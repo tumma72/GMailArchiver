@@ -5,297 +5,300 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://github.com/tumma72/GMailArchiver/workflows/Tests/badge.svg)](https://github.com/tumma72/GMailArchiver/actions)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/bfb62663af32da529734c79e0e67fa23/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
 A powerful CLI tool to archive old Gmail messages to local mbox files with validation, compression, and safe deletion.
 
-## Features
+## ✨ Features
 
-- **Smart Archiving**: Archive emails older than a specified threshold (e.g., "3y", "6m")
-- **Incremental Mode**: Skip already-archived messages for efficient recurring runs
-- **Compression**: Support for gzip, lzma, and zstd (Python 3.14 native) compression
-- **Multi-Layer Validation**: Validate archives before deletion with checksums and spot-checks
-- **Safe Deletion Workflow**:
+- **📅 Smart Archiving**: Archive emails older than a specified threshold (e.g., "3y", "6m", "30d")
+- **♻️ Incremental Mode**: Skip already-archived messages for efficient recurring runs
+- **🗜️ Compression**: Support for gzip, lzma, and zstd (fastest, Python 3.14 native)
+- **✅ Multi-Layer Validation**: Validate archives before deletion with checksums and spot-checks
+- **🛡️ Safe Deletion Workflow**:
   - Archive-only mode (default, safe)
-  - Trash mode (30-day recovery)
+  - Trash mode (30-day recovery window)
   - Permanent deletion (with explicit confirmation)
-- **Progress Tracking**: Real-time progress bars for long operations
-- **State Management**: SQLite database tracks archived messages and runs
-- **Batch Operations**: Efficient API usage with automatic rate limiting
+- **📊 Progress Tracking**: Real-time progress bars for long operations
+- **💾 State Management**: SQLite database tracks archived messages and run history
+- **⚡ Batch Operations**: Efficient API usage with automatic rate limiting
 
-## Installation
+## 📦 Installation
 
 ### Prerequisites
 
-- Python 3.14 or higher
-- Google Account with Gmail access
+- **Python 3.14+** ([Download here](https://www.python.org/downloads/))
+- **Gmail Account** with email you want to archive
 
-**Note**: OAuth2 credentials are now bundled with the application. No manual Google Cloud setup required!
+**Note**: OAuth2 credentials are bundled with the application. No manual Google Cloud setup required!
 
-### Option 1: Install from GitHub Release (Recommended)
-
-Download the latest wheel file from the [releases page](https://github.com/tumma72/GMailArchiver/releases) and install with pip:
+### Install from PyPI (Coming Soon)
 
 ```bash
-# Download the latest .whl file from releases, then:
-pip install gmailarchiver-*.whl
+pip install gmailarchiver
+```
 
-# Or install directly from the latest release URL (replace VERSION with latest):
+### Install from GitHub Release (Current Method)
+
+1. Go to the [Releases page](https://github.com/tumma72/GMailArchiver/releases)
+2. Download the latest `.whl` file
+3. Install with pip:
+
+```bash
+pip install gmailarchiver-*.whl
+```
+
+Or install directly from URL:
+
+```bash
+# Replace VERSION with the latest version (e.g., 1.0.3)
 pip install https://github.com/tumma72/GMailArchiver/releases/download/vVERSION/gmailarchiver-VERSION-py3-none-any.whl
 ```
 
-### Option 2: Install with pip + UV (For Development)
+### Verify Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/tumma72/GMailArchiver.git
-cd GMailArchiver
-
-# Install with pip in editable mode
-pip install -e .
-
-# Or install dependencies with UV
-uv sync
-
-# Or install in development mode with UV
-uv sync --dev
+gmailarchiver --version
+gmailarchiver --help
 ```
 
-### Option 3: Build from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/tumma72/GMailArchiver.git
-cd GMailArchiver
-
-# Build the wheel
-uv build
-
-# Install the built wheel (version will match your git tag)
-pip install dist/gmailarchiver-*.whl
-```
-
-### First Run - OAuth2 Authorization
+## 🔐 First Run - OAuth2 Authorization
 
 On first run, Gmail Archiver will automatically:
-1. Open your browser to Google's authorization page
-2. Ask you to sign in with your Google Account
-3. Request permission to access Gmail (read-only for archiving, modify for deletion)
-4. Save an authorization token to `~/.config/gmailarchiver/token.json` (Linux/macOS) or `%APPDATA%/gmailarchiver/token.json` (Windows)
 
-**Note**: The bundled OAuth2 credentials are for "installed applications" and follow Google's security model. The client secret is not truly confidential for desktop apps - security comes from user consent at authorization time.
+1. **Open your browser** to Google's authorization page
+2. **Ask you to sign in** with your Google Account
+3. **Request permission** to access Gmail (read-only for archiving, modify for deletion)
+4. **Save an authorization token** to:
+   - **Linux/macOS**: `~/.config/gmailarchiver/token.json`
+   - **Windows**: `%APPDATA%\gmailarchiver\token.json`
 
-#### Advanced: Custom OAuth2 Credentials (Optional)
+**Security Note**: The bundled OAuth2 credentials follow Google's security model for "installed applications". The client secret is not confidential for desktop apps - security comes from user consent at authorization time.
+
+### Using Custom OAuth2 Credentials (Optional)
 
 If you prefer to use your own OAuth2 credentials:
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the Gmail API:
-   - Navigate to "APIs & Services" > "Library"
-   - Search for "Gmail API"
-   - Click "Enable"
-4. Create OAuth 2.0 credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth 2.0 Client ID"
-   - Select "Desktop app" as application type
-   - Download the credentials JSON file
-5. Use the `--credentials` flag to specify your custom credentials file:
-   ```bash
-   gmailarchiver archive 3y --credentials /path/to/your/credentials.json
-   ```
-
-## Usage
-
-**Note**: If you installed via pip/wheel, use `gmailarchiver` directly. If running from source with UV, use `uv run gmailarchiver`.
-
-### Basic Commands
+1. Create credentials in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the Gmail API
+3. Create "Desktop app" OAuth 2.0 credentials
+4. Download the credentials JSON file
+5. Use with `--credentials` flag:
 
 ```bash
-# Archive emails older than 3 years (dry run by default for safety)
+gmailarchiver archive 3y --credentials /path/to/your/credentials.json
+```
+
+## 🚀 Quick Start
+
+### Basic Usage
+
+```bash
+# Preview what would be archived (dry run)
 gmailarchiver archive 3y --dry-run
 
-# Actually archive (creates archive_YYYYMMDD.mbox)
+# Archive emails older than 3 years
 gmailarchiver archive 3y
 
-# Archive with compression (zstd is fastest and recommended)
+# Archive with zstd compression (recommended - fastest)
 gmailarchiver archive 3y --compress zstd
 
-# Or use gzip for compatibility
-gmailarchiver archive 3y --compress gzip
-
-# Archive and move to trash (reversible, 30-day recovery)
-gmailarchiver archive 3y --trash
-
-# Archive with custom output file
-gmailarchiver archive 6m --output old_emails.mbox.gz --compress gzip
-
-# Permanent deletion (requires explicit confirmation)
-gmailarchiver archive 3y --delete
+# Archive with custom filename
+gmailarchiver archive 6m --output my_archive.mbox.zst --compress zstd
 ```
 
-### Age Threshold Formats
+### Age Formats
 
-- `3y` - 3 years
-- `6m` - 6 months
-- `2w` - 2 weeks
-- `30d` - 30 days
+| Format | Meaning |
+|--------|---------|
+| `3y` | 3 years |
+| `6m` | 6 months |
+| `2w` | 2 weeks |
+| `30d` | 30 days |
 
-### Additional Commands
-
-```bash
-# Validate an existing archive (works with all compression formats)
-gmailarchiver validate archive_20250113.mbox.zst
-
-# Show archiving status and statistics
-gmailarchiver status
-
-# Reset authentication (revoke token)
-gmailarchiver auth-reset
-
-# Get help
-gmailarchiver --help
-gmailarchiver archive --help
-```
-
-## Workflow
-
-### Recommended Safe Workflow
+### Complete Workflow (Recommended)
 
 ```bash
-# 1. Dry run to preview
+# 1. Preview what will be archived
 gmailarchiver archive 3y --dry-run
 
-# 2. Archive without deletion (using zstd for best performance)
+# 2. Archive without deletion (using zstd compression)
 gmailarchiver archive 3y --compress zstd
+# → Creates: archive_20250113.mbox.zst
 
 # 3. Validate the archive
 gmailarchiver validate archive_20250113.mbox.zst
 
-# 4. Move to trash (reversible for 30 days)
+# 4. Move emails to trash (reversible for 30 days)
 gmailarchiver archive 3y --trash
 
-# 5. (Optional) After verification, permanent delete
-#    Only run this after you've verified the archive!
+# 5. (Optional) Permanent deletion after verification
+#    ⚠️ Only after you've verified the archive!
 gmailarchiver archive 3y --delete
 ```
 
-### Incremental Archiving
+## 📝 All Commands
 
-The tool tracks archived messages in a SQLite database (`archive_state.db`). Subsequent runs automatically skip already-archived messages:
+### Archive Command
+
+```bash
+# Archive with different time periods
+gmailarchiver archive 1y    # 1 year old
+gmailarchiver archive 6m    # 6 months old
+gmailarchiver archive 30d   # 30 days old
+
+# Archive with compression options
+gmailarchiver archive 3y --compress zstd    # zstd (fastest, recommended)
+gmailarchiver archive 3y --compress gzip    # gzip (more compatible)
+gmailarchiver archive 3y --compress lzma    # lzma (smallest size)
+
+# Archive and delete
+gmailarchiver archive 3y --trash            # Move to trash (reversible)
+gmailarchiver archive 3y --delete           # Permanent delete (requires confirmation)
+
+# Custom output file
+gmailarchiver archive 6m --output old_emails.mbox.gz --compress gzip
+```
+
+### Validation Command
+
+```bash
+# Validate any archive (auto-detects compression)
+gmailarchiver validate archive_20250113.mbox
+gmailarchiver validate archive_20250113.mbox.gz
+gmailarchiver validate archive_20250113.mbox.zst
+```
+
+### Status Command
+
+```bash
+# Show archiving statistics
+gmailarchiver status
+```
+
+### Authentication Commands
+
+```bash
+# Reset authentication (revoke and delete token)
+gmailarchiver auth-reset
+
+# Use custom credentials file
+gmailarchiver archive 3y --credentials my_credentials.json
+```
+
+## 🔄 Incremental Archiving
+
+Gmail Archiver automatically tracks archived messages, so you can run it repeatedly without re-archiving the same emails:
 
 ```bash
 # First run - archives all emails older than 3 years
-gmailarchiver archive 3y
+gmailarchiver archive 3y --compress zstd
 
-# Future runs - only archives new emails matching criteria
-gmailarchiver archive 3y  # Skips previously archived messages
+# Future runs - only archives NEW emails older than 3 years
+gmailarchiver archive 3y --compress zstd
 ```
 
-## Architecture
+The tool maintains a SQLite database (`archive_state.db`) that tracks which messages have been archived.
 
-```
-gmailarchiver/
-   auth.py          # OAuth2 authentication
-   gmail_client.py  # Gmail API wrapper with retry logic
-   archiver.py      # Core archiving logic
-   validator.py     # Archive validation
-   state.py         # SQLite state tracking
-   utils.py         # Utility functions (date parsing, etc.)
-   main.py          # CLI interface (Typer)
-```
+## 🛡️ Safety Features
 
-## Safety Features
-
-1. **Dry-run mode**: Preview operations without making changes
-2. **Archive validation**: Multi-layer validation before deletion
-   - Count verification
+1. **Dry-run mode**: Preview operations without making changes (`--dry-run`)
+2. **Multi-layer validation**: Before deletion, validate:
+   - Message count matches
    - Database cross-check
-   - Content integrity check
+   - Content integrity (checksums)
    - Spot-check sampling
-3. **Trash first**: Move to trash (reversible) before permanent deletion
-4. **Explicit confirmation**: Type exact phrase to confirm permanent deletion
-5. **Incremental mode**: Prevents duplicate archiving
-6. **Rate limiting**: Automatic exponential backoff for API limits
+3. **Trash-first workflow**: Move to trash (reversible for 30 days) before permanent deletion
+4. **Explicit confirmation**: Must type exact phrase to confirm permanent deletion
+5. **Incremental mode**: Prevents duplicate archiving of messages
+6. **Automatic rate limiting**: Handles Gmail API limits with exponential backoff
+7. **Atomic operations**: Database transactions with auto-rollback on errors
 
-## Performance
+## ⚡ Performance
 
 Typical performance with Gmail API rate limits:
 
-- 10,000 emails: ~25-30 minutes
-- 50,000 emails: ~2-2.5 hours
-- 100,000 emails: ~4-5 hours (or split into multiple runs)
+| Emails | Time |
+|--------|------|
+| 10,000 | ~25-30 minutes |
+| 50,000 | ~2-2.5 hours |
+| 100,000 | ~4-5 hours |
 
-The tool uses batch operations and automatically handles rate limiting with exponential backoff.
+**Tips for large mailboxes**:
+- Use `--compress zstd` for fastest compression
+- Consider splitting into smaller date ranges
+- Run during off-hours to avoid interruptions
 
-## Database Schema
+## 🔧 Troubleshooting
 
-The tool maintains state in `archive_state.db`:
+### Authentication Issues
 
-### archived_messages table
-- `gmail_id` (PRIMARY KEY): Gmail message ID
-- `archived_timestamp`: When message was archived
-- `archive_file`: Path to archive file
-- `subject`: Email subject
-- `from_addr`: From address
-- `message_date`: Original email date
-- `checksum`: SHA256 checksum
+**Problem**: "Credentials file not found" or authentication fails
 
-### archive_runs table
-- `run_id` (PRIMARY KEY): Auto-incrementing run ID
-- `run_timestamp`: When archive run occurred
-- `query`: Gmail query used
-- `messages_archived`: Count of messages archived
-- `archive_file`: Archive file path
-
-## Troubleshooting
-
-### "Credentials file not found"
-
-Download credentials from Google Cloud Console and save as `credentials.json`.
-
-### "Rate limit exceeded"
-
-The tool automatically retries with exponential backoff. For very large mailboxes, consider splitting into smaller date ranges.
-
-### "Validation failed"
-
-The archive may be incomplete. DO NOT delete until validation passes. Check:
-- Archive file exists and is readable
-- State database is not corrupted
-- Sufficient disk space
-
-### Authentication issues
-
-Reset authentication:
+**Solution**:
 ```bash
+# Reset authentication
 gmailarchiver auth-reset
+
+# Then run any command to re-authenticate
+gmailarchiver archive 3y --dry-run
 ```
 
-Then re-run any command to re-authenticate.
+### Rate Limit Errors
 
-## Contributing
+**Problem**: "Rate limit exceeded" errors
 
-Contributions welcome! Please:
+**Solution**: The tool automatically retries with exponential backoff. For very large mailboxes, consider:
+- Running during off-peak hours
+- Splitting into smaller date ranges (e.g., `1y` instead of `5y`)
 
-1. Fork the repository
-2. Create a feature branch
-3. Run tests: `uv run pytest`
-4. Run linter: `uv run ruff check .`
-5. Run type checker: `uv run mypy gmailarchiver`
-6. Submit a pull request
+### Validation Failures
 
-## License
+**Problem**: Archive validation fails
 
-Apache-2.0
+**Solution**: DO NOT delete until validation passes. Check:
+1. Archive file exists and is readable
+2. Sufficient disk space available
+3. State database not corrupted
+4. All messages were successfully archived
 
-## Disclaimer
+If validation continues to fail, keep the archive and do not delete from Gmail.
 
-This tool permanently deletes emails when using `--delete`. Always:
-- Test with `--dry-run` first
-- Validate archives before deletion
-- Use `--trash` for reversible deletion
-- Keep backups of important emails
+### Disk Space
 
-The authors are not responsible for data loss.
+**Problem**: Running out of disk space
+
+**Solution**:
+- Use compression: `--compress zstd` (typically 50-70% space savings)
+- Archive smaller time ranges
+- Check available space before archiving: `df -h` (Linux/macOS) or `dir` (Windows)
+
+## 🤝 Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development setup
+- Testing guidelines
+- Code quality standards
+- Pull request process
+
+## 📄 License
+
+Apache-2.0 License. See [LICENSE](LICENSE) for details.
+
+## ⚠️ Disclaimer
+
+This tool **permanently deletes emails** when using `--delete`. Always:
+
+- ✅ Test with `--dry-run` first
+- ✅ Validate archives before deletion
+- ✅ Use `--trash` for reversible deletion
+- ✅ Keep backups of important emails
+
+**The authors are not responsible for data loss. Use at your own risk.**
+
+## 🔗 Links
+
+- [GitHub Repository](https://github.com/tumma72/GMailArchiver)
+- [Issue Tracker](https://github.com/tumma72/GMailArchiver/issues)
+- [Changelog](CHANGELOG.md)
+- [Contributing Guide](CONTRIBUTING.md)
+- [Developer Documentation](CLAUDE.md)

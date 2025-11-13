@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation Structure
+
+- **README.md**: User-focused documentation for installing and using Gmail Archiver
+- **CONTRIBUTING.md**: Comprehensive developer guide (setup, testing, architecture, pull requests)
+- **CLAUDE.md** (this file): Quick reference for AI assistants working on the codebase
+- **CHANGELOG.md**: Version history and release notes
+
+For detailed architecture, database schema, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Project Overview
 
 Gmail Archiver is a Python CLI tool that archives old Gmail messages to local mbox files with validation, compression, and safe deletion. The project uses Python 3.14+ and follows strict type checking with mypy and linting with ruff.
