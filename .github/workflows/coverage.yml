@@ -64,7 +64,7 @@ jobs:
         cat coverage-badge.json
 
     - name: Update coverage badge gist
-      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.GIST_ID != ''
       uses: exuanbo/actions-deploy-gist@v1
       with:
         token: ${{ secrets.GIST_TOKEN }}

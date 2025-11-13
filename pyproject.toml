@@ -70,6 +70,10 @@ target-version = "py314"
 select = ["E", "F", "I", "N", "W", "UP"]
 ignore = []
 
+[tool.ruff.lint.per-file-ignores]
+# Allow Mock* naming convention in tests (e.g., MockCreds, MockFlow)
+"tests/*" = ["N806", "F841"]
+
 [tool.mypy]
 python_version = "3.14"
 strict = true
