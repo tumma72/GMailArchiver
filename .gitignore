@@ -1,0 +1,54 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# UV
+.uv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Gmail credentials and tokens
+credentials.json
+token.json
+token.pickle
+
+# Archive files
+*.mbox
+*.mbox.gz
+*.mbox.bz2
+*.mbox.xz
+*.mbox.zst
+
+# State database
+archive_state.db
+archive_state.db-journal
+*.db
+*.db-journal
+
+# Logs
+*.log
+logs/
+
+# Checkpoints
+checkpoint.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python version
+.python-version
