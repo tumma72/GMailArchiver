@@ -43,6 +43,7 @@ The coverage badge in README.md is configured to pull from a GitHub Gist. This g
    - **Add Variable** (click "Variables" tab, then "New repository variable"):
      - Name: `GIST_ID`
      - Value: (paste the Gist ID from step 1)
+     - Example: `bfb62663af32da529734c79e0e67fa23`
 
    > **Why Variable instead of Secret?** The Gist ID is already public (visible in the README badge URL), so there's no security benefit to hiding it. Using a variable means you only define it once and it's used in both the workflow and README.
 
