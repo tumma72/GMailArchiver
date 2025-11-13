@@ -1,9 +1,10 @@
 # Gmail Archiver
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/tumma72/GMailArchiver/releases)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://github.com/tumma72/GMailArchiver/workflows/Tests/badge.svg)](https://github.com/tumma72/GMailArchiver/actions)
-[![Coverage](https://codecov.io/gh/tumma72/GMailArchiver/branch/main/graph/badge.svg)](https://codecov.io/gh/tumma72/GMailArchiver)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen.svg)](https://github.com/tumma72/GMailArchiver/actions)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
@@ -28,21 +29,49 @@ A powerful CLI tool to archive old Gmail messages to local mbox files with valid
 ### Prerequisites
 
 - Python 3.14 or higher
-- [UV](https://github.com/astral-sh/uv) package manager
 - Google Cloud Project with Gmail API enabled
 
-### Install with UV
+### Option 1: Install from GitHub Release (Recommended)
+
+Download the latest wheel file from the [releases page](https://github.com/tumma72/GMailArchiver/releases) and install with pip:
+
+```bash
+# Download the wheel file from releases, then:
+pip install gmailarchiver-1.0.0-py3-none-any.whl
+
+# Or install directly from the release URL:
+pip install https://github.com/tumma72/GMailArchiver/releases/download/v1.0.0/gmailarchiver-1.0.0-py3-none-any.whl
+```
+
+### Option 2: Install with pip + UV (For Development)
 
 ```bash
 # Clone the repository
 git clone https://github.com/tumma72/GMailArchiver.git
 cd GMailArchiver
 
-# Install dependencies with UV
+# Install with pip in editable mode
+pip install -e .
+
+# Or install dependencies with UV
 uv sync
 
-# Or install in development mode
+# Or install in development mode with UV
 uv sync --dev
+```
+
+### Option 3: Build from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/tumma72/GMailArchiver.git
+cd GMailArchiver
+
+# Build the wheel
+uv build
+
+# Install the wheel
+pip install dist/gmailarchiver-1.0.0-py3-none-any.whl
 ```
 
 ### Google Cloud Setup
@@ -62,29 +91,31 @@ uv sync --dev
 
 ## Usage
 
+**Note**: If you installed via pip/wheel, use `gmailarchiver` directly. If running from source with UV, use `uv run gmailarchiver`.
+
 ### Basic Commands
 
 ```bash
 # Archive emails older than 3 years (dry run by default for safety)
-uv run gmailarchiver archive 3y --dry-run
+gmailarchiver archive 3y --dry-run
 
 # Actually archive (creates archive_YYYYMMDD.mbox)
-uv run gmailarchiver archive 3y
+gmailarchiver archive 3y
 
 # Archive with compression (zstd is fastest and recommended)
-uv run gmailarchiver archive 3y --compress zstd
+gmailarchiver archive 3y --compress zstd
 
 # Or use gzip for compatibility
-uv run gmailarchiver archive 3y --compress gzip
+gmailarchiver archive 3y --compress gzip
 
 # Archive and move to trash (reversible, 30-day recovery)
-uv run gmailarchiver archive 3y --trash
+gmailarchiver archive 3y --trash
 
 # Archive with custom output file
-uv run gmailarchiver archive 6m --output old_emails.mbox.gz --compress gzip
+gmailarchiver archive 6m --output old_emails.mbox.gz --compress gzip
 
 # Permanent deletion (requires explicit confirmation)
-uv run gmailarchiver archive 3y --delete
+gmailarchiver archive 3y --delete
 ```
 
 ### Age Threshold Formats
@@ -98,17 +129,17 @@ uv run gmailarchiver archive 3y --delete
 
 ```bash
 # Validate an existing archive (works with all compression formats)
-uv run gmailarchiver validate archive_20250113.mbox.zst
+gmailarchiver validate archive_20250113.mbox.zst
 
 # Show archiving status and statistics
-uv run gmailarchiver status
+gmailarchiver status
 
 # Reset authentication (revoke token)
-uv run gmailarchiver auth-reset
+gmailarchiver auth-reset
 
 # Get help
-uv run gmailarchiver --help
-uv run gmailarchiver archive --help
+gmailarchiver --help
+gmailarchiver archive --help
 ```
 
 ## Workflow
@@ -117,20 +148,20 @@ uv run gmailarchiver archive --help
 
 ```bash
 # 1. Dry run to preview
-uv run gmailarchiver archive 3y --dry-run
+gmailarchiver archive 3y --dry-run
 
 # 2. Archive without deletion (using zstd for best performance)
-uv run gmailarchiver archive 3y --compress zstd
+gmailarchiver archive 3y --compress zstd
 
 # 3. Validate the archive
-uv run gmailarchiver validate archive_20250113.mbox.zst
+gmailarchiver validate archive_20250113.mbox.zst
 
 # 4. Move to trash (reversible for 30 days)
-uv run gmailarchiver archive 3y --trash
+gmailarchiver archive 3y --trash
 
 # 5. (Optional) After verification, permanent delete
 #    Only run this after you've verified the archive!
-uv run gmailarchiver archive 3y --delete
+gmailarchiver archive 3y --delete
 ```
 
 ### Incremental Archiving
@@ -139,10 +170,10 @@ The tool tracks archived messages in a SQLite database (`archive_state.db`). Sub
 
 ```bash
 # First run - archives all emails older than 3 years
-uv run gmailarchiver archive 3y
+gmailarchiver archive 3y
 
 # Future runs - only archives new emails matching criteria
-uv run gmailarchiver archive 3y  # Skips previously archived messages
+gmailarchiver archive 3y  # Skips previously archived messages
 ```
 
 ## Architecture
@@ -222,7 +253,7 @@ The archive may be incomplete. DO NOT delete until validation passes. Check:
 
 Reset authentication:
 ```bash
-uv run gmailarchiver auth-reset
+gmailarchiver auth-reset
 ```
 
 Then re-run any command to re-authenticate.

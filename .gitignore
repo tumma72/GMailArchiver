@@ -61,3 +61,4 @@ coverage.xml
 
 # Claude Code
 .claude/
+*.egg
