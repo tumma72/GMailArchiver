@@ -4,7 +4,7 @@
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://github.com/tumma72/GMailArchiver/workflows/Tests/badge.svg)](https://github.com/tumma72/GMailArchiver/actions)
-[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/GIST_ID/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
+[![Coverage](https://img.shields.io/badge/coverage-30%25-orange)](https://github.com/tumma72/GMailArchiver/actions)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
