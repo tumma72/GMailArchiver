@@ -4,11 +4,12 @@ import email
 import gzip
 import lzma
 import mailbox
-from compression import zstd
+import shutil
 from email import policy
 from pathlib import Path
 from typing import Any
 
+import zstandard as zstd
 from rich.progress import (
     BarColumn,
     Progress,
@@ -18,6 +19,7 @@ from rich.progress import (
 )
 
 from .gmail_client import GmailClient
+from .input_validator import validate_age_expression, validate_compression_format
 from .state import ArchiveState
 from .utils import datetime_to_gmail_query, format_bytes, parse_age
 from .validator import ArchiveValidator
@@ -55,14 +57,20 @@ class GmailArchiver:
         Args:
             age_threshold: Age expression (e.g., '3y', '6m')
             output_file: Output mbox file path
-            compress: Compression format ('gzip', 'lzma', None)
+            compress: Compression format ('gzip', 'lzma', 'zstd', None)
             incremental: Skip already-archived messages
             dry_run: Preview without actually archiving
 
         Returns:
             Dictionary with archive statistics
+
+        Raises:
+            InvalidInputError: If age_threshold or compress format is invalid
         """
-        # Parse age threshold
+        # Validate and parse age threshold
+        age_threshold = validate_age_expression(age_threshold)
+        compress = validate_compression_format(compress)
+
         cutoff_date = parse_age(age_threshold)
         query = f"before:{datetime_to_gmail_query(cutoff_date)}"
 
@@ -259,17 +267,17 @@ class GmailArchiver:
         if compress_format == 'gzip':
             with open(source_path, 'rb') as f_in:
                 with gzip.open(dest_path, 'wb', compresslevel=6) as f_out:
-                    f_out.writelines(f_in)
+                    shutil.copyfileobj(f_in, f_out)
         elif compress_format == 'lzma':
             with open(source_path, 'rb') as f_in:
                 with lzma.open(dest_path, 'wb') as f_out:
-                    f_out.writelines(f_in)
+                    shutil.copyfileobj(f_in, f_out)
         elif compress_format == 'zstd':
-            # Zstandard: fast compression with excellent ratios (Python 3.14+ native)
+            # Zstandard: fast compression with excellent ratios (Python 3.14+ stdlib)
             # Level 3 is default (good balance), max is 22
             with open(source_path, 'rb') as f_in:
                 with zstd.open(dest_path, 'wb', level=3) as f_out:
-                    f_out.writelines(f_in)
+                    shutil.copyfileobj(f_in, f_out)
         else:
             raise ValueError(
                 f"Unsupported compression format: {compress_format}. "

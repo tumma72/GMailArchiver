@@ -2,21 +2,31 @@
 
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from gmailarchiver.path_validator import validate_file_path
 
 
 class ArchiveState:
     """Track archived messages in SQLite database."""
 
-    def __init__(self, db_path: str = 'archive_state.db') -> None:
+    def __init__(self, db_path: str = 'archive_state.db', validate_path: bool = True) -> None:
         """
         Initialize state database.
 
         Args:
             db_path: Path to SQLite database file
+            validate_path: Whether to validate path (set False for testing)
+
+        Raises:
+            PathTraversalError: If validate_path=True and path attempts to escape working directory
         """
-        self.db_path = Path(db_path)
+        # Validate path to prevent path traversal attacks (unless disabled for testing)
+        if validate_path:
+            self.db_path = validate_file_path(db_path)
+        else:
+            from pathlib import Path
+            self.db_path = Path(db_path).resolve()
         self.conn = sqlite3.connect(str(self.db_path))
         self._create_tables()
 
@@ -94,7 +104,8 @@ class ArchiveState:
             message_date,
             checksum
         ))
-        self.conn.commit()
+        # Note: Commit is deferred to allow batch operations
+        # Call commit() explicitly or use context manager to auto-commit
 
     def record_archive_run(
         self,
@@ -122,7 +133,8 @@ class ArchiveState:
             messages_archived,
             archive_file
         ))
-        self.conn.commit()
+        # Note: Commit is deferred to allow batch operations
+        # Call commit() explicitly or use context manager to auto-commit
         return cursor.lastrowid if cursor.lastrowid is not None else -1
 
     def get_archived_count(self) -> int:
@@ -195,9 +207,22 @@ class ArchiveState:
         self.conn.close()
 
     def __enter__(self) -> ArchiveState:
-        """Context manager entry."""
+        """Context manager entry - begins transaction."""
         return self
 
-    def __exit__(self, *args: Any) -> None:
-        """Context manager exit."""
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """
+        Context manager exit - commits on success, rollbacks on exception.
+
+        Args:
+            exc_type: Exception type if an exception occurred
+            exc_val: Exception value if an exception occurred
+            exc_tb: Exception traceback if an exception occurred
+        """
+        if exc_type is None:
+            # No exception - commit the transaction
+            self.conn.commit()
+        else:
+            # Exception occurred - rollback all changes
+            self.conn.rollback()
         self.close()

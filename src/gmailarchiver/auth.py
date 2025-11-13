@@ -1,12 +1,13 @@
 """OAuth2 authentication for Gmail API."""
 
+import json
 import os
-import pickle
-from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+
+from gmailarchiver.path_validator import validate_file_path
 
 # Gmail API scopes
 SCOPES = [
@@ -21,17 +22,28 @@ class GmailAuthenticator:
     def __init__(
         self,
         credentials_file: str = 'credentials.json',
-        token_file: str = 'token.pickle'
+        token_file: str = 'token.json',
+        validate_paths: bool = True
     ) -> None:
         """
         Initialize the authenticator.
 
         Args:
             credentials_file: Path to OAuth2 credentials JSON file
-            token_file: Path to save/load access token
+            token_file: Path to save/load access token (JSON format)
+            validate_paths: Whether to validate paths (set False for testing)
+
+        Raises:
+            PathTraversalError: If validate_paths=True and paths attempt to escape working directory
         """
-        self.credentials_file = Path(credentials_file)
-        self.token_file = Path(token_file)
+        # Validate paths to prevent path traversal attacks (unless disabled for testing)
+        if validate_paths:
+            self.credentials_file = validate_file_path(credentials_file)
+            self.token_file = validate_file_path(token_file)
+        else:
+            from pathlib import Path
+            self.credentials_file = Path(credentials_file).resolve()
+            self.token_file = Path(token_file).resolve()
         self._creds: Credentials | None = None
 
     def authenticate(self) -> Credentials:
@@ -44,10 +56,11 @@ class GmailAuthenticator:
         Raises:
             FileNotFoundError: If credentials.json is not found
         """
-        # Try to load existing token
+        # Try to load existing token from JSON
         if self.token_file.exists():
-            with open(self.token_file, 'rb') as token:
-                self._creds = pickle.load(token)
+            with open(self.token_file) as token:
+                creds_data = json.load(token)
+            self._creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
 
         # If no valid credentials, refresh or run auth flow
         if not self._creds or not self._creds.valid:
@@ -73,9 +86,9 @@ class GmailAuthenticator:
                 )
                 self._creds = flow.run_local_server(port=0)
 
-            # Save the credentials for next run
-            with open(self.token_file, 'wb') as token:
-                pickle.dump(self._creds, token)
+            # Save the credentials for next run as JSON
+            with open(self.token_file, 'w') as token:
+                token.write(self._creds.to_json())
 
         return self._creds
 
