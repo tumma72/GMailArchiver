@@ -52,3 +52,12 @@ Thumbs.db
 
 # Python version
 .python-version
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Claude Code
+.claude/
