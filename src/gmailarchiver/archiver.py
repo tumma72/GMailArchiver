@@ -293,7 +293,7 @@ class GmailArchiver:
             # Zstandard: fast compression with excellent ratios (Python 3.14+ stdlib)
             # Level 3 is default (good balance), max is 22
             with open(source_path, 'rb') as f_in:
-                with zstd.open(dest_path, 'wb', level=3) as f_out:  # type: ignore[call-arg]
+                with zstd.open(dest_path, 'wb', level=3) as f_out:
                     shutil.copyfileobj(f_in, f_out)
         else:
             raise ValueError(
