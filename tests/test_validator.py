@@ -6,10 +6,9 @@ import lzma
 import mailbox
 import sqlite3
 import tempfile
+from compression import zstd
 from pathlib import Path
 from unittest.mock import patch
-
-import zstandard as zstd
 
 from gmailarchiver.validator import ArchiveValidator
 

@@ -3,6 +3,7 @@
 import gzip
 import lzma
 import tempfile
+from compression import zstd
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -196,10 +197,13 @@ class TestCompressArchive:
         dest_path = source_path.with_suffix('.zst')
 
         try:
-            # Note: The code has a bug with level=3 parameter
-            # This test expects the TypeError
-            with pytest.raises(TypeError, match="unexpected keyword argument"):
-                archiver._compress_archive(source_path, dest_path, 'zstd')
+            archiver._compress_archive(source_path, dest_path, 'zstd')
+
+            # Verify compressed file exists and can be decompressed
+            assert dest_path.exists()
+            with zstd.open(dest_path, 'rb') as f:
+                decompressed = f.read()
+            assert decompressed == b'Test data for zstd'
 
         finally:
             source_path.unlink()

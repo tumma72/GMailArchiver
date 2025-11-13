@@ -7,10 +7,9 @@ import mailbox
 import random
 import sqlite3
 import tempfile
+from compression import zstd
 from pathlib import Path
 from typing import Any
-
-import zstandard as zstd
 
 
 class ArchiveValidator:

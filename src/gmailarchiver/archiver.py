@@ -5,11 +5,11 @@ import gzip
 import lzma
 import mailbox
 import shutil
+from compression import zstd
 from email import policy
 from pathlib import Path
 from typing import Any
 
-import zstandard as zstd
 from rich.progress import (
     BarColumn,
     Progress,
