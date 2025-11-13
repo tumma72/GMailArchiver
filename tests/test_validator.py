@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 import zstandard as zstd
 
 from gmailarchiver.validator import ArchiveValidator
@@ -193,11 +192,13 @@ class TestValidateComprehensive:
             ''')
             conn.execute(
                 'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg1', '2025-01-01', 'archive.mbox', 'Test 1', 'test1@example.com', '2025-01-01', 'abc')
+                ('msg1', '2025-01-01', 'archive.mbox', 'Test 1',
+                 'test1@example.com', '2025-01-01', 'abc')
             )
             conn.execute(
                 'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg2', '2025-01-01', 'archive.mbox', 'Test 2', 'test2@example.com', '2025-01-01', 'def')
+                ('msg2', '2025-01-01', 'archive.mbox', 'Test 2',
+                 'test2@example.com', '2025-01-01', 'def')
             )
             conn.commit()
             conn.close()
@@ -249,7 +250,8 @@ class TestValidateComprehensive:
             ''')
             conn.execute(
                 'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg1', '2025-01-01', 'archive.mbox', 'Test', 'test@example.com', '2025-01-01', 'abc')
+                ('msg1', '2025-01-01', 'archive.mbox', 'Test',
+                 'test@example.com', '2025-01-01', 'abc')
             )
             conn.commit()
             conn.close()

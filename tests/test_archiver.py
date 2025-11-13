@@ -2,13 +2,11 @@
 
 import gzip
 import lzma
-import mailbox
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
-import zstandard as zstd
 
 from gmailarchiver.archiver import GmailArchiver
 from gmailarchiver.input_validator import InvalidInputError
@@ -440,7 +438,11 @@ class TestArchiveMessagesIntegration:
         mock_client = Mock()
         mock_client.list_messages.return_value = [{'id': 'msg1', 'threadId': 'thread1'}]
 
-        test_email = b'From: test@example.com\r\nSubject: Test Subject\r\nDate: Mon, 1 Jan 2024 12:00:00 +0000\r\n\r\nBody'
+        test_email = (
+            b'From: test@example.com\r\n'
+            b'Subject: Test Subject\r\n'
+            b'Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n\r\nBody'
+        )
         mock_message = {'id': 'msg1', 'threadId': 'thread1', 'raw': 'dGVzdA=='}
         mock_client.get_messages_batch.return_value = [mock_message]
         mock_client.decode_message_raw.return_value = test_email

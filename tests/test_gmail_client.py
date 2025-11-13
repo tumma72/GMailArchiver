@@ -1,8 +1,8 @@
 """Tests for Gmail API client wrapper."""
 
 import base64
-import time
-from unittest.mock import MagicMock, Mock, patch
+from typing import Any
+from unittest.mock import Mock, patch
 
 import pytest
 from googleapiclient.errors import HttpError

@@ -547,9 +547,9 @@ class TestAuthErrorPaths:
             with patch('gmailarchiver.auth.InstalledAppFlow') as MockFlow, \
                  patch('builtins.open', side_effect=[
                      # First open for credentials file succeeds
-                     open(creds_file, 'r'),
+                     open(creds_file),
                      # Second open for token file fails
-                     IOError("Cannot write token")
+                     OSError("Cannot write token")
                  ]), \
                  patch('builtins.print'):
 

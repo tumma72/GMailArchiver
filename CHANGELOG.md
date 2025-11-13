@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2025-01-13
+
+### Added
+- Comprehensive test suite improving coverage from 30% to 95%
+- CLAUDE.md documentation for codebase structure and development workflows
+- Tests for input_validator.py (61 tests, 98% coverage)
+- Tests for gmail_client.py (27 tests, 98% coverage)
+- Tests for validator.py (18 tests, 92% coverage)
+- Tests for archiver.py (22 tests, 95% coverage)
+- Extended tests for auth.py with error handling scenarios (98% coverage)
+- Total: 197 passing tests (up from 65)
+
+### Fixed
+- Linting errors in test files (unused imports, undefined types, line length)
+- Code quality issues identified by ruff linter
+
 ## [1.0.1] - 2025-01-13
 
 ### Added
@@ -60,5 +76,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automatic retry logic for API failures
 - Cross-platform support (macOS, Linux, Windows)
 
+[1.0.2]: https://github.com/tumma72/GMailArchiver/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/tumma72/GMailArchiver/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/tumma72/GMailArchiver/releases/tag/v1.0.0
