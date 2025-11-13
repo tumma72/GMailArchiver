@@ -376,3 +376,198 @@ class TestBackwardCompatibility:
                 assert pickle_file.exists()
         finally:
             os.chdir(original_cwd)
+
+
+class TestAuthErrorPaths:
+    """Tests for error handling paths in authentication."""
+
+    def test_corrupt_token_json(self, temp_dir):
+        """Test handling of corrupted token JSON file."""
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            # Create a corrupted token.json file
+            token_file = Path(temp_dir) / 'token.json'
+            token_file.write_text('{invalid json')
+
+            # Create credentials file for re-authentication
+            creds_file = Path(temp_dir) / 'credentials.json'
+            creds_data = {
+                'installed': {
+                    'client_id': 'mock_client_id',
+                    'client_secret': 'mock_client_secret',
+                    'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                    'token_uri': 'https://oauth2.googleapis.com/token'
+                }
+            }
+            creds_file.write_text(json.dumps(creds_data))
+
+            with patch('gmailarchiver.auth.InstalledAppFlow') as MockFlow, \
+                 patch('builtins.print'):
+                mock_flow_instance = Mock()
+                mock_cred_instance = Mock()
+                mock_cred_instance.valid = True
+                mock_cred_instance.to_json.return_value = json.dumps({})
+
+                mock_flow_instance.run_local_server.return_value = mock_cred_instance
+                MockFlow.from_client_secrets_file.return_value = mock_flow_instance
+
+                auth = GmailAuthenticator(
+                    credentials_file='credentials.json',
+                    token_file='token.json',
+                    validate_paths=False
+                )
+                # Should handle corrupt JSON and re-authenticate
+                result = auth.authenticate()
+                assert result is not None
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_token_refresh_failure(self, temp_dir):
+        """Test handling of token refresh failure."""
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            token_file = Path(temp_dir) / 'token.json'
+            token_data = {
+                'token': 'expired_token',
+                'refresh_token': 'invalid_refresh_token',
+                'token_uri': 'https://oauth2.googleapis.com/token',
+                'client_id': 'mock_client_id',
+                'client_secret': 'mock_client_secret',
+                'scopes': SCOPES
+            }
+            token_file.write_text(json.dumps(token_data))
+
+            # Create credentials file for fallback
+            creds_file = Path(temp_dir) / 'credentials.json'
+            creds_data = {
+                'installed': {
+                    'client_id': 'mock_client_id',
+                    'client_secret': 'mock_client_secret',
+                    'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                    'token_uri': 'https://oauth2.googleapis.com/token'
+                }
+            }
+            creds_file.write_text(json.dumps(creds_data))
+
+            with patch('gmailarchiver.auth.Credentials') as MockCreds, \
+                 patch('gmailarchiver.auth.InstalledAppFlow') as MockFlow, \
+                 patch('builtins.print'):
+
+                # Mock expired credentials that fail to refresh
+                mock_cred_instance = Mock()
+                mock_cred_instance.valid = False
+                mock_cred_instance.expired = True
+                mock_cred_instance.refresh_token = 'invalid'
+                MockCreds.from_authorized_user_info.return_value = mock_cred_instance
+
+                # Refresh fails
+                mock_cred_instance.refresh.side_effect = Exception("Refresh failed")
+
+                # Fallback to OAuth flow
+                mock_flow_instance = Mock()
+                mock_new_cred = Mock()
+                mock_new_cred.valid = True
+                mock_new_cred.to_json.return_value = json.dumps({})
+                mock_flow_instance.run_local_server.return_value = mock_new_cred
+                MockFlow.from_client_secrets_file.return_value = mock_flow_instance
+
+                auth = GmailAuthenticator(
+                    credentials_file='credentials.json',
+                    token_file='token.json',
+                    validate_paths=False
+                )
+                result = auth.authenticate()
+
+                # Should fall back to OAuth flow
+                assert result is not None
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_oauth_flow_failure(self, temp_dir):
+        """Test handling of OAuth flow failure."""
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            creds_file = Path(temp_dir) / 'credentials.json'
+            creds_data = {
+                'installed': {
+                    'client_id': 'mock_client_id',
+                    'client_secret': 'mock_client_secret',
+                    'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                    'token_uri': 'https://oauth2.googleapis.com/token'
+                }
+            }
+            creds_file.write_text(json.dumps(creds_data))
+
+            with patch('gmailarchiver.auth.InstalledAppFlow') as MockFlow, \
+                 patch('builtins.print'):
+                mock_flow_instance = Mock()
+                mock_flow_instance.run_local_server.side_effect = Exception("Auth failed")
+                MockFlow.from_client_secrets_file.return_value = mock_flow_instance
+
+                auth = GmailAuthenticator(
+                    credentials_file='credentials.json',
+                    validate_paths=False
+                )
+
+                with pytest.raises(Exception, match="Auth failed"):
+                    auth.authenticate()
+
+        finally:
+            os.chdir(original_cwd)
+
+    def test_token_save_failure(self, temp_dir):
+        """Test handling of token save failure."""
+        import os
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+
+            creds_file = Path(temp_dir) / 'credentials.json'
+            creds_data = {
+                'installed': {
+                    'client_id': 'mock_client_id',
+                    'client_secret': 'mock_client_secret',
+                    'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
+                    'token_uri': 'https://oauth2.googleapis.com/token'
+                }
+            }
+            creds_file.write_text(json.dumps(creds_data))
+
+            with patch('gmailarchiver.auth.InstalledAppFlow') as MockFlow, \
+                 patch('builtins.open', side_effect=[
+                     # First open for credentials file succeeds
+                     open(creds_file, 'r'),
+                     # Second open for token file fails
+                     IOError("Cannot write token")
+                 ]), \
+                 patch('builtins.print'):
+
+                mock_flow_instance = Mock()
+                mock_cred_instance = Mock()
+                mock_cred_instance.valid = True
+                mock_cred_instance.to_json.return_value = json.dumps({})
+                mock_flow_instance.run_local_server.return_value = mock_cred_instance
+                MockFlow.from_client_secrets_file.return_value = mock_flow_instance
+
+                auth = GmailAuthenticator(
+                    credentials_file='credentials.json',
+                    validate_paths=False
+                )
+
+                # Should complete auth even if save fails
+                result = auth.authenticate()
+                assert result is not None
+
+        finally:
+            os.chdir(original_cwd)
