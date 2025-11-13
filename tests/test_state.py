@@ -22,7 +22,7 @@ class TestArchiveState:
 
     def test_init_creates_database(self, temp_db):
         """Test that initializing ArchiveState creates database and tables."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         assert Path(temp_db).exists()
 
@@ -38,7 +38,7 @@ class TestArchiveState:
 
     def test_mark_archived(self, temp_db):
         """Test marking a message as archived."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         state.mark_archived(
             gmail_id='msg123',
@@ -68,7 +68,7 @@ class TestArchiveState:
 
     def test_is_archived(self, temp_db):
         """Test checking if message is archived."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         # Initially not archived
         assert not state.is_archived('msg123')
@@ -83,7 +83,7 @@ class TestArchiveState:
 
     def test_get_archived_count(self, temp_db):
         """Test getting count of archived messages."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         assert state.get_archived_count() == 0
 
@@ -101,7 +101,7 @@ class TestArchiveState:
 
     def test_record_archive_run(self, temp_db):
         """Test recording an archive run."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         run_id = state.record_archive_run(
             query='older_than:3y',
@@ -127,7 +127,7 @@ class TestArchiveState:
 
     def test_get_archive_runs(self, temp_db):
         """Test getting recent archive runs."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         # Add multiple runs
         state.record_archive_run('older_than:1y', 50, 'run1.mbox')
@@ -150,7 +150,7 @@ class TestArchiveState:
 
     def test_get_archived_message_ids(self, temp_db):
         """Test getting all archived message IDs."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         assert state.get_archived_message_ids() == set()
 
@@ -165,7 +165,7 @@ class TestArchiveState:
 
     def test_get_archived_message_ids_for_file(self, temp_db):
         """Test getting message IDs for specific archive file."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         # Add messages to different archives
         state.mark_archived('msg1', 'archive1.mbox')
@@ -188,7 +188,7 @@ class TestArchiveState:
 
     def test_context_manager(self, temp_db):
         """Test using ArchiveState as context manager."""
-        with ArchiveState(temp_db) as state:
+        with ArchiveState(temp_db, validate_path=False) as state:
             state.mark_archived('msg1', 'test.mbox')
             assert state.is_archived('msg1')
 
@@ -202,7 +202,7 @@ class TestArchiveState:
 
     def test_mark_archived_replace(self, temp_db):
         """Test that mark_archived replaces existing records."""
-        state = ArchiveState(temp_db)
+        state = ArchiveState(temp_db, validate_path=False)
 
         # Add initial message
         state.mark_archived(

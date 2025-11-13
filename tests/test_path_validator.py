@@ -1,6 +1,5 @@
 """Tests for path validation module."""
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -56,7 +55,7 @@ class TestValidateFilePath:
         """Test validation with custom base directory for valid path."""
         with tempfile.TemporaryDirectory() as tmpdir:
             result = validate_file_path('test.txt', base_dir=tmpdir)
-            expected = Path(tmpdir) / 'test.txt'
+            expected = (Path(tmpdir) / 'test.txt').resolve()
             assert result == expected
 
     def test_custom_base_dir_invalid(self):
@@ -97,7 +96,7 @@ class TestValidateFilePath:
             # Validate the symlink
             result = validate_file_path('link.txt', base_dir=tmpdir)
             # Result should resolve to the target file
-            assert result == target_file
+            assert result == target_file.resolve()
 
     def test_symlink_outside_base_dir(self):
         """Test that symlinks pointing outside base directory are blocked."""
@@ -160,7 +159,7 @@ class TestValidateFilePathForWriting:
             file_path = 'test.txt'
 
             result = validate_file_path_for_writing(file_path, base_dir=tmpdir)
-            expected = Path(tmpdir) / file_path
+            expected = (Path(tmpdir) / file_path).resolve()
 
             assert result == expected
             assert result.parent.exists()
@@ -174,7 +173,7 @@ class TestValidateFilePathForWriting:
 
             # All parent directories should exist
             assert result.parent.exists()
-            expected = Path(tmpdir) / file_path
+            expected = (Path(tmpdir) / file_path).resolve()
             assert result == expected
 
     def test_path_traversal_blocked_for_writing(self):

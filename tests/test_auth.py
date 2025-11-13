@@ -3,11 +3,11 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from gmailarchiver.auth import GmailAuthenticator, SCOPES
+from gmailarchiver.auth import SCOPES, GmailAuthenticator
 from gmailarchiver.path_validator import PathTraversalError
 
 
@@ -41,11 +41,14 @@ class TestGmailAuthenticatorInit:
 
     def test_default_initialization(self):
         """Test initialization with default parameters."""
-        # Should use current directory as base
+        # Should use bundled credentials and XDG token path
         auth = GmailAuthenticator()
 
-        assert auth.credentials_file == Path.cwd() / 'credentials.json'
-        assert auth.token_file == Path.cwd() / 'token.json'
+        # Should use bundled credentials in src/gmailarchiver/config/
+        assert 'gmailarchiver/config/oauth_credentials.json' in str(auth.credentials_file)
+        # Should use XDG-compliant path for token
+        assert 'gmailarchiver' in str(auth.token_file)
+        assert 'token.json' in str(auth.token_file.name)
         assert auth._creds is None
 
     def test_custom_file_paths(self, temp_dir):
@@ -57,7 +60,8 @@ class TestGmailAuthenticatorInit:
 
             auth = GmailAuthenticator(
                 credentials_file='my_creds.json',
-                token_file='my_token.json'
+                token_file='my_token.json',
+                validate_paths=False  # Disable validation for tests
             )
 
             assert auth.credentials_file.name == 'my_creds.json'
@@ -109,7 +113,7 @@ class TestGmailAuthenticatorAuthenticate:
                 mock_cred_instance.valid = True
                 MockCreds.from_authorized_user_info.return_value = mock_cred_instance
 
-                auth = GmailAuthenticator(token_file='token.json')
+                auth = GmailAuthenticator(token_file='token.json', validate_paths=False)
                 result = auth.authenticate()
 
                 # Verify credentials were loaded from JSON
@@ -128,14 +132,16 @@ class TestGmailAuthenticatorAuthenticate:
             os.chdir(temp_dir)
 
             auth = GmailAuthenticator(
-                credentials_file='nonexistent_credentials.json'
+                credentials_file='nonexistent_credentials.json',
+                validate_paths=False  # Disable validation for tests
             )
 
             with pytest.raises(FileNotFoundError) as exc_info:
                 auth.authenticate()
 
-            assert 'Credentials file not found' in str(exc_info.value)
-            assert 'Google Cloud Console' in str(exc_info.value)
+            # Updated error message for bundled credentials
+            assert 'OAuth credentials file not found' in str(exc_info.value)
+            assert 'reinstall' in str(exc_info.value).lower()
         finally:
             os.chdir(original_cwd)
 
@@ -175,7 +181,7 @@ class TestGmailAuthenticatorAuthenticate:
                 mock_cred_instance.refresh.side_effect = make_valid
                 mock_cred_instance.to_json.return_value = json.dumps(token_data)
 
-                auth = GmailAuthenticator(token_file='token.json')
+                auth = GmailAuthenticator(token_file='token.json', validate_paths=False)
                 result = auth.authenticate()
 
                 # Verify refresh was called
@@ -222,7 +228,8 @@ class TestGmailAuthenticatorAuthenticate:
 
                 auth = GmailAuthenticator(
                     credentials_file='credentials.json',
-                    token_file='token.json'
+                    token_file='token.json',
+                    validate_paths=False  # Disable validation for tests
                 )
                 auth.authenticate()
 
@@ -231,7 +238,7 @@ class TestGmailAuthenticatorAuthenticate:
                 assert token_file.exists()
 
                 # Should be readable as JSON (not pickle)
-                with open(token_file, 'r') as f:
+                with open(token_file) as f:
                     token_content = json.load(f)
 
                 assert 'token' in token_content
@@ -246,7 +253,7 @@ class TestGmailAuthenticatorAuthenticate:
         try:
             os.chdir(temp_dir)
 
-            auth = GmailAuthenticator()
+            auth = GmailAuthenticator(validate_paths=False)
 
             # Initially None
             assert auth.credentials is None
@@ -275,7 +282,7 @@ class TestGmailAuthenticatorRevoke:
             token_file = Path(temp_dir) / 'token.json'
             token_file.write_text('{}')
 
-            auth = GmailAuthenticator(token_file='token.json')
+            auth = GmailAuthenticator(token_file='token.json', validate_paths=False)
             auth._creds = Mock()
 
             # Revoke
@@ -296,7 +303,7 @@ class TestGmailAuthenticatorRevoke:
         try:
             os.chdir(temp_dir)
 
-            auth = GmailAuthenticator(token_file='nonexistent.json')
+            auth = GmailAuthenticator(token_file='nonexistent.json', validate_paths=False)
             auth._creds = Mock()
 
             # Should not raise an error
@@ -356,7 +363,8 @@ class TestBackwardCompatibility:
                 # User creates new authenticator with default token.json
                 auth = GmailAuthenticator(
                     credentials_file='credentials.json',
-                    token_file='token.json'
+                    token_file='token.json',
+                    validate_paths=False  # Disable validation for tests
                 )
                 auth.authenticate()
 

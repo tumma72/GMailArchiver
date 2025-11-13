@@ -45,15 +45,16 @@ def validate_file_path(path: str, base_dir: str | None = None) -> Path:
     else:
         base_dir_path = Path(base_dir).resolve()
 
-    # Convert input path to Path object and resolve it
-    # resolve() will:
-    # - Make the path absolute
-    # - Remove '..' and '.' components
-    # - Follow symlinks
-    try:
-        resolved_path = Path(path).resolve()
-    except (OSError, RuntimeError) as e:
-        raise ValueError(f"Invalid path: {path}") from e
+    # Convert input path to Path object
+    input_path = Path(path)
+
+    # If path is relative, combine with base_dir before resolving
+    # If path is absolute, use it directly
+    if input_path.is_absolute():
+        resolved_path = input_path.resolve()
+    else:
+        # Resolve relative to base_dir
+        resolved_path = (base_dir_path / input_path).resolve()
 
     # Check if resolved path is within base directory
     # This prevents path traversal attacks

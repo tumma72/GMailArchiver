@@ -96,12 +96,12 @@ def archive(
 
     # Authenticate
     console.print("\n[bold blue]Gmail Archiver[/bold blue]\n")
-    console.print("Authenticating...")
 
     try:
+        # credentials=None uses bundled OAuth credentials
+        # token_file=None uses ~/.config/gmailarchiver/token.json
         authenticator = GmailAuthenticator(credentials_file=credentials)
         creds = authenticator.authenticate()
-        console.print("✓ Authenticated successfully\n")
     except FileNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}", style="red")
         raise typer.Exit(1)

@@ -24,6 +24,33 @@ def _get_bundled_credentials_path() -> Path:
     return module_dir / 'config' / 'oauth_credentials.json'
 
 
+def _get_default_token_path() -> Path:
+    """
+    Get default path for user token following XDG Base Directory standard.
+
+    Returns:
+        Path to token file in user's config directory:
+        - Linux/macOS: ~/.config/gmailarchiver/token.json
+        - Windows: %APPDATA%/gmailarchiver/token.json
+    """
+    import os
+
+    # Respect XDG_CONFIG_HOME if set (Linux/macOS)
+    config_home = os.environ.get('XDG_CONFIG_HOME')
+    if config_home:
+        config_dir = Path(config_home)
+    elif os.name == 'nt':  # Windows
+        config_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    else:  # macOS/Linux
+        config_dir = Path.home() / '.config'
+
+    # Create gmailarchiver subdirectory
+    app_config_dir = config_dir / 'gmailarchiver'
+    app_config_dir.mkdir(parents=True, exist_ok=True)
+
+    return app_config_dir / 'token.json'
+
+
 class GmailAuthenticator:
     """
     Handle OAuth2 authentication for Gmail API.
@@ -36,7 +63,7 @@ class GmailAuthenticator:
     def __init__(
         self,
         credentials_file: str | None = None,
-        token_file: str = 'token.json',
+        token_file: str | None = None,
         validate_paths: bool = True
     ) -> None:
         """
@@ -46,7 +73,8 @@ class GmailAuthenticator:
             credentials_file: Optional custom OAuth2 credentials file.
                             If None (default), uses bundled app credentials.
                             Only needed for developers or advanced users.
-            token_file: Path to save/load user's access token (JSON format)
+            token_file: Path to save/load user's access token (JSON format).
+                       If None (default), uses ~/.config/gmailarchiver/token.json
             validate_paths: Whether to validate paths (set False for testing)
 
         Raises:
@@ -61,11 +89,14 @@ class GmailAuthenticator:
             else:
                 self.credentials_file = Path(credentials_file).resolve()
 
-        # Token file - always validate if requested
-        if validate_paths:
-            self.token_file = validate_file_path(token_file)
+        # Token file - use XDG config directory by default
+        if token_file is None:
+            self.token_file = _get_default_token_path()
         else:
-            self.token_file = Path(token_file).resolve()
+            if validate_paths:
+                self.token_file = validate_file_path(token_file)
+            else:
+                self.token_file = Path(token_file).resolve()
 
         self._creds: Credentials | None = None
 
