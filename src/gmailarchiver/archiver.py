@@ -293,7 +293,7 @@ class GmailArchiver:
             # Zstandard: fast compression with excellent ratios (Python 3.14+ stdlib)
             # Level 3 is default (good balance), max is 22
             with open(source_path, 'rb') as f_in:
-                with zstd.open(dest_path, 'wb', level=3) as f_out:
+                with zstd.open(dest_path, 'wb', level=3) as f_out:  # type: ignore[call-arg]
                     shutil.copyfileobj(f_in, f_out)
         else:
             raise ValueError(
@@ -319,7 +319,7 @@ class GmailArchiver:
         validator = ArchiveValidator(archive_file, self.state_db_path)
         results = validator.validate_comprehensive(expected_message_ids)
         validator.report(results)
-        return results['passed']
+        return results['passed']  # type: ignore[no-any-return]
 
     def delete_archived_messages(
         self,

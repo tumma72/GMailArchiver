@@ -98,7 +98,7 @@ class GmailClient:
         Returns:
             Message dictionary
         """
-        return self._execute_with_retry(
+        return self._execute_with_retry(  # type: ignore[no-any-return]
             self.service.users().messages().get(
                 userId=self.user_id,
                 id=message_id,
