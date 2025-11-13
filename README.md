@@ -1,10 +1,10 @@
 # Gmail Archiver
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/tumma72/GMailArchiver/releases)
+[![Version](https://img.shields.io/github/v/release/tumma72/GMailArchiver)](https://github.com/tumma72/GMailArchiver/releases)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Tests](https://github.com/tumma72/GMailArchiver/workflows/Tests/badge.svg)](https://github.com/tumma72/GMailArchiver/actions)
-[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen.svg)](https://github.com/tumma72/GMailArchiver/actions)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/GIST_ID/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://mypy-lang.org/)
 
@@ -29,18 +29,20 @@ A powerful CLI tool to archive old Gmail messages to local mbox files with valid
 ### Prerequisites
 
 - Python 3.14 or higher
-- Google Cloud Project with Gmail API enabled
+- Google Account with Gmail access
+
+**Note**: OAuth2 credentials are now bundled with the application. No manual Google Cloud setup required!
 
 ### Option 1: Install from GitHub Release (Recommended)
 
 Download the latest wheel file from the [releases page](https://github.com/tumma72/GMailArchiver/releases) and install with pip:
 
 ```bash
-# Download the wheel file from releases, then:
-pip install gmailarchiver-1.0.0-py3-none-any.whl
+# Download the latest .whl file from releases, then:
+pip install gmailarchiver-*.whl
 
-# Or install directly from the release URL:
-pip install https://github.com/tumma72/GMailArchiver/releases/download/v1.0.0/gmailarchiver-1.0.0-py3-none-any.whl
+# Or install directly from the latest release URL (replace VERSION with latest):
+pip install https://github.com/tumma72/GMailArchiver/releases/download/vVERSION/gmailarchiver-VERSION-py3-none-any.whl
 ```
 
 ### Option 2: Install with pip + UV (For Development)
@@ -70,11 +72,23 @@ cd GMailArchiver
 # Build the wheel
 uv build
 
-# Install the wheel
-pip install dist/gmailarchiver-1.0.0-py3-none-any.whl
+# Install the built wheel (version will match your git tag)
+pip install dist/gmailarchiver-*.whl
 ```
 
-### Google Cloud Setup
+### First Run - OAuth2 Authorization
+
+On first run, Gmail Archiver will automatically:
+1. Open your browser to Google's authorization page
+2. Ask you to sign in with your Google Account
+3. Request permission to access Gmail (read-only for archiving, modify for deletion)
+4. Save an authorization token to `~/.config/gmailarchiver/token.json` (Linux/macOS) or `%APPDATA%/gmailarchiver/token.json` (Windows)
+
+**Note**: The bundled OAuth2 credentials are for "installed applications" and follow Google's security model. The client secret is not truly confidential for desktop apps - security comes from user consent at authorization time.
+
+#### Advanced: Custom OAuth2 Credentials (Optional)
+
+If you prefer to use your own OAuth2 credentials:
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select an existing one
@@ -87,7 +101,10 @@ pip install dist/gmailarchiver-1.0.0-py3-none-any.whl
    - Click "Create Credentials" > "OAuth 2.0 Client ID"
    - Select "Desktop app" as application type
    - Download the credentials JSON file
-5. Save the downloaded file as `credentials.json` in the project directory
+5. Use the `--credentials` flag to specify your custom credentials file:
+   ```bash
+   gmailarchiver archive 3y --credentials /path/to/your/credentials.json
+   ```
 
 ## Usage
 

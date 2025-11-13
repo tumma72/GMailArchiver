@@ -1,0 +1,73 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Needed for version detection
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+
+    - name: Install UV
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Install dependencies
+      run: |
+        uv sync --dev
+
+    - name: Run tests with coverage
+      run: |
+        uv run pytest --cov=src/gmailarchiver --cov-report=xml --cov-report=term
+
+    - name: Get coverage percentage
+      id: coverage
+      run: |
+        COVERAGE=$(uv run python -c "import xml.etree.ElementTree as ET; tree = ET.parse('coverage.xml'); root = tree.getroot(); print(f\"{float(root.attrib['line-rate']) * 100:.0f}\")")
+        echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+        echo "Coverage: $COVERAGE%"
+
+    - name: Create coverage badge
+      run: |
+        COVERAGE=${{ steps.coverage.outputs.percentage }}
+        COLOR="red"
+        if [ "$COVERAGE" -ge 80 ]; then
+          COLOR="brightgreen"
+        elif [ "$COVERAGE" -ge 60 ]; then
+          COLOR="yellow"
+        elif [ "$COVERAGE" -ge 40 ]; then
+          COLOR="orange"
+        fi
+
+        cat > coverage-badge.json <<EOF
+        {
+          "schemaVersion": 1,
+          "label": "coverage",
+          "message": "${COVERAGE}%",
+          "color": "$COLOR"
+        }
+        EOF
+
+        cat coverage-badge.json
+
+    - name: Update coverage badge gist
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      uses: exuanbo/actions-deploy-gist@v1
+      with:
+        token: ${{ secrets.GIST_TOKEN }}
+        gist_id: ${{ secrets.GIST_ID }}
+        file_path: coverage-badge.json
+        file_type: text
