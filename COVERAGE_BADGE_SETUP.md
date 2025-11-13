@@ -33,22 +33,32 @@ The coverage badge in README.md is configured to pull from a GitHub Gist. This g
    - Click "Generate token"
    - **Copy the token immediately** (you won't be able to see it again)
 
-3. **Add Secrets to Your Repository**
+3. **Add Configuration to Your Repository**
    - Go to your repository Settings → Secrets and variables → Actions
-   - Click "New repository secret"
-   - Add two secrets:
-     - Name: `GIST_TOKEN`, Value: (paste the personal access token from step 2)
-     - Name: `GIST_ID`, Value: (paste the Gist ID from step 1)
+
+   - **Add Secret** (click "New repository secret"):
+     - Name: `GIST_TOKEN`
+     - Value: (paste the personal access token from step 2)
+
+   - **Add Variable** (click "Variables" tab, then "New repository variable"):
+     - Name: `GIST_ID`
+     - Value: (paste the Gist ID from step 1)
+
+   > **Why Variable instead of Secret?** The Gist ID is already public (visible in the README badge URL), so there's no security benefit to hiding it. Using a variable means you only define it once and it's used in both the workflow and README.
 
 4. **Update README.md**
-   - Replace `GIST_ID` in line 7 of README.md with your actual Gist ID
+   - Replace the static coverage badge on line 7 with a dynamic one using your Gist ID
    - Change this:
      ```markdown
-     [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/GIST_ID/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
+     [![Coverage](https://img.shields.io/badge/coverage-30%25-orange)](https://github.com/tumma72/GMailArchiver/actions)
      ```
-   - To this (replace `YOUR_GIST_ID`):
+   - To this (replace `YOUR_USERNAME` and `YOUR_GIST_ID`):
      ```markdown
      [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/YOUR_USERNAME/YOUR_GIST_ID/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
+     ```
+   - Example:
+     ```markdown
+     [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/a1b2c3d4e5f6/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
      ```
 
 5. **Trigger the Workflow**
