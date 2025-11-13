@@ -171,6 +171,12 @@ class GmailArchiver:
         output_path = Path(output_file)
         temp_mbox_path = output_path if not compress else output_path.with_suffix('.mbox')
 
+        # Clean up any orphaned lock files from previous runs
+        lock_file = Path(str(temp_mbox_path) + '.lock')
+        if lock_file.exists():
+            print(f"Warning: Removing orphaned lock file: {lock_file}")
+            lock_file.unlink()
+
         # Create mbox file
         mbox = mailbox.mbox(str(temp_mbox_path))
         mbox.lock()
@@ -221,13 +227,24 @@ class GmailArchiver:
             mbox.flush()
 
         finally:
-            mbox.unlock()
-            mbox.close()
+            # Ensure mbox is properly unlocked and closed
+            try:
+                mbox.unlock()
+            except Exception as e:
+                print(f"Warning: Failed to unlock mbox: {e}")
+            try:
+                mbox.close()
+            except Exception as e:
+                print(f"Warning: Failed to close mbox: {e}")
 
         # Compress if requested
         if compress:
             self._compress_archive(temp_mbox_path, output_path, compress)
-            temp_mbox_path.unlink()  # Remove uncompressed file
+            # Remove uncompressed file AND its lock file
+            temp_mbox_path.unlink()
+            lock_file = Path(str(temp_mbox_path) + '.lock')
+            if lock_file.exists():
+                lock_file.unlink()
 
         # Calculate stats
         attempted = len(message_ids)

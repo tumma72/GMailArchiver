@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -16,12 +17,25 @@ SCOPES = [
 ]
 
 
+def _get_bundled_credentials_path() -> Path:
+    """Get path to bundled OAuth credentials."""
+    # Get the directory where this module is located
+    module_dir = Path(__file__).parent
+    return module_dir / 'config' / 'oauth_credentials.json'
+
+
 class GmailAuthenticator:
-    """Handle OAuth2 authentication for Gmail API."""
+    """
+    Handle OAuth2 authentication for Gmail API.
+
+    This uses pre-configured OAuth credentials bundled with the application.
+    Users only need to authorize the app through their Google account - no need
+    to create their own Google Cloud project or credentials.
+    """
 
     def __init__(
         self,
-        credentials_file: str = 'credentials.json',
+        credentials_file: str | None = None,
         token_file: str = 'token.json',
         validate_paths: bool = True
     ) -> None:
@@ -29,66 +43,120 @@ class GmailAuthenticator:
         Initialize the authenticator.
 
         Args:
-            credentials_file: Path to OAuth2 credentials JSON file
-            token_file: Path to save/load access token (JSON format)
+            credentials_file: Optional custom OAuth2 credentials file.
+                            If None (default), uses bundled app credentials.
+                            Only needed for developers or advanced users.
+            token_file: Path to save/load user's access token (JSON format)
             validate_paths: Whether to validate paths (set False for testing)
 
         Raises:
             PathTraversalError: If validate_paths=True and paths attempt to escape working directory
         """
-        # Validate paths to prevent path traversal attacks (unless disabled for testing)
+        # Use bundled credentials by default, or custom if provided
+        if credentials_file is None:
+            self.credentials_file = _get_bundled_credentials_path()
+        else:
+            if validate_paths:
+                self.credentials_file = validate_file_path(credentials_file)
+            else:
+                self.credentials_file = Path(credentials_file).resolve()
+
+        # Token file - always validate if requested
         if validate_paths:
-            self.credentials_file = validate_file_path(credentials_file)
             self.token_file = validate_file_path(token_file)
         else:
-            from pathlib import Path
-            self.credentials_file = Path(credentials_file).resolve()
             self.token_file = Path(token_file).resolve()
+
         self._creds: Credentials | None = None
 
     def authenticate(self) -> Credentials:
         """
         Perform OAuth2 authentication flow.
 
+        On first run, this will:
+        1. Open your web browser
+        2. Ask you to log in to your Google account
+        3. Ask you to authorize Gmail Archiver to access your Gmail
+        4. Save the authorization token locally for future use
+
+        On subsequent runs, it will reuse the saved token (no browser needed).
+
         Returns:
             Google OAuth2 credentials
 
         Raises:
-            FileNotFoundError: If credentials.json is not found
+            FileNotFoundError: If bundled credentials are missing (shouldn't happen)
+            Exception: If OAuth flow fails
         """
         # Try to load existing token from JSON
         if self.token_file.exists():
-            with open(self.token_file) as token:
-                creds_data = json.load(token)
-            self._creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+            try:
+                with open(self.token_file) as token:
+                    creds_data = json.load(token)
+                self._creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Warning: Failed to load saved token: {e}")
+                print("Will re-authenticate...")
+                self._creds = None
 
         # If no valid credentials, refresh or run auth flow
         if not self._creds or not self._creds.valid:
             if self._creds and self._creds.expired and self._creds.refresh_token:
                 # Refresh expired token
-                self._creds.refresh(Request())
-            else:
-                # Run OAuth2 flow
+                print("Refreshing expired token...")
+                try:
+                    self._creds.refresh(Request())
+                except Exception as e:
+                    print(f"Warning: Token refresh failed: {e}")
+                    print("Will re-authenticate...")
+                    self._creds = None
+
+            # Run OAuth2 flow if we still don't have valid credentials
+            if not self._creds or not self._creds.valid:
                 if not self.credentials_file.exists():
                     raise FileNotFoundError(
-                        f"Credentials file not found: {self.credentials_file}\n"
-                        "Please download it from Google Cloud Console:\n"
-                        "1. Go to https://console.cloud.google.com/\n"
-                        "2. Create or select a project\n"
-                        "3. Enable Gmail API\n"
-                        "4. Create OAuth 2.0 Client ID (Desktop app)\n"
-                        "5. Download credentials and save as 'credentials.json'"
+                        f"OAuth credentials file not found: {self.credentials_file}\n"
+                        "This is a bug - the application's OAuth credentials are missing.\n"
+                        "Please reinstall the application or report this issue."
                     )
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(self.credentials_file),
-                    SCOPES
-                )
-                self._creds = flow.run_local_server(port=0)
+                print("\n" + "="*60)
+                print("GMAIL AUTHORIZATION REQUIRED")
+                print("="*60)
+                print("\nThis application needs permission to access your Gmail.")
+                print("A browser window will open where you can:")
+                print("  1. Log in to your Google account")
+                print("  2. Review the permissions requested")
+                print("  3. Click 'Allow' to authorize Gmail Archiver")
+                print("\nYour authorization will be saved locally, so you only")
+                print("need to do this once (unless you revoke access).")
+                print("="*60 + "\n")
+
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        str(self.credentials_file),
+                        SCOPES
+                    )
+                    # Use localhost redirect - most user-friendly
+                    self._creds = flow.run_local_server(
+                        port=0,
+                        authorization_prompt_message='Opening browser for authorization...',
+                        success_message='Authorization successful! You can close this window.',
+                        open_browser=True
+                    )
+                    print("\n✓ Authorization successful!")
+                except Exception as e:
+                    print(f"\n✗ Authorization failed: {e}")
+                    raise
 
             # Save the credentials for next run as JSON
-            with open(self.token_file, 'w') as token:
-                token.write(self._creds.to_json())
+            try:
+                with open(self.token_file, 'w') as token:
+                    token.write(self._creds.to_json())
+                print(f"✓ Authorization saved to: {self.token_file}")
+            except Exception as e:
+                print(f"Warning: Failed to save token: {e}")
+                print("You may need to re-authorize next time.")
 
         return self._creds
 

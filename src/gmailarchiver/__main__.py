@@ -56,10 +56,10 @@ def archive(
         "--dry-run",
         help="Preview without making changes"
     ),
-    credentials: str = typer.Option(
-        "credentials.json",
+    credentials: str | None = typer.Option(
+        None,
         "--credentials",
-        help="Path to OAuth2 credentials file"
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)"
     ),
 ) -> None:
     """

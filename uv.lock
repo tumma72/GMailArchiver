@@ -103,7 +103,6 @@ wheels = [
 
 [[package]]
 name = "gmailarchiver"
-version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-api-python-client" },
