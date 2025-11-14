@@ -381,7 +381,9 @@ class ArchiveValidator:
 
                     except Exception as e:
                         failed_reads += 1
-                        failures.append(f"Failed to read message {gmail_id} at offset {offset}: {e}")
+                        failures.append(
+                            f"Failed to read message {gmail_id} at offset {offset}: {e}"
+                        )
 
             accuracy_percentage = (
                 (successful_reads / total_checked * 100.0) if total_checked > 0 else 0.0
@@ -456,7 +458,8 @@ class ArchiveValidator:
 
                 # Check for duplicate gmail_ids
                 cursor = conn.execute(
-                    'SELECT gmail_id, COUNT(*) as cnt FROM messages GROUP BY gmail_id HAVING cnt > 1'
+                    '''SELECT gmail_id, COUNT(*) as cnt FROM messages
+                       GROUP BY gmail_id HAVING cnt > 1'''
                 )
                 report.duplicate_gmail_ids = len(cursor.fetchall())
 
