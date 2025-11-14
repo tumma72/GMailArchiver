@@ -725,6 +725,182 @@ def dedupe(
         raise typer.Exit(1)
 
 
+@app.command(name="verify-offsets")
+def verify_offsets_cmd(
+    archive_file: str = typer.Argument(..., help="Path to archive file"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path")
+) -> None:
+    """
+    Verify mbox offset accuracy for v1.1 databases.
+
+    Validates that stored mbox file offsets accurately point to messages.
+    Requires v1.1 schema (run 'gmailarchiver migrate' if needed).
+
+    Example:
+        $ gmailarchiver verify-offsets archive_20250114.mbox.gz
+        $ gmailarchiver verify-offsets test.mbox --state-db /path/to/archive_state.db
+    """
+    console.print("\n[bold blue]Offset Verification[/bold blue]\n")
+
+    # Check files exist
+    archive_path = Path(archive_file)
+    if not archive_path.exists():
+        console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
+        raise typer.Exit(1)
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        raise typer.Exit(1)
+
+    # Create validator and run verification
+    try:
+        validator = ArchiveValidator(archive_file, state_db)
+        result = validator.verify_offsets()
+
+        # Handle skipped (v1.0 schema)
+        if result.skipped:
+            console.print("[yellow]Offset verification skipped (v1.0 schema)[/yellow]")
+            console.print(
+                "[dim]Run 'gmailarchiver migrate' to upgrade to v1.1 for offset tracking[/dim]\n"
+            )
+            return
+
+        # Display results
+        console.print(f"Total offsets checked: [cyan]{result.total_checked}[/cyan]")
+        console.print(f"Successful reads: [green]{result.successful_reads}[/green]")
+        console.print(f"Failed reads: [red]{result.failed_reads}[/red]")
+        console.print(f"Accuracy: [bold]{result.accuracy_percentage:.1f}%[/bold]\n")
+
+        # Success case
+        if result.accuracy_percentage == 100.0:
+            from rich.panel import Panel
+            console.print(Panel(
+                f"[green]✓ All {result.total_checked} offsets verified successfully[/green]",
+                title="Verification Passed",
+                border_style="green"
+            ))
+            return
+
+        # Failure case - show details
+        if result.failures:
+            table = Table(title="Offset Verification Failures")
+            table.add_column("Failure Details", style="red")
+
+            for failure in result.failures[:20]:  # Limit to first 20
+                table.add_row(failure)
+
+            console.print(table)
+
+            if len(result.failures) > 20:
+                console.print(
+                    f"[dim]... and {len(result.failures) - 20} more failures[/dim]\n"
+                )
+
+        console.print(f"\n[red]Verification failed: {result.accuracy_percentage:.1f}% accuracy[/red]")
+        raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command(name="verify-consistency")
+def verify_consistency_cmd(
+    archive_file: str = typer.Argument(..., help="Path to archive file"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path")
+) -> None:
+    """
+    Deep database consistency check.
+
+    Validates database integrity, checks for orphaned records, missing records,
+    duplicates, and FTS synchronization (v1.1 only).
+
+    Example:
+        $ gmailarchiver verify-consistency archive_20250114.mbox.gz
+        $ gmailarchiver verify-consistency test.mbox --state-db /path/to/archive_state.db
+    """
+    console.print("\n[bold blue]Database Consistency Check[/bold blue]\n")
+
+    # Check files exist
+    archive_path = Path(archive_file)
+    if not archive_path.exists():
+        console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
+        raise typer.Exit(1)
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        raise typer.Exit(1)
+
+    # Create validator and run consistency check
+    try:
+        validator = ArchiveValidator(archive_file, state_db)
+        report = validator.verify_consistency()
+
+        # Display schema version
+        console.print(f"Schema version: [cyan]{report.schema_version}[/cyan]\n")
+
+        # Create results table
+        table = Table(title="Consistency Check Results")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status", style="bold")
+
+        # Add results
+        table.add_row(
+            "Orphaned records",
+            f"[red]{report.orphaned_records}[/red]" if report.orphaned_records > 0
+            else "[green]0[/green]"
+        )
+        table.add_row(
+            "Missing records",
+            f"[red]{report.missing_records}[/red]" if report.missing_records > 0
+            else "[green]0[/green]"
+        )
+        table.add_row(
+            "Duplicate Gmail IDs",
+            f"[red]{report.duplicate_gmail_ids}[/red]" if report.duplicate_gmail_ids > 0
+            else "[green]0[/green]"
+        )
+
+        if report.schema_version == "1.1":
+            table.add_row(
+                "Duplicate RFC Message-IDs",
+                f"[red]{report.duplicate_rfc_message_ids}[/red]"
+                if report.duplicate_rfc_message_ids > 0
+                else "[green]0[/green]"
+            )
+            table.add_row(
+                "FTS synchronized",
+                "[green]Yes[/green]" if report.fts_synced else "[red]No[/red]"
+            )
+
+        console.print(table)
+
+        # Show errors if any
+        if report.errors:
+            console.print("\n[bold red]Issues Found:[/bold red]")
+            for error in report.errors:
+                console.print(f"  • {error}")
+
+        # Overall status
+        if report.passed:
+            from rich.panel import Panel
+            console.print(Panel(
+                "[green]✓ All consistency checks passed[/green]",
+                title="Consistency Check Passed",
+                border_style="green"
+            ))
+            return
+
+        console.print("\n[red]Consistency check failed - issues detected[/red]\n")
+        raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @app.command()
 def auth_reset() -> None:
     """
