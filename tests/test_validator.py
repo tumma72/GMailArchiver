@@ -465,3 +465,595 @@ class TestReport:
         full_output = ' '.join(calls)
         assert 'FAILED' in full_output
         assert 'Count mismatch' in full_output
+
+
+class TestOffsetVerification:
+    """Tests for offset verification (v1.1 schema)."""
+
+    def test_verify_offsets_valid_offsets(self) -> None:
+        """Test verify_offsets with valid offsets (all pass)."""
+        # Create test mbox with 2 messages
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        # Create test database with v1.1 schema
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with test messages
+            mbox = mailbox.mbox(str(mbox_path))
+            msg1 = mailbox.mboxMessage()
+            msg1['Message-ID'] = '<msg1@example.com>'
+            msg1['From'] = 'test1@example.com'
+            msg1['Subject'] = 'Test 1'
+            msg1.set_payload('Body 1')
+            mbox.add(msg1)
+
+            msg2 = mailbox.mboxMessage()
+            msg2['Message-ID'] = '<msg2@example.com>'
+            msg2['From'] = 'test2@example.com'
+            msg2['Subject'] = 'Test 2'
+            msg2.set_payload('Body 2')
+            mbox.add(msg2)
+            mbox.close()
+
+            # Read mbox to get actual offsets and lengths
+            with open(mbox_path, 'rb') as f:
+                content = f.read()
+                # Find offsets for each message (they start with "From ")
+                offset1 = content.find(b'From ')
+                offset2 = content.find(b'From ', offset1 + 1)
+                length1 = offset2 - offset1 if offset2 != -1 else len(content) - offset1
+                length2 = len(content) - offset2 if offset2 != -1 else 0
+
+            # Create v1.1 database
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                   archived_timestamp, archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
+                 '2025-01-01', 'archive.mbox', offset1, length1)
+            )
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                   archived_timestamp, archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
+                 '2025-01-01', 'archive.mbox', offset2, length2)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            result = validator.verify_offsets()
+
+            assert result.total_checked == 2
+            assert result.successful_reads == 2
+            assert result.failed_reads == 0
+            assert result.accuracy_percentage == 100.0
+            assert len(result.failures) == 0
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_offsets_corrupted_offset(self) -> None:
+        """Test verify_offsets with corrupted offset (fails gracefully)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg['From'] = 'test@example.com'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Create v1.1 database with WRONG offset
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 99999, 100)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            result = validator.verify_offsets()
+
+            assert result.total_checked == 1
+            assert result.successful_reads == 0
+            assert result.failed_reads == 1
+            assert result.accuracy_percentage == 0.0
+            assert len(result.failures) == 1
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_offsets_wrong_message_id(self) -> None:
+        """Test verify_offsets with wrong Message-ID (detects mismatch)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<actual@example.com>'
+            msg['From'] = 'test@example.com'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Get actual offset
+            with open(mbox_path, 'rb') as f:
+                content = f.read()
+                offset = content.find(b'From ')
+                length = len(content) - offset
+
+            # Create v1.1 database with WRONG Message-ID
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<wrong@example.com>', '2025-01-01', 'archive.mbox', offset, length)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            result = validator.verify_offsets()
+
+            assert result.total_checked == 1
+            assert result.successful_reads == 0
+            assert result.failed_reads == 1
+            assert 'Message-ID mismatch' in result.failures[0]
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_offsets_v10_schema(self) -> None:
+        """Test verify_offsets with v1.0 schema (skips gracefully)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create empty mbox
+            mbox = mailbox.mbox(str(mbox_path))
+            mbox.close()
+
+            # Create v1.0 database (old schema without offsets)
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE archived_messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    archived_timestamp TEXT,
+                    archive_file TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    message_date TEXT,
+                    checksum TEXT
+                )
+            ''')
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            result = validator.verify_offsets()
+
+            # Should skip verification for v1.0 schema
+            assert result.total_checked == 0
+            assert result.successful_reads == 0
+            assert result.failed_reads == 0
+            assert result.skipped is True
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_offsets_length_mismatch(self) -> None:
+        """Test verify_offsets with incorrect mbox_length."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg['From'] = 'test@example.com'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Get actual offset but use WRONG length
+            with open(mbox_path, 'rb') as f:
+                content = f.read()
+                offset = content.find(b'From ')
+
+            # Create v1.1 database with WRONG length
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', offset, 50)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            result = validator.verify_offsets()
+
+            assert result.total_checked == 1
+            assert result.failed_reads == 1
+            assert 'length mismatch' in result.failures[0].lower()
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+
+class TestConsistencyChecks:
+    """Tests for deep database consistency checks."""
+
+    def test_verify_consistency_perfect_database(self) -> None:
+        """Test verify_consistency with perfect database (all checks pass)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with 2 messages
+            mbox = mailbox.mbox(str(mbox_path))
+            msg1 = mailbox.mboxMessage()
+            msg1['Message-ID'] = '<msg1@example.com>'
+            msg1['From'] = 'test1@example.com'
+            msg1.set_payload('Body 1')
+            mbox.add(msg1)
+
+            msg2 = mailbox.mboxMessage()
+            msg2['Message-ID'] = '<msg2@example.com>'
+            msg2['From'] = 'test2@example.com'
+            msg2.set_payload('Body 2')
+            mbox.add(msg2)
+            mbox.close()
+
+            # Create v1.1 database
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute('''
+                CREATE VIRTUAL TABLE messages_fts USING fts5(
+                    subject,
+                    from_addr,
+                    content=messages,
+                    content_rowid=rowid
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+            )
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail2', '<msg2@example.com>', '2025-01-01', 'archive.mbox', 100, 100)
+            )
+            # Sync FTS5
+            conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            report = validator.verify_consistency()
+
+            assert report.orphaned_records == 0
+            assert report.missing_records == 0
+            assert report.duplicate_gmail_ids == 0
+            assert report.duplicate_rfc_message_ids == 0
+            assert report.fts_synced is True
+            assert report.passed is True
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_consistency_orphaned_records(self) -> None:
+        """Test verify_consistency with orphaned records (detects)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with 1 message
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Create v1.1 database with 2 messages (one orphaned)
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+            )
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail2', '<orphan@example.com>', '2025-01-01', 'archive.mbox', 100, 100)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            report = validator.verify_consistency()
+
+            assert report.orphaned_records == 1
+            assert report.passed is False
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_consistency_missing_records(self) -> None:
+        """Test verify_consistency with missing records (detects)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with 2 messages
+            mbox = mailbox.mbox(str(mbox_path))
+            msg1 = mailbox.mboxMessage()
+            msg1['Message-ID'] = '<msg1@example.com>'
+            msg1.set_payload('Body 1')
+            mbox.add(msg1)
+
+            msg2 = mailbox.mboxMessage()
+            msg2['Message-ID'] = '<msg2@example.com>'
+            msg2.set_payload('Body 2')
+            mbox.add(msg2)
+            mbox.close()
+
+            # Create v1.1 database with only 1 message (one missing)
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            report = validator.verify_consistency()
+
+            assert report.missing_records == 1
+            assert report.passed is False
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_consistency_fts_desync(self) -> None:
+        """Test verify_consistency with FTS5 desync (detects)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with 1 message
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Create v1.1 database with messages table but empty FTS
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute('''
+                CREATE VIRTUAL TABLE messages_fts USING fts5(
+                    subject,
+                    from_addr,
+                    content=messages,
+                    content_rowid=rowid
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+            )
+            # Don't sync FTS5 - create desync
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            report = validator.verify_consistency()
+
+            assert report.fts_synced is False
+            assert report.passed is False
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+
+    def test_verify_consistency_v10_schema(self) -> None:
+        """Test verify_consistency with v1.0 schema (limited checks)."""
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        try:
+            # Create mbox with 1 message
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Create v1.0 database
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE archived_messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    archived_timestamp TEXT,
+                    archive_file TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    message_date TEXT,
+                    checksum TEXT
+                )
+            ''')
+            conn.execute(
+                'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
+                ('gmail1', '2025-01-01', 'archive.mbox', 'Test',
+                 'test@example.com', '2025-01-01', 'abc')
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(mbox_path), str(db_path))
+            report = validator.verify_consistency()
+
+            # Should have limited checks for v1.0 schema
+            assert report.schema_version == '1.0'
+            assert report.fts_synced is True  # No FTS in v1.0
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
