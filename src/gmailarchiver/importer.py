@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
 from tempfile import NamedTemporaryFile
+from typing import Any
 
 from gmailarchiver.state import ArchiveState
 
@@ -200,7 +201,7 @@ class ArchiveImporter:
         offset: int,
         length: int,
         account_id: str
-    ) -> dict[str, any]:  # noqa: F821
+    ) -> dict[str, Any]:
         """
         Extract all v1.1 metadata from email message.
 
@@ -308,7 +309,8 @@ class ArchiveImporter:
                     try:
                         # Get file position from mbox library
                         # The _toc dict maps key to (offset, length) tuple
-                        offset = mbox._toc[key][0]  # noqa: SLF001
+                        # _toc is private but needed for offset calculation
+                        offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
 
                         # Read message
                         msg = mbox[key]
@@ -330,7 +332,7 @@ class ArchiveImporter:
                         if key_index < len(keys_list) - 1:
                             # Not the last message - length is distance to next message
                             next_key = keys_list[key_index + 1]
-                            next_offset = mbox._toc[next_key][0]  # noqa: SLF001
+                            next_offset = mbox._toc[next_key][0]  # type: ignore[attr-defined]
                             length = next_offset - offset
                         else:
                             # Last message - length is to end of file
@@ -346,13 +348,13 @@ class ArchiveImporter:
                             account_id
                         )
 
-                        # Insert into database (may fail on unique constraint if skip_duplicates=False)
+                        # Insert into database (may fail on unique constraint)
                         try:
                             state.mark_archived(**metadata)
                             session_ids.add(rfc_message_id)  # Add to session set
                             result.messages_imported += 1
                         except Exception as db_err:
-                            # Database constraint violation (e.g., unique constraint on rfc_message_id)
+                            # Database constraint violation (e.g., unique constraint)
                             result.messages_failed += 1
                             error_msg = f"Message {key}: Database error: {str(db_err)}"
                             result.errors.append(error_msg)
