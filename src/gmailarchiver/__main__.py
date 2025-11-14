@@ -1062,6 +1062,129 @@ def search(
         raise typer.Exit(1)
 
 
+@app.command(name="import")
+def import_cmd(
+    archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
+    account_id: str = typer.Option("default", help="Account identifier"),
+    skip_duplicates: bool = typer.Option(True, help="Skip duplicate messages"),
+    state_db: str = typer.Option("archive_state.db", help="State database path")
+) -> None:
+    """
+    Import existing mbox archives into v1.1 database.
+
+    Parses mbox files, extracts metadata with accurate byte offset tracking,
+    and populates the v1.1 database for fast message access and searching.
+
+    Examples:
+        $ gmailarchiver import archive_2024.mbox
+        $ gmailarchiver import archive_*.mbox.gz --skip-duplicates
+        $ gmailarchiver import "archives/*.mbox.zst" --account-id gmail_work
+        $ gmailarchiver import old_archive.mbox --state-db /path/to/archive_state.db
+    """
+    import glob
+    import time
+    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+
+    from .importer import ArchiveImporter
+    from .migration import MigrationManager
+
+    console.print("\n[bold blue]Import Archive[/bold blue]\n")
+
+    db_path = Path(state_db)
+
+    # Check if database exists (require v1.1 schema)
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        console.print("[yellow]Create a v1.1 database first (run 'gmailarchiver migrate')[/yellow]")
+        raise typer.Exit(1)
+
+    # Check database schema version (require v1.1)
+    manager = MigrationManager(db_path)
+    version = manager.detect_schema_version()
+    manager._close()
+
+    if version != "1.1":
+        console.print("[red]Error:[/red] Import requires v1.1 database schema")
+        console.print("[yellow]Run 'gmailarchiver migrate' to upgrade your database[/yellow]")
+        raise typer.Exit(1)
+
+    # Expand glob pattern
+    files = glob.glob(archive_pattern)
+    if not files:
+        console.print(f"[red]Error:[/red] No files match pattern: {archive_pattern}")
+        raise typer.Exit(1)
+
+    console.print(f"Found {len(files)} file(s) to import\n")
+
+    # Import each file with progress
+    importer = ArchiveImporter(state_db)
+    results = []
+    start_time = time.perf_counter()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        console=console
+    ) as progress:
+        task = progress.add_task(f"Importing {len(files)} file(s)...", total=len(files))
+
+        for file_path in files:
+            try:
+                result = importer.import_archive(
+                    file_path,
+                    account_id=account_id,
+                    skip_duplicates=skip_duplicates
+                )
+                results.append(result)
+                progress.advance(task)
+            except Exception as e:
+                console.print(f"\n[red]Error importing {file_path}:[/red] {e}")
+                progress.advance(task)
+
+    total_time = time.perf_counter() - start_time
+
+    # Display summary table
+    table = Table(title="Import Summary")
+    table.add_column("Archive File", style="cyan")
+    table.add_column("Imported", style="green", justify="right")
+    table.add_column("Skipped", style="yellow", justify="right")
+    table.add_column("Failed", style="red", justify="right")
+    table.add_column("Time (ms)", style="magenta", justify="right")
+
+    total_imported = 0
+    total_skipped = 0
+    total_failed = 0
+
+    for result in results:
+        table.add_row(
+            Path(result.archive_file).name,
+            str(result.messages_imported),
+            str(result.messages_skipped),
+            str(result.messages_failed),
+            f"{result.execution_time_ms:.2f}"
+        )
+        total_imported += result.messages_imported
+        total_skipped += result.messages_skipped
+        total_failed += result.messages_failed
+
+    console.print(table)
+
+    # Show aggregate statistics
+    console.print(f"\n[green]✓ Total messages imported: {total_imported}[/green]")
+    if total_skipped > 0:
+        console.print(f"[yellow]  Skipped duplicates: {total_skipped}[/yellow]")
+    if total_failed > 0:
+        console.print(f"[red]  Failed: {total_failed}[/red]")
+
+    # Show performance metrics
+    if total_imported > 0 and total_time > 0:
+        rate = total_imported / total_time
+        console.print(f"\n[dim]Performance: {rate:.1f} messages/second[/dim]")
+
+    console.print()
+
+
 @app.command()
 def auth_reset() -> None:
     """
