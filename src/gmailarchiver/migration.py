@@ -1,0 +1,518 @@
+"""Database schema migration system for Gmail Archiver."""
+
+import email
+import hashlib
+import shutil
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+
+console = Console()
+
+
+class MigrationError(Exception):
+    """Raised when migration fails."""
+    pass
+
+
+class MigrationManager:
+    """
+    Manage database schema migrations.
+
+    Handles migration from v1.0.x schema (archived_messages) to v1.1.0 schema
+    (messages table with mbox_offset, FTS5, and enhanced indexing).
+    """
+
+    SCHEMA_VERSION_1_0 = "1.0"
+    SCHEMA_VERSION_1_1 = "1.1"
+
+    def __init__(self, db_path: str | Path) -> None:
+        """
+        Initialize migration manager.
+
+        Args:
+            db_path: Path to SQLite database file
+        """
+        self.db_path = Path(db_path).resolve()
+        self.conn: sqlite3.Connection | None = None
+
+    def _connect(self) -> sqlite3.Connection:
+        """
+        Get database connection.
+
+        Returns:
+            SQLite connection
+        """
+        if self.conn is None:
+            self.conn = sqlite3.connect(str(self.db_path))
+            # Enable foreign key support
+            self.conn.execute("PRAGMA foreign_keys = ON")
+        return self.conn
+
+    def _close(self) -> None:
+        """Close database connection."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    def detect_schema_version(self) -> str:
+        """
+        Detect current database schema version.
+
+        Returns:
+            Schema version string ("1.0", "1.1", or "none")
+        """
+        if not self.db_path.exists():
+            return "none"
+
+        conn = self._connect()
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        )
+
+        if cursor.fetchone():
+            # Schema version table exists - read version
+            version_cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = version_cursor.fetchone()
+            return row[0] if row else "1.0"
+
+        # Check for v1.0 schema (archived_messages table)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+        )
+        if cursor.fetchone():
+            return "1.0"
+
+        # Check for v1.1 schema (messages table)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        )
+        if cursor.fetchone():
+            return "1.1"
+
+        return "none"
+
+    def needs_migration(self) -> bool:
+        """
+        Check if database needs migration to v1.1.
+
+        Returns:
+            True if migration is needed
+        """
+        version = self.detect_schema_version()
+        return version in ("1.0", "none")
+
+    def create_backup(self) -> Path:
+        """
+        Create backup of database before migration.
+
+        Returns:
+            Path to backup file
+
+        Raises:
+            MigrationError: If backup creation fails
+        """
+        if not self.db_path.exists():
+            raise MigrationError(f"Database not found: {self.db_path}")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = self.db_path.parent / f"{self.db_path.name}.backup.{timestamp}"
+
+        try:
+            console.print(f"[cyan]Creating backup: {backup_path}[/cyan]")
+            shutil.copy2(self.db_path, backup_path)
+            console.print("[green]✓ Backup created successfully[/green]")
+            return backup_path
+        except Exception as e:
+            raise MigrationError(f"Failed to create backup: {e}") from e
+
+    def _create_enhanced_schema(self, conn: sqlite3.Connection) -> None:
+        """
+        Create enhanced v1.1.0 schema.
+
+        Args:
+            conn: SQLite connection
+        """
+        # Create messages table (enhanced schema)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+
+        # Create performance indexes
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_rfc_message_id ON messages(rfc_message_id)",
+            "CREATE INDEX IF NOT EXISTS idx_thread_id ON messages(thread_id)",
+            "CREATE INDEX IF NOT EXISTS idx_archive_file ON messages(archive_file)",
+            "CREATE INDEX IF NOT EXISTS idx_date ON messages(date)",
+            "CREATE INDEX IF NOT EXISTS idx_from ON messages(from_addr)",
+            "CREATE INDEX IF NOT EXISTS idx_subject ON messages(subject)",
+        ]
+        for index_sql in indexes:
+            conn.execute(index_sql)
+
+        # Create FTS5 virtual table for full-text search
+        conn.execute('''
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject,
+                from_addr,
+                to_addr,
+                body_preview,
+                content=messages,
+                content_rowid=rowid,
+                tokenize='porter unicode61 remove_diacritics 1'
+            )
+        ''')
+
+        # Create auto-sync triggers for FTS5
+        conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+            END
+        ''')
+
+        conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+                UPDATE messages_fts
+                SET subject = new.subject,
+                    from_addr = new.from_addr,
+                    to_addr = new.to_addr,
+                    body_preview = new.body_preview
+                WHERE rowid = new.rowid;
+            END
+        ''')
+
+        conn.execute('''
+            CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.rowid;
+            END
+        ''')
+
+        # Create accounts table (for future multi-account support)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS accounts (
+                account_id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                provider TEXT DEFAULT 'gmail',
+                added_timestamp TEXT,
+                last_sync_timestamp TEXT
+            )
+        ''')
+
+        # Insert default account
+        conn.execute('''
+            INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp)
+            VALUES ('default', 'default', ?)
+        ''', (datetime.now().isoformat(),))
+
+        # Keep archive_runs table (already exists, just ensure it's there)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT NOT NULL,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+
+        # Create schema_version table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+        ''')
+
+        conn.commit()
+
+    def _extract_rfc_message_id(self, msg: email.message.Message) -> str:
+        """
+        Extract RFC 2822 Message-ID from email message.
+
+        Args:
+            msg: Email message
+
+        Returns:
+            Message-ID header value (or generated fallback)
+        """
+        message_id = msg.get('Message-ID', '').strip()
+        if not message_id:
+            # Generate fallback Message-ID from Subject + Date
+            subject = msg.get('Subject', 'no-subject')
+            date = msg.get('Date', 'no-date')
+            fallback_id = f"<{hashlib.sha256(f'{subject}{date}'.encode()).hexdigest()}@generated>"
+            return fallback_id
+        return message_id
+
+    def _extract_body_preview(self, msg: email.message.Message, max_chars: int = 1000) -> str:
+        """
+        Extract body preview from email message.
+
+        Args:
+            msg: Email message
+            max_chars: Maximum characters to extract
+
+        Returns:
+            Plain text preview
+        """
+        body = ""
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain":
+                    try:
+                        payload = part.get_payload(decode=True)
+                        if payload and isinstance(payload, bytes):
+                            body = payload.decode('utf-8', errors='ignore')
+                            break
+                    except Exception:
+                        continue
+        else:
+            try:
+                payload = msg.get_payload(decode=True)
+                if payload and isinstance(payload, bytes):
+                    body = payload.decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+
+        return body[:max_chars]
+
+    # TODO: Implement offset calculation for backfilling existing archives
+    # This method is not currently used as migration uses placeholder (-1) values
+    # Will be properly implemented when building the importer module
+    # def _calculate_mbox_offsets(
+    #     self,
+    #     archive_file: str,
+    #     expected_ids: set[str]
+    # ) -> dict[str, tuple[int, int]]:
+    #     """Calculate mbox offsets for all messages in archive."""
+    #     pass
+
+    def migrate_v1_to_v1_1(self, progress_callback: Any = None) -> None:
+        """
+        Migrate database from v1.0 to v1.1 schema.
+
+        Args:
+            progress_callback: Optional callback for progress updates
+
+        Raises:
+            MigrationError: If migration fails
+        """
+        conn = self._connect()
+
+        try:
+            console.print("[cyan]Starting migration from v1.0 to v1.1...[/cyan]")
+
+            # 1. Rename old table
+            console.print("[cyan]Renaming archived_messages to archived_messages_old...[/cyan]")
+            conn.execute("ALTER TABLE archived_messages RENAME TO archived_messages_old")
+
+            # 2. Create new schema
+            console.print("[cyan]Creating enhanced schema with mbox_offset tracking...[/cyan]")
+            self._create_enhanced_schema(conn)
+
+            # 3. Migrate data with progress tracking
+            console.print("[cyan]Migrating message data...[/cyan]")
+            cursor = conn.execute("SELECT COUNT(*) FROM archived_messages_old")
+            total_messages = cursor.fetchone()[0]
+
+            console.print(f"[cyan]Processing {total_messages} messages...[/cyan]")
+
+            # Group messages by archive file for efficient offset calculation
+            cursor = conn.execute(
+                "SELECT DISTINCT archive_file FROM archived_messages_old"
+            )
+            archive_files = [row[0] for row in cursor.fetchall()]
+
+            migrated_count = 0
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console
+            ) as progress:
+                task = progress.add_task("Migrating messages...", total=total_messages)
+
+                for archive_file in archive_files:
+                    # Get messages for this archive
+                    cursor = conn.execute(
+                        '''SELECT gmail_id, archived_timestamp, subject, from_addr,
+                                  message_date, checksum
+                           FROM archived_messages_old
+                           WHERE archive_file = ?''',
+                        (archive_file,)
+                    )
+                    messages = cursor.fetchall()
+
+                    # Process each message (for now, without offset calculation)
+                    # Offset calculation will be added in a subsequent update
+                    for row in messages:
+                        gmail_id, archived_ts, subject, from_addr, msg_date, checksum = row
+
+                        # For v1.1, we need to add placeholder values for required fields
+                        # These will be populated when we add full offset tracking
+                        conn.execute('''
+                            INSERT INTO messages
+                            (gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                             to_addr, cc_addr, date, archived_timestamp, archive_file,
+                             mbox_offset, mbox_length, body_preview, checksum, size_bytes,
+                             labels, account_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            gmail_id,
+                            f"<{gmail_id}@migration>",  # Placeholder Message-ID
+                            None,  # thread_id
+                            subject,
+                            from_addr,
+                            None,  # to_addr
+                            None,  # cc_addr
+                            msg_date,
+                            archived_ts,
+                            archive_file,
+                            -1,  # mbox_offset (placeholder, will be calculated later)
+                            -1,  # mbox_length (placeholder)
+                            None,  # body_preview
+                            checksum,
+                            None,  # size_bytes
+                            None,  # labels
+                            'default'  # account_id
+                        ))
+
+                        migrated_count += 1
+                        progress.update(task, advance=1)
+
+            # 4. Drop old table
+            console.print("[cyan]Dropping old table...[/cyan]")
+            conn.execute("DROP TABLE archived_messages_old")
+
+            # 5. Set schema version
+            console.print("[cyan]Setting schema version to 1.1...[/cyan]")
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version VALUES (?, ?)",
+                (self.SCHEMA_VERSION_1_1, datetime.now().isoformat())
+            )
+
+            # Commit the transaction before VACUUM
+            conn.commit()
+
+            # 6. Run VACUUM to reclaim space (must be outside transaction)
+            console.print("[cyan]Running VACUUM to reclaim space...[/cyan]")
+            conn.execute("VACUUM")
+
+            msg = f"✓ Migration completed! Migrated {migrated_count} messages"
+            console.print(f"[green]{msg}[/green]")
+
+        except Exception as e:
+            conn.rollback()
+            raise MigrationError(f"Migration failed: {e}") from e
+
+    def validate_migration(self) -> bool:
+        """
+        Validate migration was successful.
+
+        Returns:
+            True if validation passes
+
+        Raises:
+            MigrationError: If validation fails
+        """
+        conn = self._connect()
+
+        try:
+            # Check schema version
+            cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = cursor.fetchone()
+            if not row or row[0] != self.SCHEMA_VERSION_1_1:
+                raise MigrationError("Schema version not set to 1.1")
+
+            # Check messages table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+            )
+            if not cursor.fetchone():
+                raise MigrationError("messages table not found")
+
+            # Check FTS5 table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            )
+            if not cursor.fetchone():
+                raise MigrationError("messages_fts table not found")
+
+            # Check message count
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
+            message_count = cursor.fetchone()[0]
+
+            msg = f"✓ Validation passed: {message_count} messages in database"
+            console.print(f"[green]{msg}[/green]")
+            return True
+
+        except Exception as e:
+            raise MigrationError(f"Validation failed: {e}") from e
+
+    def rollback_migration(self, backup_path: Path) -> None:
+        """
+        Rollback migration by restoring from backup.
+
+        Args:
+            backup_path: Path to backup file
+
+        Raises:
+            MigrationError: If rollback fails
+        """
+        if not backup_path.exists():
+            raise MigrationError(f"Backup file not found: {backup_path}")
+
+        try:
+            console.print(f"[yellow]Rolling back migration from {backup_path}...[/yellow]")
+
+            # Close connection
+            self._close()
+
+            # Remove current database
+            if self.db_path.exists():
+                self.db_path.unlink()
+
+            # Restore from backup
+            shutil.copy2(backup_path, self.db_path)
+
+            console.print("[green]✓ Rollback completed successfully[/green]")
+
+        except Exception as e:
+            raise MigrationError(f"Rollback failed: {e}") from e
+
+    def __enter__(self) -> MigrationManager:
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit."""
+        self._close()

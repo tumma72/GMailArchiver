@@ -125,7 +125,7 @@ class GmailAuthenticator:
                 with open(self.token_file) as token:
                     creds_data = json.load(token)
                 self._creds = Credentials.from_authorized_user_info(creds_data, SCOPES)  # type: ignore[no-untyped-call]
-            except (json.JSONDecodeError, KeyError) as e:
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
                 print(f"Warning: Failed to load saved token: {e}")
                 print("Will re-authenticate...")
                 self._creds = None

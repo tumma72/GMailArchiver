@@ -507,3 +507,245 @@ class TestDeleteArchivedMessages:
 
         assert count == 3
         mock_client.trash_messages.assert_called_once()
+
+
+class TestExtractRfcMessageId:
+    """Tests for _extract_rfc_message_id method."""
+
+    def test_extract_existing_message_id(self) -> None:
+        """Test extraction of existing Message-ID header."""
+        import email
+        from email import policy
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        msg = email.message_from_string(
+            "Message-ID: <unique123@example.com>\nSubject: Test\n\nBody",
+            policy=policy.default
+        )
+
+        result = archiver._extract_rfc_message_id(msg)
+        assert result == '<unique123@example.com>'
+
+    def test_generate_fallback_message_id(self) -> None:
+        """Test fallback Message-ID generation when missing."""
+        import email
+        from email import policy
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        msg = email.message_from_string(
+            "Subject: Test Subject\nDate: Mon, 1 Jan 2024 12:00:00 +0000\n\nBody",
+            policy=policy.default
+        )
+
+        result = archiver._extract_rfc_message_id(msg)
+
+        # Should generate SHA256-based ID
+        assert result.startswith('<')
+        assert result.endswith('@generated>')
+        assert len(result) > 20  # SHA256 hash is long
+
+    def test_handles_empty_message_id(self) -> None:
+        """Test handling of empty Message-ID."""
+        import email
+        from email import policy
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        msg = email.message_from_string(
+            "Message-ID:   \nSubject: Test\n\nBody",
+            policy=policy.default
+        )
+
+        result = archiver._extract_rfc_message_id(msg)
+
+        # Should generate fallback
+        assert '@generated>' in result
+
+
+class TestExtractBodyPreview:
+    """Tests for _extract_body_preview method."""
+
+    def test_extract_from_plain_text(self) -> None:
+        """Test extraction from plain text message."""
+        import email
+        from email import policy
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        msg = email.message_from_string(
+            "Subject: Test\n\nThis is a test message body.",
+            policy=policy.default
+        )
+
+        result = archiver._extract_body_preview(msg, max_chars=10)
+        assert result == "This is a "
+
+    def test_extract_from_multipart(self) -> None:
+        """Test extraction from multipart message."""
+        import email
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        # Create multipart message
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'Test'
+        msg.set_content("Plain text body")
+        msg.add_alternative("<html><body>HTML body</body></html>", subtype='html')
+
+        result = archiver._extract_body_preview(msg)
+        assert "Plain text body" in result
+
+    def test_max_chars_limit(self) -> None:
+        """Test that preview respects max_chars limit."""
+        import email
+        from email import policy
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        long_text = "A" * 2000
+        msg = email.message_from_string(
+            f"Subject: Test\n\n{long_text}",
+            policy=policy.default
+        )
+
+        result = archiver._extract_body_preview(msg, max_chars=1000)
+        assert len(result) == 1000
+        assert result == "A" * 1000
+
+
+class TestV11OffsetTracking:
+    """Tests for v1.1 offset tracking during archiving."""
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_archive_with_v1_1_schema_tracks_offsets(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test that archiving with v1.1 schema captures mbox offsets."""
+        import email
+        import json
+        import mailbox
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Create v1.1 database
+            conn = sqlite3.connect(str(db_path))
+            # Create enhanced v1.1 schema
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT
+                )
+            ''')
+            conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
+            conn.commit()
+            conn.close()
+
+            # Configure mock_state_class to return real ArchiveState with validate_path=False
+            from gmailarchiver.state import ArchiveState as RealArchiveState
+
+            def create_state(db_path):
+                """Create ArchiveState with validation disabled."""
+                return RealArchiveState(db_path, validate_path=False)
+
+            mock_state_class.side_effect = create_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            # Create test email
+            msg = email.message.EmailMessage()
+            msg['Message-ID'] = '<test123@example.com>'
+            msg['Subject'] = 'Test Subject'
+            msg['From'] = 'test@example.com'
+            msg['To'] = 'recipient@example.com'
+            msg['Cc'] = 'cc@example.com'
+            msg['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
+            msg.set_content("This is the test email body content.")
+
+            raw_email = msg.as_bytes()
+
+            # Mock message with labelIds
+            mock_message = {
+                'id': 'msg123',
+                'raw': '',  # Will be replaced by decode_message_raw
+                'threadId': 'thread123',
+                'labelIds': ['INBOX', 'IMPORTANT']
+            }
+
+            def mock_get_messages_batch(ids):
+                """Mock batch message retrieval."""
+                return [mock_message]
+
+            mock_client.decode_message_raw.return_value = raw_email
+            mock_client.get_messages_batch = mock_get_messages_batch
+
+            # Create archiver and archive
+            archiver = GmailArchiver(mock_client, str(db_path))
+            archiver._archive_messages(['msg123'], str(mbox_path))
+
+            # Verify offset and length were captured
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.execute(
+                "SELECT mbox_offset, mbox_length, rfc_message_id, "
+                "thread_id, to_addr, cc_addr, body_preview, "
+                "size_bytes, labels FROM messages WHERE gmail_id = 'msg123'"
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row is not None
+            mbox_offset, mbox_length, rfc_message_id, thread_id, to_addr, cc_addr, body_preview, size_bytes, labels = row  # noqa: E501
+
+            # Verify offsets are not placeholder values
+            assert mbox_offset >= 0, "mbox_offset should be non-negative"
+            assert mbox_length > 0, "mbox_length should be positive"
+
+            # Verify enhanced v1.1 fields
+            assert rfc_message_id == '<test123@example.com>'
+            assert thread_id == 'thread123'
+            assert to_addr == 'recipient@example.com'
+            assert cc_addr == 'cc@example.com'
+            assert 'test email body' in body_preview.lower()
+            assert size_bytes == len(raw_email)
+            assert labels == json.dumps(['INBOX', 'IMPORTANT'])
+
+            # Verify message can be extracted from mbox using offset
+            mbox = mailbox.mbox(str(mbox_path))
+            assert len(mbox) == 1
+            extracted_msg = mbox[0]
+            assert extracted_msg['Subject'] == 'Test Subject'

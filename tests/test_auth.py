@@ -133,6 +133,7 @@ class TestGmailAuthenticatorAuthenticate:
 
             auth = GmailAuthenticator(
                 credentials_file='nonexistent_credentials.json',
+                token_file='token.json',  # Use local token file, not XDG default
                 validate_paths=False  # Disable validation for tests
             )
 
@@ -517,6 +518,7 @@ class TestAuthErrorPaths:
 
                 auth = GmailAuthenticator(
                     credentials_file='credentials.json',
+                    token_file='token.json',  # Use local token file, not XDG default
                     validate_paths=False
                 )
 
@@ -562,6 +564,7 @@ class TestAuthErrorPaths:
 
                 auth = GmailAuthenticator(
                     credentials_file='credentials.json',
+                    token_file='token.json',  # Use local token file, not XDG default
                     validate_paths=False
                 )
 

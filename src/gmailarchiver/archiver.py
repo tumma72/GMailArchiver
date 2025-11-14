@@ -206,11 +206,41 @@ class GmailArchiver:
                         # Parse email
                         msg = email.message_from_bytes(raw_email, policy=policy.default)
 
+                        # Get current file position before adding message (v1.1 offset tracking)
+                        mbox_offset = -1
+                        mbox_length = -1
+                        if state.schema_version == "1.1":
+                            with open(temp_mbox_path, 'rb') as f:
+                                f.seek(0, 2)  # Seek to end of file
+                                mbox_offset = f.tell()
+
                         # Add to mbox
                         mbox.add(msg)
 
+                        # For v1.1, flush and calculate message length
+                        if state.schema_version == "1.1":
+                            mbox.flush()
+                            with open(temp_mbox_path, 'rb') as f:
+                                f.seek(0, 2)  # Seek to end of file
+                                mbox_length = f.tell() - mbox_offset
+
                         # Track in database
                         checksum = validator.compute_checksum(raw_email)
+
+                        # Extract v1.1 enhanced fields
+                        rfc_message_id = self._extract_rfc_message_id(msg)
+                        is_v1_1 = state.schema_version == "1.1"
+                        body_preview = self._extract_body_preview(msg) if is_v1_1 else None
+                        to_addr = msg.get('To') if is_v1_1 else None
+                        cc_addr = msg.get('Cc') if is_v1_1 else None
+                        thread_id = message.get('threadId') if is_v1_1 else None
+                        size_bytes = len(raw_email) if is_v1_1 else None
+
+                        # Extract Gmail labels as JSON
+                        labels = None
+                        if state.schema_version == "1.1" and 'labelIds' in message:
+                            import json
+                            labels = json.dumps(message['labelIds'])
 
                         state.mark_archived(
                             gmail_id=message['id'],
@@ -218,7 +248,17 @@ class GmailArchiver:
                             subject=msg.get('Subject'),
                             from_addr=msg.get('From'),
                             message_date=msg.get('Date'),
-                            checksum=checksum
+                            checksum=checksum,
+                            # v1.1 enhanced fields
+                            rfc_message_id=rfc_message_id if is_v1_1 else None,
+                            mbox_offset=mbox_offset if is_v1_1 else None,
+                            mbox_length=mbox_length if is_v1_1 else None,
+                            body_preview=body_preview,
+                            to_addr=to_addr,
+                            cc_addr=cc_addr,
+                            thread_id=thread_id,
+                            size_bytes=size_bytes,
+                            labels=labels
                         )
 
                         archived_count += 1
@@ -320,6 +360,61 @@ class GmailArchiver:
         results = validator.validate_comprehensive(expected_message_ids)
         validator.report(results)
         return results['passed']  # type: ignore[no-any-return]
+
+    def _extract_rfc_message_id(self, msg: email.message.Message) -> str:
+        """
+        Extract RFC 2822 Message-ID from email message.
+
+        Args:
+            msg: Email message
+
+        Returns:
+            Message-ID header value (or generated fallback)
+        """
+        import hashlib
+
+        message_id = msg.get('Message-ID', '').strip()
+        if not message_id:
+            # Generate fallback Message-ID from Subject + Date
+            subject = msg.get('Subject', 'no-subject')
+            date = msg.get('Date', 'no-date')
+            fallback_id = f"<{hashlib.sha256(f'{subject}{date}'.encode()).hexdigest()}@generated>"
+            return fallback_id
+        return message_id
+
+    def _extract_body_preview(self, msg: email.message.Message, max_chars: int = 1000) -> str:
+        """
+        Extract body preview from email message.
+
+        Args:
+            msg: Email message
+            max_chars: Maximum characters to extract
+
+        Returns:
+            Plain text preview (first max_chars)
+        """
+        body = ""
+
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain":
+                    try:
+                        payload = part.get_payload(decode=True)
+                        if payload and isinstance(payload, bytes):
+                            body = payload.decode('utf-8', errors='ignore')
+                            break
+                    except Exception:
+                        continue
+        else:
+            try:
+                payload = msg.get_payload(decode=True)
+                if payload and isinstance(payload, bytes):
+                    body = payload.decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+
+        return body[:max_chars]
 
     def delete_archived_messages(
         self,

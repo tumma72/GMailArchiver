@@ -234,3 +234,203 @@ class TestArchiveState:
         assert row[2] == 'new_checksum'
 
         state.close()
+
+
+class TestV11SchemaOperations:
+    """Tests for v1.1 schema-specific operations."""
+
+    def test_mark_archived_v1_1_requires_offsets(self, temp_db):
+        """Test that v1.1 schema requires mbox_offset and mbox_length."""
+        import sqlite3
+
+        # Create v1.1 database
+        conn = sqlite3.connect(temp_db)
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT
+            )
+        ''')
+        conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
+        conn.commit()
+        conn.close()
+
+        state = ArchiveState(temp_db, validate_path=False)
+
+        # Should raise ValueError when offsets missing
+        with pytest.raises(ValueError, match="mbox_offset and mbox_length required"):
+            state.mark_archived(
+                'msg1',
+                'archive.mbox',
+                subject='Test',
+                # Missing mbox_offset and mbox_length
+            )
+
+        state.close()
+
+    def test_mark_archived_v1_1_with_all_fields(self, temp_db):
+        """Test mark_archived with all v1.1 fields."""
+        import json
+        import sqlite3
+
+        # Create v1.1 database
+        conn = sqlite3.connect(temp_db)
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT
+            )
+        ''')
+        conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
+        conn.commit()
+        conn.close()
+
+        state = ArchiveState(temp_db, validate_path=False)
+
+        # Mark archived with all v1.1 fields
+        state.mark_archived(
+            gmail_id='msg123',
+            archive_file='test.mbox',
+            subject='Test Subject',
+            from_addr='from@example.com',
+            message_date='2024-01-01',
+            checksum='abc123',
+            rfc_message_id='<unique@example.com>',
+            mbox_offset=0,
+            mbox_length=1234,
+            body_preview='Test body preview',
+            to_addr='to@example.com',
+            cc_addr='cc@example.com',
+            thread_id='thread123',
+            size_bytes=5000,
+            labels=json.dumps(['INBOX', 'IMPORTANT']),
+            account_id='test_account'
+        )
+
+        # Verify all fields were stored
+        cursor = state.conn.execute(
+            "SELECT rfc_message_id, mbox_offset, mbox_length, "
+            "body_preview, to_addr, cc_addr, thread_id, "
+            "size_bytes, labels, account_id FROM messages WHERE gmail_id = 'msg123'"
+        )
+        row = cursor.fetchone()
+
+        assert row[0] == '<unique@example.com>'
+        assert row[1] == 0
+        assert row[2] == 1234
+        assert row[3] == 'Test body preview'
+        assert row[4] == 'to@example.com'
+        assert row[5] == 'cc@example.com'
+        assert row[6] == 'thread123'
+        assert row[7] == 5000
+        assert row[8] == json.dumps(['INBOX', 'IMPORTANT'])
+        assert row[9] == 'test_account'
+
+        state.close()
+
+    def test_schema_version_property(self, temp_db):
+        """Test schema_version property."""
+        import sqlite3
+
+        # Create v1.1 database
+        conn = sqlite3.connect(temp_db)
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT
+            )
+        ''')
+        conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
+        conn.commit()
+        conn.close()
+
+        state = ArchiveState(temp_db, validate_path=False)
+        assert state.schema_version == '1.1'
+        state.close()
+
+    def test_needs_migration(self, temp_db):
+        """Test needs_migration method."""
+        import sqlite3
+
+        # Create v1.0 database
+        conn = sqlite3.connect(temp_db)
+        conn.execute('''
+            CREATE TABLE archived_messages (
+                gmail_id TEXT PRIMARY KEY
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+        state = ArchiveState(temp_db, validate_path=False)
+        assert state.needs_migration() is True
+        state.close()
+
+    def test_context_manager_rollback_on_exception(self, temp_db):
+        """Test that context manager rolls back on exception."""
+        state = ArchiveState(temp_db, validate_path=False)
+        state.close()
+
+        # Test rollback on exception
+        try:
+            with ArchiveState(temp_db, validate_path=False) as state:
+                state.mark_archived(
+                    'msg1',
+                    'test.mbox',
+                    subject='Test'
+                )
+                # Force an exception
+                raise ValueError("Test exception")
+        except ValueError:
+            pass
+
+        # Verify no data was committed
+        with ArchiveState(temp_db, validate_path=False) as state:
+            assert state.get_archived_count() == 0

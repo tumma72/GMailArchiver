@@ -729,12 +729,13 @@ class TestOffsetVerification:
             mbox.add(msg)
             mbox.close()
 
-            # Get actual offset but use WRONG length
+            # Get actual offset and actual length
             with open(mbox_path, 'rb') as f:
                 content = f.read()
                 offset = content.find(b'From ')
+                actual_length = len(content) - offset
 
-            # Create v1.1 database with WRONG length
+            # Create v1.1 database with WRONG length (larger than file)
             conn = sqlite3.connect(str(db_path))
             conn.execute('''
                 CREATE TABLE messages (
@@ -750,7 +751,8 @@ class TestOffsetVerification:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', offset, 50)
+                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox',
+                 offset, actual_length + 1000)
             )
             conn.commit()
             conn.close()
@@ -800,6 +802,8 @@ class TestConsistencyChecks:
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
+                    subject TEXT,
+                    from_addr TEXT,
                     archived_timestamp TIMESTAMP NOT NULL,
                     archive_file TEXT NOT NULL,
                     mbox_offset INTEGER NOT NULL,
@@ -815,16 +819,18 @@ class TestConsistencyChecks:
                 )
             ''')
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
-                   archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                   archived_timestamp, archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
+                 '2025-01-01', 'archive.mbox', 0, 100)
             )
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
-                   archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail2', '<msg2@example.com>', '2025-01-01', 'archive.mbox', 100, 100)
+                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                   archived_timestamp, archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
+                 '2025-01-01', 'archive.mbox', 100, 100)
             )
             # Sync FTS5
             conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")

@@ -28,7 +28,37 @@ class ArchiveState:
             from pathlib import Path
             self.db_path = Path(db_path).resolve()
         self.conn = sqlite3.connect(str(self.db_path))
+        self._schema_version = self._detect_schema_version()
         self._create_tables()
+
+    def _detect_schema_version(self) -> str:
+        """
+        Detect current database schema version.
+
+        Returns:
+            Schema version: "1.0", "1.1", or "none"
+        """
+        cursor = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        )
+        if cursor.fetchone():
+            version_cursor = self.conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = version_cursor.fetchone()
+            return row[0] if row else "1.0"
+
+        cursor = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        )
+        if cursor.fetchone():
+            return "1.1"
+
+        cursor = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+        )
+        if cursor.fetchone():
+            return "1.0"
+
+        return "none"
 
     def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
@@ -66,8 +96,9 @@ class ArchiveState:
         Returns:
             True if message is in archive database
         """
+        table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
         cursor = self.conn.execute(
-            'SELECT 1 FROM archived_messages WHERE gmail_id = ?',
+            f'SELECT 1 FROM {table_name} WHERE gmail_id = ?',
             (gmail_id,)
         )
         return cursor.fetchone() is not None
@@ -79,7 +110,18 @@ class ArchiveState:
         subject: str | None = None,
         from_addr: str | None = None,
         message_date: str | None = None,
-        checksum: str | None = None
+        checksum: str | None = None,
+        # v1.1 enhanced fields
+        rfc_message_id: str | None = None,
+        mbox_offset: int | None = None,
+        mbox_length: int | None = None,
+        body_preview: str | None = None,
+        to_addr: str | None = None,
+        cc_addr: str | None = None,
+        thread_id: str | None = None,
+        size_bytes: int | None = None,
+        labels: str | None = None,
+        account_id: str = 'default'
     ) -> None:
         """
         Mark a message as archived.
@@ -91,19 +133,66 @@ class ArchiveState:
             from_addr: From address
             message_date: Message date
             checksum: SHA256 checksum of message
+            rfc_message_id: RFC 2822 Message-ID header (v1.1+)
+            mbox_offset: Byte offset in mbox file (v1.1+)
+            mbox_length: Message length in bytes (v1.1+)
+            body_preview: First 1000 chars of body (v1.1+)
+            to_addr: To address (v1.1+)
+            cc_addr: CC address (v1.1+)
+            thread_id: Gmail thread ID (v1.1+)
+            size_bytes: Total message size (v1.1+)
+            labels: JSON array of Gmail labels (v1.1+)
+            account_id: Account identifier (v1.1+, default: 'default')
         """
-        self.conn.execute('''
-            INSERT OR REPLACE INTO archived_messages
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            gmail_id,
-            datetime.now().isoformat(),
-            archive_file,
-            subject,
-            from_addr,
-            message_date,
-            checksum
-        ))
+        if self._schema_version == "1.1":
+            # Use enhanced schema
+            # Default rfc_message_id if not provided
+            if rfc_message_id is None:
+                rfc_message_id = f"<{gmail_id}@gmail>"
+
+            # Require mbox_offset and mbox_length for v1.1
+            if mbox_offset is None or mbox_length is None:
+                raise ValueError("mbox_offset and mbox_length required for v1.1 schema")
+
+            self.conn.execute('''
+                INSERT OR REPLACE INTO messages
+                (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+                 date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+                 body_preview, checksum, size_bytes, labels, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                gmail_id,
+                rfc_message_id,
+                thread_id,
+                subject,
+                from_addr,
+                to_addr,
+                cc_addr,
+                message_date,
+                datetime.now().isoformat(),
+                archive_file,
+                mbox_offset,
+                mbox_length,
+                body_preview,
+                checksum,
+                size_bytes,
+                labels,
+                account_id
+            ))
+        else:
+            # Use v1.0 schema (backward compatibility)
+            self.conn.execute('''
+                INSERT OR REPLACE INTO archived_messages
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                gmail_id,
+                datetime.now().isoformat(),
+                archive_file,
+                subject,
+                from_addr,
+                message_date,
+                checksum
+            ))
         # Note: Commit is deferred to allow batch operations
         # Call commit() explicitly or use context manager to auto-commit
 
@@ -144,7 +233,8 @@ class ArchiveState:
         Returns:
             Count of archived messages
         """
-        cursor = self.conn.execute('SELECT COUNT(*) FROM archived_messages')
+        table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
+        cursor = self.conn.execute(f'SELECT COUNT(*) FROM {table_name}')
         result = cursor.fetchone()
         return result[0] if result else 0
 
@@ -183,7 +273,8 @@ class ArchiveState:
         Returns:
             Set of Gmail message IDs
         """
-        cursor = self.conn.execute('SELECT gmail_id FROM archived_messages')
+        table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
+        cursor = self.conn.execute(f'SELECT gmail_id FROM {table_name}')
         return {row[0] for row in cursor.fetchall()}
 
     def get_archived_message_ids_for_file(self, archive_file: str) -> set[str]:
@@ -196,11 +287,31 @@ class ArchiveState:
         Returns:
             Set of Gmail message IDs in that specific archive
         """
+        table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
         cursor = self.conn.execute(
-            'SELECT gmail_id FROM archived_messages WHERE archive_file = ?',
+            f'SELECT gmail_id FROM {table_name} WHERE archive_file = ?',
             (archive_file,)
         )
         return {row[0] for row in cursor.fetchall()}
+
+    @property
+    def schema_version(self) -> str:
+        """
+        Get current schema version.
+
+        Returns:
+            Schema version string ("1.0", "1.1", or "none")
+        """
+        return self._schema_version
+
+    def needs_migration(self) -> bool:
+        """
+        Check if database needs migration to v1.1.
+
+        Returns:
+            True if migration is needed
+        """
+        return self._schema_version in ("1.0", "none")
 
     def close(self) -> None:
         """Close database connection."""

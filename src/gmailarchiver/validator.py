@@ -1,5 +1,6 @@
 """Archive validation module."""
 
+import email
 import gzip
 import hashlib
 import lzma
@@ -8,8 +9,35 @@ import random
 import sqlite3
 import tempfile
 from compression import zstd
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+@dataclass
+class OffsetVerificationResult:
+    """Result from offset verification."""
+
+    total_checked: int
+    successful_reads: int
+    failed_reads: int
+    accuracy_percentage: float
+    failures: list[str] = field(default_factory=list)
+    skipped: bool = False
+
+
+@dataclass
+class ConsistencyReport:
+    """Report from consistency checks."""
+
+    schema_version: str
+    orphaned_records: int
+    missing_records: int
+    duplicate_gmail_ids: int
+    duplicate_rfc_message_ids: int
+    fts_synced: bool
+    passed: bool
+    errors: list[str] = field(default_factory=list)
 
 
 class ArchiveValidator:
@@ -251,3 +279,226 @@ class ArchiveValidator:
         else:
             print("VALIDATION: ✗ FAILED")
         print("="*60 + "\n")
+
+    def _detect_schema_version(self) -> str:
+        """
+        Detect database schema version.
+
+        Returns:
+            Schema version: "1.0", "1.1", or "none"
+        """
+        if not self.state_db_path.exists():
+            return "none"
+
+        conn = sqlite3.connect(str(self.state_db_path))
+        try:
+            # Check for v1.1 messages table
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+            )
+            if cursor.fetchone():
+                return "1.1"
+
+            # Check for v1.0 archived_messages table
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+            )
+            if cursor.fetchone():
+                return "1.0"
+
+            return "none"
+        finally:
+            conn.close()
+
+    def verify_offsets(self) -> OffsetVerificationResult:
+        """
+        Verify mbox offset accuracy for v1.1 databases.
+
+        Returns:
+            Detailed verification result with accuracy statistics
+        """
+        schema_version = self._detect_schema_version()
+
+        # Skip if not v1.1 schema
+        if schema_version != "1.1":
+            return OffsetVerificationResult(
+                total_checked=0,
+                successful_reads=0,
+                failed_reads=0,
+                accuracy_percentage=0.0,
+                skipped=True
+            )
+
+        # Get mbox path (decompress if needed)
+        mbox_path, is_temp = self._get_mbox_path()
+
+        try:
+            conn = sqlite3.connect(str(self.state_db_path))
+            cursor = conn.execute(
+                'SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length FROM messages'
+            )
+            records = cursor.fetchall()
+            conn.close()
+
+            total_checked = len(records)
+            successful_reads = 0
+            failed_reads = 0
+            failures = []
+
+            with open(mbox_path, 'rb') as f:
+                for gmail_id, rfc_message_id, offset, length in records:
+                    try:
+                        # Seek to offset
+                        f.seek(offset)
+                        # Read expected length
+                        data = f.read(length)
+
+                        # First check if we read the expected amount of data
+                        actual_length = len(data)
+                        if actual_length != length:
+                            failed_reads += 1
+                            failures.append(
+                                f"Length mismatch for {gmail_id}: expected "
+                                f"{length}, got {actual_length}"
+                            )
+                            continue
+
+                        # Parse as email message
+                        msg = email.message_from_bytes(data)
+
+                        # Extract Message-ID
+                        actual_message_id = msg.get('Message-ID', '')
+
+                        # Compare with database
+                        if actual_message_id != rfc_message_id:
+                            failed_reads += 1
+                            failures.append(
+                                f"Message-ID mismatch for {gmail_id}: expected "
+                                f"{rfc_message_id}, got {actual_message_id}"
+                            )
+                        else:
+                            successful_reads += 1
+
+                    except Exception as e:
+                        failed_reads += 1
+                        failures.append(f"Failed to read message {gmail_id} at offset {offset}: {e}")
+
+            accuracy_percentage = (
+                (successful_reads / total_checked * 100.0) if total_checked > 0 else 0.0
+            )
+
+            return OffsetVerificationResult(
+                total_checked=total_checked,
+                successful_reads=successful_reads,
+                failed_reads=failed_reads,
+                accuracy_percentage=accuracy_percentage,
+                failures=failures
+            )
+
+        finally:
+            # Clean up temporary file if created
+            if is_temp and mbox_path.exists():
+                mbox_path.unlink()
+
+    def verify_consistency(self) -> ConsistencyReport:
+        """
+        Deep database consistency checks.
+
+        Returns:
+            Detailed consistency report
+        """
+        schema_version = self._detect_schema_version()
+
+        # Initialize report
+        report = ConsistencyReport(
+            schema_version=schema_version,
+            orphaned_records=0,
+            missing_records=0,
+            duplicate_gmail_ids=0,
+            duplicate_rfc_message_ids=0,
+            fts_synced=True,
+            passed=True
+        )
+
+        # Skip if no database
+        if schema_version == "none":
+            report.passed = False
+            report.errors.append("No database found")
+            return report
+
+        # Get mbox path (decompress if needed)
+        mbox_path, is_temp = self._get_mbox_path()
+
+        try:
+            # Get all Message-IDs from mbox
+            mbox = mailbox.mbox(str(mbox_path))
+            mbox_message_ids = set()
+            for msg in mbox:
+                msg_id = msg.get('Message-ID', '')
+                if msg_id:
+                    mbox_message_ids.add(msg_id)
+
+            # Get all Message-IDs from database
+            conn = sqlite3.connect(str(self.state_db_path))
+
+            if schema_version == "1.1":
+                # v1.1 schema checks
+                cursor = conn.execute('SELECT rfc_message_id FROM messages')
+                db_message_ids = {row[0] for row in cursor.fetchall()}
+
+                # Check for orphaned records (in DB but not in mbox)
+                orphaned = db_message_ids - mbox_message_ids
+                report.orphaned_records = len(orphaned)
+
+                # Check for missing records (in mbox but not in DB)
+                missing = mbox_message_ids - db_message_ids
+                report.missing_records = len(missing)
+
+                # Check for duplicate gmail_ids
+                cursor = conn.execute(
+                    'SELECT gmail_id, COUNT(*) as cnt FROM messages GROUP BY gmail_id HAVING cnt > 1'
+                )
+                report.duplicate_gmail_ids = len(cursor.fetchall())
+
+                # Check for duplicate rfc_message_ids
+                cursor = conn.execute(
+                    '''SELECT rfc_message_id, COUNT(*) as cnt FROM messages GROUP BY
+                       rfc_message_id HAVING cnt > 1'''
+                )
+                report.duplicate_rfc_message_ids = len(cursor.fetchall())
+
+                # Check FTS5 sync
+                try:
+                    cursor = conn.execute('SELECT COUNT(*) FROM messages')
+                    messages_count = cursor.fetchone()[0]
+
+                    cursor = conn.execute('SELECT COUNT(*) FROM messages_fts')
+                    fts_count = cursor.fetchone()[0]
+
+                    report.fts_synced = (messages_count == fts_count)
+                except sqlite3.OperationalError:
+                    # FTS5 table doesn't exist
+                    report.fts_synced = False
+
+            else:
+                # v1.0 schema has limited checks
+                # We can't verify Message-IDs easily since they're not stored
+                report.fts_synced = True  # No FTS in v1.0
+
+            conn.close()
+
+            # Determine overall pass/fail
+            report.passed = (
+                report.orphaned_records == 0 and
+                report.missing_records == 0 and
+                report.duplicate_gmail_ids == 0 and
+                report.duplicate_rfc_message_ids == 0 and
+                report.fts_synced
+            )
+
+            return report
+
+        finally:
+            # Clean up temporary file if created
+            if is_temp and mbox_path.exists():
+                mbox_path.unlink()
