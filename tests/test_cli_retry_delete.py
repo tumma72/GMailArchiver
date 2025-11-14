@@ -42,9 +42,18 @@ class TestRetryDeleteCommand:
         """Test successful retry deletion of archived messages."""
         db_path, archive_file = temp_state_db
 
-        with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+             patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
              patch('gmailarchiver.__main__.GmailClient') as MockClient, \
              patch('gmailarchiver.__main__.GmailArchiver') as MockArchiver:
+
+            # Mock ArchiveState context manager
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = {
+                f'msg_{i}' for i in range(5)
+            }
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
 
             # Mock authenticator with valid scopes
             mock_auth = Mock()
@@ -61,12 +70,12 @@ class TestRetryDeleteCommand:
             mock_archiver = Mock()
             MockArchiver.return_value = mock_archiver
 
-            # Run command (trash, not permanent)
+            # Run command (trash, not permanent) - provide 'y' for confirmation
             result = runner.invoke(app, [
                 'retry-delete',
                 archive_file,
                 '--state-db', db_path
-            ])
+            ], input='y\n')
 
             assert result.exit_code == 0
             mock_auth.authenticate.assert_called_once()
@@ -77,20 +86,37 @@ class TestRetryDeleteCommand:
         """Test error when archive file not in database."""
         db_path, _ = temp_state_db
 
-        result = runner.invoke(app, [
-            'retry-delete',
-            'nonexistent_archive.mbox',
-            '--state-db', db_path
-        ])
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState:
+            # Mock ArchiveState returning empty set
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = set()
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
 
-        assert result.exit_code == 1
-        assert 'No archived messages found' in result.stdout
+            result = runner.invoke(app, [
+                'retry-delete',
+                'nonexistent_archive.mbox',
+                '--state-db', db_path
+            ])
+
+            assert result.exit_code == 1
+            assert 'No archived messages found' in result.stdout
 
     def test_retry_delete_missing_scope(self, temp_state_db):
         """Test error when credentials lack deletion permission."""
         db_path, archive_file = temp_state_db
 
-        with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth:
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+             patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth:
+
+            # Mock ArchiveState
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = {
+                f'msg_{i}' for i in range(5)
+            }
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
+
             # Mock authenticator with insufficient scopes
             mock_auth = Mock()
             mock_creds = Mock()
@@ -112,9 +138,18 @@ class TestRetryDeleteCommand:
         """Test permanent deletion with correct confirmation."""
         db_path, archive_file = temp_state_db
 
-        with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+             patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
              patch('gmailarchiver.__main__.GmailClient') as MockClient, \
              patch('gmailarchiver.__main__.GmailArchiver') as MockArchiver:
+
+            # Mock ArchiveState
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = {
+                f'msg_{i}' for i in range(5)
+            }
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
 
             # Mock authenticator
             mock_auth = Mock()
@@ -149,7 +184,17 @@ class TestRetryDeleteCommand:
         """Test permanent deletion cancelled with wrong confirmation."""
         db_path, archive_file = temp_state_db
 
-        with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth:
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+             patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth:
+
+            # Mock ArchiveState
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = {
+                f'msg_{i}' for i in range(5)
+            }
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
+
             # Mock authenticator
             mock_auth = Mock()
             mock_creds = Mock()
@@ -172,9 +217,18 @@ class TestRetryDeleteCommand:
         """Test that default behavior is trash (not permanent deletion)."""
         db_path, archive_file = temp_state_db
 
-        with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
+        with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+             patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
              patch('gmailarchiver.__main__.GmailClient') as MockClient, \
              patch('gmailarchiver.__main__.GmailArchiver') as MockArchiver:
+
+            # Mock ArchiveState
+            mock_state = Mock()
+            mock_state.get_archived_message_ids_for_file.return_value = {
+                f'msg_{i}' for i in range(5)
+            }
+            MockState.return_value.__enter__.return_value = mock_state
+            MockState.return_value.__exit__.return_value = None
 
             # Mock authenticator
             mock_auth = Mock()
@@ -191,12 +245,12 @@ class TestRetryDeleteCommand:
             mock_archiver = Mock()
             MockArchiver.return_value = mock_archiver
 
-            # Run without --permanent flag
+            # Run without --permanent flag (provide 'y' for trash confirmation)
             result = runner.invoke(app, [
                 'retry-delete',
                 archive_file,
                 '--state-db', db_path
-            ])
+            ], input='y\n')
 
             assert result.exit_code == 0
             mock_archiver.delete_archived_messages.assert_called_once()
@@ -211,24 +265,21 @@ class TestRetryDeleteIntegration:
     def test_retry_delete_retrieves_correct_message_ids(self):
         """Test that retry-delete retrieves the correct message IDs from database."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / 'test_state.db'
             archive_file = 'archive_test.mbox'
 
-            # Create database with messages
+            # Mock expected IDs
             expected_ids = [f'msg_{i}' for i in range(3)]
-            with ArchiveState(str(db_path), validate_path=False) as state:
-                for msg_id in expected_ids:
-                    state.mark_archived(
-                        gmail_id=msg_id,
-                        archive_file=archive_file,
-                        subject='Test',
-                        from_addr='test@example.com',
-                        message_date='2025-01-01'
-                    )
 
-            with patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
+            with patch('gmailarchiver.__main__.ArchiveState') as MockState, \
+                 patch('gmailarchiver.__main__.GmailAuthenticator') as MockAuth, \
                  patch('gmailarchiver.__main__.GmailClient') as MockClient, \
                  patch('gmailarchiver.__main__.GmailArchiver') as MockArchiver:
+
+                # Mock ArchiveState
+                mock_state = Mock()
+                mock_state.get_archived_message_ids_for_file.return_value = set(expected_ids)
+                MockState.return_value.__enter__.return_value = mock_state
+                MockState.return_value.__exit__.return_value = None
 
                 mock_auth = Mock()
                 mock_creds = Mock()
@@ -245,8 +296,8 @@ class TestRetryDeleteIntegration:
                 result = runner.invoke(app, [
                     'retry-delete',
                     archive_file,
-                    '--state-db', str(db_path)
-                ])
+                    '--state-db', str(tmpdir)
+                ], input='y\n')
 
                 assert result.exit_code == 0
                 # Verify correct message IDs were passed

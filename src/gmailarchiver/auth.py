@@ -11,10 +11,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from gmailarchiver.path_validator import validate_file_path
 
 # Gmail API scopes
-SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.modify'
-]
+# NOTE: Using full Gmail access scope to support all operations including permanent deletion.
+# The gmail.modify scope is insufficient for permanent deletion (messages.delete API).
+# This is a breaking change - existing users must re-authenticate (run `gmailarchiver auth-reset`).
+SCOPES = ['https://mail.google.com/']
 
 
 def _get_bundled_credentials_path() -> Path:
@@ -195,6 +195,39 @@ class GmailAuthenticator:
     def credentials(self) -> Credentials | None:
         """Get current credentials."""
         return self._creds
+
+    def validate_scopes(self, required_scopes: list[str]) -> bool:
+        """
+        Validate that current credentials have required scopes.
+
+        This is critical for operations like permanent deletion that require
+        specific OAuth scopes. Use this before attempting operations that may
+        fail with 403 Insufficient Permission errors.
+
+        Args:
+            required_scopes: List of required OAuth scope URLs
+
+        Returns:
+            True if all required scopes are present in credentials
+
+        Example:
+            >>> auth = GmailAuthenticator()
+            >>> auth.authenticate()
+            >>> if not auth.validate_scopes(['https://mail.google.com/']):
+            ...     print("Missing deletion permission - re-authenticate required")
+        """
+        if not self._creds or not self._creds.scopes:
+            return False
+
+        creds_scopes = set(self._creds.scopes)
+        required = set(required_scopes)
+
+        # Full Gmail access (https://mail.google.com/) covers all Gmail operations
+        if 'https://mail.google.com/' in creds_scopes:
+            return True
+
+        # Otherwise check if specific required scopes are present
+        return required.issubset(creds_scopes)
 
     def revoke(self) -> None:
         """Revoke authentication and delete token file."""

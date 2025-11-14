@@ -1,11 +1,7 @@
 """Tests for OAuth scope validation and scope changes."""
 
-import json
 import tempfile
-from pathlib import Path
 from unittest.mock import Mock
-
-import pytest
 
 from gmailarchiver.auth import SCOPES, GmailAuthenticator
 

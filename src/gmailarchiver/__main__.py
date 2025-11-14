@@ -223,6 +223,117 @@ def validate(
         raise typer.Exit(1)
 
 
+@app.command("retry-delete")
+def retry_delete_cmd(
+    archive_file: str = typer.Argument(..., help="Archive file to delete messages from"),
+    permanent: bool = typer.Option(False, "--permanent", help="Permanent deletion (vs trash)"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    credentials: str | None = typer.Option(
+        None,
+        "--credentials",
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)"
+    ),
+) -> None:
+    """
+    Retry deletion for already-archived messages.
+
+    Use this if archiving succeeded but deletion failed due to permission errors.
+    This command retrieves message IDs from the database and attempts deletion again.
+
+    IMPORTANT: You must re-authenticate with full Gmail permissions before using this.
+    Run 'gmailarchiver auth-reset' first if you see permission errors.
+
+    Examples:
+        Trash messages (recoverable for 30 days):
+        $ gmailarchiver retry-delete archive_20251114.mbox
+
+        Permanent deletion (IRREVERSIBLE):
+        $ gmailarchiver retry-delete archive_20251114.mbox --permanent
+    """
+    try:
+        # 1. Get archived message IDs from database
+        with ArchiveState(state_db) as state:
+            message_ids = list(state.get_archived_message_ids_for_file(archive_file))
+
+        if not message_ids:
+            console.print(f"[red]Error: No archived messages found for: {archive_file}[/red]")
+            console.print("\nPossible causes:")
+            console.print("  - Archive file name doesn't match database records")
+            console.print("  - Wrong state database path")
+            console.print(f"  - Using: {state_db}")
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold]Found {len(message_ids)} archived messages[/bold]")
+        console.print(f"Archive: {archive_file}\n")
+
+        # 2. Authenticate and validate scopes
+        authenticator = GmailAuthenticator(credentials_file=credentials)
+        console.print("Authenticating with Gmail...")
+        creds = authenticator.authenticate()
+
+        # 3. Validate deletion scope
+        console.print("Validating permissions...")
+        if not authenticator.validate_scopes(['https://mail.google.com/']):
+            console.print("\n[red]Error: Missing deletion permission[/red]")
+            console.print(
+                "\nYour current authorization doesn't include "
+                "permission to delete messages."
+            )
+            console.print("This was likely caused by using an older version of the app.")
+            console.print("\n[bold yellow]To fix this:[/bold yellow]")
+            console.print("  1. Run: [bold cyan]gmailarchiver auth-reset[/bold cyan]")
+            console.print("  2. Run this command again to re-authenticate with full permissions")
+            raise typer.Exit(1)
+
+        console.print("[green]✓ Permissions validated[/green]\n")
+
+        # 4. Create Gmail client
+        client = GmailClient(creds)
+
+        # 5. Create archiver (for deletion functionality)
+        archiver = GmailArchiver(client, state_db)
+
+        # 6. Delete messages with appropriate confirmation
+        if permanent:
+            console.print("[bold red]⚠ WARNING: PERMANENT DELETION[/bold red]")
+            console.print(
+                f"This will [bold]permanently delete[/bold] {len(message_ids)} messages."
+            )
+            console.print("[red]This action CANNOT be undone![/red]")
+            console.print(
+                "\nDeleted messages will be gone forever - "
+                "not in trash, not recoverable.\n"
+            )
+
+            confirmation = typer.prompt(
+                f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm"
+            )
+            if confirmation != f"DELETE {len(message_ids)} MESSAGES":
+                console.print("[yellow]Deletion cancelled[/yellow]")
+                return
+
+            # Perform permanent deletion
+            archiver.delete_archived_messages(message_ids, permanent=True)
+
+        else:
+            # Trash deletion (default) - still ask for confirmation
+            console.print(f"This will move {len(message_ids)} messages to trash.")
+            console.print("(Messages can be recovered from trash for 30 days)\n")
+
+            if not typer.confirm(f"Move {len(message_ids)} messages to trash?"):
+                console.print("[yellow]Cancelled[/yellow]")
+                return
+
+            # Move to trash
+            archiver.delete_archived_messages(message_ids, permanent=False)
+
+        console.print("\n[bold green]✓ Deletion completed successfully![/bold green]\n")
+
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
 @app.command()
 def status() -> None:
     """
