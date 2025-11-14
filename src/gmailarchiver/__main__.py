@@ -1029,8 +1029,16 @@ def search(
 
             for result in results.results:
                 # Truncate long fields
-                from_display = result.from_addr[:28] + "..." if len(result.from_addr) > 28 else result.from_addr
-                subject_display = result.subject[:38] + "..." if len(result.subject) > 38 else result.subject or "(no subject)"
+                if len(result.from_addr) > 28:
+                    from_display = result.from_addr[:28] + "..."
+                else:
+                    from_display = result.from_addr
+
+                if len(result.subject) > 38:
+                    subject_display = result.subject[:38] + "..."
+                else:
+                    subject_display = result.subject or "(no subject)"
+
                 archive_display = Path(result.archive_file).name
 
                 table.add_row(
@@ -1041,7 +1049,10 @@ def search(
                 )
 
             console.print(table)
-            console.print(f"\n[dim]Found {results.total_results} results in {execution_time_ms:.2f}ms[/dim]\n")
+            console.print(
+                f"\n[dim]Found {results.total_results} results "
+                f"in {execution_time_ms:.2f}ms[/dim]\n"
+            )
 
     except ValueError as e:
         console.print(f"[red]Error:[/red] {e}")
