@@ -465,8 +465,8 @@ class TestSearchPerformance:
 
         elapsed_ms = (end_time - start_time) * 1000
 
-        # Should find many messages
-        assert results.total_results > 100
+        # Should find many messages (limited by default 100)
+        assert results.total_results >= 100
 
         # Should complete in under 100ms
         assert elapsed_ms < 100, f"Search took {elapsed_ms:.2f}ms (expected < 100ms)"
