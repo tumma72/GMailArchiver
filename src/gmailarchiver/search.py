@@ -1,4 +1,22 @@
-"""Full-text and metadata search for archived Gmail messages."""
+"""Full-text and metadata search for archived Gmail messages.
+
+This module provides a SearchEngine for querying archived Gmail messages using
+SQLite FTS5 full-text search and metadata filters. It supports Gmail-style query
+syntax for intuitive searching.
+
+Query Syntax Examples:
+    - from:alice@example.com
+    - to:bob@example.com
+    - subject:meeting
+    - after:2024-01-01
+    - before:2024-12-31
+    - meeting project (bare words search all fields)
+    - from:alice subject:invoice after:2024-01-01 (combined filters)
+
+Security:
+    All query parameters are passed through parameterized SQL to prevent injection.
+    Field names for FTS5 are validated against a whitelist.
+"""
 
 import re
 import sqlite3
@@ -35,6 +53,9 @@ class SearchResults:
 
 class SearchEngine:
     """Full-text and metadata search for archived messages."""
+
+    # Valid FTS5 field names (whitelist for security)
+    VALID_FTS_FIELDS = {'subject', 'from_addr', 'to_addr', 'body_preview'}
 
     def __init__(self, state_db_path: str) -> None:
         """
@@ -91,27 +112,37 @@ class SearchEngine:
         # Parse Gmail-style query
         params = self._parse_gmail_query(query)
 
+        # Extract typed values from params
+        fulltext_terms = params['fulltext_terms']
+        from_addr = params['from_addr']
+        to_addr = params['to_addr']
+        subject_terms = params['subject_terms']
+        after = params['after']
+        before = params['before']
+
+        # Type assertions for mypy
+        assert isinstance(fulltext_terms, list)
+        assert isinstance(from_addr, (str, type(None)))
+        assert isinstance(to_addr, (str, type(None)))
+        assert isinstance(subject_terms, list)
+        assert isinstance(after, (str, type(None)))
+        assert isinstance(before, (str, type(None)))
+
         # Determine search strategy
-        if params['fulltext_terms']:
+        if fulltext_terms:
             # Has free-text terms - use FTS5
-            fulltext_query = ' '.join(params['fulltext_terms'])
+            fulltext_query = ' '.join(fulltext_terms)
 
             # If we also have metadata filters, combine them
-            if any([
-                params['from_addr'],
-                params['to_addr'],
-                params['subject_terms'],
-                params['after'],
-                params['before']
-            ]):
+            if any([from_addr, to_addr, subject_terms, after, before]):
                 # Hybrid: FTS5 + metadata filters
                 results = self._search_hybrid(
                     fulltext_query=fulltext_query,
-                    from_addr=params['from_addr'],
-                    to_addr=params['to_addr'],
-                    subject_terms=params['subject_terms'],
-                    after=params['after'],
-                    before=params['before'],
+                    from_addr=from_addr,
+                    to_addr=to_addr,
+                    subject_terms=subject_terms,
+                    after=after,
+                    before=before,
                     limit=limit,
                     offset=offset
                 )
@@ -121,11 +152,11 @@ class SearchEngine:
         else:
             # Pure metadata search
             results = self.search_metadata(
-                from_addr=params['from_addr'],
-                to_addr=params['to_addr'],
-                subject=params['subject_terms'][0] if params['subject_terms'] else None,
-                after=params['after'],
-                before=params['before'],
+                from_addr=from_addr,
+                to_addr=to_addr,
+                subject=subject_terms[0] if subject_terms else None,
+                after=after,
+                before=before,
                 limit=limit
             )
 
@@ -151,8 +182,17 @@ class SearchEngine:
 
         Returns:
             SearchResults with ranked results (BM25 scoring)
+
+        Raises:
+            ValueError: If invalid field names are provided
         """
         start_time = time.perf_counter()
+
+        # Validate fields against whitelist
+        if fields:
+            invalid_fields = set(fields) - self.VALID_FTS_FIELDS
+            if invalid_fields:
+                raise ValueError(f"Invalid FTS5 field names: {invalid_fields}")
 
         # Build FTS5 query
         if fields:
@@ -204,7 +244,7 @@ class SearchEngine:
                 query=text,
                 execution_time_ms=execution_time
             )
-        except sqlite3.OperationalError as e:
+        except sqlite3.OperationalError:
             # FTS5 query syntax error - return empty results
             execution_time = (time.perf_counter() - start_time) * 1000
             return SearchResults(
@@ -243,7 +283,7 @@ class SearchEngine:
 
         # Build WHERE clause
         where_clauses = []
-        params = []
+        params: list[str | int] = []
 
         if from_addr:
             where_clauses.append('from_addr LIKE ?')
@@ -304,7 +344,7 @@ class SearchEngine:
         return SearchResults(
             total_results=len(results),
             results=results,
-            query=f'metadata search',
+            query='metadata search',
             execution_time_ms=execution_time
         )
 
@@ -339,7 +379,7 @@ class SearchEngine:
 
         # Build WHERE clause for metadata filters
         where_clauses = []
-        params = [fulltext_query]
+        params: list[str | int] = [fulltext_query]
 
         if from_addr:
             where_clauses.append('m.from_addr LIKE ?')
@@ -406,7 +446,7 @@ class SearchEngine:
             execution_time_ms=execution_time
         )
 
-    def _parse_gmail_query(self, query: str) -> dict[str, list[str] | str | None]:
+    def _parse_gmail_query(self, query: str) -> dict[str, object]:
         """
         Parse Gmail-style query into search parameters.
 
@@ -416,7 +456,7 @@ class SearchEngine:
         Returns:
             Dictionary with parsed parameters
         """
-        params: dict[str, list[str] | str | None] = {
+        params: dict[str, object] = {
             'fulltext_terms': [],
             'from_addr': None,
             'to_addr': None,
@@ -471,7 +511,7 @@ class SearchEngine:
         """Close database connection."""
         self.conn.close()
 
-    def __enter__(self) -> 'SearchEngine':
+    def __enter__(self) -> SearchEngine:
         """Context manager entry."""
         return self
 
