@@ -24,8 +24,8 @@ def state_db(temp_dir):
     """Create a test state database."""
     db_path = temp_dir / "test_state.db"
 
-    # Initialize database with schema
-    with ArchiveState(str(db_path)) as state:
+    # Initialize database with schema (disable path validation for tests)
+    with ArchiveState(str(db_path), validate_path=False) as state:
         # Ensure tables exist
         state.conn.execute('''
             CREATE TABLE IF NOT EXISTS messages (
@@ -65,7 +65,7 @@ def sample_mbox_1(temp_dir, state_db):
     mbox.close()
 
     # Add to database
-    with ArchiveState(str(state_db)) as state:
+    with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3):
             state.conn.execute('''
                 INSERT INTO messages
@@ -108,7 +108,7 @@ def sample_mbox_2(temp_dir, state_db):
     mbox.close()
 
     # Add to database
-    with ArchiveState(str(state_db)) as state:
+    with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3, 6):
             state.conn.execute('''
                 INSERT INTO messages
@@ -176,7 +176,7 @@ def mbox_with_duplicates(temp_dir, state_db):
     mbox2.close()
 
     # Add to database
-    with ArchiveState(str(state_db)) as state:
+    with ArchiveState(str(state_db), validate_path=False) as state:
         # From archive1
         for i in range(2):
             state.conn.execute('''
