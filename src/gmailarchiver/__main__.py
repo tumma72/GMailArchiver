@@ -904,6 +904,154 @@ def verify_consistency_cmd(
 
 
 @app.command()
+def search(
+    query: str | None = typer.Argument(None, help="Gmail-style search query"),
+    from_addr: str | None = typer.Option(None, "--from", help="Filter by sender"),
+    to_addr: str | None = typer.Option(None, "--to", help="Filter by recipient"),
+    subject: str | None = typer.Option(None, "--subject", help="Filter by subject"),
+    after: str | None = typer.Option(None, "--after", help="After date (YYYY-MM-DD)"),
+    before: str | None = typer.Option(None, "--before", help="Before date (YYYY-MM-DD)"),
+    limit: int = typer.Option(100, help="Maximum results"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON")
+) -> None:
+    """
+    Search archived messages.
+
+    Examples:
+        $ gmailarchiver search "from:alice meeting"
+        $ gmailarchiver search "invoice payment" --limit 50
+        $ gmailarchiver search --from alice@example.com --subject meeting
+        $ gmailarchiver search --after 2024-01-01 --before 2024-12-31
+    """
+    import json
+    import time
+    from datetime import datetime
+
+    from .migration import MigrationManager
+    from .search import SearchEngine
+
+    # Don't print header if JSON output
+    if not json_output:
+        console.print("\n[bold blue]Search Archived Messages[/bold blue]\n")
+
+    # Check database exists
+    db_path = Path(state_db)
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        raise typer.Exit(1)
+
+    # Check schema version (require v1.1)
+    manager = MigrationManager(db_path)
+    schema_version = manager.detect_schema_version()
+    manager._close()
+
+    if schema_version != "1.1":
+        console.print("[red]Error:[/red] Search requires v1.1 database schema")
+        console.print("[yellow]Run 'gmailarchiver migrate' to upgrade[/yellow]")
+        raise typer.Exit(1)
+
+    # Validate dates if provided
+    if after:
+        try:
+            datetime.strptime(after, '%Y-%m-%d')
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format: {after}")
+            console.print("[yellow]Use YYYY-MM-DD format (e.g., 2024-01-15)[/yellow]")
+            raise typer.Exit(1)
+
+    if before:
+        try:
+            datetime.strptime(before, '%Y-%m-%d')
+        except ValueError:
+            console.print(f"[red]Error:[/red] Invalid date format: {before}")
+            console.print("[yellow]Use YYYY-MM-DD format (e.g., 2024-01-15)[/yellow]")
+            raise typer.Exit(1)
+
+    # Build query string from filters if no query provided
+    if not query:
+        query_parts = []
+        if from_addr:
+            query_parts.append(f"from:{from_addr}")
+        if to_addr:
+            query_parts.append(f"to:{to_addr}")
+        if subject:
+            query_parts.append(f"subject:{subject}")
+        if after:
+            query_parts.append(f"after:{after}")
+        if before:
+            query_parts.append(f"before:{before}")
+
+        if not query_parts:
+            console.print("[red]Error:[/red] No search query or filters provided")
+            raise typer.Exit(1)
+
+        query = " ".join(query_parts)
+
+    # Execute search
+    try:
+        start_time = time.perf_counter()
+
+        with SearchEngine(state_db) as engine:
+            results = engine.search(query, limit=limit)
+
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
+
+        # Format output
+        if json_output:
+            # Output JSON array
+            data = [
+                {
+                    'gmail_id': r.gmail_id,
+                    'rfc_message_id': r.rfc_message_id,
+                    'date': r.date,
+                    'from': r.from_addr,
+                    'to': r.to_addr,
+                    'subject': r.subject,
+                    'archive_file': r.archive_file,
+                    'mbox_offset': r.mbox_offset,
+                    'relevance_score': r.relevance_score
+                }
+                for r in results.results
+            ]
+            print(json.dumps(data, indent=2))
+        else:
+            # Rich table output
+            if results.total_results == 0:
+                console.print("[yellow]No results found[/yellow]\n")
+                return
+
+            table = Table(title=f"Search Results ({results.total_results} found)")
+            table.add_column("Date", style="cyan", width=12)
+            table.add_column("From", style="green", width=30)
+            table.add_column("Subject", style="yellow", width=40)
+            table.add_column("Archive", style="magenta", width=30)
+
+            for result in results.results:
+                # Truncate long fields
+                from_display = result.from_addr[:28] + "..." if len(result.from_addr) > 28 else result.from_addr
+                subject_display = result.subject[:38] + "..." if len(result.subject) > 38 else result.subject or "(no subject)"
+                archive_display = Path(result.archive_file).name
+
+                table.add_row(
+                    result.date[:10] if result.date else "N/A",
+                    from_display,
+                    subject_display,
+                    archive_display
+                )
+
+            console.print(table)
+            console.print(f"\n[dim]Found {results.total_results} results in {execution_time_ms:.2f}ms[/dim]\n")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def auth_reset() -> None:
     """
     Reset authentication (revoke and delete token).
