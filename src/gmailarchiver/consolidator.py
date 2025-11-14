@@ -1,12 +1,12 @@
 """Archive consolidation for merging multiple mbox files."""
 
 import gzip
-import lzma
 import mailbox
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Any
 
 from gmailarchiver.state import ArchiveState
 
@@ -120,9 +120,9 @@ class ArchiveConsolidator:
             compression_used=compress,
         )
 
-    def _collect_messages(self, source_archives: list[Path]) -> list[dict]:
+    def _collect_messages(self, source_archives: list[Path]) -> list[dict[str, Any]]:
         """Collect all messages from source archives."""
-        messages = []
+        messages: list[dict[str, Any]] = []
 
         for archive_path in source_archives:
             # Handle compressed archives
@@ -174,16 +174,16 @@ class ArchiveConsolidator:
             # Return epoch for invalid dates (sorts to beginning)
             return 0.0
 
-    def _sort_messages(self, messages: list[dict]) -> list[dict]:
+    def _sort_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Sort messages by date timestamp."""
         return sorted(messages, key=lambda m: m['date'])
 
     def _deduplicate_messages(
-        self, messages: list[dict], strategy: str
-    ) -> tuple[list[dict], int]:
+        self, messages: list[dict[str, Any]], strategy: str
+    ) -> tuple[list[dict[str, Any]], int]:
         """Remove duplicates using specified strategy."""
         # Group by Message-ID
-        by_message_id: dict[str, list[dict]] = {}
+        by_message_id: dict[str, list[dict[str, Any]]] = {}
         for msg_dict in messages:
             msg_id = msg_dict['rfc_message_id']
             if msg_id not in by_message_id:
@@ -214,7 +214,7 @@ class ArchiveConsolidator:
 
     def _write_consolidated_mbox(
         self,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         output_path: Path,
         compress: str | None,
     ) -> dict[str, tuple[int, int]]:
