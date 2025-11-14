@@ -98,7 +98,7 @@ git push origin v1.0.2
 
 **src/gmailarchiver/__main__.py**
 - CLI entry point using Typer
-- Defines all commands: `archive`, `validate`, `status`, `auth-reset`
+- Defines all commands: `archive`, `validate`, `status`, `retry-delete`, `auth-reset`
 - Handles user interaction, confirmations, and Rich console output
 - Orchestrates the archiving workflow
 
@@ -107,6 +107,8 @@ git push origin v1.0.2
 - Uses bundled credentials from `config/oauth_credentials.json` by default
 - Stores tokens at XDG-compliant paths (`~/.config/gmailarchiver/token.json` on Linux/macOS)
 - Handles token refresh and revocation
+- SCOPES: Uses full Gmail access (`https://mail.google.com/`) for deletion support
+- `validate_scopes()` method checks if credentials have required permissions
 
 **src/gmailarchiver/gmail_client.py** (`GmailClient`)
 - Wrapper around Gmail API
@@ -265,12 +267,26 @@ To create a new release:
 3. Build: `uv build`
 4. The wheel will have version `1.0.2`
 
-## OAuth2 Flow
+## OAuth2 Flow and Scope Changes
+
+**BREAKING CHANGE (v1.0.4+)**: OAuth scope changed from `gmail.modify` to full Gmail access.
 
 The bundled credentials are "installed application" type (per Google's model):
 - Client secret is not confidential for desktop apps
 - Security comes from user consent at authorization time
 - Users can optionally provide their own credentials via `--credentials` flag
+
+**Scope Requirements**:
+- Previous scope: `gmail.readonly` + `gmail.modify` (insufficient for permanent deletion)
+- Current scope: `https://mail.google.com/` (full Gmail access, includes deletion)
+- Reason: The `gmail.modify` scope does NOT include the `messages.delete` API endpoint
+- Users must re-authenticate: Run `gmailarchiver auth-reset` and archive again
+
+**retry-delete Command**:
+If archiving succeeds but deletion fails with 403 error:
+1. Run: `gmailarchiver auth-reset`
+2. Run: `gmailarchiver retry-delete <archive_file> [--permanent]`
+3. The command retrieves message IDs from database and retries deletion
 
 ## Common Debugging Scenarios
 
@@ -292,6 +308,11 @@ The bundled credentials are "installed application" type (per Google's model):
 - Pattern: `.lock.lock` files accumulating
 - Root cause: mbox library doesn't clean up on exceptions
 - Solution: Defensive cleanup in archiver.py before/after mbox operations
+
+### "403 Insufficient Permission" error during deletion
+- Cause: User authenticated with old OAuth scope (missing deletion permission)
+- Solution: Re-authenticate with `gmailarchiver auth-reset`, then retry
+- Alternative: Use `gmailarchiver retry-delete <archive_file>` to retry deletion for already-archived messages
 
 ## Dependencies
 
