@@ -3,8 +3,6 @@
 import mailbox
 import sqlite3
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -86,7 +84,9 @@ def sample_mbox_with_duplicates(tmp_path):
 class TestImportCommand:
     """Test 'gmailarchiver import' command."""
 
-    def test_import_single_file_success(self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch):
+    def test_import_single_file_success(
+        self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch
+    ):
         """Test importing a single mbox file shows success message."""
         monkeypatch.chdir(tmp_path)
 
@@ -100,7 +100,9 @@ class TestImportCommand:
         assert 'imported' in result.stdout.lower()
         assert '3' in result.stdout  # 3 messages imported
 
-    def test_import_with_skip_duplicates(self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch):
+    def test_import_with_skip_duplicates(
+        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+    ):
         """Test import with --skip-duplicates shows skipped count."""
         monkeypatch.chdir(tmp_path)
 
@@ -114,7 +116,9 @@ class TestImportCommand:
         assert result.exit_code == 0
         assert 'skipped' in result.stdout.lower() or '1' in result.stdout
 
-    def test_import_with_no_skip_duplicates(self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch):
+    def test_import_with_no_skip_duplicates(
+        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+    ):
         """Test import with --no-skip-duplicates imports all messages."""
         monkeypatch.chdir(tmp_path)
 
@@ -129,7 +133,9 @@ class TestImportCommand:
         # Should import first message, but second will fail on unique constraint
         assert 'imported' in result.stdout.lower()
 
-    def test_import_with_account_id(self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch):
+    def test_import_with_account_id(
+        self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch
+    ):
         """Test import with --account-id verifies in database."""
         monkeypatch.chdir(tmp_path)
 
@@ -187,7 +193,11 @@ class TestImportCommand:
         ])
 
         assert result.exit_code == 1
-        assert 'error' in result.stdout.lower() or 'not found' in result.stdout.lower() or 'no files match' in result.stdout.lower()
+        assert (
+            'error' in result.stdout.lower()
+            or 'not found' in result.stdout.lower()
+            or 'no files match' in result.stdout.lower()
+        )
 
     def test_import_database_error_handling(self, runner, tmp_path, monkeypatch):
         """Test import with database error shows error handling."""
@@ -227,7 +237,9 @@ class TestImportCommand:
         assert result.exit_code == 1
         assert 'v1.1' in result.stdout.lower() or 'schema' in result.stdout.lower()
 
-    def test_import_shows_progress_and_statistics(self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch):
+    def test_import_shows_progress_and_statistics(
+        self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch
+    ):
         """Test import shows progress bar and summary statistics."""
         monkeypatch.chdir(tmp_path)
 

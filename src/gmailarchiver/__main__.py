@@ -1083,7 +1083,8 @@ def import_cmd(
     """
     import glob
     import time
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
+
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
     from .importer import ArchiveImporter
     from .migration import MigrationManager

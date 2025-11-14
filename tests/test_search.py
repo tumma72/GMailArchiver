@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gmailarchiver.search import MessageSearchResult, SearchEngine, SearchResults
+from gmailarchiver.search import SearchEngine
 
 
 @pytest.fixture

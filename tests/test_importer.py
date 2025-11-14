@@ -2,16 +2,13 @@
 
 import email
 import gzip
-import hashlib
 import mailbox
 import sqlite3
 import time
-from pathlib import Path
 
 import pytest
 
 from gmailarchiver.importer import ArchiveImporter, ImportResult, MultiImportResult
-from gmailarchiver.state import ArchiveState
 
 
 # Fixtures for creating test mbox files
