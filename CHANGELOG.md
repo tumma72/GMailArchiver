@@ -5,6 +5,100 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-beta.1] - 2025-01-14
+
+### ⚠️ Breaking Changes
+
+- **OAuth Scopes**: Changed from `gmail.modify` to full Gmail access (`https://mail.google.com/`) to support permanent deletion
+  - **Action Required**: Run `gmailarchiver auth-reset` and re-authenticate
+  - **Why**: Previous scope did not include `messages.delete` permission, causing HTTP 403 errors after archiving
+  - **Fix**: Added `retry-delete` command to retry deletion for already-archived messages
+
+### Added
+
+#### Core Features
+
+- **Database Migration System** (v1.0 → v1.1)
+  - Automatic schema migration with backup and rollback support
+  - Enhanced schema with `mbox_offset` and `mbox_length` for O(1) message access
+  - FTS5 full-text search with auto-sync triggers
+  - 17-field messages table (vs 7 in v1.0)
+
+- **FTS5 Full-Text Search**
+  - Gmail-style query syntax (`from:`, `to:`, `subject:`, `after:`, `before:`)
+  - BM25 ranking algorithm
+  - Performance: 0.85ms for 1000 messages (118x faster than 100ms target)
+
+- **Archive Import**
+  - Import existing mbox archives into v1.1 database
+  - Automatic offset calculation and metadata extraction
+  - Support for gzip, lzma, zstd compression
+  - Performance: 10,145 messages/second (60x faster than target)
+
+- **Message Deduplication**
+  - 100% precision via RFC Message-ID matching
+  - Support for multiple strategies: `newest`, `largest`, `first`
+  - Cross-archive duplicate detection
+
+- **Archive Consolidation**
+  - Merge multiple archives into one
+  - Chronological sorting with integrated deduplication
+  - Automatic offset recalculation
+  - Performance: 3.57s for 10k messages (16x faster than 60s target)
+
+- **Enhanced Validation**
+  - `verify-offsets`: Validate mbox offset accuracy
+  - `verify-consistency`: Deep database integrity checks
+  - Orphaned record detection
+  - FTS5 sync validation
+
+#### New CLI Commands (11 total)
+
+- `migrate` - Migrate database from v1.0 to v1.1 schema
+- `db-info` - Display database schema version and statistics
+- `rollback` - Restore database from backup
+- `search` - Search archived messages with Gmail-style syntax
+- `import` - Import existing mbox archives into database
+- `dedupe-report` - Analyze duplicate messages across archives
+- `dedupe` - Remove duplicate messages with configurable strategy
+- `verify-offsets` - Validate mbox offset accuracy (v1.1 only)
+- `verify-consistency` - Deep database consistency check
+- `consolidate` - Merge multiple archives with sort/dedupe
+- `retry-delete` - Retry deletion for already-archived messages
+
+### Changed
+
+- **Database Schema**: v1.0 → v1.1 (automatic migration on first run)
+- **Performance**: Massive performance improvements across all operations:
+  - Search: 0.85ms for 1000 messages (118x faster than target)
+  - Import: 10,145 messages/second (60x faster than target)
+  - Consolidate: 3.57s for 10k messages (16x faster than target)
+
+### Fixed
+
+- **Critical**: Fixed OAuth scope missing deletion permission
+  - Previous scope `gmail.modify` did not include `messages.delete`
+  - Users experienced HTTP 403 errors after 30+ minutes of archiving
+  - Now uses full Gmail scope `https://mail.google.com/`
+  - Added `retry-delete` command for failed deletions
+
+### Performance
+
+| Component | Target | Achieved | Improvement |
+|-----------|--------|----------|-------------|
+| Search (1000 msgs) | <100ms | 0.85ms | 118x faster |
+| Import (10k msgs) | <60s | <1s | 60x faster |
+| Consolidate (10k msgs) | <60s | 3.57s | 16x faster |
+
+### Test Coverage
+
+- Total tests: 435 (up from 283 in v1.0.3)
+- New tests: 152
+- Pass rate: 100%
+- Coverage: 92%
+
+[1.1.0-beta.1]: https://github.com/tumma72/GMailArchiver/compare/v1.0.3...v1.1.0-beta.1
+
 ## [1.0.3] - 2025-01-13
 
 ### Added

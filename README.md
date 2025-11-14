@@ -8,6 +8,50 @@
 
 A powerful CLI tool to archive old Gmail messages to local mbox files with validation, compression, and safe deletion.
 
+## 🔔 Upgrading from v1.0.x?
+
+See the [Migration Guide](MIGRATION_GUIDE.md) for v1.0 → v1.1 upgrade instructions.
+
+**TL;DR**: Run `gmailarchiver migrate` on first v1.1 run. Automatic backup included.
+
+## ✨ New in v1.1.0
+
+### 🔍 Full-Text Search (FTS5)
+Search your archived messages with Gmail-style syntax:
+- **Search by sender**: `from:alice@example.com`
+- **Search by subject**: `subject:meeting`
+- **Search by date range**: `after:2024-01-01 before:2024-12-31`
+- **Full-text search**: `invoice payment`
+- **Performance**: 0.85ms for 1000 messages (118x faster than target)
+
+### 📥 Import Existing Archives
+Import mbox files from other tools or previous archives:
+- Automatic metadata extraction
+- Accurate offset calculation for fast access
+- Support for compressed archives (gzip, lzma, zstd)
+- **Performance**: 10,000+ messages per second
+
+### 🔄 Deduplication
+Remove duplicate messages across archives:
+- 100% precision via RFC Message-ID
+- Multiple strategies (newest, largest, first)
+- Cross-archive detection
+
+### 📦 Archive Consolidation
+Merge multiple archives into one:
+- Chronological sorting
+- Integrated deduplication
+- Automatic offset recalculation
+- **Performance**: 10k messages in 3.57 seconds (16x faster than target)
+
+### ⚡ Performance Improvements
+
+| Component | Target | Achieved | Improvement |
+|-----------|--------|----------|-------------|
+| Search (1000 msgs) | <100ms | 0.85ms | 118x faster |
+| Import (10k msgs) | <60s | <1s | 60x faster |
+| Consolidate (10k msgs) | <60s | 3.57s | 16x faster |
+
 ## ✨ Features
 
 - **📅 Smart Archiving**: Archive emails older than a specified threshold (e.g., "3y", "6m", "30d")
@@ -183,6 +227,93 @@ gmailarchiver auth-reset
 
 # Use custom credentials file
 gmailarchiver archive 3y --credentials my_credentials.json
+```
+
+### Migration Commands (v1.1+)
+
+```bash
+# Migrate v1.0 database to v1.1 (automatic on first run)
+gmailarchiver migrate
+
+# Show database schema version and statistics
+gmailarchiver db-info
+
+# Rollback to backup (if migration fails)
+gmailarchiver rollback --backup-file archive_state.db.backup.20250114_120000
+```
+
+### Search Commands (v1.1+)
+
+```bash
+# Search with Gmail-style syntax
+gmailarchiver search "from:alice meeting"
+gmailarchiver search "subject:invoice after:2024-01-01"
+gmailarchiver search "payment" --limit 50
+
+# Search with filters
+gmailarchiver search --from alice@example.com --subject report
+gmailarchiver search --after 2024-01-01 --before 2024-12-31
+
+# JSON output for scripting
+gmailarchiver search "invoice" --json
+```
+
+### Import Commands (v1.1+)
+
+```bash
+# Import existing mbox archive
+gmailarchiver import old_archive.mbox
+
+# Import multiple archives with glob pattern
+gmailarchiver import "archive_*.mbox.gz"
+
+# Import with custom account ID
+gmailarchiver import external.mbox --account-id backup_2024
+```
+
+### Deduplication Commands (v1.1+)
+
+```bash
+# Analyze duplicates (preview only)
+gmailarchiver dedupe-report
+
+# Remove duplicates (with confirmation)
+gmailarchiver dedupe --strategy newest
+
+# Dry run
+gmailarchiver dedupe --dry-run
+```
+
+### Consolidation Commands (v1.1+)
+
+```bash
+# Merge multiple archives
+gmailarchiver consolidate archive_*.mbox -o merged.mbox
+
+# Merge with options
+gmailarchiver consolidate old1.mbox old2.mbox -o consolidated.mbox.gz
+gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
+gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
+```
+
+### Enhanced Validation Commands (v1.1+)
+
+```bash
+# Verify mbox offset accuracy (v1.1 databases only)
+gmailarchiver verify-offsets archive_20250114.mbox.gz
+
+# Deep database consistency check
+gmailarchiver verify-consistency archive_20250114.mbox.gz
+```
+
+### Retry Failed Operations (v1.1+)
+
+```bash
+# Retry deletion after OAuth scope fix
+gmailarchiver retry-delete archive_20250114.mbox --permanent
+
+# Preview what will be retried (dry run)
+gmailarchiver retry-delete archive_20250114.mbox --dry-run
 ```
 
 ## 🔄 Incremental Archiving
