@@ -2,8 +2,7 @@
 
 import sqlite3
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner

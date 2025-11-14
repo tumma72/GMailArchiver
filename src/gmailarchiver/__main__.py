@@ -797,7 +797,9 @@ def verify_offsets_cmd(
                     f"[dim]... and {len(result.failures) - 20} more failures[/dim]\n"
                 )
 
-        console.print(f"\n[red]Verification failed: {result.accuracy_percentage:.1f}% accuracy[/red]")
+        console.print(
+            f"\n[red]Verification failed: {result.accuracy_percentage:.1f}% accuracy[/red]"
+        )
         raise typer.Exit(1)
 
     except Exception as e:
