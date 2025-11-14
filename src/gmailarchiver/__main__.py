@@ -1298,6 +1298,135 @@ def import_cmd(
 
 
 @app.command()
+def consolidate(
+    archives: list[str] = typer.Argument(..., help="Archive files or glob patterns"),
+    output: str = typer.Option(..., "-o", "--output", help="Output archive file"),
+    sort: bool = typer.Option(True, help="Sort messages chronologically"),
+    dedupe: bool = typer.Option(True, help="Remove duplicate messages"),
+    dedupe_strategy: str = typer.Option("newest", help="Dedup strategy: newest/largest/first"),
+    compress: str | None = typer.Option(None, help="Compression: gzip/lzma/zstd"),
+    state_db: str = typer.Option("archive_state.db", help="State database path")
+) -> None:
+    """
+    Consolidate multiple archives into one.
+
+    Merges multiple mbox archives, optionally sorting by date and removing duplicates.
+    Supports compression auto-detection from output file extension.
+
+    Examples:
+        $ gmailarchiver consolidate archive_*.mbox -o merged.mbox
+        $ gmailarchiver consolidate old1.mbox old2.mbox -o consolidated.mbox.gz
+        $ gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
+        $ gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
+    """
+    import glob
+
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    from .consolidator import ArchiveConsolidator
+
+    console.print("\n[bold blue]Archive Consolidation[/bold blue]\n")
+
+    # 1. Expand glob patterns
+    all_files = []
+    for pattern in archives:
+        matches = glob.glob(pattern)
+        if not matches:
+            # Try as literal file path
+            if Path(pattern).exists():
+                all_files.append(pattern)
+            else:
+                console.print(f"[yellow]Warning: No files match pattern: {pattern}[/yellow]")
+        else:
+            all_files.extend(matches)
+
+    if not all_files:
+        console.print("[red]Error: No archive files found[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"Found {len(all_files)} archive(s) to consolidate\n")
+
+    # 2. Validate dedupe strategy
+    valid_strategies = ['newest', 'largest', 'first']
+    if dedupe_strategy not in valid_strategies:
+        console.print(f"[red]Error: Invalid dedupe strategy: {dedupe_strategy}[/red]")
+        console.print(f"[yellow]Valid strategies: {', '.join(valid_strategies)}[/yellow]")
+        raise typer.Exit(1)
+
+    # 3. Auto-detect compression from output extension
+    if compress is None:
+        output_path = Path(output)
+        if output_path.suffix == '.gz':
+            compress = 'gzip'
+        elif output_path.suffix == '.xz':
+            compress = 'lzma'
+        elif output_path.suffix == '.zst':
+            compress = 'zstd'
+
+    # 4. Check if output file exists
+    output_path = Path(output)
+    if output_path.exists():
+        overwrite = typer.confirm(f"Output file exists: {output}. Overwrite?")
+        if not overwrite:
+            console.print("[yellow]Consolidation cancelled[/yellow]")
+            raise typer.Exit(0)
+
+    # 5. Consolidate with progress
+    consolidator = ArchiveConsolidator(state_db)
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Consolidating archives...", total=None)
+
+            result = consolidator.consolidate(
+                source_archives=all_files,
+                output_archive=output,
+                sort_by_date=sort,
+                deduplicate=dedupe,
+                dedupe_strategy=dedupe_strategy,
+                compress=compress
+            )
+
+            progress.update(task, completed=True)
+
+        # 6. Display summary
+        table = Table(title="Consolidation Summary")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Source archives", str(len(result.source_files)))
+        table.add_row("Total messages", str(result.total_messages))
+        table.add_row("Duplicates removed", str(result.duplicates_removed))
+        table.add_row("Messages consolidated", str(result.messages_consolidated))
+        table.add_row("Sorted by date", "Yes" if result.sort_applied else "No")
+        if result.compression_used:
+            table.add_row("Compression", result.compression_used)
+
+        console.print(table)
+
+        # 7. Performance metrics
+        if result.execution_time_ms > 0:
+            rate = (result.messages_consolidated / result.execution_time_ms) * 1000
+            console.print(f"\n[green]✓ Consolidation complete![/green]")
+            console.print(f"[dim]Performance: {rate:.1f} messages/second[/dim]")
+            console.print(f"[dim]Output: {result.output_file}[/dim]\n")
+
+    except ValueError as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except FileNotFoundError as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def auth_reset() -> None:
     """
     Reset authentication (revoke and delete token).
