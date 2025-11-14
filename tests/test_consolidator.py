@@ -3,7 +3,7 @@
 import mailbox
 import sqlite3
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -78,7 +78,7 @@ def sample_mbox_1(temp_dir, state_db):
                 str(mbox_path),
                 0,  # placeholder offset
                 100,  # placeholder length
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 f'Test Message {i}',
                 f'sender{i}@example.com',
                 f'2024-01-{10+i}'
@@ -121,7 +121,7 @@ def sample_mbox_2(temp_dir, state_db):
                 str(mbox_path),
                 0,  # placeholder offset
                 100,  # placeholder length
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 f'Test Message {i}',
                 f'sender{i}@example.com',
                 f'2024-01-{10+i}'
@@ -189,7 +189,7 @@ def mbox_with_duplicates(temp_dir, state_db):
                 f'<dup{i}@example.com>',
                 str(mbox1_path),
                 0, 100,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 f'Duplicate Test {i}',
                 f'sender{i}@example.com',
                 f'2024-02-0{5+i}'
@@ -206,7 +206,7 @@ def mbox_with_duplicates(temp_dir, state_db):
             '<dup1@example.com>',
             str(mbox2_path),
             0, 100,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             'Duplicate Test 1',
             'sender1@example.com',
             '2024-02-07'
@@ -222,7 +222,7 @@ def mbox_with_duplicates(temp_dir, state_db):
             '<unique@example.com>',
             str(mbox2_path),
             0, 100,
-            datetime.now(timezone.utc).isoformat(),
+            datetime.now(UTC).isoformat(),
             'Unique Message',
             'sender2@example.com',
             '2024-02-08'
@@ -540,7 +540,9 @@ class TestDeduplication:
 class TestDatabaseUpdate:
     """Tests for database updates after consolidation."""
 
-    def test_database_updated_with_new_archive_file(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    def test_database_updated_with_new_archive_file(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
         """Test database updated with new archive file path."""
         consolidator = ArchiveConsolidator(str(state_db))
         output_path = temp_dir / "consolidated.mbox"
@@ -649,7 +651,9 @@ class TestDatabaseUpdate:
 class TestCompression:
     """Tests for compression support."""
 
-    def test_consolidate_with_gzip_compression(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    def test_consolidate_with_gzip_compression(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
         """Test consolidation with gzip compression."""
         consolidator = ArchiveConsolidator(str(state_db))
         output_path = temp_dir / "consolidated.mbox.gz"

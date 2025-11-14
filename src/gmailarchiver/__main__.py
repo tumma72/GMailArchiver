@@ -1382,8 +1382,11 @@ def consolidate(
         ) as progress:
             task = progress.add_task("Consolidating archives...", total=None)
 
+            # Convert file paths to list[str | Path] for type compatibility
+            source_paths: list[str | Path] = [Path(f) for f in all_files]
+
             result = consolidator.consolidate(
-                source_archives=all_files,
+                source_archives=source_paths,
                 output_archive=output,
                 sort_by_date=sort,
                 deduplicate=dedupe,
@@ -1411,7 +1414,7 @@ def consolidate(
         # 7. Performance metrics
         if result.execution_time_ms > 0:
             rate = (result.messages_consolidated / result.execution_time_ms) * 1000
-            console.print(f"\n[green]✓ Consolidation complete![/green]")
+            console.print("\n[green]✓ Consolidation complete![/green]")
             console.print(f"[dim]Performance: {rate:.1f} messages/second[/dim]")
             console.print(f"[dim]Output: {result.output_file}[/dim]\n")
 
