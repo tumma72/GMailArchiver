@@ -1228,17 +1228,29 @@ def import_cmd(
 
     db_path = Path(state_db)
 
-    # Database will be auto-created by DBManager/ArchiveImporter if it doesn't exist
-    # Check schema version only if database already exists
+    # Handle database schema: auto-create if missing, auto-migrate if v1.0
     if db_path.exists():
         manager = MigrationManager(db_path)
         version = manager.detect_schema_version()
-        manager._close()
 
-        if version != "1.1":
-            console.print("[red]Error:[/red] Import requires v1.1 database schema")
-            console.print("[yellow]Run 'gmailarchiver migrate' to upgrade your database[/yellow]")
+        if version == "1.0":
+            # Auto-migrate v1.0 to v1.1
+            console.print("[yellow]Detected v1.0 database, auto-migrating to v1.1...[/yellow]")
+            try:
+                manager.migrate_v1_to_v1_1()
+                console.print("[green]✓[/green] Migration completed successfully\n")
+            except Exception as e:
+                manager._close()
+                console.print(f"[red]Migration failed:[/red] {e}")
+                raise typer.Exit(1)
+        elif version != "1.1":
+            manager._close()
+            console.print(f"[red]Error:[/red] Unsupported database schema version: {version}")
+            console.print("[yellow]Please run 'gmailarchiver migrate' manually[/yellow]")
             raise typer.Exit(1)
+
+        manager._close()
+    # If database doesn't exist, DBManager will auto-create it with v1.1 schema
 
     # Expand glob pattern
     files = glob.glob(archive_pattern)
