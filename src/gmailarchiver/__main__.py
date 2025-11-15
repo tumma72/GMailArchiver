@@ -7,6 +7,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from ._version import __version__
 from .archiver import GmailArchiver
 from .auth import GmailAuthenticator
 from .deduplicator import MessageDeduplicator
@@ -16,11 +17,34 @@ from .state import ArchiveState
 from .utils import format_bytes
 from .validator import ArchiveValidator
 
+
+def version_callback(value: bool) -> None:
+    """Print version and exit."""
+    if value:
+        typer.echo(f"Gmail Archiver version {__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(
     help="Archive old Gmail messages to local mbox files",
     no_args_is_help=True
 )
 console = Console()
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-v",
+        callback=version_callback,
+        is_eager=True,
+        help="Show version and exit"
+    )
+) -> None:
+    """Gmail Archiver - Archive old Gmail messages to local mbox files."""
+    pass
 
 
 @app.command()
@@ -1656,17 +1680,6 @@ def auth_reset() -> None:
 
     console.print("✓ Authentication token deleted")
     console.print("Run any command to re-authenticate\n")
-
-
-@app.callback()
-def main() -> None:
-    """
-    Gmail Archiver - Archive old Gmail messages to local mbox files.
-
-    Safely archive emails older than a specified threshold with validation,
-    compression, and incremental archiving support.
-    """
-    pass
 
 
 if __name__ == "__main__":
