@@ -95,7 +95,7 @@ uv run ruff check . && uv run mypy gmailarchiver && uv run pytest
 - **Import order**: Enforced by ruff (I rules)
 
 **Quality Gates:**
-- All tests must pass (197 tests, 96% coverage target)
+- All tests must pass (619 tests, 92% coverage)
 - No linting errors (ruff)
 - No type checking errors (mypy)
 - Coverage should not decrease
@@ -134,12 +134,18 @@ def test_list_messages(self, mock_build: Mock) -> None:
 ```
 src/gmailarchiver/
 ├── __init__.py           # Package initialization
-├── __main__.py           # CLI entry point (Typer)
+├── __main__.py           # CLI entry point (Typer) - 17 commands
 ├── auth.py               # OAuth2 authentication (GmailAuthenticator)
 ├── gmail_client.py       # Gmail API wrapper (GmailClient)
 ├── archiver.py           # Core archiving logic (GmailArchiver)
 ├── validator.py          # Archive validation (ArchiveValidator)
-├── state.py              # SQLite state tracking (ArchiveState)
+├── state.py              # SQLite state tracking (ArchiveState) - v1.0 compatibility
+├── db_manager.py         # Database manager (DBManager) - v1.1 schema
+├── hybrid_storage.py     # Hybrid storage (HybridStorage) - atomic transactions
+├── search.py             # FTS5 full-text search
+├── importer.py           # Import existing mbox archives
+├── deduplicator.py       # Deduplication logic
+├── consolidator.py       # Archive consolidation
 ├── utils.py              # Utility functions
 ├── input_validator.py    # Input sanitization and validation
 ├── path_validator.py     # Path traversal prevention
@@ -151,7 +157,15 @@ src/gmailarchiver/
 ### Component Responsibilities
 
 **`__main__.py`** - CLI Entry Point
-- Defines all commands using Typer: `archive`, `validate`, `status`, `auth-reset`
+- Defines all commands using Typer (17 commands in v1.1.0):
+  - **Core**: `archive`, `validate`, `status`, `auth-reset`
+  - **Search**: `search`
+  - **Import**: `import`
+  - **Deduplication**: `dedupe-report`, `dedupe`
+  - **Consolidation**: `consolidate`
+  - **Database**: `migrate`, `db-info`, `rollback`
+  - **Verification**: `verify-offsets`, `verify-consistency`, `verify-integrity`
+  - **Repair**: `repair`, `retry-delete`
 - Handles user interaction and Rich console output
 - Orchestrates the archiving workflow
 
@@ -229,9 +243,49 @@ The tool implements multiple safety layers:
 
 ## Database Schema
 
-The tool maintains state in `archive_state.db`:
+The tool maintains state in `archive_state.db` with support for both v1.0 (legacy) and v1.1 (current) schemas:
 
-### `archived_messages` Table
+### v1.1.0 Schema (Current)
+
+**`messages` Table** (17 fields with FTS5 support):
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `message_id` | TEXT PRIMARY KEY | Gmail message ID |
+| `thread_id` | TEXT | Gmail thread ID |
+| `label_ids` | TEXT | JSON array of label IDs |
+| `snippet` | TEXT | Email snippet |
+| `history_id` | TEXT | Gmail history ID |
+| `internal_date` | INTEGER | Unix timestamp (ms) |
+| `size_estimate` | INTEGER | Message size in bytes |
+| `raw` | TEXT | Raw email content |
+| `from_header` | TEXT | From header |
+| `to_header` | TEXT | To header |
+| `subject` | TEXT | Email subject |
+| `date_header` | TEXT | Date header |
+| `mbox_offset` | INTEGER | Offset in mbox file |
+| `account_id` | TEXT | Account identifier |
+| `archive_file` | TEXT | Path to archive file |
+| `archived_timestamp` | TEXT | ISO 8601 timestamp |
+| `checksum` | TEXT | SHA256 for integrity |
+
+**`messages_fts` Table** (FTS5 virtual table):
+- Full-text search index on: `from_header`, `to_header`, `subject`, `snippet`
+- Supports Gmail-style search syntax: `from:`, `to:`, `subject:`, `after:`, `before:`
+
+**`archive_runs` Table**:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `run_id` | INTEGER PRIMARY KEY | Auto-increment |
+| `run_timestamp` | TEXT | ISO 8601 timestamp |
+| `query` | TEXT | Gmail search query used |
+| `messages_archived` | INTEGER | Count of messages |
+| `archive_file` | TEXT | Archive file path |
+
+### v1.0 Schema (Legacy)
+
+**`archived_messages` Table** (7 fields, maintained for backward compatibility):
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -243,15 +297,7 @@ The tool maintains state in `archive_state.db`:
 | `message_date` | TEXT | Original email date |
 | `checksum` | TEXT | SHA256 for integrity |
 
-### `archive_runs` Table
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `run_id` | INTEGER PRIMARY KEY | Auto-increment |
-| `run_timestamp` | TEXT | ISO 8601 timestamp |
-| `query` | TEXT | Gmail search query used |
-| `messages_archived` | INTEGER | Count of messages |
-| `archive_file` | TEXT | Archive file path |
+**Migration**: Run `gmailarchiver migrate` to upgrade from v1.0 to v1.1 schema. Automatic backup created.
 
 ## Important Patterns
 
@@ -295,8 +341,8 @@ Mbox operations require careful lock file cleanup:
    uv run ruff check . && uv run mypy gmailarchiver && uv run pytest
    ```
 
-2. **Ensure tests pass**: All 197 tests should pass
-3. **Verify coverage**: Overall coverage should be 96%+
+2. **Ensure tests pass**: All 619 tests should pass
+3. **Verify coverage**: Overall coverage should be 92%+
 4. **Update documentation**: Update README.md, CONTRIBUTING.md, or CLAUDE.md as needed
 5. **Update CHANGELOG.md**: Add your changes to the "Unreleased" section
 
@@ -342,8 +388,8 @@ We follow conventional commits:
 ### Version Management
 
 Version is automatically determined from git tags using `hatch-vcs`:
-- Git tag `v1.0.3` → package version `1.0.3`
-- Between tags → `1.0.3.devN+gHASH`
+- Git tag `v1.1.0` → package version `1.1.0`
+- Between tags → `1.1.0.devN+gHASH`
 - No tags → fallback version `0.0.0`
 
 ### Creating a Release
@@ -355,12 +401,12 @@ Version is automatically determined from git tags using `hatch-vcs`:
 2. **Commit the changelog**:
    ```bash
    git add CHANGELOG.md
-   git commit -m "chore: Prepare v1.0.4 release"
+   git commit -m "docs: Prepare v1.1.0 release"
    ```
 
 3. **Tag the release**:
    ```bash
-   git tag -a v1.0.4 -m "Release v1.0.4: Description"
+   git tag -a v1.1.0 -m "Release v1.1.0: First stable release"
    git push origin main --tags
    ```
 
@@ -377,10 +423,10 @@ Version is automatically determined from git tags using `hatch-vcs`:
 # Build wheel and source distribution
 uv build
 
-# Version matches git tag (e.g., v1.0.3 → 1.0.3)
+# Version matches git tag (e.g., v1.1.0 → 1.1.0)
 ls dist/
-# gmailarchiver-1.0.3-py3-none-any.whl
-# gmailarchiver-1.0.3.tar.gz
+# gmailarchiver-1.1.0-py3-none-any.whl
+# gmailarchiver-1.1.0.tar.gz
 ```
 
 ## Getting Help

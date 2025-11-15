@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2025-01-15
+## [1.1.0] - 2025-11-15
 
 ### 🎉 Stable Release
 
@@ -136,7 +136,7 @@ gmailarchiver archive 3y  # Re-authenticate during first archive
 
 [1.1.0]: https://github.com/tumma72/GMailArchiver/compare/v1.0.3...v1.1.0
 
-## [1.1.0-beta.2] - 2025-01-14
+## [1.1.0-beta.2] - 2025-11-14
 
 ### 🔴 Critical Fixes (Data Integrity)
 
@@ -285,7 +285,7 @@ No performance regressions. All operations maintain or exceed beta.1 performance
 
 [1.1.0-beta.2]: https://github.com/tumma72/GMailArchiver/compare/v1.1.0-beta.1...v1.1.0-beta.2
 
-## [1.1.0-beta.1] - 2025-01-14
+## [1.1.0-beta.1] - 2025-11-14
 
 ### ⚠️ Breaking Changes
 
@@ -379,7 +379,7 @@ No performance regressions. All operations maintain or exceed beta.1 performance
 
 [1.1.0-beta.1]: https://github.com/tumma72/GMailArchiver/compare/v1.0.3...v1.1.0-beta.1
 
-## [1.0.3] - 2025-01-13
+## [1.0.3] - 2025-11-13
 
 ### Added
 - Comprehensive test suite improving coverage from 30% to 96%
@@ -397,7 +397,7 @@ No performance regressions. All operations maintain or exceed beta.1 performance
 - Code quality issues identified by ruff linter
 - zstd compression now works correctly with level parameter
 
-## [1.0.1] - 2025-01-13
+## [1.0.1] - 2025-11-13
 
 ### Added
 - XDG Base Directory standard compliance for token storage
@@ -432,7 +432,7 @@ No performance regressions. All operations maintain or exceed beta.1 performance
 - Added input validation for Gmail queries, filenames, and age expressions
 - Proper handling of OAuth2 credentials following Google's best practices
 
-## [1.0.0] - 2025-01-13
+## [1.0.0] - 2025-11-13
 
 ### Added
 - Initial release of Gmail Archiver

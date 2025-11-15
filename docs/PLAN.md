@@ -1,8 +1,8 @@
 # Gmail Archiver: Strategic Plan & Roadmap
 
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-15
 **Status:** Active Development
-**Current Version:** 1.0.3
+**Current Version:** 1.1.0 (Stable Release)
 
 ---
 

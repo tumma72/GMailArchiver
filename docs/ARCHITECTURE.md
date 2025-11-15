@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-11-14
 **Status:** Active Development
-**Current Version:** 1.0.3 (Refactoring in progress for 1.1.0-beta.2)
+**Current Version:** 1.1.0 (Stable Release - November 2025)
 
 ---
 
@@ -997,7 +997,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 
 ## Technology Stack
 
-### Current (v1.0.3)
+### Current (v1.1.0)
 
 **Core:**
 - **Python:** 3.14+ (for native zstd compression)
@@ -1007,7 +1007,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 - **OAuth2:** google-auth, google-auth-oauthlib
 
 **Development:**
-- **Testing:** pytest, pytest-cov (96% coverage)
+- **Testing:** pytest, pytest-cov (619 tests, 92% coverage)
 - **Type Checking:** mypy (strict mode)
 - **Linting:** ruff (E, F, I, N, W, UP rules)
 - **Build:** hatchling, hatch-vcs (version from git tags)
@@ -1522,17 +1522,20 @@ All significant architectural decisions are documented as ADRs. For detailed rat
 
 ## Future Architecture Evolution
 
-### Version 1.1.0 - Foundation
-- Enhanced database schema (hybrid model with `mbox_offset`)
-- Archive import and consolidation
-- Message-ID deduplication
-- Metadata search
+### Version 1.1.0 - Foundation ✅ RELEASED (November 2025)
+- ✅ Enhanced database schema (hybrid model with `mbox_offset`)
+- ✅ Archive import and consolidation
+- ✅ Message-ID deduplication
+- ✅ FTS5 full-text search with Gmail-style syntax
+- ✅ 17 CLI commands (archive, search, import, dedupe, consolidate, etc.)
+- ✅ DBManager and HybridStorage for data integrity
+- ✅ Migration from v1.0 with automatic backups
 
-### Version 1.2.0 - Search
-- FTS5 full-text search
-- Advanced query language
-- Index management
-- Export formats
+### Version 1.2.0 - Enhanced Search & Export
+- Advanced query language extensions
+- Export to multiple formats (PST, EML, JSON)
+- Search result highlighting
+- Index management and optimization
 
 ### Version 2.0.0 - Accessibility
 - Web UI (Svelte 5 + FastAPI)

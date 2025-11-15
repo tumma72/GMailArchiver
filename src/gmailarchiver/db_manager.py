@@ -45,24 +45,31 @@ class DBManager:
     archive_runs for complete audit trail.
     """
 
-    def __init__(self, db_path: str | Path, validate_schema: bool = True) -> None:
+    def __init__(
+        self, db_path: str | Path, validate_schema: bool = True, auto_create: bool = True
+    ) -> None:
         """
         Initialize database manager with automatic schema validation.
 
         Args:
             db_path: Path to SQLite database file
             validate_schema: Whether to validate schema version on init
+            auto_create: Whether to auto-create v1.1 database if it doesn't exist
 
         Raises:
-            FileNotFoundError: If database file doesn't exist
+            FileNotFoundError: If database file doesn't exist and auto_create=False
             SchemaValidationError: If validate_schema=True and schema is invalid
             DBManagerError: If database connection fails
         """
         self.db_path = Path(db_path).resolve()
 
-        # Check file existence first
+        # Auto-create database if it doesn't exist
         if not self.db_path.exists():
-            raise FileNotFoundError(f"Database file not found: {self.db_path}")
+            if not auto_create:
+                raise FileNotFoundError(f"Database file not found: {self.db_path}")
+
+            logger.info(f"Database not found at {self.db_path}, creating new v1.1 database")
+            self._create_new_database()
 
         try:
             self.conn = self._connect()
@@ -85,6 +92,148 @@ class DBManager:
         # Enable foreign key support
         conn.execute("PRAGMA foreign_keys = ON")
         return conn
+
+    def _create_new_database(self) -> None:
+        """
+        Create a new v1.1 database with complete schema.
+
+        This is called automatically when database doesn't exist.
+        Creates all tables, indexes, triggers, and schema_version.
+        """
+        # Ensure parent directory exists
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create database connection
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        try:
+            # Create messages table (enhanced schema)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                )
+            ''')
+
+            # Create performance indexes
+            indexes = [
+                "CREATE INDEX IF NOT EXISTS idx_rfc_message_id ON messages(rfc_message_id)",
+                "CREATE INDEX IF NOT EXISTS idx_thread_id ON messages(thread_id)",
+                "CREATE INDEX IF NOT EXISTS idx_archive_file ON messages(archive_file)",
+                "CREATE INDEX IF NOT EXISTS idx_date ON messages(date)",
+                "CREATE INDEX IF NOT EXISTS idx_from ON messages(from_addr)",
+                "CREATE INDEX IF NOT EXISTS idx_subject ON messages(subject)",
+            ]
+            for index_sql in indexes:
+                conn.execute(index_sql)
+
+            # Create FTS5 virtual table for full-text search
+            conn.execute('''
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    subject,
+                    from_addr,
+                    to_addr,
+                    body_preview,
+                    content=messages,
+                    content_rowid=rowid,
+                    tokenize='porter unicode61 remove_diacritics 1'
+                )
+            ''')
+
+            # Create auto-sync triggers for FTS5
+            conn.execute('''
+                CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                    VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+                END
+            ''')
+
+            conn.execute('''
+                CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+                    UPDATE messages_fts
+                    SET subject = new.subject,
+                        from_addr = new.from_addr,
+                        to_addr = new.to_addr,
+                        body_preview = new.body_preview
+                    WHERE rowid = new.rowid;
+                END
+            ''')
+
+            conn.execute('''
+                CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid = old.rowid;
+                END
+            ''')
+
+            # Create accounts table (for future multi-account support)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS accounts (
+                    account_id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    display_name TEXT,
+                    provider TEXT DEFAULT 'gmail',
+                    added_timestamp TEXT,
+                    last_sync_timestamp TEXT
+                )
+            ''')
+
+            # Insert default account
+            conn.execute('''
+                INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp)
+                VALUES ('default', 'default', ?)
+            ''', (datetime.now().isoformat(),))
+
+            # Create archive_runs table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS archive_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_timestamp TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    messages_archived INTEGER NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    account_id TEXT DEFAULT 'default',
+                    operation_type TEXT DEFAULT 'archive'
+                )
+            ''')
+
+            # Create schema_version table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT NOT NULL
+                )
+            ''')
+
+            # Set schema version to 1.1
+            conn.execute('''
+                INSERT OR REPLACE INTO schema_version (version, migrated_timestamp)
+                VALUES ('1.1', ?)
+            ''', (datetime.now().isoformat(),))
+
+            conn.commit()
+            logger.info("Successfully created new v1.1 database")
+
+        except Exception as e:
+            conn.rollback()
+            raise DBManagerError(f"Failed to create database schema: {e}") from e
+        finally:
+            conn.close()
 
     def _validate_schema_version(self) -> str:
         """
