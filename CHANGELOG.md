@@ -5,6 +5,137 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-01-15
+
+### 🎉 Stable Release
+
+This is the first stable release of Gmail Archiver v1.1, consolidating all features and fixes from beta.1 and beta.2 into a production-ready release.
+
+### Major Features
+
+#### Database Architecture (v1.1 Schema)
+- **Automatic v1.0 → v1.1 migration** with backup and rollback support
+- **Enhanced schema** with 17-field messages table (vs 7 in v1.0)
+- **O(1) message access** via `mbox_offset` and `mbox_length` fields
+- **FTS5 full-text search** with auto-sync triggers and BM25 ranking
+- **DBManager** - Centralized database operations (754 LOC, 92% test coverage)
+- **HybridStorage** - Atomic mbox + database coordinator (1,167 LOC, 87% test coverage)
+
+#### Search & Discovery
+- **Gmail-style query syntax**: `from:`, `to:`, `subject:`, `after:`, `before:`, free-text
+- **Performance**: 0.85ms for 1000 messages (118x faster than 100ms target)
+- **BM25 ranking algorithm** for relevance-based results
+
+#### Archive Management
+- **Import existing archives**: Support for gzip/lzma/zstd compressed mbox files
+- **Message deduplication**: 100% precision via RFC Message-ID matching
+- **Archive consolidation**: Merge multiple archives with chronological sorting
+- **Three deduplication strategies**: 'newest', 'largest', 'first'
+- **Performance**: 10,145 messages/second (import), 3.57s for 10k messages (consolidate)
+
+#### Validation & Recovery
+- **Database integrity verification** with comprehensive checks
+- **Automated repair** with dry-run mode and backfill support
+- **Offset validation** for mbox file accuracy
+- **Consistency checks** across database and FTS index
+
+#### New CLI Commands (17 total)
+- `migrate` - Migrate v1.0 → v1.1 database schema
+- `db-info` - Display database schema version and statistics
+- `rollback` - Restore database from backup
+- `search` - Search archived messages with Gmail-style syntax
+- `import` - Import existing mbox archives
+- `dedupe-report` - Analyze duplicate messages
+- `dedupe` - Remove duplicates with configurable strategy
+- `verify-offsets` - Validate mbox offsets (v1.1 only)
+- `verify-consistency` - Deep database consistency check
+- `verify-integrity` - Comprehensive integrity verification
+- `consolidate` - Merge multiple archives
+- `repair` - Automated database repair with backfill option
+- `retry-delete` - Retry deletion for authorization failures
+
+### Fixed
+
+#### Critical Fixes
+- **zstd import inconsistency**: Standardized to Python 3.14 native `compression.zstd` API
+- **Migration placeholder bug**: Migration now scans actual mbox files for real offsets (beta.1 issue)
+- **Missing audit trail**: All operations recorded in `archive_runs` with `operation_type`
+- **Schema divergence**: Unified `archive_runs` table structure across all code paths
+- **OAuth scope**: Changed to full Gmail access (`https://mail.google.com/`) for deletion support
+
+#### Quality Improvements
+- **Consolidator regression**: Restored sorting and all deduplication strategies
+- **FTS repair logic**: Handles both content-based and external content FTS modes
+- **Performance test failures**: Updated fixtures to use complete v1.1 schema
+- **Code quality**: All ruff linting issues resolved
+
+### Changed
+
+- **Breaking**: OAuth scope changed from `gmail.modify` to full Gmail access
+  - **Action Required**: Run `gmailarchiver auth-reset` and re-authenticate
+  - **Reason**: Previous scope lacked `messages.delete` permission
+
+### Performance
+
+All operations meet or exceed targets:
+- **Search**: 0.85ms for 1000 messages (118x faster than 100ms target)
+- **Import**: 10,145 messages/second (60x faster than target)
+- **Consolidate**: 3.57s for 10k messages (16x faster than 60s target)
+
+### Test Coverage
+
+- **Total tests**: 619 (up from 283 in v1.0.3)
+- **Pass rate**: 100% (619 passing, 4 skipped)
+- **Coverage**: 92%
+- **New tests since v1.0**: 336 additional tests
+
+### Migration from v1.0.x
+
+**Automatic migration on first run:**
+
+```bash
+# Backup created automatically at ~/.local/share/gmailarchiver/archives.db.backup_v1.0
+gmailarchiver db-info  # Triggers migration if needed
+```
+
+**Re-authentication required** (OAuth scope change):
+
+```bash
+gmailarchiver auth-reset
+gmailarchiver archive 3y  # Re-authenticate during first archive
+```
+
+### Migration from v1.1.0-beta.1
+
+**If you upgraded to beta.1 and migrated your v1.0 database:**
+
+1. Upgrade to v1.1.0:
+   ```bash
+   pip install --upgrade gmailarchiver
+   ```
+
+2. Verify database integrity:
+   ```bash
+   gmailarchiver verify-integrity
+   ```
+
+3. If issues found (likely invalid offsets from beta.1 bug):
+   ```bash
+   # Preview repairs
+   gmailarchiver repair --backfill
+
+   # Apply repairs
+   gmailarchiver repair --backfill --no-dry-run
+   ```
+
+4. Verify repair succeeded:
+   ```bash
+   gmailarchiver verify-integrity
+   # Should show: "✓ Database integrity verified - no issues found"
+   ```
+
+[1.1.0]: https://github.com/tumma72/GMailArchiver/compare/v1.0.3...v1.1.0
+
 ## [1.1.0-beta.2] - 2025-01-14
 
 ### 🔴 Critical Fixes (Data Integrity)
