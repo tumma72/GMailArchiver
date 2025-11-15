@@ -102,11 +102,9 @@ class ArchiveImporter:
                     temp.write(f_in.read())
             elif compression == 'zstd':
                 # Python 3.14+ has native zstd support
-                import zstandard as zstd
-                dctx = zstd.ZstdDecompressor()
-                with open(archive_path, 'rb') as f_in:
-                    with dctx.stream_reader(f_in) as reader:
-                        temp.write(reader.read())
+                from compression import zstd
+                with zstd.open(archive_path, 'rb') as f_in:
+                    temp.write(f_in.read())
 
             temp.close()
             return temp_path, True
