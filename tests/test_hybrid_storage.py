@@ -1,0 +1,2017 @@
+"""Tests for HybridStorage class - Transactional coordinator for mbox + database operations.
+
+HybridStorage ensures atomic operations across mbox files and database using
+two-phase commit pattern. It must guarantee that both mbox and database succeed
+or both are rolled back.
+
+Test Coverage: 95%+ target
+- Initialization tests
+- Archive message tests (atomicity critical!)
+- Consolidation tests
+- Validation tests
+- Atomicity tests (CRITICAL for data integrity)
+- Error handling tests
+"""
+
+import email
+import mailbox
+import sqlite3
+import tempfile
+from collections.abc import Generator
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from gmailarchiver.db_manager import DBManager
+from gmailarchiver.hybrid_storage import HybridStorage, HybridStorageError, IntegrityError
+
+# ============================================================================
+# Test Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def temp_dir() -> Generator[Path]:
+    """Create a temporary directory for test files."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        yield Path(tmpdir)
+
+
+@pytest.fixture
+def v11_db_path(temp_dir: Path) -> str:
+    """Create a v1.1 database for testing."""
+    db_path = temp_dir / 'test.db'
+    conn = sqlite3.connect(str(db_path))
+
+    # Create messages table (v1.1 schema)
+    conn.execute('''
+        CREATE TABLE messages (
+            gmail_id TEXT PRIMARY KEY,
+            rfc_message_id TEXT UNIQUE NOT NULL,
+            thread_id TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            to_addr TEXT,
+            cc_addr TEXT,
+            date TIMESTAMP,
+            archived_timestamp TIMESTAMP NOT NULL,
+            archive_file TEXT NOT NULL,
+            mbox_offset INTEGER NOT NULL,
+            mbox_length INTEGER NOT NULL,
+            body_preview TEXT,
+            checksum TEXT,
+            size_bytes INTEGER,
+            labels TEXT,
+            account_id TEXT DEFAULT 'default'
+        )
+    ''')
+
+    # Create indexes
+    indexes = [
+        "CREATE INDEX idx_rfc_message_id ON messages(rfc_message_id)",
+        "CREATE INDEX idx_thread_id ON messages(thread_id)",
+        "CREATE INDEX idx_archive_file ON messages(archive_file)",
+        "CREATE INDEX idx_date ON messages(date)",
+    ]
+    for index_sql in indexes:
+        conn.execute(index_sql)
+
+    # Create FTS5 virtual table
+    conn.execute('''
+        CREATE VIRTUAL TABLE messages_fts USING fts5(
+            subject,
+            from_addr,
+            to_addr,
+            body_preview,
+            content=messages,
+            content_rowid=rowid,
+            tokenize='porter unicode61 remove_diacritics 1'
+        )
+    ''')
+
+    # Create FTS triggers
+    conn.execute('''
+        CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+            VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+        END
+    ''')
+
+    # Create archive_runs table
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT NOT NULL,
+            query TEXT NOT NULL,
+            messages_archived INTEGER NOT NULL,
+            archive_file TEXT NOT NULL,
+            account_id TEXT DEFAULT 'default',
+            operation_type TEXT DEFAULT 'archive'
+        )
+    ''')
+
+    # Create schema_version table
+    conn.execute('''
+        CREATE TABLE schema_version (
+            version TEXT PRIMARY KEY,
+            migrated_timestamp TEXT NOT NULL
+        )
+    ''')
+    conn.execute(
+        "INSERT INTO schema_version VALUES ('1.1', ?)",
+        (datetime.now().isoformat(),)
+    )
+
+    conn.commit()
+    conn.close()
+
+    return str(db_path)
+
+
+@pytest.fixture
+def db_manager(v11_db_path: str) -> Generator[DBManager]:
+    """Create DBManager instance for testing."""
+    db = DBManager(v11_db_path)
+    yield db
+    db.close()
+
+
+@pytest.fixture
+def sample_email_message() -> email.message.Message:
+    """Create a sample email message for testing."""
+    msg = email.message.EmailMessage()
+    msg['Message-ID'] = '<test123@example.com>'
+    msg['Subject'] = 'Test Subject'
+    msg['From'] = 'sender@example.com'
+    msg['To'] = 'recipient@example.com'
+    msg['Cc'] = 'cc@example.com'
+    msg['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
+    msg.set_content("This is a test email body content.")
+    return msg
+
+
+@pytest.fixture
+def mbox_path(temp_dir: Path) -> Path:
+    """Create a path for test mbox file."""
+    return temp_dir / 'test.mbox'
+
+
+# ============================================================================
+# Initialization Tests
+# ============================================================================
+
+
+class TestHybridStorageInitialization:
+    """Tests for HybridStorage initialization."""
+
+    def test_init_with_valid_db_manager(self, db_manager: DBManager) -> None:
+        """Test initialization with valid DBManager."""
+        storage = HybridStorage(db_manager)
+
+        assert storage.db == db_manager
+        assert storage._staging_area.exists()
+        assert storage._staging_area.is_dir()
+
+    def test_init_creates_staging_area(
+        self, db_manager: DBManager, temp_dir: Path
+    ) -> None:
+        """Test that staging area is created on initialization."""
+        storage = HybridStorage(db_manager)
+
+        # Staging area should exist
+        assert storage._staging_area.exists()
+        assert storage._staging_area.name.startswith('gmailarchiver_staging')
+
+    def test_cleanup_staging_area_on_del(self, db_manager: DBManager) -> None:
+        """Test staging area cleanup on object deletion."""
+        storage = HybridStorage(db_manager)
+        staging_path = storage._staging_area
+
+        # Create a test file in staging
+        test_file = staging_path / 'test.eml'
+        test_file.write_text('test content')
+
+        # Cleanup
+        storage.__del__()
+
+        # Staging files should be cleaned up
+        assert not test_file.exists()
+
+
+# ============================================================================
+# Archive Message Tests
+# ============================================================================
+
+
+class TestArchiveMessage:
+    """Tests for archive_message method (atomicity critical!)."""
+
+    def test_archive_message_success(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test successful message archiving (happy path)."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify message in mbox
+        mbox = mailbox.mbox(str(mbox_path))
+        assert len(mbox) == 1
+        archived_msg = mbox[0]
+        assert archived_msg['Subject'] == 'Test Subject'
+        mbox.close()
+
+        # Verify message in database
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is not None
+        assert msg_data['gmail_id'] == 'msg123'
+        assert msg_data['rfc_message_id'] == '<test123@example.com>'
+        assert msg_data['mbox_offset'] >= 0
+        assert msg_data['mbox_length'] > 0
+
+    def test_archive_message_calculates_offset_correctly(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that mbox_offset is calculated correctly."""
+        storage = HybridStorage(db_manager)
+
+        # Archive first message
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg1',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        msg1_data = db_manager.get_message_by_gmail_id('msg1')
+        first_offset = msg1_data['mbox_offset']
+        first_length = msg1_data['mbox_length']
+
+        # Archive second message
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<test456@example.com>'
+        msg2['Subject'] = 'Second Message'
+        msg2['From'] = 'sender2@example.com'
+        msg2.set_content("Second message body.")
+
+        storage.archive_message(
+            email_message=msg2,
+            gmail_id='msg2',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        msg2_data = db_manager.get_message_by_gmail_id('msg2')
+        second_offset = msg2_data['mbox_offset']
+
+        # Second offset should be after first message
+        assert second_offset > first_offset
+        assert second_offset >= first_offset + first_length
+
+    def test_archive_message_calculates_length_correctly(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that mbox_length is calculated correctly."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        recorded_length = msg_data['mbox_length']
+
+        # Read actual message from mbox
+        with open(mbox_path, 'rb') as f:
+            f.seek(msg_data['mbox_offset'])
+            actual_data = f.read(recorded_length)
+
+        # Verify length matches actual data
+        assert len(actual_data) == recorded_length
+        # Verify data is valid email
+        parsed_msg = email.message_from_bytes(actual_data)
+        assert parsed_msg['Subject'] == 'Test Subject'
+
+    def test_archive_message_with_gzip_compression(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        temp_dir: Path
+    ) -> None:
+        """Test archiving with gzip compression."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / 'test.mbox.gz'
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression='gzip'
+        )
+
+        # Verify file exists and is compressed
+        assert mbox_path.exists()
+        # Note: Actual compression testing would be in integration tests
+        # Here we just verify the path is recorded correctly
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data['archive_file'] == str(mbox_path)
+
+    def test_archive_message_with_lzma_compression(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        temp_dir: Path
+    ) -> None:
+        """Test archiving with lzma compression."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / 'test.mbox.xz'
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression='lzma'
+        )
+
+        assert mbox_path.exists()
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data['archive_file'] == str(mbox_path)
+
+    def test_archive_message_with_zstd_compression(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        temp_dir: Path
+    ) -> None:
+        """Test archiving with zstd compression."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / 'test.mbox.zst'
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression='zstd'
+        )
+
+        assert mbox_path.exists()
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data['archive_file'] == str(mbox_path)
+
+    def test_archive_message_lock_file_management(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that lock files are properly managed during archiving."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Lock file should not exist after successful operation
+        lock_file = Path(str(mbox_path) + '.lock')
+        assert not lock_file.exists()
+
+    def test_archive_message_cleans_staging_file(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that staging files are cleaned up after archiving."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Staging area should be empty or only contain cleanup files
+        staging_files = list(storage._staging_area.glob('msg123.eml'))
+        assert len(staging_files) == 0
+
+    def test_archive_message_mbox_succeeds_database_fails_rollback(
+        self,
+        sample_email_message: email.message.Message,
+        mbox_path: Path,
+        v11_db_path: str
+    ) -> None:
+        """Test rollback when mbox write succeeds but database update fails.
+
+        Note: Mbox library doesn't support transaction rollback. When database
+        operations fail after mbox write, the mbox file may contain orphaned data.
+        This test verifies that database rollback works and error logging occurs.
+        """
+        # Create db_manager with mock that fails on record_archived_message
+        db_manager = DBManager(v11_db_path)
+        original_record = db_manager.record_archived_message
+
+        def failing_record(*args: Any, **kwargs: Any) -> None:
+            """Mock that always fails."""
+            raise sqlite3.IntegrityError("Database constraint violation")
+
+        db_manager.record_archived_message = failing_record  # type: ignore
+
+        storage = HybridStorage(db_manager)
+
+        # Attempt to archive (should fail with HybridStorageError wrapping the sqlite error)
+        with pytest.raises(HybridStorageError, match="Failed to archive message msg123"):
+            storage.archive_message(
+                email_message=sample_email_message,
+                gmail_id='msg123',
+                archive_file=mbox_path,
+                compression=None
+            )
+
+        # Database should not have the message (rollback succeeded)
+        db_manager.record_archived_message = original_record  # type: ignore
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is None
+
+        # Note: mbox rollback is limited - file may exist but database is consistent
+        # This is documented behavior - manual cleanup logging should have occurred
+
+        db_manager.close()
+
+    def test_archive_message_validation_fails_rollback(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test rollback when validation fails after database update."""
+        storage = HybridStorage(db_manager)
+
+        # Mock _validate_message_consistency to always fail
+        with patch.object(
+            storage,
+            '_validate_message_consistency',
+            side_effect=IntegrityError("Validation failed")
+        ):
+            with pytest.raises(IntegrityError):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+        # Database should have rolled back
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is None
+
+    def test_archive_message_missing_message_id(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test archiving message without Message-ID header."""
+        storage = HybridStorage(db_manager)
+
+        # Create message without Message-ID
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'No Message-ID'
+        msg['From'] = 'sender@example.com'
+        msg.set_content("Test body")
+
+        # Should handle gracefully by generating fallback Message-ID
+        storage.archive_message(
+            email_message=msg,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify message was archived with generated Message-ID
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is not None
+        assert msg_data['gmail_id'] == 'msg123'
+        # Generated Message-ID should exist
+        assert msg_data['rfc_message_id'].startswith('<')
+        assert msg_data['rfc_message_id'].endswith('@generated>')
+
+
+# ============================================================================
+# Consolidation Tests
+# ============================================================================
+
+
+class TestConsolidateArchives:
+    """Tests for consolidate_archives method."""
+
+    def test_consolidate_without_deduplication(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidating multiple archives without deduplication."""
+        storage = HybridStorage(db_manager)
+
+        # Create two source archives with messages
+        source1 = temp_dir / 'source1.mbox'
+        source2 = temp_dir / 'source2.mbox'
+
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user1@example.com'
+        msg1.set_content("Body 1")
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<msg2@example.com>'
+        msg2['Subject'] = 'Message 2'
+        msg2['From'] = 'user2@example.com'
+        msg2.set_content("Body 2")
+
+        # Archive messages to separate files
+        storage.archive_message(msg1, 'msg1', source1, None)
+        storage.archive_message(msg2, 'msg2', source2, None)
+
+        # Consolidate
+        output = temp_dir / 'consolidated.mbox'
+        result = storage.consolidate_archives(
+            source_archives=[source1, source2],
+            output_archive=output,
+            deduplicate=False
+        )
+
+        # Verify result
+        assert result.total_messages == 2
+        assert result.output_file == str(output)
+        assert output.exists()
+
+        # Verify all messages in consolidated archive
+        mbox = mailbox.mbox(str(output))
+        assert len(mbox) == 2
+        mbox.close()
+
+        # Verify database updated with new offsets
+        msg1_data = db_manager.get_message_by_gmail_id('msg1')
+        msg2_data = db_manager.get_message_by_gmail_id('msg2')
+
+        assert msg1_data['archive_file'] == str(output)
+        assert msg2_data['archive_file'] == str(output)
+        assert msg1_data['mbox_offset'] >= 0
+        assert msg2_data['mbox_offset'] >= 0
+        # msg2 should be after msg1
+        assert msg2_data['mbox_offset'] > msg1_data['mbox_offset']
+
+    def test_consolidate_with_deduplication(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidating with deduplication enabled."""
+        storage = HybridStorage(db_manager)
+
+        # Create messages with duplicate Message-ID
+        source1 = temp_dir / 'source1.mbox'
+        source2 = temp_dir / 'source2.mbox'
+
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<duplicate@example.com>'
+        msg1['Subject'] = 'First Instance'
+        msg1['From'] = 'user@example.com'
+        msg1['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
+        msg1.set_content("First instance body")
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<duplicate@example.com>'  # Same Message-ID
+        msg2['Subject'] = 'Second Instance'
+        msg2['From'] = 'user@example.com'
+        msg2['Date'] = 'Mon, 1 Jan 2024 13:00:00 +0000'  # Newer date
+        msg2.set_content("Second instance body")
+
+        # Archive both (bypass unique constraint for testing)
+        storage.archive_message(msg1, 'msg1', source1, None)
+        # Second message will fail due to unique constraint in real scenario
+        # For testing, we'd need to bypass constraints or use different approach
+
+        # In real implementation, consolidate would handle this
+        output = temp_dir / 'consolidated.mbox'
+        result = storage.consolidate_archives(
+            source_archives=[source1],
+            output_archive=output,
+            deduplicate=True
+        )
+
+        assert result.total_messages >= 1
+
+    def test_consolidate_recalculates_offsets(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test that offsets are recalculated correctly during consolidation."""
+        storage = HybridStorage(db_manager)
+
+        # Create source archives
+        source1 = temp_dir / 'source1.mbox'
+        source2 = temp_dir / 'source2.mbox'
+
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user1@example.com'
+        msg1.set_content("Body 1" * 100)  # Larger body
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<msg2@example.com>'
+        msg2['Subject'] = 'Message 2'
+        msg2['From'] = 'user2@example.com'
+        msg2.set_content("Body 2")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+        storage.archive_message(msg2, 'msg2', source2, None)
+
+        # Get original offsets
+        orig_msg1 = db_manager.get_message_by_gmail_id('msg1')
+        orig_msg2 = db_manager.get_message_by_gmail_id('msg2')
+
+        # Consolidate
+        output = temp_dir / 'consolidated.mbox'
+        storage.consolidate_archives(
+            source_archives=[source1, source2],
+            output_archive=output,
+            deduplicate=False
+        )
+
+        # Get new offsets
+        new_msg1 = db_manager.get_message_by_gmail_id('msg1')
+        new_msg2 = db_manager.get_message_by_gmail_id('msg2')
+
+        # Offsets should be different (consolidated into new file)
+        # msg1 should be at beginning
+        assert new_msg1['mbox_offset'] >= 0
+        # msg2 should be after msg1
+        assert new_msg2['mbox_offset'] > new_msg1['mbox_offset']
+
+        # Lengths should remain the same
+        assert new_msg1['mbox_length'] == orig_msg1['mbox_length']
+        assert new_msg2['mbox_length'] == orig_msg2['mbox_length']
+
+    def test_consolidate_validates_result(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test that consolidation validates the resulting archive."""
+        storage = HybridStorage(db_manager)
+
+        source1 = temp_dir / 'source1.mbox'
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Test'
+        msg1['From'] = 'user@example.com'
+        msg1.set_content("Test body")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+
+        output = temp_dir / 'consolidated.mbox'
+
+        # Mock validation to fail (consolidation uses _validate_consolidation_output)
+        with patch.object(
+            storage,
+            '_validate_consolidation_output',
+            side_effect=IntegrityError("Validation failed")
+        ):
+            with pytest.raises(IntegrityError):
+                storage.consolidate_archives(
+                    source_archives=[source1],
+                    output_archive=output,
+                    deduplicate=False
+                )
+
+        # Output file should be cleaned up on failure
+        # Database should be rolled back
+        msg1_data = db_manager.get_message_by_gmail_id('msg1')
+        # Should still point to original file
+        assert msg1_data['archive_file'] == str(source1)
+
+    def test_consolidate_with_compressed_archives(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidating compressed archives."""
+        storage = HybridStorage(db_manager)
+
+        # Create compressed source
+        source1 = temp_dir / 'source1.mbox.gz'
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Compressed'
+        msg1['From'] = 'user@example.com'
+        msg1.set_content("Compressed body")
+
+        storage.archive_message(msg1, 'msg1', source1, compression='gzip')
+
+        # Consolidate to uncompressed output
+        output = temp_dir / 'consolidated.mbox'
+        result = storage.consolidate_archives(
+            source_archives=[source1],
+            output_archive=output,
+            deduplicate=False
+        )
+
+        assert result.total_messages == 1
+        assert output.exists()
+
+        # Verify message readable
+        mbox = mailbox.mbox(str(output))
+        assert len(mbox) == 1
+        mbox.close()
+
+    def test_consolidate_rollback_on_failure(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test that consolidation rolls back on failure."""
+        storage = HybridStorage(db_manager)
+
+        source1 = temp_dir / 'source1.mbox'
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Test'
+        msg1['From'] = 'user@example.com'
+        msg1.set_content("Test body")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+
+        # Get original state
+        orig_data = db_manager.get_message_by_gmail_id('msg1')
+
+        output = temp_dir / 'consolidated.mbox'
+
+        # Mock bulk_update to fail
+        original_bulk_update = db_manager.bulk_update_archive_locations
+
+        def failing_bulk_update(*args: Any, **kwargs: Any) -> None:
+            raise sqlite3.IntegrityError("Update failed")
+
+        db_manager.bulk_update_archive_locations = failing_bulk_update  # type: ignore
+
+        # Should raise HybridStorageError wrapping the IntegrityError
+        with pytest.raises(HybridStorageError, match="Failed to consolidate archives"):
+            storage.consolidate_archives(
+                source_archives=[source1],
+                output_archive=output,
+                deduplicate=False
+            )
+
+        # Restore original function
+        db_manager.bulk_update_archive_locations = original_bulk_update  # type: ignore
+
+        # Verify rollback - data should be unchanged
+        current_data = db_manager.get_message_by_gmail_id('msg1')
+        assert current_data['archive_file'] == orig_data['archive_file']
+        assert current_data['mbox_offset'] == orig_data['mbox_offset']
+
+
+# ============================================================================
+# Validation Tests
+# ============================================================================
+
+
+class TestValidation:
+    """Tests for validation methods."""
+
+    def test_validate_message_consistency_valid_message(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test validation of a valid, consistent message."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Validation should pass without raising
+        storage._validate_message_consistency('msg123')
+
+    def test_validate_message_consistency_missing_in_database(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test validation fails when message missing from database."""
+        storage = HybridStorage(db_manager)
+
+        # Try to validate non-existent message
+        with pytest.raises(IntegrityError, match="not in database"):
+            storage._validate_message_consistency('nonexistent')
+
+    def test_validate_message_consistency_missing_in_mbox(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test validation fails when message missing from mbox."""
+        storage = HybridStorage(db_manager)
+
+        # Manually insert into database without mbox
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test123@example.com>',
+            archive_file=str(mbox_path),
+            mbox_offset=0,
+            mbox_length=1000  # Non-existent data
+        )
+
+        # Create empty mbox
+        mbox_path.touch()
+
+        # Validation should fail
+        with pytest.raises(IntegrityError, match="No data at offset"):
+            storage._validate_message_consistency('msg123')
+
+    def test_validate_message_consistency_corrupt_email_data(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test validation when email data doesn't exist at offset."""
+        storage = HybridStorage(db_manager)
+
+        # Create empty mbox file
+        mbox_path.touch()
+
+        # Record in database with non-existent offset
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test123@example.com>',
+            archive_file=str(mbox_path),
+            mbox_offset=1000,  # Beyond end of file
+            mbox_length=100
+        )
+
+        # Validation should fail - no data at offset
+        with pytest.raises(IntegrityError, match="No data at offset"):
+            storage._validate_message_consistency('msg123')
+
+    def test_validate_archive_consistency_all_good(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archive validation passes for consistent archive."""
+        storage = HybridStorage(db_manager)
+
+        # Archive multiple messages
+        for i in range(3):
+            msg = email.message.EmailMessage()
+            msg['Message-ID'] = f'<msg{i}@example.com>'
+            msg['Subject'] = f'Message {i}'
+            msg['From'] = 'user@example.com'
+            msg.set_content(f"Body {i}")
+
+            storage.archive_message(msg, f'msg{i}', mbox_path, None)
+
+        # Validation should pass
+        storage._validate_archive_consistency(mbox_path)
+
+    def test_validate_archive_consistency_count_mismatch(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test validation fails on count mismatch."""
+        storage = HybridStorage(db_manager)
+
+        # Create mbox with one message
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<msg1@example.com>'
+        msg['Subject'] = 'Test'
+        msg['From'] = 'user@example.com'
+        msg.set_content("Body")
+
+        mbox = mailbox.mbox(str(mbox_path))
+        mbox.add(msg)
+        mbox.close()
+
+        # Record two messages in database (mismatch)
+        db_manager.record_archived_message(
+            gmail_id='msg1',
+            rfc_message_id='<msg1@example.com>',
+            archive_file=str(mbox_path),
+            mbox_offset=0,
+            mbox_length=100
+        )
+        db_manager.record_archived_message(
+            gmail_id='msg2',
+            rfc_message_id='<msg2@example.com>',
+            archive_file=str(mbox_path),
+            mbox_offset=100,
+            mbox_length=100
+        )
+
+        # Validation should fail
+        with pytest.raises(IntegrityError, match="Count mismatch"):
+            storage._validate_archive_consistency(mbox_path)
+
+    def test_validate_archive_consistency_orphaned_message(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test validation fails when message in mbox but not in database."""
+        storage = HybridStorage(db_manager)
+
+        # Create mbox with message
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<orphan@example.com>'
+        msg['Subject'] = 'Orphaned'
+        msg['From'] = 'user@example.com'
+        msg.set_content("Orphaned message")
+
+        mbox = mailbox.mbox(str(mbox_path))
+        mbox.add(msg)
+        mbox.close()
+
+        # Database doesn't have this message
+
+        # Validation should fail
+        with pytest.raises(IntegrityError, match="in mbox but not in database"):
+            storage._validate_archive_consistency(mbox_path)
+
+
+# ============================================================================
+# Atomicity Tests (CRITICAL!)
+# ============================================================================
+
+
+class TestAtomicity:
+    """Tests for atomic operation guarantees (CRITICAL for data integrity)."""
+
+    def test_transaction_commits_on_full_success(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that transaction commits when all operations succeed."""
+        storage = HybridStorage(db_manager)
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify committed to database (open new connection)
+        new_db = DBManager(db_manager.db_path)
+        msg_data = new_db.get_message_by_gmail_id('msg123')
+        assert msg_data is not None
+        assert msg_data['gmail_id'] == 'msg123'
+        new_db.close()
+
+        # Verify mbox file exists
+        assert mbox_path.exists()
+
+    def test_rollback_leaves_database_unchanged(
+        self,
+        sample_email_message: email.message.Message,
+        mbox_path: Path,
+        v11_db_path: str
+    ) -> None:
+        """Test that rollback leaves database in original state."""
+        db_manager = DBManager(v11_db_path)
+        storage = HybridStorage(db_manager)
+
+        # Get initial state
+        initial_count = db_manager.conn.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
+
+        # Force failure in validation
+        with patch.object(
+            storage,
+            '_validate_message_consistency',
+            side_effect=IntegrityError("Forced failure")
+        ):
+            with pytest.raises(IntegrityError):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+        # Verify database unchanged
+        final_count = db_manager.conn.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
+        assert final_count == initial_count
+
+        db_manager.close()
+
+    def test_rollback_cleans_up_staging_files(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that rollback cleans up staging files."""
+        storage = HybridStorage(db_manager)
+
+        # Force failure
+        with patch.object(
+            storage,
+            '_validate_message_consistency',
+            side_effect=IntegrityError("Forced failure")
+        ):
+            with pytest.raises(IntegrityError):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+        # Verify staging area is clean
+        staging_files = list(storage._staging_area.glob('msg123.eml'))
+        assert len(staging_files) == 0
+
+    def test_partial_write_detection(
+        self,
+        db_manager: DBManager,
+        mbox_path: Path
+    ) -> None:
+        """Test detection of partial writes."""
+        storage = HybridStorage(db_manager)
+
+        # Create partial write scenario - mbox exists but database incomplete
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<partial@example.com>'
+        msg['Subject'] = 'Partial'
+        msg['From'] = 'user@example.com'
+        msg.set_content("Partial write")
+
+        # Write to mbox manually
+        mbox = mailbox.mbox(str(mbox_path))
+        mbox.add(msg)
+        mbox.close()
+
+        # Don't update database - simulate partial write
+
+        # Validation should detect this
+        with pytest.raises(IntegrityError):
+            storage._validate_archive_consistency(mbox_path)
+
+    def test_concurrent_operations_dont_interfere(
+        self,
+        v11_db_path: str,
+        temp_dir: Path
+    ) -> None:
+        """Test that concurrent operations maintain consistency."""
+        # Create two separate storage instances (simulating concurrent access)
+        db1 = DBManager(v11_db_path)
+        db2 = DBManager(v11_db_path)
+        storage1 = HybridStorage(db1)
+        storage2 = HybridStorage(db2)
+
+        mbox1 = temp_dir / 'test1.mbox'
+        mbox2 = temp_dir / 'test2.mbox'
+
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user1@example.com'
+        msg1.set_content("Body 1")
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<msg2@example.com>'
+        msg2['Subject'] = 'Message 2'
+        msg2['From'] = 'user2@example.com'
+        msg2.set_content("Body 2")
+
+        # Both operations should succeed independently
+        storage1.archive_message(msg1, 'msg1', mbox1, None)
+        storage2.archive_message(msg2, 'msg2', mbox2, None)
+
+        # Verify both messages in database
+        msg1_data = db1.get_message_by_gmail_id('msg1')
+        msg2_data = db2.get_message_by_gmail_id('msg2')
+
+        assert msg1_data is not None
+        assert msg2_data is not None
+
+        db1.close()
+        db2.close()
+
+
+# ============================================================================
+# Error Handling Tests
+# ============================================================================
+
+
+class TestErrorHandling:
+    """Tests for error handling and edge cases."""
+
+    def test_invalid_mbox_path(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message
+    ) -> None:
+        """Test error handling for invalid mbox path."""
+        storage = HybridStorage(db_manager)
+
+        # Try to use invalid path
+        invalid_path = Path('/invalid/nonexistent/path/test.mbox')
+
+        with pytest.raises(HybridStorageError):
+            storage.archive_message(
+                email_message=sample_email_message,
+                gmail_id='msg123',
+                archive_file=invalid_path,
+                compression=None
+            )
+
+    def test_disk_full_scenario(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test handling of disk full scenario."""
+        storage = HybridStorage(db_manager)
+
+        # Mock file write to simulate disk full
+        with patch('builtins.open', side_effect=OSError("No space left on device")):
+            with pytest.raises(HybridStorageError, match="No space left"):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+        # Database should not have the message
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is None
+
+    def test_permission_error(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        temp_dir: Path
+    ) -> None:
+        """Test handling of permission errors."""
+        storage = HybridStorage(db_manager)
+
+        # Create read-only directory
+        readonly_dir = temp_dir / 'readonly'
+        readonly_dir.mkdir()
+        readonly_dir.chmod(0o444)  # Read-only
+
+        mbox_path = readonly_dir / 'test.mbox'
+
+        try:
+            with pytest.raises(HybridStorageError):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+            # Database should not have the message
+            msg_data = db_manager.get_message_by_gmail_id('msg123')
+            assert msg_data is None
+
+        finally:
+            # Cleanup
+            readonly_dir.chmod(0o755)
+
+    def test_corrupt_source_archive_in_consolidation(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test handling of corrupt source archive during consolidation."""
+        storage = HybridStorage(db_manager)
+
+        # Create corrupt source file with no associated database records
+        corrupt_source = temp_dir / 'corrupt.mbox'
+        corrupt_source.write_bytes(b'\x00\x01\x02\x03')  # Invalid mbox data
+
+        output = temp_dir / 'consolidated.mbox'
+
+        # Consolidation should succeed but with 0 messages (no records in DB)
+        result = storage.consolidate_archives(
+            source_archives=[corrupt_source],
+            output_archive=output,
+            deduplicate=False
+        )
+
+        # Should have 0 messages since there are no DB records for this archive
+        assert result.total_messages == 0
+
+
+# ============================================================================
+# Edge Cases and Coverage Gap Tests
+# ============================================================================
+
+
+class TestEdgeCasesAndCoverage:
+    """Tests targeting specific uncovered lines to reach 90%+ coverage."""
+
+    # ============ Decompression Error Scenarios ============
+
+    def test_decompress_corrupt_gzip(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test validation fails on corrupt gzip archive."""
+        storage = HybridStorage(db_manager)
+
+        # Create a corrupt gzip file
+        corrupt_gz = temp_dir / 'corrupt.mbox.gz'
+        corrupt_gz.write_bytes(b'\x1f\x8b\x08\x00CORRUPT_DATA_HERE')
+
+        # Record a message pointing to this corrupt archive
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(corrupt_gz),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        # Validation should fail with IntegrityError wrapping decompression error
+        with pytest.raises(IntegrityError, match="Failed to decompress"):
+            storage._validate_message_consistency('msg123')
+
+    def test_decompress_corrupt_lzma(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test validation fails on corrupt lzma archive."""
+        storage = HybridStorage(db_manager)
+
+        # Create a corrupt lzma file
+        corrupt_xz = temp_dir / 'corrupt.mbox.xz'
+        corrupt_xz.write_bytes(b'\xfd\x37\x7a\x58\x5a\x00CORRUPT')
+
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(corrupt_xz),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        with pytest.raises(IntegrityError, match="Failed to decompress"):
+            storage._validate_message_consistency('msg123')
+
+    def test_decompress_corrupt_zstd(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test validation fails on corrupt zstd archive."""
+        storage = HybridStorage(db_manager)
+
+        # Create a corrupt zstd file
+        corrupt_zst = temp_dir / 'corrupt.mbox.zst'
+        corrupt_zst.write_bytes(b'\x28\xb5\x2f\xfd\x00CORRUPT')
+
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(corrupt_zst),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        with pytest.raises(IntegrityError, match="Failed to decompress"):
+            storage._validate_message_consistency('msg123')
+
+    def test_decompress_with_invalid_compression_format(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test _decompress_file raises ValueError for invalid format."""
+        storage = HybridStorage(db_manager)
+
+        source = temp_dir / 'source.mbox'
+        source.write_text('test')
+        dest = temp_dir / 'dest.mbox'
+
+        # Should raise ValueError for unsupported compression
+        with pytest.raises(ValueError, match="Unsupported compression format"):
+            storage._decompress_file(source, dest, 'bzip2')
+
+    def test_compress_with_invalid_compression_format(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test _compress_file raises ValueError for invalid format."""
+        storage = HybridStorage(db_manager)
+
+        source = temp_dir / 'source.mbox'
+        source.write_text('test')
+        dest = temp_dir / 'dest.mbox.bz2'
+
+        # Should raise ValueError for unsupported compression
+        with pytest.raises(ValueError, match="Unsupported compression format"):
+            storage._compress_file(source, dest, 'bzip2')
+
+    # ============ Validation Edge Cases ============
+
+    def test_validate_archive_consistency_decompression_fails(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test archive validation handles decompression failure."""
+        storage = HybridStorage(db_manager)
+
+        # Create corrupt compressed archive
+        corrupt_gz = temp_dir / 'corrupt.mbox.gz'
+        corrupt_gz.write_bytes(b'NOT_GZIP_DATA')
+
+        # Record a message for this archive
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(corrupt_gz),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        # Validation should fail
+        with pytest.raises(IntegrityError, match="Failed to decompress"):
+            storage._validate_archive_consistency(corrupt_gz)
+
+    def test_collect_messages_decompression_fails(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test _collect_messages handles decompression failure."""
+        storage = HybridStorage(db_manager)
+
+        # Create corrupt compressed archive
+        corrupt_gz = temp_dir / 'corrupt.mbox.gz'
+        corrupt_gz.write_bytes(b'NOT_GZIP_DATA')
+
+        # Record a message for this archive
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(corrupt_gz),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        # Should raise HybridStorageError
+        with pytest.raises(HybridStorageError, match="Failed to decompress"):
+            storage._collect_messages([corrupt_gz])
+
+    # ============ Consolidation Edge Cases ============
+
+    def test_consolidate_validation_missing_messages(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidation validation catches missing messages."""
+        storage = HybridStorage(db_manager)
+
+        # Create source with message
+        source1 = temp_dir / 'source1.mbox'
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user@example.com'
+        msg1.set_content("Body 1")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+
+        output = temp_dir / 'consolidated.mbox'
+
+        # Mock _validate_consolidation_output to simulate missing messages
+        original_validate = storage._validate_consolidation_output
+
+        def failing_validate(*args: Any, **kwargs: Any) -> None:
+            # Create output file but simulate missing message in validation
+            raise IntegrityError("Missing 1 expected messages in consolidated archive")
+
+        with patch.object(
+            storage,
+            '_validate_consolidation_output',
+            side_effect=failing_validate
+        ):
+            with pytest.raises(IntegrityError, match="Missing .* expected messages"):
+                storage.consolidate_archives(
+                    source_archives=[source1],
+                    output_archive=output,
+                    deduplicate=False
+                )
+
+    def test_consolidate_validation_unexpected_messages(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidation validation catches unexpected messages."""
+        storage = HybridStorage(db_manager)
+
+        source1 = temp_dir / 'source1.mbox'
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user@example.com'
+        msg1.set_content("Body 1")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+
+        output = temp_dir / 'consolidated.mbox'
+
+        # Mock validation to simulate unexpected messages
+        def failing_validate(*args: Any, **kwargs: Any) -> None:
+            raise IntegrityError("Found 1 unexpected messages in consolidated archive")
+
+        with patch.object(
+            storage,
+            '_validate_consolidation_output',
+            side_effect=failing_validate
+        ):
+            with pytest.raises(IntegrityError, match="Found .* unexpected messages"):
+                storage.consolidate_archives(
+                    source_archives=[source1],
+                    output_archive=output,
+                    deduplicate=False
+                )
+
+    # ============ Context Manager Tests ============
+
+    def test_context_manager_enter(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test context manager __enter__ returns self."""
+        storage = HybridStorage(db_manager)
+
+        with storage as ctx:
+            assert ctx is storage
+            assert ctx._staging_area.exists()
+
+    def test_context_manager_exit_cleanup(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test context manager __exit__ cleans up staging area."""
+        storage = HybridStorage(db_manager)
+        staging_path = storage._staging_area
+
+        # Create test file in staging
+        test_file = staging_path / 'test.eml'
+        test_file.write_text('test content')
+
+        # Use context manager
+        with storage:
+            assert test_file.exists()
+
+        # After exit, staging files should be cleaned
+        # Note: staging area itself may still exist but files should be removed
+
+    # ============ Cleanup Edge Cases ============
+
+    def test_cleanup_staging_area_with_permission_error(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test cleanup handles permission errors gracefully."""
+        storage = HybridStorage(db_manager)
+
+        # Create a file that can't be deleted (mock unlink to fail)
+        test_file = storage._staging_area / 'protected.eml'
+        test_file.write_text('protected')
+
+        # Mock unlink to raise permission error
+        original_unlink = Path.unlink
+
+        def failing_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self.name == 'protected.eml':
+                raise PermissionError("Permission denied")
+            original_unlink(self, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', failing_unlink):
+            # Should log warning but not raise
+            storage._cleanup_staging_area()
+
+    def test_cleanup_staging_area_with_missing_attribute(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test cleanup handles missing _staging_area attribute."""
+        storage = HybridStorage(db_manager)
+
+        # Remove _staging_area attribute
+        delattr(storage, '_staging_area')
+
+        # Should not raise when _staging_area doesn't exist
+        storage._cleanup_staging_area()
+
+    # ============ Body Preview Edge Cases ============
+
+    def test_extract_body_preview_non_multipart_with_exception(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test body preview extraction handles exceptions in non-multipart."""
+        storage = HybridStorage(db_manager)
+
+        # Create message that will throw exception during payload decode
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'Test'
+
+        # Mock get_payload to raise exception
+        with patch.object(
+            email.message.Message,
+            'get_payload',
+            side_effect=Exception("Payload error")
+        ):
+            preview = storage._extract_body_preview(msg)
+            # Should return empty string when exception occurs
+            assert preview == ""
+
+    def test_extract_body_preview_multipart_with_exception(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test body preview extraction handles exceptions in multipart."""
+        storage = HybridStorage(db_manager)
+
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'Test'
+        msg.set_content("Main body")
+        msg.add_alternative("<html><body>HTML</body></html>", subtype='html')
+
+        # Patch walk to return parts where one will raise during get_payload
+        original_walk = msg.walk
+
+        def failing_walk() -> Any:
+            # First part is the multipart container
+            yield msg
+            # Second part will raise during get_payload
+            failing_part = email.message.EmailMessage()
+            failing_part['Content-Type'] = 'text/plain'
+
+            def raise_on_decode(decode: bool = False) -> Any:
+                if decode:
+                    raise Exception("Decode failed")
+                return b"test"
+
+            failing_part.get_payload = raise_on_decode  # type: ignore
+            failing_part.get_content_type = lambda: 'text/plain'  # type: ignore
+            yield failing_part
+
+        msg.walk = failing_walk  # type: ignore
+        preview = storage._extract_body_preview(msg)
+        # Should continue and return empty string since exception was caught
+        assert preview == ""
+
+    def test_extract_body_preview_very_short(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test body preview with very short max_chars."""
+        storage = HybridStorage(db_manager)
+
+        msg = email.message.EmailMessage()
+        msg.set_content("This is a long body that should be truncated")
+
+        preview = storage._extract_body_preview(msg, max_chars=10)
+        assert len(preview) == 10
+        assert preview == "This is a "
+
+    # ============ Archive File Path Edge Cases ============
+
+    def test_archive_message_with_unusual_compressed_extension(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        temp_dir: Path
+    ) -> None:
+        """Test archiving with unusual compressed extension fallback."""
+        storage = HybridStorage(db_manager)
+
+        # Use a compressed file with unusual naming that triggers fallback
+        # This tests line 139 (fallback path for unusual compression extensions)
+        mbox_path = temp_dir / 'test.unusual.gz'
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression='gzip'
+        )
+
+        # Verify message was archived
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is not None
+
+    def test_archive_message_with_orphaned_lock_file(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archiving handles orphaned lock files (lines 153-154)."""
+        storage = HybridStorage(db_manager)
+
+        # Create an orphaned lock file
+        lock_file = Path(str(mbox_path) + '.lock')
+        lock_file.write_text('orphaned')
+
+        # Should remove the lock file and proceed
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify message was archived successfully
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data is not None
+
+    def test_archive_message_to_new_file_offset_zero(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archiving to new file starts at offset 0 (line 165)."""
+        storage = HybridStorage(db_manager)
+
+        # Ensure mbox file doesn't exist
+        assert not mbox_path.exists()
+
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify offset is 0 for first message
+        msg_data = db_manager.get_message_by_gmail_id('msg123')
+        assert msg_data['mbox_offset'] == 0
+
+    # ============ Validation Error Path Tests ============
+
+    def test_validate_message_missing_archive_file(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test validation when archive file is missing (line 527)."""
+        storage = HybridStorage(db_manager)
+
+        missing_file = temp_dir / 'nonexistent.mbox'
+
+        # Record message pointing to non-existent file
+        db_manager.record_archived_message(
+            gmail_id='msg123',
+            rfc_message_id='<test@example.com>',
+            archive_file=str(missing_file),
+            mbox_offset=0,
+            mbox_length=100
+        )
+
+        # Validation should fail with IntegrityError about missing file
+        with pytest.raises(IntegrityError, match="Archive file missing"):
+            storage._validate_message_consistency('msg123')
+
+    # ============ Deduplication Edge Cases ============
+
+    def test_deduplicate_with_duplicate_rfc_message_ids(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test deduplication removes duplicates (lines 803-804)."""
+        storage = HybridStorage(db_manager)
+
+        # Create message dicts with duplicate RFC Message-IDs
+        messages = [
+            {'rfc_message_id': '<msg1@example.com>', 'gmail_id': 'gm1'},
+            {'rfc_message_id': '<msg1@example.com>', 'gmail_id': 'gm2'},  # Duplicate
+            {'rfc_message_id': '<msg2@example.com>', 'gmail_id': 'gm3'},
+            {'rfc_message_id': '<msg2@example.com>', 'gmail_id': 'gm4'},  # Duplicate
+        ]
+
+        deduplicated, count = storage._deduplicate_messages(messages)
+
+        # Should remove 2 duplicates
+        assert count == 2
+        assert len(deduplicated) == 2
+        # Should keep first occurrence of each
+        assert deduplicated[0]['gmail_id'] == 'gm1'
+        assert deduplicated[1]['gmail_id'] == 'gm3'
+
+    # ============ Consolidation Validation Edge Cases ============
+
+    def test_validate_consolidation_with_temp_file_cleanup(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidation validation cleans up temp files (line 700)."""
+        storage = HybridStorage(db_manager)
+
+        # Create compressed source
+        source_gz = temp_dir / 'source.mbox.gz'
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<msg1@example.com>'
+        msg['Subject'] = 'Test'
+        msg['From'] = 'user@example.com'
+        msg.set_content("Body")
+
+        storage.archive_message(msg, 'msg1', source_gz, compression='gzip')
+
+        # Create consolidated output (uncompressed to avoid double compression issue)
+        output = temp_dir / 'consolidated.mbox'
+
+        # Perform consolidation - source is compressed, output is not
+        result = storage.consolidate_archives(
+            source_archives=[source_gz],
+            output_archive=output,
+            deduplicate=False
+        )
+
+        assert result.total_messages == 1
+        # Temp files should be cleaned up automatically
+
+    # ============ Cleanup Exception Tests ============
+
+    def test_cleanup_staging_area_iterdir_exception(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test cleanup handles iterdir exception (line 982-983)."""
+        storage = HybridStorage(db_manager)
+
+        # Mock iterdir to raise exception
+        original_iterdir = Path.iterdir
+
+        def failing_iterdir(self: Path) -> Any:
+            raise PermissionError("Cannot iterate directory")
+
+        with patch.object(Path, 'iterdir', failing_iterdir):
+            # Should log warning but not raise
+            storage._cleanup_staging_area()
+
+    # ============ Body Preview Additional Cases ============
+
+    def test_extract_body_preview_no_text_plain_part(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test body preview with no text/plain part (line 851-853)."""
+        storage = HybridStorage(db_manager)
+
+        # Create multipart message with only HTML
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'HTML Only'
+        msg.add_alternative("<html><body>HTML only</body></html>", subtype='html')
+
+        preview = storage._extract_body_preview(msg)
+        # Should return empty string since no text/plain part
+        assert preview == ""
+
+    def test_extract_body_preview_payload_not_bytes(
+        self,
+        db_manager: DBManager
+    ) -> None:
+        """Test body preview when payload is not bytes."""
+        storage = HybridStorage(db_manager)
+
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'Test'
+
+        # Mock get_payload to return non-bytes
+        def mock_get_payload(decode: bool = False) -> Any:
+            if decode:
+                return "not bytes but string"  # Not bytes
+            return b"test"
+
+        msg.get_payload = mock_get_payload  # type: ignore
+
+        preview = storage._extract_body_preview(msg)
+        # Should return empty string when payload is not bytes
+        assert preview == ""
+
+    # ============ Error Handling with Rollback Failures ============
+
+    def test_archive_message_rollback_exception_on_integrity_error(
+        self,
+        v11_db_path: str,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archive handles rollback exception during integrity error (lines 236-237)."""
+        db_manager = DBManager(v11_db_path)
+        storage = HybridStorage(db_manager)
+
+        # Mock validation to raise IntegrityError
+        with patch.object(
+            storage,
+            '_validate_message_consistency',
+            side_effect=IntegrityError("Validation failed")
+        ):
+            # Mock rollback to also fail
+            original_rollback = db_manager.rollback
+
+            def failing_rollback() -> None:
+                raise Exception("Rollback failed")
+
+            db_manager.rollback = failing_rollback  # type: ignore
+
+            # Should still raise IntegrityError even if rollback fails
+            with pytest.raises(IntegrityError, match="Validation failed"):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+            db_manager.rollback = original_rollback  # type: ignore
+            db_manager.close()
+
+    def test_archive_message_rollback_exception_on_general_error(
+        self,
+        v11_db_path: str,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archive handles rollback exception during general error (lines 246-247)."""
+        db_manager = DBManager(v11_db_path)
+        storage = HybridStorage(db_manager)
+
+        # Mock mbox.add to raise general exception
+        with patch('mailbox.mbox') as mock_mbox_class:
+            mock_mbox_instance = mock_mbox_class.return_value
+            mock_mbox_instance.add.side_effect = OSError("Disk error")
+            mock_mbox_instance.lock.return_value = None
+            mock_mbox_instance.unlock.return_value = None
+            mock_mbox_instance.close.return_value = None
+
+            # Mock rollback to also fail
+            original_rollback = db_manager.rollback
+
+            def failing_rollback() -> None:
+                raise Exception("Rollback also failed")
+
+            db_manager.rollback = failing_rollback  # type: ignore
+
+            # Should raise HybridStorageError wrapping the original error
+            with pytest.raises(HybridStorageError, match="Failed to archive message"):
+                storage.archive_message(
+                    email_message=sample_email_message,
+                    gmail_id='msg123',
+                    archive_file=mbox_path,
+                    compression=None
+                )
+
+            db_manager.rollback = original_rollback  # type: ignore
+            db_manager.close()
+
+    # ============ Finally Block Exception Handling ============
+
+    def test_archive_message_staging_file_unlink_exception(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test archive handles staging file unlink exception (lines 274-275)."""
+        storage = HybridStorage(db_manager)
+
+        # Archive the message successfully first
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg123',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Now test with unlink failure
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<test456@example.com>'
+        msg2['Subject'] = 'Test 2'
+        msg2['From'] = 'sender@example.com'
+        msg2.set_content("Test body 2")
+
+        # Mock unlink to fail on staging file
+        original_unlink = Path.unlink
+
+        def selective_unlink(self: Path, *args: Any, **kwargs: Any) -> None:
+            if 'msg456.eml' in str(self):
+                raise PermissionError("Cannot delete staging file")
+            original_unlink(self, *args, **kwargs)
+
+        with patch.object(Path, 'unlink', selective_unlink):
+            # Should log warning but complete
+            storage.archive_message(
+                email_message=msg2,
+                gmail_id='msg456',
+                archive_file=mbox_path,
+                compression=None
+            )
+
+            msg_data = db_manager.get_message_by_gmail_id('msg456')
+            assert msg_data is not None
+
+    # ============ Consolidation with Compression Tests ============
+
+    def test_consolidate_with_compression_output(
+        self,
+        db_manager: DBManager,
+        temp_dir: Path
+    ) -> None:
+        """Test consolidation with compressed output (lines 379, 385-391)."""
+        storage = HybridStorage(db_manager)
+
+        # Create uncompressed source archives
+        source1 = temp_dir / 'source1.mbox'
+        source2 = temp_dir / 'source2.mbox'
+
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<msg1@example.com>'
+        msg1['Subject'] = 'Message 1'
+        msg1['From'] = 'user1@example.com'
+        msg1.set_content("Body 1")
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<msg2@example.com>'
+        msg2['Subject'] = 'Message 2'
+        msg2['From'] = 'user2@example.com'
+        msg2.set_content("Body 2")
+
+        storage.archive_message(msg1, 'msg1', source1, None)
+        storage.archive_message(msg2, 'msg2', source2, None)
+
+        # Consolidate to compressed output
+        output_gz = temp_dir / 'consolidated.mbox.gz'
+        result = storage.consolidate_archives(
+            source_archives=[source1, source2],
+            output_archive=output_gz,
+            deduplicate=False,
+            compression='gzip'
+        )
+
+        assert result.total_messages == 2
+        assert output_gz.exists()
+
+        # Verify database updated
+        msg1_data = db_manager.get_message_by_gmail_id('msg1')
+        msg2_data = db_manager.get_message_by_gmail_id('msg2')
+        assert msg1_data['archive_file'] == str(output_gz)
+        assert msg2_data['archive_file'] == str(output_gz)

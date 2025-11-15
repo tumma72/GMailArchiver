@@ -18,7 +18,9 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
+from .db_manager import DBManager
 from .gmail_client import GmailClient
+from .hybrid_storage import HybridStorage
 from .input_validator import validate_age_expression, validate_compression_format
 from .state import ArchiveState
 from .utils import datetime_to_gmail_query, format_bytes, parse_age
@@ -42,6 +44,8 @@ class GmailArchiver:
         """
         self.client = gmail_client
         self.state_db_path = state_db_path
+        self.db_manager: DBManager | None = None
+        self.hybrid_storage: HybridStorage | None = None
 
     def archive(
         self,
@@ -100,14 +104,29 @@ class GmailArchiver:
         # Filter out already-archived messages if incremental
         message_ids = [msg['id'] for msg in message_list]
         if incremental:
-            with ArchiveState(self.state_db_path) as state:
-                archived_ids = state.get_archived_message_ids()
-                original_count = len(message_ids)
-                message_ids = [mid for mid in message_ids if mid not in archived_ids]
-                skipped_count = original_count - len(message_ids)
+            # Try to use DBManager for v1.1 schema, fall back to ArchiveState for legacy
+            db_path = Path(self.state_db_path)
+            if db_path.exists():
+                try:
+                    # Use DBManager for v1.1 schema
+                    db = DBManager(str(db_path), validate_schema=True)
+                    # Get all gmail_ids from messages table
+                    cursor = db.conn.execute("SELECT gmail_id FROM messages")
+                    archived_ids = {row[0] for row in cursor.fetchall()}
+                    db.close()
+                except Exception:
+                    # Fall back to ArchiveState for legacy schema
+                    with ArchiveState(self.state_db_path) as state:
+                        archived_ids = state.get_archived_message_ids()
+            else:
+                archived_ids = set()
 
-                if skipped_count > 0:
-                    print(f"Skipping {skipped_count} already-archived messages")
+            original_count = len(message_ids)
+            message_ids = [mid for mid in message_ids if mid not in archived_ids]
+            skipped_count = original_count - len(message_ids)
+
+            if skipped_count > 0:
+                print(f"Skipping {skipped_count} already-archived messages")
 
         if not message_ids:
             print("All messages already archived")
@@ -136,12 +155,29 @@ class GmailArchiver:
         )
 
         # Record run in state
-        with ArchiveState(self.state_db_path) as state:
-            state.record_archive_run(
-                query=query,
-                messages_archived=archive_result['archived'],
-                archive_file=output_file
-            )
+        # Try to use DBManager for v1.1 schema, fall back to ArchiveState for legacy
+        db_path = Path(self.state_db_path)
+        if db_path.exists():
+            try:
+                # DBManager already recorded this via _record_archive_run during each message
+                # So we don't need to record again here for v1.1 schema
+                pass
+            except Exception:
+                # Fall back to ArchiveState for legacy schema
+                with ArchiveState(self.state_db_path) as state:
+                    state.record_archive_run(
+                        query=query,
+                        messages_archived=archive_result['archived'],
+                        archive_file=output_file
+                    )
+        else:
+            # No database yet - ArchiveState will create it
+            with ArchiveState(self.state_db_path) as state:
+                state.record_archive_run(
+                    query=query,
+                    messages_archived=archive_result['archived'],
+                    archive_file=output_file
+                )
 
         return {
             'messages_found': len(message_list),
@@ -158,7 +194,137 @@ class GmailArchiver:
         compress: str | None = None
     ) -> dict[str, Any]:
         """
-        Fetch messages and write to mbox archive.
+        Fetch messages and write to mbox archive using HybridStorage.
+
+        Args:
+            message_ids: List of Gmail message IDs
+            output_file: Output file path
+            compress: Compression format
+
+        Returns:
+            Dict with archived count and failed count
+        """
+        # Initialize DBManager and HybridStorage
+        # Check if database exists - if not, fall back to ArchiveState for backward compatibility
+        db_path = Path(self.state_db_path)
+        use_hybrid_storage = False
+
+        if db_path.exists():
+            try:
+                # Try to initialize DBManager - this validates v1.1 schema
+                self.db_manager = DBManager(str(db_path), validate_schema=True)
+                self.hybrid_storage = HybridStorage(self.db_manager)
+                use_hybrid_storage = True
+            except Exception:
+                # Fall back to ArchiveState if DBManager fails (e.g., old schema)
+                use_hybrid_storage = False
+
+        if use_hybrid_storage and self.hybrid_storage:
+            return self._archive_messages_hybrid_storage(
+                message_ids, output_file, compress
+            )
+        else:
+            return self._archive_messages_legacy(
+                message_ids, output_file, compress
+            )
+
+    def _archive_messages_hybrid_storage(
+        self,
+        message_ids: list[str],
+        output_file: str,
+        compress: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Archive messages using HybridStorage for atomic operations.
+
+        Args:
+            message_ids: List of Gmail message IDs
+            output_file: Output file path
+            compress: Compression format
+
+        Returns:
+            Dict with archived count and failed count
+        """
+        output_path = Path(output_file)
+        archived_count = 0
+        failed_count = 0
+
+        assert self.hybrid_storage is not None, "HybridStorage not initialized"
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task(
+                "Archiving messages...",
+                total=len(message_ids)
+            )
+
+            # Fetch messages in batches
+            try:
+                for message in self.client.get_messages_batch(message_ids):
+                    try:
+                        # Decode raw message
+                        raw_email = self.client.decode_message_raw(message)
+
+                        # Parse email
+                        msg = email.message_from_bytes(raw_email, policy=policy.default)
+
+                        # Extract Gmail labels as JSON
+                        labels = None
+                        if 'labelIds' in message:
+                            import json
+                            labels = json.dumps(message['labelIds'])
+
+                        # Archive using HybridStorage (atomic operation)
+                        self.hybrid_storage.archive_message(
+                            email_message=msg,
+                            gmail_id=message['id'],
+                            archive_file=output_path,
+                            thread_id=message.get('threadId'),
+                            labels=labels,
+                            compression=compress
+                        )
+
+                        archived_count += 1
+
+                    except Exception as e:
+                        # Log error but continue with next message
+                        print(f"Warning: Failed to archive message {message['id']}: {e}")
+                        failed_count += 1
+
+                    progress.advance(task)
+            finally:
+                # Close DBManager to prevent resource warnings
+                if self.db_manager:
+                    self.db_manager.close()
+
+        # Print summary
+        final_path = output_path
+        file_size = final_path.stat().st_size if final_path.exists() else 0
+        print(f"\n✓ Archived {archived_count} messages")
+        if failed_count > 0:
+            print(f"  ⚠ Failed: {failed_count} messages (errors during archiving)")
+        print(f"  File: {final_path}")
+        print(f"  Size: {format_bytes(file_size)}")
+
+        return {
+            'archived': archived_count,
+            'failed': failed_count,
+            'attempted': len(message_ids)
+        }
+
+    def _archive_messages_legacy(
+        self,
+        message_ids: list[str],
+        output_file: str,
+        compress: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Legacy archiving method using ArchiveState (for backward compatibility).
 
         Args:
             message_ids: List of Gmail message IDs

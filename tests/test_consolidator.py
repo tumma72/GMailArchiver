@@ -21,26 +21,86 @@ def temp_dir():
 
 @pytest.fixture
 def state_db(temp_dir):
-    """Create a test state database."""
+    """Create a test state database with v1.1 schema."""
     db_path = temp_dir / "test_state.db"
 
-    # Initialize database with schema (disable path validation for tests)
-    with ArchiveState(str(db_path), validate_path=False) as state:
-        # Ensure tables exist
-        state.conn.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                gmail_id TEXT PRIMARY KEY,
-                rfc_message_id TEXT,
-                archive_file TEXT,
-                mbox_offset INTEGER,
-                mbox_length INTEGER,
-                archived_timestamp TEXT,
-                subject TEXT,
-                from_addr TEXT,
-                message_date TEXT
-            )
-        ''')
-        state.conn.commit()
+    # Create database with v1.1 schema BEFORE ArchiveState initializes
+    # This prevents ArchiveState from creating old schema tables
+    conn = sqlite3.connect(str(db_path))
+
+    # Create messages table with full v1.1 schema
+    # NOTE: Removed UNIQUE constraint on rfc_message_id for testing deduplication
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            gmail_id TEXT PRIMARY KEY,
+            rfc_message_id TEXT NOT NULL,
+            thread_id TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            to_addr TEXT,
+            cc_addr TEXT,
+            date TIMESTAMP,
+            archived_timestamp TIMESTAMP NOT NULL,
+            archive_file TEXT NOT NULL,
+            mbox_offset INTEGER NOT NULL,
+            mbox_length INTEGER NOT NULL,
+            body_preview TEXT,
+            checksum TEXT,
+            size_bytes INTEGER,
+            labels TEXT,
+            account_id TEXT DEFAULT 'default'
+        )
+    ''')
+
+    # Create archive_runs table (match DBManager expectations)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT NOT NULL,
+            query TEXT NOT NULL,
+            messages_archived INTEGER NOT NULL,
+            archive_file TEXT NOT NULL,
+            account_id TEXT DEFAULT 'default',
+            operation_type TEXT
+        )
+    ''')
+
+    # Create FTS table for full-text search
+    conn.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            subject, from_addr, to_addr, body_preview,
+            content='messages',
+            content_rowid='rowid'
+        )
+    ''')
+
+    # Create schema_version table (for v1.1 detection)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version TEXT PRIMARY KEY,
+            applied_timestamp TEXT NOT NULL
+        )
+    ''')
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_version VALUES ('1.1', ?)",
+        (datetime.now(UTC).isoformat(),)
+    )
+
+    # Create old tables for backward compatibility (ArchiveState expects these)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+
+    conn.commit()
+    conn.close()
 
     return db_path
 
@@ -64,24 +124,33 @@ def sample_mbox_1(temp_dir, state_db):
 
     mbox.close()
 
-    # Add to database
+    # Add to database with v1.1 schema
     with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3):
             state.conn.execute('''
                 INSERT INTO messages
-                (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
-                 archived_timestamp, subject, from_addr, message_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
+                 cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+                 body_preview, checksum, size_bytes, labels, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 f'gmail{i}',
                 f'<msg{i}@example.com>',
+                f'thread{i}',
+                f'Test Message {i}',
+                f'sender{i}@example.com',
+                'recipient@example.com',
+                None,
+                f'2024-01-{10+i}T12:00:00+00:00',
+                datetime.now(UTC).isoformat(),
                 str(mbox_path),
                 0,  # placeholder offset
                 100,  # placeholder length
-                datetime.now(UTC).isoformat(),
-                f'Test Message {i}',
-                f'sender{i}@example.com',
-                f'2024-01-{10+i}'
+                f'Body of message {i}',
+                'abc123',
+                100,
+                '[]',
+                'default'
             ))
         state.conn.commit()
 
@@ -107,24 +176,33 @@ def sample_mbox_2(temp_dir, state_db):
 
     mbox.close()
 
-    # Add to database
+    # Add to database with v1.1 schema
     with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3, 6):
             state.conn.execute('''
                 INSERT INTO messages
-                (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
-                 archived_timestamp, subject, from_addr, message_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
+                 cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+                 body_preview, checksum, size_bytes, labels, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 f'gmail{i}',
                 f'<msg{i}@example.com>',
+                f'thread{i}',
+                f'Test Message {i}',
+                f'sender{i}@example.com',
+                'recipient@example.com',
+                None,
+                f'2024-01-{10+i}T12:00:00+00:00',
+                datetime.now(UTC).isoformat(),
                 str(mbox_path),
                 0,  # placeholder offset
                 100,  # placeholder length
-                datetime.now(UTC).isoformat(),
-                f'Test Message {i}',
-                f'sender{i}@example.com',
-                f'2024-01-{10+i}'
+                f'Body of message {i}',
+                'abc123',
+                100,
+                '[]',
+                'default'
             ))
         state.conn.commit()
 
@@ -175,57 +253,84 @@ def mbox_with_duplicates(temp_dir, state_db):
 
     mbox2.close()
 
-    # Add to database
+    # Add to database with v1.1 schema
     with ArchiveState(str(state_db), validate_path=False) as state:
         # From archive1
         for i in range(2):
             state.conn.execute('''
                 INSERT INTO messages
-                (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
-                 archived_timestamp, subject, from_addr, message_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
+                 cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+                 body_preview, checksum, size_bytes, labels, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 f'gmail_dup{i}',
                 f'<dup{i}@example.com>',
-                str(mbox1_path),
-                0, 100,
-                datetime.now(UTC).isoformat(),
+                f'thread_dup{i}',
                 f'Duplicate Test {i}',
                 f'sender{i}@example.com',
-                f'2024-02-0{5+i}'
+                'recipient@example.com',
+                None,
+                f'2024-02-0{5+i}T10:00:00+00:00',
+                datetime.now(UTC).isoformat(),
+                str(mbox1_path),
+                0, 100,
+                f'First version of message {i}',
+                'abc123',
+                100,
+                '[]',
+                'default'
             ))
 
         # From archive2 (duplicate has different gmail_id)
         state.conn.execute('''
             INSERT INTO messages
-            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
-             archived_timestamp, subject, from_addr, message_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
+             cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+             body_preview, checksum, size_bytes, labels, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             'gmail_dup1_v2',
             '<dup1@example.com>',
-            str(mbox2_path),
-            0, 100,
-            datetime.now(UTC).isoformat(),
+            'thread_dup1',
             'Duplicate Test 1',
             'sender1@example.com',
-            '2024-02-07'
+            'recipient@example.com',
+            None,
+            '2024-02-07T10:00:00+00:00',
+            datetime.now(UTC).isoformat(),
+            str(mbox2_path),
+            0, 100,
+            'Second version of message 1 (newer)',
+            'abc123',
+            100,
+            '[]',
+            'default'
         ))
 
         state.conn.execute('''
             INSERT INTO messages
-            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
-             archived_timestamp, subject, from_addr, message_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
+             cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+             body_preview, checksum, size_bytes, labels, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             'gmail_unique',
             '<unique@example.com>',
-            str(mbox2_path),
-            0, 100,
-            datetime.now(UTC).isoformat(),
+            'thread_unique',
             'Unique Message',
             'sender2@example.com',
-            '2024-02-08'
+            'recipient@example.com',
+            None,
+            '2024-02-08T10:00:00+00:00',
+            datetime.now(UTC).isoformat(),
+            str(mbox2_path),
+            0, 100,
+            'This message is unique',
+            'abc123',
+            100,
+            '[]',
+            'default'
         ))
 
         state.conn.commit()
@@ -725,3 +830,202 @@ class TestErrorHandling:
                 deduplicate=True,
                 dedupe_strategy='invalid_strategy'
             )
+
+
+class TestAtomicConsolidation:
+    """Tests for atomic consolidation using HybridStorage."""
+
+    def test_atomic_consolidation_both_succeed(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
+        """Test that both mbox and database are updated atomically."""
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "consolidated.mbox"
+
+        # Perform consolidation
+        result = consolidator.consolidate(
+            source_archives=[sample_mbox_1, sample_mbox_2],
+            output_archive=output_path,
+            sort_by_date=False,
+            deduplicate=False
+        )
+
+        # Verify mbox exists and has correct count
+        assert output_path.exists()
+        mbox = mailbox.mbox(str(output_path))
+        assert len(mbox) == 6
+        mbox.close()
+
+        # Verify database updated
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute(
+                'SELECT COUNT(*) FROM messages WHERE archive_file = ?',
+                (str(output_path),)
+            )
+            db_count = cursor.fetchone()[0]
+
+        # Both should match
+        assert db_count == 6
+
+    def test_atomic_consolidation_updates_offsets(self, temp_dir, state_db, sample_mbox_1):
+        """Test that database offsets are updated correctly."""
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "consolidated.mbox"
+
+        # Perform consolidation
+        consolidator.consolidate(
+            source_archives=[sample_mbox_1],
+            output_archive=output_path
+        )
+
+        # Verify offsets are updated and valid
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute(
+                '''
+                SELECT rfc_message_id, mbox_offset, mbox_length
+                FROM messages
+                WHERE archive_file = ?
+                ORDER BY mbox_offset
+                ''',
+                (str(output_path),)
+            )
+            rows = cursor.fetchall()
+
+        assert len(rows) == 3
+
+        # All offsets should be non-negative and lengths positive
+        for msg_id, offset, length in rows:
+            assert offset >= 0, f"Invalid offset for {msg_id}"
+            assert length > 0, f"Invalid length for {msg_id}"
+
+        # Offsets should be sequential (no overlap)
+        for i in range(len(rows) - 1):
+            _, offset1, length1 = rows[i]
+            _, offset2, _ = rows[i+1]
+            assert offset1 + length1 <= offset2, "Overlapping offsets detected"
+
+    def test_consolidation_creates_audit_trail(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
+        """Test that consolidation is recorded in archive_runs."""
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "consolidated.mbox"
+
+        # Count archive_runs before
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute('SELECT COUNT(*) FROM archive_runs')
+            runs_before = cursor.fetchone()[0]
+
+        # Perform consolidation
+        consolidator.consolidate(
+            source_archives=[sample_mbox_1, sample_mbox_2],
+            output_archive=output_path
+        )
+
+        # Verify audit trail created
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute('SELECT COUNT(*) FROM archive_runs')
+            runs_after = cursor.fetchone()[0]
+
+        # Should have at least one new entry
+        assert runs_after > runs_before
+
+    def test_consolidation_with_compression_atomic(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
+        """Test atomic consolidation with compression."""
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "consolidated.mbox.gz"
+
+        result = consolidator.consolidate(
+            source_archives=[sample_mbox_1, sample_mbox_2],
+            output_archive=output_path,
+            compress='gzip'
+        )
+
+        # Verify compressed file exists
+        assert output_path.exists()
+        assert result.compression_used == 'gzip'
+
+        # Verify database points to compressed file
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute(
+                'SELECT DISTINCT archive_file FROM messages WHERE archive_file = ?',
+                (str(output_path),)
+            )
+            db_files = [row[0] for row in cursor.fetchall()]
+
+        assert str(output_path) in db_files
+
+    def test_deduplication_updates_database_atomically(
+        self, temp_dir, state_db, mbox_with_duplicates
+    ):
+        """Test that deduplication updates database correctly."""
+        mbox1, mbox2 = mbox_with_duplicates
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "deduped.mbox"
+
+        # Count messages before
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            count_before = cursor.fetchone()[0]
+
+        # Perform consolidation with deduplication
+        result = consolidator.consolidate(
+            source_archives=[mbox1, mbox2],
+            output_archive=output_path,
+            deduplicate=True
+        )
+
+        # Count messages after
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            count_after = cursor.fetchone()[0]
+
+        # Should have removed 1 duplicate
+        assert count_before - count_after == result.duplicates_removed
+        assert result.duplicates_removed == 1
+
+    def test_consolidation_preserves_metadata(self, temp_dir, state_db, sample_mbox_1):
+        """Test that consolidation preserves all message metadata."""
+        consolidator = ArchiveConsolidator(str(state_db))
+        output_path = temp_dir / "consolidated.mbox"
+
+        # Get original metadata
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute(
+                '''
+                SELECT gmail_id, rfc_message_id, subject, from_addr
+                FROM messages
+                WHERE archive_file = ?
+                ''',
+                (str(sample_mbox_1),)
+            )
+            original_metadata = {row[0]: row for row in cursor.fetchall()}
+
+        # Perform consolidation
+        consolidator.consolidate(
+            source_archives=[sample_mbox_1],
+            output_archive=output_path
+        )
+
+        # Get new metadata
+        with sqlite3.connect(str(state_db)) as conn:
+            cursor = conn.execute(
+                '''
+                SELECT gmail_id, rfc_message_id, subject, from_addr
+                FROM messages
+                WHERE archive_file = ?
+                ''',
+                (str(output_path),)
+            )
+            new_metadata = {row[0]: row for row in cursor.fetchall()}
+
+        # All metadata should match (except archive_file)
+        assert set(original_metadata.keys()) == set(new_metadata.keys())
+        for gmail_id in original_metadata:
+            orig = original_metadata[gmail_id]
+            new = new_metadata[gmail_id]
+            assert orig[1] == new[1]  # rfc_message_id
+            assert orig[2] == new[2]  # subject
+            assert orig[3] == new[3]  # from_addr

@@ -266,7 +266,203 @@ def migrate_database(db_path):
 
 ## 📅 Phased Roadmap
 
-### Version 1.1.0 - "Foundation" 🔴 CRITICAL
+### Phase 0: Architecture Refactoring 🔴🔴 BLOCKING (v1.1.0-beta.2)
+
+**Timeline:** 2-3 weeks
+**Theme:** Critical architectural fixes for data integrity
+**Status:** In Progress (Discovered during v1.1.0-beta.1 testing)
+**Blocks:** All v1.1.0 features
+
+#### Background: Critical Issues Discovered
+
+During v1.1.0-beta.1 user testing, we discovered fundamental architectural flaws that compromise data integrity:
+
+**Issue 1: Migration Creates Placeholder Records**
+- Migration generates `rfc_message_id='<gmail_id@migration>'` instead of scanning mbox
+- All migrated messages have `mbox_offset=-1` (invalid)
+- Result: `verify-offsets` shows 0.0% accuracy for 16,132 messages
+- Impact: v1.1 features (search, O(1) access) don't work for migrated data
+
+**Issue 2: Missing Audit Trails**
+- `archive_runs` table not recording import/consolidate/dedupe operations
+- User imported 5 archives but only 1 run shows in database
+- Impossible to debug issues or understand system history
+
+**Issue 3: No Transactional Guarantees**
+- mbox write can succeed while database update fails (orphaned messages)
+- Database can be updated while mbox write fails (missing messages)
+- No atomicity between hybrid storage layers
+
+**Issue 4: SQL Scattered Across Codebase**
+- Direct SQL queries in 8+ modules
+- Inconsistent error handling
+- No centralized validation
+- Hard to optimize or maintain
+
+**Issue 5: Commands Assume State**
+- `consolidate` doesn't verify database updates succeeded
+- `validate` fails with inconsistent counts
+- No prerequisite checks before operations
+
+**User Feedback:**
+> "Even as a power user, it is starting to become complicated to figure out which commands to run in which sequence and what their effect will be on the database and the mbox files. [...] I would suggest to: a) Review the architecture to ensure data integrity b) Build in more validation and verification c) Design more ergonomic commands which encapsulate all necessary operations d) Design a hybrid storage class which transactionally ensures changes are atomic"
+
+#### Refactoring Goals
+
+1. **DBManager Class** - Single source of truth for database operations
+   - Centralize ALL SQL queries (no direct SQL in other modules)
+   - Enforce parameterized queries (SQL injection prevention)
+   - Transaction management with automatic rollback
+   - Audit trail for ALL operations (fixes missing archive_runs)
+   - Built-in integrity validation
+
+2. **HybridStorage Class** - Transactional coordinator
+   - Atomic operations across mbox + database
+   - Two-phase commit pattern
+   - Automatic validation after every write
+   - Staging area to prevent partial writes
+   - Clear rollback on failures
+
+3. **Self-Contained Commands** - Each command handles prerequisites
+   - Verify state before operation
+   - Perform atomic operation via HybridStorage
+   - Validate results after operation
+   - Record in audit trail
+   - Clear error messages with recovery instructions
+
+4. **Data Integrity Layer** - Built-in verification
+   - `verify-integrity` command (comprehensive checks)
+   - `repair` command (fix common issues)
+   - Automatic consistency checks after writes
+   - Migration repair (backfill placeholder records)
+
+#### Implementation Plan
+
+**Week 1: Foundation (DBManager)**
+- [ ] Create `src/gmailarchiver/db_manager.py`
+- [ ] Implement core CRUD operations
+- [ ] Add transaction support with context manager
+- [ ] Implement audit trail recording (`_record_archive_run`)
+- [ ] Add integrity checks (`verify_database_integrity`)
+- [ ] Add repair utilities (`repair_database`)
+- [ ] Write comprehensive unit tests (95%+ coverage)
+
+**Week 2: Coordination (HybridStorage)**
+- [ ] Create `src/gmailarchiver/hybrid_storage.py`
+- [ ] Implement `archive_message()` with two-phase commit
+- [ ] Implement `consolidate_archives()` with atomicity
+- [ ] Add staging area management
+- [ ] Add validation methods (`_validate_message_consistency`)
+- [ ] Handle rollback scenarios
+- [ ] Write integration tests for atomic operations
+
+**Week 3: Migration & Refactoring**
+- [ ] Update `migration.py` to use DBManager
+- [ ] Fix migration to scan mbox files (not create placeholders)
+- [ ] Create `repair --backfill` command for v1.1.0-beta.1 users
+- [ ] Refactor `archiver.py` to use HybridStorage
+- [ ] Refactor `importer.py` to use HybridStorage
+- [ ] Refactor `consolidator.py` to use HybridStorage
+- [ ] Remove all direct SQL from modules
+- [ ] Update all commands to be self-contained
+
+**Week 4: Verification & Testing**
+- [ ] Create `verify-integrity` command
+- [ ] Create `repair` command
+- [ ] Comprehensive integration tests
+- [ ] Chaos testing (kill during write, corrupt database)
+- [ ] Performance regression tests
+- [ ] Migration testing (v1.0 → v1.1, beta.1 → beta.2)
+- [ ] Documentation updates
+
+#### Success Criteria
+
+- ✅ 100% of SQL queries in DBManager (zero direct queries elsewhere)
+- ✅ All write operations are atomic (mbox + database both succeed or both fail)
+- ✅ Audit trail complete (archive_runs records all operations)
+- ✅ Migration backfills real data (no placeholders)
+- ✅ `verify-integrity` shows 0 issues on clean database
+- ✅ `verify-offsets` shows 100% accuracy
+- ✅ Test coverage maintained at 95%+
+- ✅ All existing functionality preserved
+- ✅ Clear upgrade path for v1.1.0-beta.1 users
+
+#### Deliverables
+
+**New Components:**
+1. `src/gmailarchiver/db_manager.py` - Database operations manager
+2. `src/gmailarchiver/hybrid_storage.py` - Transactional coordinator
+3. `verify-integrity` command - Comprehensive database checks
+4. `repair` command - Fix common issues
+5. `repair --backfill` - Fix v1.1.0-beta.1 placeholder records
+
+**Updated Components:**
+1. `migration.py` - Scan mbox files instead of placeholders
+2. `archiver.py` - Use HybridStorage
+3. `importer.py` - Use HybridStorage
+4. `consolidator.py` - Use HybridStorage
+5. `deduplicator.py` - Use DBManager
+6. `search.py` - Use DBManager
+7. All commands - Self-contained with prerequisites/validation
+
+**Documentation:**
+1. ARCHITECTURE.md - New sections for DBManager and HybridStorage
+2. MIGRATION_GUIDE.md - v1.1.0-beta.1 → v1.1.0-beta.2 upgrade
+3. CHANGELOG.md - Breaking changes and fixes
+4. README.md - Updated command examples
+
+#### Risk Assessment
+
+**High Priority Risks:**
+
+1. **Breaking Changes for Beta Users** (Probability: High, Impact: Medium)
+   - Mitigation: Provide automatic repair tool
+   - Mitigation: Clear upgrade documentation
+   - Mitigation: Maintain backward compatibility where possible
+
+2. **Regression During Refactoring** (Probability: Medium, Impact: High)
+   - Mitigation: Comprehensive test suite (maintain 95%+ coverage)
+   - Mitigation: Integration tests for all workflows
+   - Mitigation: Beta testing period before final release
+
+3. **Performance Overhead** (Probability: Low, Impact: Medium)
+   - Validation adds overhead to operations
+   - Mitigation: Target < 5% overhead
+   - Mitigation: Performance regression tests
+   - Mitigation: Optional `--skip-validation` flag for power users
+
+#### Migration Path for v1.1.0-beta.1 Users
+
+```bash
+# Upgrade to v1.1.0-beta.2
+pip install --upgrade gmailarchiver
+
+# Detect issues
+gmailarchiver verify-integrity
+# Output:
+# ❌ 16,132 messages with invalid offsets
+# ❌ 4 import operations missing from archive_runs
+# ❌ 1,478 duplicate Message-IDs found
+
+# Repair placeholder records
+gmailarchiver repair --backfill
+# Scans all mbox files and backfills:
+# - Real RFC Message-IDs
+# - Accurate mbox_offset and mbox_length
+# - Missing metadata (thread_id, body_preview)
+
+# Verify fix
+gmailarchiver verify-offsets archive_20251114.mbox
+# Output: ✅ 100% accurate (16,132/16,132 valid)
+
+# Verify database
+gmailarchiver verify-integrity
+# Output: ✅ No issues found
+```
+
+---
+
+### Version 1.1.0 - "Foundation" 🔴 CRITICAL (Depends on Phase 0)
 
 **Timeline:** 4-6 weeks
 **Theme:** Archive consolidation with enhanced indexing
@@ -1010,7 +1206,18 @@ Before merging any feature:
 
 ## 📝 Changelog
 
-### 2025-11-14
+### 2025-11-14 (Update 2 - Critical Pivot)
+- **CRITICAL**: Added Phase 0: Architecture Refactoring (v1.1.0-beta.2)
+- Documented 5 critical data integrity issues discovered during beta testing
+- Introduced DBManager class for centralized database operations
+- Introduced HybridStorage class for transactional coordination
+- Updated ARCHITECTURE.md with comprehensive integrity architecture
+- Defined 4-week implementation plan for architectural fixes
+- Updated v1.1.0 to depend on Phase 0 completion
+- Added migration path for v1.1.0-beta.1 users
+- Comprehensive risk assessment for refactoring
+
+### 2025-11-14 (Update 1)
 - Initial strategic plan created
 - Architectural decision: Hybrid model (mbox + SQLite)
 - Roadmap defined: v1.1.0 → v1.2.0 → v2.0.0 → v2.1.0 → v3.0.0

@@ -1429,6 +1429,218 @@ def consolidate(
         raise typer.Exit(1)
 
 
+@app.command(name="verify-integrity")
+def verify_integrity_cmd(
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database file"
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Show verbose output"
+    ),
+) -> None:
+    """
+    Verify database integrity and report issues.
+
+    Checks for:
+    - Orphaned FTS records
+    - Missing FTS records
+    - Invalid mbox offsets (placeholder values from v1.1.0-beta.1)
+    - Duplicate Message-IDs
+    - Missing archive files
+
+    Exit code: 0 if clean, 1 if issues found
+
+    Examples:
+        $ gmailarchiver verify-integrity
+        $ gmailarchiver verify-integrity --state-db /path/to/archive_state.db
+        $ gmailarchiver verify-integrity --verbose
+    """
+    from gmailarchiver.db_manager import DBManager
+
+    console.print("\n[bold blue]Database Integrity Check[/bold blue]\n")
+
+    db_path = Path(state_db)
+
+    # Check if database exists
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        raise typer.Exit(1)
+
+    try:
+        # Initialize DBManager without schema validation to avoid errors
+        db = DBManager(str(db_path), validate_schema=False)
+        issues = db.verify_database_integrity()
+        db.close()
+
+        if not issues:
+            console.print("[green]✓ Database integrity verified - no issues found[/green]\n")
+            raise typer.Exit(0)
+
+        # Display issues in table
+        table = Table(title="Database Integrity Issues")
+        table.add_column("Issue", style="red")
+
+        for issue in issues:
+            table.add_row(issue)
+
+        console.print(table)
+        console.print(f"\n[yellow]Found {len(issues)} integrity issue(s)[/yellow]")
+        console.print("[cyan]Run 'gmailarchiver repair --no-dry-run' to fix these issues[/cyan]\n")
+
+        raise typer.Exit(1)
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def repair(
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database file"
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Show what would be fixed without making changes (default: True)"
+    ),
+    backfill: bool = typer.Option(
+        False,
+        "--backfill",
+        help="Fix invalid offsets by scanning mbox files"
+    ),
+) -> None:
+    """
+    Repair database integrity issues.
+
+    Fixes:
+    - Orphaned FTS records (removes records not in messages table)
+    - Missing FTS records (rebuilds FTS index for missing messages)
+    - Invalid mbox offsets with --backfill (scans mbox files to extract real offsets)
+
+    The --backfill option is critical for fixing placeholder records created by
+    the v1.1.0-beta.1 migration bug.
+
+    Examples:
+        $ gmailarchiver repair
+        $ gmailarchiver repair --no-dry-run
+        $ gmailarchiver repair --backfill --no-dry-run
+        $ gmailarchiver repair --state-db /path/to/archive_state.db
+    """
+    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.migration import MigrationManager
+
+    console.print("\n[bold blue]Database Repair[/bold blue]\n")
+
+    db_path = Path(state_db)
+
+    # Check if database exists
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}")
+        raise typer.Exit(1)
+
+    # Get confirmation for non-dry-run
+    if not dry_run:
+        console.print("[yellow]⚠ WARNING: This will modify the database[/yellow]\n")
+        confirm = typer.confirm("Continue with database repair?", default=False)
+        if not confirm:
+            console.print("[yellow]Repair cancelled[/yellow]\n")
+            raise typer.Exit(0)
+
+    try:
+        # Initialize DBManager without schema validation
+        db = DBManager(str(db_path), validate_schema=False)
+
+        # Phase 1: Fix FTS sync issues
+        console.print("[cyan]Phase 1: Checking FTS synchronization...[/cyan]")
+        repairs = db.repair_database(dry_run=dry_run)
+
+        # Phase 2: Backfill invalid offsets if requested
+        if backfill:
+            console.print("[cyan]Phase 2: Checking for invalid offsets...[/cyan]")
+            invalid_msgs = db.get_messages_with_invalid_offsets()
+
+            if invalid_msgs:
+                console.print(
+                    f"[cyan]Found {len(invalid_msgs)} messages with invalid offsets[/cyan]"
+                )
+
+                if not dry_run:
+                    # Use MigrationManager logic to scan mbox and backfill
+                    migrator = MigrationManager(db_path)
+                    backfilled = migrator.backfill_offsets_from_mbox(invalid_msgs)
+                    repairs['invalid_offsets_fixed'] = backfilled
+                    migrator._close()
+                else:
+                    repairs['invalid_offsets_would_fix'] = len(invalid_msgs)
+            else:
+                console.print("[green]No invalid offsets found[/green]")
+
+        db.close()
+
+        # Display results
+        _display_repair_results(console, repairs, dry_run)
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Repair failed:[/red] {e}")
+        raise typer.Exit(1)
+
+
+def _display_repair_results(
+    console: Console,
+    repairs: dict[str, int],
+    dry_run: bool
+) -> None:
+    """Display repair results in a formatted table."""
+    console.print()
+
+    # Create results table
+    table = Table(title="Repair Results" if not dry_run else "Repair Preview (Dry Run)")
+    table.add_column("Repair Type", style="cyan")
+    table.add_column("Count", style="green" if not dry_run else "yellow", justify="right")
+
+    # Add FTS repairs
+    if 'orphaned_fts_removed' in repairs and repairs['orphaned_fts_removed'] > 0:
+        action = "Removed" if not dry_run else "Would remove"
+        table.add_row(f"{action} orphaned FTS records", str(repairs['orphaned_fts_removed']))
+
+    if 'missing_fts_added' in repairs and repairs['missing_fts_added'] > 0:
+        action = "Added" if not dry_run else "Would add"
+        table.add_row(f"{action} missing FTS records", str(repairs['missing_fts_added']))
+
+    # Add offset backfill repairs
+    if 'invalid_offsets_fixed' in repairs and repairs['invalid_offsets_fixed'] > 0:
+        table.add_row("Backfilled invalid offsets", str(repairs['invalid_offsets_fixed']))
+
+    if 'invalid_offsets_would_fix' in repairs and repairs['invalid_offsets_would_fix'] > 0:
+        table.add_row("Would backfill invalid offsets", str(repairs['invalid_offsets_would_fix']))
+
+    console.print(table)
+
+    # Summary message
+    total_repairs = sum(repairs.values())
+
+    if total_repairs == 0:
+        console.print("\n[green]✓ No repairs needed - database is clean[/green]\n")
+    elif dry_run:
+        console.print(f"\n[yellow]Would perform {total_repairs} repair(s)[/yellow]")
+        console.print("[cyan]Run with --no-dry-run to apply these repairs[/cyan]\n")
+    else:
+        console.print(f"\n[green]✓ Successfully performed {total_repairs} repair(s)[/green]\n")
+
+
 @app.command()
 def auth_reset() -> None:
     """

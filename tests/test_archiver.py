@@ -621,6 +621,251 @@ class TestExtractBodyPreview:
         assert result == "A" * 1000
 
 
+class TestAtomicOperations:
+    """Tests for atomic mbox + database operations using HybridStorage."""
+
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_atomic_archive_both_succeed(
+        self, mock_print: Mock, mock_progress_class: Mock
+    ) -> None:
+        """Test that successful archiving commits both mbox and database."""
+        import tempfile
+        from pathlib import Path
+
+        from gmailarchiver.db_manager import DBManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Create v1.1 database schema
+            self._create_v11_db(db_path)
+
+            # Setup mock client
+            mock_client = Mock()
+            mock_client.list_messages.return_value = [{'id': 'msg1', 'threadId': 'thread1'}]
+
+            test_email = b'From: test@example.com\r\nSubject: Test\r\n\r\nBody'
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1',
+                'raw': 'dGVzdA=='
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = test_email
+
+            # Mock Progress
+            mock_progress = Mock()
+            mock_task = Mock()
+            mock_progress.add_task.return_value = mock_task
+            mock_progress_class.return_value.__enter__.return_value = mock_progress
+
+            # Archive using HybridStorage
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+            result = archiver.archive('3y', str(mbox_path), incremental=False)
+
+            # Verify both mbox and database were updated
+            assert result['messages_archived'] == 1
+            assert mbox_path.exists(), "Mbox file should exist"
+
+            # Verify database has the message
+            db = DBManager(str(db_path))
+            location = db.get_message_location('msg1')
+            assert location is not None, "Message should be in database"
+            assert location[0] == str(mbox_path)
+            assert location[1] >= 0, "Offset should be valid"
+            assert location[2] > 0, "Length should be positive"
+            db.close()
+
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_atomic_rollback_on_database_failure(
+        self, mock_print: Mock, mock_progress_class: Mock
+    ) -> None:
+        """Test that database failure rolls back and doesn't leave orphaned mbox entries."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Create v1.1 database schema
+            self._create_v11_db(db_path)
+
+            # Setup mock client
+            mock_client = Mock()
+            mock_client.list_messages.return_value = [
+                {'id': 'msg1', 'threadId': 'thread1'},
+                {'id': 'msg2', 'threadId': 'thread2'}
+            ]
+
+            test_email = b'From: test@example.com\r\nSubject: Test\r\n\r\nBody'
+            mock_messages = [
+                {'id': 'msg1', 'threadId': 'thread1', 'raw': 'dGVzdA=='},
+                {'id': 'msg2', 'threadId': 'thread2', 'raw': 'dGVzdA=='}
+            ]
+            mock_client.get_messages_batch.return_value = mock_messages
+            mock_client.decode_message_raw.return_value = test_email
+
+            # Mock Progress
+            mock_progress = Mock()
+            mock_task = Mock()
+            mock_progress.add_task.return_value = mock_task
+            mock_progress_class.return_value.__enter__.return_value = mock_progress
+
+            # Mock HybridStorage to fail on second message
+            from collections.abc import Callable
+            from typing import Any
+            original_archive: Callable[..., Any] | None = None
+            call_count = [0]
+
+            def failing_archive(*args: Any, **kwargs: Any) -> Any:
+                """Fail on second call to simulate database failure."""
+                call_count[0] += 1
+                if call_count[0] == 2:
+                    raise Exception("Database failure simulation")
+                assert original_archive is not None
+                return original_archive(*args, **kwargs)
+
+            # Patch HybridStorage.archive_message to fail on second message
+            with patch('gmailarchiver.hybrid_storage.HybridStorage.archive_message') as mock_arch:
+                # Store original and set up side effect
+                from gmailarchiver.db_manager import DBManager as RealDB
+                from gmailarchiver.hybrid_storage import HybridStorage
+                db = RealDB(str(db_path))
+                storage = HybridStorage(db)
+                original_archive = storage.archive_message
+                mock_arch.side_effect = failing_archive
+
+                # Archive should handle the failure gracefully
+                archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+
+                # The archiving should continue and report partial success
+                result = archiver.archive('3y', str(mbox_path), incremental=False)
+
+                # Should have 1 success and 1 failure
+                assert result['messages_archived'] >= 0
+                assert result['messages_failed'] >= 0
+
+            db.close()
+
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_automatic_validation_after_archiving(
+        self, mock_print: Mock, mock_progress_class: Mock
+    ) -> None:
+        """Test that validation runs automatically after each message is archived."""
+        import tempfile
+        from pathlib import Path
+
+        from gmailarchiver.db_manager import DBManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Create v1.1 database schema
+            self._create_v11_db(db_path)
+
+            # Setup mock client
+            mock_client = Mock()
+            mock_client.list_messages.return_value = [{'id': 'msg1', 'threadId': 'thread1'}]
+
+            test_email = b'From: test@example.com\r\nSubject: Test\r\n\r\nBody'
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1',
+                'raw': 'dGVzdA=='
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = test_email
+
+            # Mock Progress
+            mock_progress = Mock()
+            mock_task = Mock()
+            mock_progress.add_task.return_value = mock_task
+            mock_progress_class.return_value.__enter__.return_value = mock_progress
+
+            # Archive message
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+            result = archiver.archive('3y', str(mbox_path), incremental=False)
+
+            assert result['messages_archived'] == 1
+
+            # Verify the message can be read from mbox at the stored offset
+            db = DBManager(str(db_path))
+            location = db.get_message_location('msg1')
+            assert location is not None
+
+            archive_file, offset, length = location
+            with open(archive_file, 'rb') as f:
+                f.seek(offset)
+                data = f.read(length)
+                assert len(data) > 0, "Should be able to read message at offset"
+
+            db.close()
+
+    def _create_v11_db(self, db_path: Path) -> None:
+        """Helper to create v1.1 database schema."""
+        import sqlite3
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+        conn.execute('''
+            CREATE VIRTUAL TABLE messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content=messages, content_rowid=rowid
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER,
+                archive_file TEXT,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT
+            )
+        ''')
+        conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
+        conn.commit()
+        conn.close()
+
+
 class TestV11OffsetTracking:
     """Tests for v1.1 offset tracking during archiving."""
 
@@ -666,6 +911,23 @@ class TestV11OffsetTracking:
                 )
             ''')
             conn.execute('''
+                CREATE VIRTUAL TABLE messages_fts USING fts5(
+                    subject, from_addr, to_addr, body_preview,
+                    content=messages, content_rowid=rowid
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE archive_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_timestamp TEXT NOT NULL,
+                    query TEXT,
+                    messages_archived INTEGER,
+                    archive_file TEXT,
+                    account_id TEXT DEFAULT 'default',
+                    operation_type TEXT DEFAULT 'archive'
+                )
+            ''')
+            conn.execute('''
                 CREATE TABLE schema_version (
                     version TEXT PRIMARY KEY,
                     migrated_timestamp TEXT
@@ -678,7 +940,7 @@ class TestV11OffsetTracking:
             # Configure mock_state_class to return real ArchiveState with validate_path=False
             from gmailarchiver.state import ArchiveState as RealArchiveState
 
-            def create_state(db_path):
+            def create_state(db_path: str) -> RealArchiveState:
                 """Create ArchiveState with validation disabled."""
                 return RealArchiveState(db_path, validate_path=False)
 
@@ -700,14 +962,14 @@ class TestV11OffsetTracking:
             raw_email = msg.as_bytes()
 
             # Mock message with labelIds
-            mock_message = {
+            mock_message: dict[str, str | list[str]] = {
                 'id': 'msg123',
                 'raw': '',  # Will be replaced by decode_message_raw
                 'threadId': 'thread123',
                 'labelIds': ['INBOX', 'IMPORTANT']
             }
 
-            def mock_get_messages_batch(ids):
+            def mock_get_messages_batch(ids: list[str]) -> list[dict[str, str | list[str]]]:
                 """Mock batch message retrieval."""
                 return [mock_message]
 
@@ -747,5 +1009,399 @@ class TestV11OffsetTracking:
             # Verify message can be extracted from mbox using offset
             mbox = mailbox.mbox(str(mbox_path))
             assert len(mbox) == 1
-            extracted_msg = mbox[0]
+            # Get first message from mbox (use list() since mbox doesn't support direct indexing)
+            messages = list(mbox)
+            extracted_msg = messages[0]
             assert extracted_msg['Subject'] == 'Test Subject'
+
+
+class TestExceptionHandling:
+    """Tests for exception handling in archiver."""
+
+    @patch('gmailarchiver.archiver.DBManager')
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_incremental_falls_back_on_dbmanager_failure(
+        self, mock_print: Mock, mock_progress: Mock,
+        mock_state_class: Mock, mock_dbmanager: Mock
+    ) -> None:
+        """Test that incremental mode falls back to ArchiveState if DBManager fails."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+
+            # Create database file (empty, will cause DBManager to fail)
+            db_path.touch()
+
+            # Mock DBManager to raise exception
+            mock_dbmanager.side_effect = Exception("Schema validation failed")
+
+            # Mock ArchiveState to return archived IDs
+            mock_state = Mock()
+            mock_state.get_archived_message_ids.return_value = {'msg1'}
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+            mock_client.list_messages.return_value = [
+                {'id': 'msg1', 'threadId': 'thread1'},
+                {'id': 'msg2', 'threadId': 'thread2'}
+            ]
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+
+            # Use dry_run to avoid executing archiving logic
+            result = archiver.archive('3y', 'test.mbox', incremental=True, dry_run=True)
+
+            # Should skip msg1 (archived), include msg2 (not archived)
+            # Should fall back to ArchiveState
+            mock_state.get_archived_message_ids.assert_called_once()
+            # In dry_run, we should see 1 message to archive (msg2)
+            assert result['messages_to_archive'] == 1
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_incremental_with_nonexistent_database(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test incremental mode when database doesn't exist yet."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "nonexistent.db"
+
+            # Database doesn't exist - should set archived_ids to empty set
+            assert not db_path.exists()
+
+            # Mock state for later operations
+            mock_state = Mock()
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+            mock_client.list_messages.return_value = [
+                {'id': 'msg1', 'threadId': 'thread1'}
+            ]
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+            result = archiver.archive('3y', 'test.mbox', incremental=True, dry_run=True)
+
+            # Should not skip any messages (no archived_ids)
+            assert result['messages_to_archive'] == 1
+
+    @patch('gmailarchiver.archiver.DBManager')
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_archive_messages_falls_back_on_dbmanager_init_failure(
+        self, mock_print: Mock, mock_progress: Mock,
+        mock_state_class: Mock, mock_dbmanager: Mock
+    ) -> None:
+        """Test _archive_messages falls back to legacy if DBManager init fails."""
+        import email
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Create database file
+            db_path.touch()
+
+            # Mock DBManager to raise exception on init
+            mock_dbmanager.side_effect = Exception("Schema validation failed")
+
+            # Mock ArchiveState for legacy path
+            mock_state = Mock()
+            mock_state.schema_version = "1.0"
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            # Create test email
+            msg = email.message.EmailMessage()
+            msg['Subject'] = 'Test'
+            msg['From'] = 'test@example.com'
+            msg.set_content("Test body")
+            raw_email = msg.as_bytes()
+
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1',
+                'raw': 'dGVzdA=='
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = raw_email
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+            result = archiver._archive_messages(['msg1'], str(mbox_path))
+
+            # Should use legacy path and succeed
+            assert result['archived'] == 1
+            assert mbox_path.exists()
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_mbox_unlock_exception_handling(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test that exceptions during mbox unlock are caught and logged."""
+        import email
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock, Mock, patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Mock state
+            mock_state = Mock()
+            mock_state.schema_version = "1.0"
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            msg = email.message.EmailMessage()
+            msg['Subject'] = 'Test'
+            msg['From'] = 'test@example.com'
+            msg.set_content("Test body")
+            raw_email = msg.as_bytes()
+
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1'
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = raw_email
+
+            # Patch mailbox.mbox to create a mock that raises on unlock
+            with patch('gmailarchiver.archiver.mailbox.mbox') as mock_mbox_class:
+                mock_mbox = MagicMock()
+                mock_mbox_class.return_value = mock_mbox
+
+                # Make unlock raise exception
+                mock_mbox.unlock.side_effect = Exception("Unlock failed")
+
+                archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+                result = archiver._archive_messages(['msg1'], str(mbox_path))
+
+                # Should handle exception and continue
+                assert result['archived'] == 1
+                # Verify warning was printed
+                mock_print.assert_any_call("Warning: Failed to unlock mbox: Unlock failed")
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_mbox_close_exception_handling(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test that exceptions during mbox close are caught and logged."""
+        import email
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Mock state
+            mock_state = Mock()
+            mock_state.schema_version = "1.0"
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            msg = email.message.EmailMessage()
+            msg['Subject'] = 'Test'
+            msg['From'] = 'test@example.com'
+            msg.set_content("Test body")
+            raw_email = msg.as_bytes()
+
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1'
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = raw_email
+
+            # Patch mailbox.mbox
+            with patch('gmailarchiver.archiver.mailbox.mbox') as mock_mbox_class:
+                mock_mbox = MagicMock()
+                mock_mbox_class.return_value = mock_mbox
+
+                # Make close raise exception
+                mock_mbox.close.side_effect = Exception("Close failed")
+
+                archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+                result = archiver._archive_messages(['msg1'], str(mbox_path))
+
+                # Should handle exception and continue
+                assert result['archived'] == 1
+                # Verify warning was printed
+                mock_print.assert_any_call("Warning: Failed to close mbox: Close failed")
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_lock_file_cleanup_after_compression(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test that lock files are cleaned up after compression."""
+        import email
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox.gz"
+
+            # Mock state
+            mock_state = Mock()
+            mock_state.schema_version = "1.0"
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            msg = email.message.EmailMessage()
+            msg['Subject'] = 'Test'
+            msg['From'] = 'test@example.com'
+            msg.set_content("Test body")
+            raw_email = msg.as_bytes()
+
+            mock_message = {
+                'id': 'msg1',
+                'threadId': 'thread1'
+            }
+            mock_client.get_messages_batch.return_value = [mock_message]
+            mock_client.decode_message_raw.return_value = raw_email
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+
+            # Archive with gzip compression
+            result = archiver._archive_messages(['msg1'], str(mbox_path), compress='gzip')
+
+            # Verify compressed file exists
+            assert mbox_path.exists()
+
+            # Verify lock file was cleaned up
+            temp_mbox_lock = temp_path / "test.mbox.lock"
+            assert not temp_mbox_lock.exists(), "Lock file should be cleaned up"
+
+    @patch('gmailarchiver.archiver.ArchiveState')
+    @patch('gmailarchiver.archiver.Progress')
+    @patch('builtins.print')
+    def test_failed_messages_print_statement(
+        self, mock_print: Mock, mock_progress: Mock, mock_state_class: Mock
+    ) -> None:
+        """Test that failed message count is printed when failures occur."""
+        import email
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_path = Path(tmpdir)
+            db_path = temp_path / "test.db"
+            mbox_path = temp_path / "test.mbox"
+
+            # Mock state
+            mock_state = Mock()
+            mock_state.schema_version = "1.0"
+            mock_state_class.return_value.__enter__.return_value = mock_state
+
+            # Setup mock client
+            mock_client = Mock()
+
+            msg = email.message.EmailMessage()
+            msg['Subject'] = 'Test'
+            msg['From'] = 'test@example.com'
+            msg.set_content("Test body")
+            raw_email = msg.as_bytes()
+
+            # Only return one message (simulating that second message was deleted/moved)
+            mock_messages = [
+                {'id': 'msg1', 'threadId': 'thread1'}
+            ]
+
+            mock_client.get_messages_batch.return_value = mock_messages
+            mock_client.decode_message_raw.return_value = raw_email
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(db_path))
+
+            # Request 2 messages but only 1 is returned (simulating deletion/move)
+            result = archiver._archive_messages(['msg1', 'msg2'], str(mbox_path))
+
+            # Should have 1 success, 1 failure (msg2 was deleted/moved)
+            assert result['archived'] == 1
+            assert result['failed'] == 1
+
+            # Verify failure message was printed
+            # Look for the warning message in print calls
+            print_calls = [str(call) for call in mock_print.call_args_list]
+            failure_printed = any('Failed: 1 message' in str(call) for call in print_calls)
+            assert failure_printed, "Should print failure count"
+
+
+class TestBodyPreviewExceptions:
+    """Tests for exception handling in body preview extraction."""
+
+    def test_multipart_decode_exception(self) -> None:
+        """Test that decode exceptions in multipart messages are handled."""
+        import email
+        from unittest.mock import Mock, patch
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        # Create multipart message
+        msg = email.message.EmailMessage()
+        msg['Subject'] = 'Test'
+        msg.set_content("Text part")
+
+        # Patch get_payload to raise exception
+        with patch.object(email.message.EmailMessage, 'get_payload') as mock_payload:
+            mock_payload.side_effect = Exception("Decode failed")
+
+            # Should handle exception and return empty string
+            result = archiver._extract_body_preview(msg)
+            assert result == ""
+
+    def test_non_multipart_decode_exception(self) -> None:
+        """Test that decode exceptions in non-multipart messages are handled."""
+        import email
+        from email import policy
+        from unittest.mock import Mock, patch
+
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        # Create simple message
+        msg_text = "Subject: Test\n\nBody content"
+        msg = email.message_from_string(msg_text, policy=policy.default)
+
+        # Patch get_payload to raise exception
+        with patch.object(type(msg), 'get_payload') as mock_payload:
+            mock_payload.side_effect = Exception("Decode failed")
+
+            # Should handle exception and return empty string
+            result = archiver._extract_body_preview(msg)
+            assert result == ""

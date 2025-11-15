@@ -16,7 +16,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-from gmailarchiver.state import ArchiveState
+from gmailarchiver.db_manager import DBManager
 
 
 @dataclass
@@ -213,7 +213,7 @@ class ArchiveImporter:
             account_id: Account identifier
 
         Returns:
-            Dictionary of metadata fields
+            Dictionary of metadata fields matching DBManager.record_archived_message signature
         """
         message_bytes = msg.as_bytes()
         rfc_message_id = self._extract_rfc_message_id(msg)
@@ -231,7 +231,7 @@ class ArchiveImporter:
             'from_addr': msg.get('From'),
             'to_addr': msg.get('To'),
             'cc_addr': msg.get('Cc'),
-            'message_date': msg.get('Date'),
+            'date': msg.get('Date'),  # Changed from 'message_date' to 'date' for DBManager
             'archive_file': archive_path,
             'mbox_offset': offset,
             'mbox_length': length,
@@ -285,15 +285,57 @@ class ArchiveImporter:
         mbox_path, is_temp = self._decompress_to_temp(archive_path)
 
         try:
+            # Create database if it doesn't exist
+            db_path = Path(self.state_db_path)
+            if not db_path.exists():
+                # Create empty database with v1.1 schema
+                import sqlite3
+                conn = sqlite3.connect(str(db_path))
+                # Create minimal schema (just messages table for import)
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS messages (
+                        gmail_id TEXT PRIMARY KEY,
+                        rfc_message_id TEXT UNIQUE NOT NULL,
+                        thread_id TEXT,
+                        subject TEXT,
+                        from_addr TEXT,
+                        to_addr TEXT,
+                        cc_addr TEXT,
+                        date TIMESTAMP,
+                        archived_timestamp TIMESTAMP NOT NULL,
+                        archive_file TEXT NOT NULL,
+                        mbox_offset INTEGER NOT NULL,
+                        mbox_length INTEGER NOT NULL,
+                        body_preview TEXT,
+                        checksum TEXT,
+                        size_bytes INTEGER,
+                        labels TEXT,
+                        account_id TEXT DEFAULT 'default'
+                    )
+                ''')
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS archive_runs (
+                        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_timestamp TEXT NOT NULL,
+                        query TEXT NOT NULL,
+                        messages_archived INTEGER NOT NULL,
+                        archive_file TEXT NOT NULL,
+                        account_id TEXT DEFAULT 'default',
+                        operation_type TEXT DEFAULT 'import'
+                    )
+                ''')
+                conn.commit()
+                conn.close()
+
             # Open mbox file
             mbox = mailbox.mbox(str(mbox_path))
 
-            with ArchiveState(self.state_db_path, validate_path=False) as state:
+            with DBManager(self.state_db_path, validate_schema=False) as db:
                 # Get existing RFC Message-IDs if skip_duplicates
                 existing_ids = set()
                 if skip_duplicates:
                     try:
-                        cursor = state.conn.execute(
+                        cursor = db.conn.execute(
                             "SELECT rfc_message_id FROM messages"
                         )
                         existing_ids = {row[0] for row in cursor.fetchall()}
@@ -348,16 +390,57 @@ class ArchiveImporter:
                             account_id
                         )
 
-                        # Insert into database (may fail on unique constraint)
+                        # Insert into database using DBManager or direct SQL (for INSERT OR REPLACE)
                         try:
-                            state.mark_archived(**metadata)
-                            session_ids.add(rfc_message_id)  # Add to session set
-                            result.messages_imported += 1
+                            if skip_duplicates:
+                                # Use DBManager's INSERT (will fail on duplicates, caught above)
+                                db.record_archived_message(**metadata)
+                                session_ids.add(rfc_message_id)
+                                result.messages_imported += 1
+                            else:
+                                # For skip_duplicates=False, use INSERT OR REPLACE directly
+                                # DBManager doesn't support OR REPLACE, so we use direct SQL
+                                # This is acceptable as it's a specific use case for importing
+                                from datetime import datetime
+                                archived_timestamp = datetime.now().isoformat()
+
+                                db.conn.execute(
+                                    """
+                                    INSERT OR REPLACE INTO messages (
+                                        gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                                        to_addr, cc_addr, date, archived_timestamp, archive_file,
+                                        mbox_offset, mbox_length, body_preview, checksum,
+                                        size_bytes, labels, account_id
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    (
+                                        metadata['gmail_id'],
+                                        metadata['rfc_message_id'],
+                                        metadata['thread_id'],
+                                        metadata['subject'],
+                                        metadata['from_addr'],
+                                        metadata['to_addr'],
+                                        metadata['cc_addr'],
+                                        metadata['date'],
+                                        archived_timestamp,
+                                        metadata['archive_file'],
+                                        metadata['mbox_offset'],
+                                        metadata['mbox_length'],
+                                        metadata['body_preview'],
+                                        metadata['checksum'],
+                                        metadata['size_bytes'],
+                                        metadata['labels'],
+                                        metadata['account_id'],
+                                    ),
+                                )
+                                session_ids.add(rfc_message_id)
+                                result.messages_imported += 1
                         except Exception as db_err:
                             # Database constraint violation (e.g., unique constraint)
                             result.messages_failed += 1
                             error_msg = f"Message {key}: Database error: {str(db_err)}"
                             result.errors.append(error_msg)
+                            db.rollback()  # Rollback this message only
                             continue
 
                     except Exception as e:

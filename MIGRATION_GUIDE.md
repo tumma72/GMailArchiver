@@ -1,6 +1,143 @@
-# Migration Guide: v1.0 → v1.1
+# Migration Guide
 
-This guide helps you upgrade from Gmail Archiver v1.0.x to v1.1.0.
+This guide helps you upgrade between Gmail Archiver versions.
+
+## Quick Links
+
+- [v1.1.0-beta.1 → v1.1.0-beta.2](#v110-beta1--v110-beta2) - **Critical fixes for beta.1 users**
+- [v1.0 → v1.1](#v10--v11) - Initial v1.1 upgrade
+
+---
+
+## v1.1.0-beta.1 → v1.1.0-beta.2
+
+### Overview
+
+**v1.1.0-beta.2 fixes critical data integrity bugs discovered in beta.1.** All beta.1 users should upgrade immediately.
+
+### What's Fixed in Beta.2
+
+1. **Critical Migration Bug**: Beta.1 migration created placeholder records with `offset=-1` instead of scanning actual mbox files
+2. **Missing Audit Trail**: Import/consolidate operations weren't recorded in archive_runs
+3. **Schema Divergence**: Inconsistent archive_runs table structure caused database errors
+
+### Required Actions
+
+#### Step 1: Upgrade to Beta.2
+
+```bash
+pip install --upgrade gmailarchiver
+```
+
+#### Step 2: Verify Database Integrity
+
+```bash
+gmailarchiver verify-integrity
+```
+
+**Expected outcomes:**
+
+**If you migrated from v1.0 to beta.1**, you'll likely see:
+```
+Database Integrity Issues
+┌──────────────────────────────────────────────────────────┐
+│ Issue                                                     │
+├──────────────────────────────────────────────────────────┤
+│ 16,132 messages with invalid offsets                     │
+└──────────────────────────────────────────────────────────┘
+
+Found 1 integrity issue(s)
+Run 'gmailarchiver repair' to fix these issues
+```
+
+**If you only used beta.1 features (import/consolidate)**, you should see:
+```
+✓ Database integrity verified - no issues found
+```
+
+#### Step 3: Fix Invalid Offsets (If Found)
+
+```bash
+# Preview what will be fixed
+gmailarchiver repair --backfill
+
+# Apply the fix
+gmailarchiver repair --backfill --no-dry-run
+```
+
+**What happens during repair:**
+1. Scans your mbox archives to find real message positions
+2. Extracts actual RFC Message-IDs from each message
+3. Calculates accurate offsets and lengths
+4. Updates database with real data
+5. Records repair in audit trail
+
+**Time estimate**: ~1 second per 1000 messages
+
+#### Step 4: Verify Repair Succeeded
+
+```bash
+gmailarchiver verify-integrity
+```
+
+Should show:
+```
+✓ Database integrity verified - no issues found
+```
+
+### New Features in Beta.2
+
+- **`verify-integrity`** command - Check database for issues
+- **`repair [--backfill]`** command - Fix database issues automatically
+- **DBManager** - Centralized database operations with audit trail
+- **HybridStorage** - Atomic operations for data integrity
+
+### Breaking Changes
+
+None. Beta.2 is fully backward compatible with beta.1 databases.
+
+### Troubleshooting
+
+#### "Invalid offsets" still showing after repair
+
+```bash
+# Check which archives have issues
+gmailarchiver verify-integrity --verbose
+
+# Ensure mbox files exist and are readable
+ls -lh archive_*.mbox*
+
+# Try repair again
+gmailarchiver repair --backfill --no-dry-run
+```
+
+#### "Missing archive file" errors
+
+**Cause**: Database references mbox files that no longer exist
+
+**Solution**: Either restore the missing files or remove the references:
+```bash
+# Option 1: Restore missing mbox files from backup
+cp /backup/archive_*.mbox .
+
+# Option 2: Remove references to missing files (CAUTION: data loss)
+# Contact support for manual database cleanup
+```
+
+#### "Duplicate Message-IDs found"
+
+**Cause**: Multiple database records with the same RFC Message-ID
+
+**Solution**: Use dedupe command:
+```bash
+gmailarchiver dedupe --strategy newest
+```
+
+---
+
+## v1.0 → v1.1
+
+This section applies to users upgrading from v1.0.x to v1.1.0-beta.2 or later.
 
 ## What's New in v1.1?
 

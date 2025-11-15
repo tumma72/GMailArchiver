@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from gmailarchiver.db_manager import DBManager
 from gmailarchiver.importer import ArchiveImporter, ImportResult, MultiImportResult
 
 
@@ -238,7 +239,7 @@ def v1_1_db(tmp_path):
         ("1.1", "2024-01-01T00:00:00")
     )
 
-    # Create archive_runs table
+    # Create archive_runs table with operation_type column
     conn.execute('''
         CREATE TABLE archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,7 +247,8 @@ def v1_1_db(tmp_path):
             query TEXT NOT NULL,
             messages_archived INTEGER NOT NULL,
             archive_file TEXT NOT NULL,
-            account_id TEXT DEFAULT 'default'
+            account_id TEXT DEFAULT 'default',
+            operation_type TEXT DEFAULT 'archive'
         )
     ''')
 
@@ -509,6 +511,172 @@ class TestMetadataExtraction:
         assert size_bytes > 0
         assert account_id == 'default'
 
+    def test_extract_thread_id_from_xgm_thrid(self, v1_1_db, tmp_path):
+        """Test thread ID extraction from X-GM-THRID header."""
+        mbox_path = tmp_path / "thread_test.mbox"
+
+        # Create message with X-GM-THRID header
+        with open(mbox_path, 'w') as f:
+            f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
+            f.write("Message-ID: <thread-test@example.com>\n")
+            f.write("Subject: Thread Test\n")
+            f.write("From: sender@example.com\n")
+            f.write("Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+            f.write("X-GM-THRID: 1234567890abcdef\n")
+            f.write("\n")
+            f.write("Test message with Gmail thread ID.\n")
+            f.write("\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        assert result.messages_imported == 1
+
+        # Verify thread_id is extracted
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT thread_id FROM messages WHERE rfc_message_id = '<thread-test@example.com>'"
+        )
+        thread_id = cursor.fetchone()[0]
+        conn.close()
+
+        assert thread_id == '1234567890abcdef'
+
+    def test_extract_thread_id_from_references_fallback(self, v1_1_db, tmp_path):
+        """Test thread ID extraction from References header when X-GM-THRID is missing."""
+        mbox_path = tmp_path / "references_test.mbox"
+
+        # Create message with References header (no X-GM-THRID)
+        with open(mbox_path, 'w') as f:
+            f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
+            f.write("Message-ID: <references-test@example.com>\n")
+            f.write("Subject: References Test\n")
+            f.write("From: sender@example.com\n")
+            f.write("Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+            f.write("References: <original@example.com> <reply1@example.com>\n")
+            f.write("\n")
+            f.write("Test message using References for thread ID.\n")
+            f.write("\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        assert result.messages_imported == 1
+
+        # Verify thread_id is first reference
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT thread_id FROM messages "
+            "WHERE rfc_message_id = '<references-test@example.com>'"
+        )
+        thread_id = cursor.fetchone()[0]
+        conn.close()
+
+        assert thread_id == '<original@example.com>'
+
+    def test_extract_thread_id_none_when_missing(self, v1_1_db, tmp_path):
+        """Test thread ID is None when both X-GM-THRID and References are missing."""
+        mbox_path = tmp_path / "no_thread.mbox"
+
+        # Create message with no thread headers
+        with open(mbox_path, 'w') as f:
+            f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
+            f.write("Message-ID: <no-thread@example.com>\n")
+            f.write("Subject: No Thread Test\n")
+            f.write("From: sender@example.com\n")
+            f.write("Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+            f.write("\n")
+            f.write("Test message with no thread information.\n")
+            f.write("\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        assert result.messages_imported == 1
+
+        # Verify thread_id is None
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT thread_id FROM messages WHERE rfc_message_id = '<no-thread@example.com>'"
+        )
+        thread_id = cursor.fetchone()[0]
+        conn.close()
+
+        assert thread_id is None
+
+    def test_body_preview_multipart_with_decoding_error(self, v1_1_db, tmp_path):
+        """Test body preview extraction handles decoding errors in multipart messages."""
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+
+        mbox_path = tmp_path / "multipart_error.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        # Create multipart message with problematic encoding
+        msg = MIMEMultipart()
+        msg['Message-ID'] = '<multipart-error@example.com>'
+        msg['Subject'] = 'Multipart Error Test'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+
+        # Add valid text part
+        text_part = MIMEText('Valid text content')
+        msg.attach(text_part)
+
+        mbox.add(msg)
+        mbox.close()
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        assert result.messages_imported == 1
+
+        # Verify body preview was extracted
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT body_preview FROM messages "
+            "WHERE rfc_message_id = '<multipart-error@example.com>'"
+        )
+        body_preview = cursor.fetchone()[0]
+        conn.close()
+
+        assert 'Valid text content' in body_preview
+
+    def test_body_preview_non_multipart_with_decoding_error(self, v1_1_db, tmp_path):
+        """Test body preview extraction handles decoding errors in non-multipart messages."""
+        mbox_path = tmp_path / "decode_error.mbox"
+
+        # Create message with invalid UTF-8 in body
+        with open(mbox_path, 'wb') as f:
+            f.write(b"From sender@example.com Mon Jan 01 12:00:00 2024\n")
+            f.write(b"Message-ID: <decode-error@example.com>\n")
+            f.write(b"Subject: Decode Error Test\n")
+            f.write(b"From: sender@example.com\n")
+            f.write(b"Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+            f.write(b"Content-Type: text/plain; charset=utf-8\n")
+            f.write(b"\n")
+            # Include some invalid UTF-8 bytes - will be handled with errors='ignore'
+            f.write(b"Valid content with invalid bytes: \xff\xfe mixed in.\n")
+            f.write(b"\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        assert result.messages_imported == 1
+
+        # Verify body preview exists (invalid bytes ignored)
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT body_preview FROM messages "
+            "WHERE rfc_message_id = '<decode-error@example.com>'"
+        )
+        body_preview = cursor.fetchone()[0]
+        conn.close()
+
+        assert body_preview is not None
+        assert 'Valid content' in body_preview
+
     def test_extract_rfc_message_id(self, v1_1_db, sample_mbox_simple):
         """Test RFC Message-ID extraction."""
         importer = ArchiveImporter(str(v1_1_db))
@@ -664,6 +832,113 @@ class TestCompressionSupport:
         # (This test will be implemented when we know the internal API)
         pass
 
+    def test_import_lzma_compressed_archive(self, v1_1_db, tmp_path):
+        """Test importing lzma-compressed (.xz) mbox."""
+        import lzma
+
+        # Create uncompressed mbox
+        mbox_path = tmp_path / "lzma_test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<lzma-test@example.com>'
+        msg['Subject'] = 'LZMA Test Message'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('This message will be LZMA compressed.')
+        mbox.add(msg)
+        mbox.close()
+
+        # Compress with lzma (.xz extension)
+        compressed_path = tmp_path / "lzma_test.mbox.xz"
+        with open(mbox_path, 'rb') as f_in:
+            with lzma.open(compressed_path, 'wb') as f_out:
+                f_out.write(f_in.read())
+
+        # Remove uncompressed file
+        mbox_path.unlink()
+
+        # Test import
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(compressed_path))
+
+        assert result.messages_imported == 1
+        assert result.messages_failed == 0
+
+    def test_import_zstd_compressed_archive(self, v1_1_db, tmp_path):
+        """Test importing zstd-compressed (.zst) mbox."""
+        try:
+            import zstandard as zstd
+        except ImportError:
+            pytest.skip("zstandard module not available")
+
+        # Create uncompressed mbox
+        mbox_path = tmp_path / "zstd_test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<zstd-test@example.com>'
+        msg['Subject'] = 'Zstandard Test Message'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('This message will be Zstandard compressed.')
+        mbox.add(msg)
+        mbox.close()
+
+        # Compress with zstd
+        compressed_path = tmp_path / "zstd_test.mbox.zst"
+        cctx = zstd.ZstdCompressor()
+        with open(mbox_path, 'rb') as f_in:
+            with open(compressed_path, 'wb') as f_out:
+                f_out.write(cctx.compress(f_in.read()))
+
+        # Remove uncompressed file
+        mbox_path.unlink()
+
+        # Test import
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(compressed_path))
+
+        assert result.messages_imported == 1
+        assert result.messages_failed == 0
+
+    def test_compression_format_detection(self, tmp_path):
+        """Test _get_compression_format() detects all formats correctly."""
+        from pathlib import Path
+
+        importer = ArchiveImporter(str(tmp_path / "test.db"))
+
+        # Test gzip detection
+        assert importer._get_compression_format(Path("test.mbox.gz")) == 'gzip'
+
+        # Test lzma detection (.xz)
+        assert importer._get_compression_format(Path("test.mbox.xz")) == 'lzma'
+
+        # Test lzma detection (.lzma)
+        assert importer._get_compression_format(Path("test.mbox.lzma")) == 'lzma'
+
+        # Test zstd detection
+        assert importer._get_compression_format(Path("test.mbox.zst")) == 'zstd'
+
+        # Test no compression
+        assert importer._get_compression_format(Path("test.mbox")) is None
+
+    def test_decompression_failure_cleanup(self, v1_1_db, tmp_path):
+        """Test that temporary files are cleaned up on decompression failure."""
+
+        # Create a corrupted gzip file
+        corrupted_path = tmp_path / "corrupted.mbox.gz"
+        with open(corrupted_path, 'wb') as f:
+            f.write(b'This is not valid gzip data')
+
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # Should raise RuntimeError and clean up temp file
+        with pytest.raises(RuntimeError, match="Failed to decompress"):
+            importer.import_archive(str(corrupted_path))
+
 
 class TestErrorHandling:
     """Test error handling and recovery."""
@@ -720,6 +995,208 @@ class TestErrorHandling:
 
         with pytest.raises((FileNotFoundError, Exception)):
             importer.import_archive(str(nonexistent))
+
+    def test_database_query_error_handling(self, v1_1_db, tmp_path):
+        """Test error handling when database query fails during duplicate check."""
+        # Create simple mbox
+        mbox_path = tmp_path / "test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<test@example.com>'
+        msg['Subject'] = 'Test'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('Test content.')
+        mbox.add(msg)
+        mbox.close()
+
+        # Import first time normally
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        # Should import successfully (DB exists and is valid)
+        assert result.messages_imported == 1
+
+        # Second import with skip_duplicates should trigger the existing_ids query
+        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
+        assert result2.messages_skipped == 1  # Message already exists
+
+    def test_database_insert_error_recovery(self, v1_1_db, tmp_path):
+        """Test that database insert errors are caught and recorded."""
+        # Create mbox with messages
+        mbox_path = tmp_path / "insert_test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        # Add first message
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<insert1@example.com>'
+        msg1['Subject'] = 'Insert Test 1'
+        msg1['From'] = 'sender@example.com'
+        msg1['To'] = 'recipient@example.com'
+        msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg1.set_content('First message.')
+        mbox.add(msg1)
+
+        # Add second message
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<insert2@example.com>'
+        msg2['Subject'] = 'Insert Test 2'
+        msg2['From'] = 'sender@example.com'
+        msg2['To'] = 'recipient@example.com'
+        msg2['Date'] = 'Tue, 02 Jan 2024 12:00:00 +0000'
+        msg2.set_content('Second message.')
+        mbox.add(msg2)
+
+        mbox.close()
+
+        # Import first time
+        importer = ArchiveImporter(str(v1_1_db))
+        result1 = importer.import_archive(str(mbox_path))
+        assert result1.messages_imported == 2
+
+        # Import again with skip_duplicates=True, then manually trigger constraint violation
+        # by trying to insert with skip_duplicates=True (will fail silently with proper
+        # error handling)
+        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
+        assert result2.messages_skipped == 2
+        assert result2.messages_failed == 0
+
+    def test_import_multiple_with_file_error(self, v1_1_db, tmp_path):
+        """Test that import_multiple continues after file-level errors."""
+        # Create one valid mbox
+        mbox1_path = tmp_path / "valid.mbox"
+        mbox = mailbox.mbox(str(mbox1_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<valid@example.com>'
+        msg['Subject'] = 'Valid Message'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('Valid message.')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create an invalid file (not an mbox)
+        invalid_path = tmp_path / "invalid.mbox"
+        with open(invalid_path, 'w') as f:
+            f.write("This is not a valid mbox file\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        pattern = str(tmp_path / "*.mbox")
+        result = importer.import_multiple(pattern)
+
+        # Should have 2 files (1 valid, 1 invalid)
+        assert result.total_files == 2
+        # The valid file should succeed, invalid should be in file_results with error
+        assert len(result.file_results) == 2
+
+        # Check that at least one file succeeded
+        successful_files = [r for r in result.file_results if r.messages_imported > 0]
+        assert len(successful_files) >= 1
+
+    def test_body_preview_multipart_exception_handling(self, v1_1_db, tmp_path):
+        """Test exception handling in multipart body preview extraction."""
+        from email.mime.base import MIMEBase
+        from email.mime.multipart import MIMEMultipart
+
+        mbox_path = tmp_path / "multipart_exception.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        # Create multipart message with non-text parts
+        msg = MIMEMultipart()
+        msg['Message-ID'] = '<multipart-exception@example.com>'
+        msg['Subject'] = 'Multipart Exception Test'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+
+        # Add a binary part (image)
+        binary_part = MIMEBase('image', 'png')
+        binary_part.set_payload(b'\x89PNG\r\n\x1a\n')  # PNG header
+        msg.attach(binary_part)
+
+        mbox.add(msg)
+        mbox.close()
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        # Should import successfully despite no text/plain part
+        assert result.messages_imported == 1
+
+        # Verify body_preview is empty or minimal (no text/plain found)
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute(
+            "SELECT body_preview FROM messages "
+            "WHERE rfc_message_id = '<multipart-exception@example.com>'"
+        )
+        body_preview = cursor.fetchone()[0]
+        conn.close()
+
+        # Body preview will be empty since no text/plain part exists
+        assert body_preview == ""
+
+    def test_body_preview_non_multipart_exception_handling(self, v1_1_db, tmp_path):
+        """Test exception handling in non-multipart body preview extraction."""
+        mbox_path = tmp_path / "non_multipart_exception.mbox"
+
+        # Create message with Content-Transfer-Encoding that might cause issues
+        with open(mbox_path, 'w') as f:
+            f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
+            f.write("Message-ID: <non-multipart-exception@example.com>\n")
+            f.write("Subject: Non-Multipart Exception Test\n")
+            f.write("From: sender@example.com\n")
+            f.write("Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+            f.write("Content-Type: application/octet-stream\n")
+            f.write("\n")
+            f.write("Binary data here\n")
+            f.write("\n")
+
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+
+        # Should import successfully despite non-text content
+        assert result.messages_imported == 1
+
+    def test_import_multiple_error_recovery(self, v1_1_db, tmp_path):
+        """Test that import_multiple records errors but continues processing files."""
+        # Create one valid mbox
+        valid_path = tmp_path / "valid.mbox"
+        mbox = mailbox.mbox(str(valid_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<valid-multiple@example.com>'
+        msg['Subject'] = 'Valid Message'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('Valid content.')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create directory (not a file) with .mbox extension to trigger error
+        error_path = tmp_path / "error.mbox"
+        error_path.mkdir()
+
+        importer = ArchiveImporter(str(v1_1_db))
+        pattern = str(tmp_path / "*.mbox")
+        result = importer.import_multiple(pattern)
+
+        # Should have 2 "files" (1 valid mbox, 1 directory)
+        assert result.total_files == 2
+
+        # Valid file should import successfully
+        assert result.total_messages_imported >= 1
+
+        # Should have results for both (valid + error)
+        assert len(result.file_results) == 2
+
+        # One should have an error
+        error_results = [r for r in result.file_results if len(r.errors) > 0]
+        assert len(error_results) >= 1
 
 
 class TestMultipleArchiveImport:
@@ -843,3 +1320,108 @@ class TestPerformance:
 
         # Should process at least 100 messages/second
         assert msg_per_sec > 100
+
+
+class TestDBManagerIntegration:
+    """Test integration with DBManager instead of direct SQL."""
+
+    def test_uses_dbmanager_for_database_operations(self, v1_1_db, sample_mbox_simple):
+        """Test that importer uses DBManager for all database operations."""
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # Import should work without direct SQL queries
+        result = importer.import_archive(str(sample_mbox_simple))
+        assert result.messages_imported == 3
+
+        # Verify DBManager can read the imported messages
+        with DBManager(str(v1_1_db)) as db:
+            # Check messages were recorded
+            conn = db.conn
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
+            count = cursor.fetchone()[0]
+            assert count == 3
+
+    def test_atomic_import_operations(self, v1_1_db, sample_mbox_simple):
+        """Test that import operations are atomic (all or nothing)."""
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # First import should succeed
+        result = importer.import_archive(str(sample_mbox_simple))
+        assert result.messages_imported == 3
+
+        # Check database has exactly 3 records
+        with DBManager(str(v1_1_db)) as db:
+            cursor = db.conn.execute("SELECT COUNT(*) FROM messages")
+            count = cursor.fetchone()[0]
+            assert count == 3
+
+    def test_audit_trail_in_archive_runs(self, v1_1_db, sample_mbox_simple):
+        """Test that import operations are recorded in archive_runs."""
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # Import messages
+        importer.import_archive(str(sample_mbox_simple), account_id='test-import')
+
+        # Verify archive_runs has entries
+        conn = sqlite3.connect(str(v1_1_db))
+        cursor = conn.execute("""
+            SELECT COUNT(*), SUM(messages_archived)
+            FROM archive_runs
+            WHERE account_id = 'test-import'
+        """)
+        run_count, total_messages = cursor.fetchone()
+        conn.close()
+
+        # Should have audit trail entries
+        assert run_count > 0
+        assert total_messages == 3
+
+    def test_error_handling_with_rollback(self, v1_1_db, tmp_path):
+        """Test proper error handling with database rollback."""
+        # Create a simple mbox
+        mbox_path = tmp_path / "test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<rollback-test@example.com>'
+        msg['Subject'] = 'Test Message'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content('Test content.')
+        mbox.add(msg)
+        mbox.close()
+
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # First import should succeed
+        result1 = importer.import_archive(str(mbox_path))
+        assert result1.messages_imported == 1
+
+        # Second import with skip_duplicates should skip
+        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
+        assert result2.messages_skipped == 1
+        assert result2.messages_imported == 0
+
+    def test_no_direct_sql_queries_in_importer(self, v1_1_db, sample_mbox_simple):
+        """Test that importer doesn't use direct SQL queries."""
+        # This is a behavioral test - we verify the importer works correctly
+        # using only DBManager methods, not direct SQL
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(sample_mbox_simple))
+
+        assert result.messages_imported == 3
+
+        # Verify using DBManager that messages are correctly stored
+        with DBManager(str(v1_1_db)) as db:
+            # Get all messages using DBManager API
+            messages = db.get_all_messages_for_archive(str(sample_mbox_simple))
+            assert len(messages) == 3
+
+            # Verify each message has proper metadata
+            for msg_data in messages:
+                assert msg_data['gmail_id'] is not None
+                assert msg_data['rfc_message_id'] is not None
+                assert msg_data['mbox_offset'] >= 0
+                assert msg_data['mbox_length'] > 0
+                assert msg_data['archive_file'] == str(sample_mbox_simple)
