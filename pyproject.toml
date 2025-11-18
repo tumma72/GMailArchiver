@@ -1,5 +1,5 @@
 [project]
-name = "gmailarchiver"
+name = "gmail-archiver-cli"
 dynamic = ["version"]
 description = "A CLI tool to archive old Gmail messages to local mbox files with validation and safe deletion"
 readme = "README.md"
