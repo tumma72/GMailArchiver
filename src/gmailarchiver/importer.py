@@ -283,52 +283,12 @@ class ArchiveImporter:
         mbox_path, is_temp = self._decompress_to_temp(archive_path)
 
         try:
-            # Create database if it doesn't exist
-            db_path = Path(self.state_db_path)
-            if not db_path.exists():
-                # Create empty database with v1.1 schema
-                import sqlite3
-                conn = sqlite3.connect(str(db_path))
-                # Create minimal schema (just messages table for import)
-                conn.execute('''
-                    CREATE TABLE IF NOT EXISTS messages (
-                        gmail_id TEXT PRIMARY KEY,
-                        rfc_message_id TEXT UNIQUE NOT NULL,
-                        thread_id TEXT,
-                        subject TEXT,
-                        from_addr TEXT,
-                        to_addr TEXT,
-                        cc_addr TEXT,
-                        date TIMESTAMP,
-                        archived_timestamp TIMESTAMP NOT NULL,
-                        archive_file TEXT NOT NULL,
-                        mbox_offset INTEGER NOT NULL,
-                        mbox_length INTEGER NOT NULL,
-                        body_preview TEXT,
-                        checksum TEXT,
-                        size_bytes INTEGER,
-                        labels TEXT,
-                        account_id TEXT DEFAULT 'default'
-                    )
-                ''')
-                conn.execute('''
-                    CREATE TABLE IF NOT EXISTS archive_runs (
-                        run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        run_timestamp TEXT NOT NULL,
-                        query TEXT NOT NULL,
-                        messages_archived INTEGER NOT NULL,
-                        archive_file TEXT NOT NULL,
-                        account_id TEXT DEFAULT 'default',
-                        operation_type TEXT DEFAULT 'import'
-                    )
-                ''')
-                conn.commit()
-                conn.close()
-
             # Open mbox file
             mbox = mailbox.mbox(str(mbox_path))
 
-            with DBManager(self.state_db_path, validate_schema=False) as db:
+            # DBManager will auto-create database with complete v1.1 schema if it doesn't exist
+            # We use validate_schema=False to allow working with databases in various states
+            with DBManager(self.state_db_path, validate_schema=False, auto_create=True) as db:
                 # Get existing RFC Message-IDs if skip_duplicates
                 existing_ids = set()
                 if skip_duplicates:
@@ -392,7 +352,8 @@ class ArchiveImporter:
                         try:
                             if skip_duplicates:
                                 # Use DBManager's INSERT (will fail on duplicates, caught above)
-                                db.record_archived_message(**metadata)
+                                # record_run=False because we'll record a single run at the end
+                                db.record_archived_message(**metadata, record_run=False)
                                 session_ids.add(rfc_message_id)
                                 result.messages_imported += 1
                             else:
@@ -446,6 +407,15 @@ class ArchiveImporter:
                         error_msg = f"Message {key}: {str(e)}"
                         result.errors.append(error_msg)
                         continue
+
+                # Record a single archive run for this import operation
+                if result.messages_imported > 0:
+                    db.record_archive_run(
+                        operation="import",
+                        messages_count=result.messages_imported,
+                        archive_file=str(archive_path),
+                        account_id=account_id
+                    )
 
         finally:
             # Clean up temporary file if created

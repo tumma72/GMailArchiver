@@ -306,12 +306,13 @@ class DBManager:
         size_bytes: int | None = None,
         labels: str | None = None,
         account_id: str = "default",
+        record_run: bool = True,
     ) -> None:
         """
-        Record a newly archived message with audit trail.
+        Record a newly archived message with optional audit trail.
 
         This is a transactional operation - commits or rolls back.
-        Also records in archive_runs for complete audit trail.
+        Optionally records in archive_runs for complete audit trail.
 
         Args:
             gmail_id: Gmail message ID (primary key)
@@ -330,6 +331,8 @@ class DBManager:
             size_bytes: Total message size
             labels: JSON array of Gmail labels
             account_id: Account identifier (default: 'default')
+            record_run: If True, record in archive_runs (default: True for single operations,
+                       set False for bulk operations that will record a single run at the end)
 
         Raises:
             DBManagerError: If operation fails
@@ -365,13 +368,14 @@ class DBManager:
                 ),
             )
 
-            # Record in audit trail
-            self._record_archive_run(
-                operation="archive",
-                messages_count=1,
-                archive_file=archive_file,
-                account_id=account_id,
-            )
+            # Record in audit trail (unless caller will do it in bulk)
+            if record_run:
+                self._record_archive_run(
+                    operation="archive",
+                    messages_count=1,
+                    archive_file=archive_file,
+                    account_id=account_id,
+                )
         except sqlite3.IntegrityError:
             # Re-raise IntegrityError for tests to catch
             raise
@@ -845,6 +849,29 @@ class DBManager:
             self.conn.rollback()
             logger.error(f"Transaction rolled back: {e}")
             raise
+
+    def record_archive_run(
+        self,
+        operation: str,
+        messages_count: int,
+        archive_file: str | None = None,
+        notes: str | None = None,
+        account_id: str = "default",
+    ) -> None:
+        """
+        Record an operation in archive_runs for audit trail.
+
+        Use this for bulk operations (import, consolidate, etc.) to record
+        a single run entry instead of one per message.
+
+        Args:
+            operation: Operation type (archive, import, deduplicate, consolidate, repair)
+            messages_count: Number of messages affected
+            archive_file: Archive file path (if applicable)
+            notes: Additional notes (stored in 'query' field for compatibility)
+            account_id: Account identifier (default: 'default')
+        """
+        self._record_archive_run(operation, messages_count, archive_file, notes, account_id)
 
     def _record_archive_run(
         self,

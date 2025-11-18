@@ -104,21 +104,21 @@ class GmailArchiver:
         # Filter out already-archived messages if incremental
         message_ids = [msg['id'] for msg in message_list]
         if incremental:
-            # Try to use DBManager for v1.1 schema, fall back to ArchiveState for legacy
+            # DBManager will auto-create v1.1 database if it doesn't exist
+            # We use validate_schema=False to allow working with v1.0 databases too
             db_path = Path(self.state_db_path)
-            if db_path.exists():
-                try:
-                    # Use DBManager for v1.1 schema
-                    db = DBManager(str(db_path), validate_schema=True)
-                    # Get all gmail_ids from messages table
-                    cursor = db.conn.execute("SELECT gmail_id FROM messages")
-                    archived_ids = {row[0] for row in cursor.fetchall()}
-                    db.close()
-                except Exception:
-                    # Fall back to ArchiveState for legacy schema
-                    with ArchiveState(self.state_db_path) as state:
-                        archived_ids = state.get_archived_message_ids()
-            else:
+            try:
+                db = DBManager(
+                    str(db_path),
+                    validate_schema=False,
+                    auto_create=True
+                )
+                # Get all gmail_ids from messages table
+                cursor = db.conn.execute("SELECT gmail_id FROM messages")
+                archived_ids = {row[0] for row in cursor.fetchall()}
+                db.close()
+            except Exception:
+                # If query fails, database might be empty or table doesn't exist yet
                 archived_ids = set()
 
             original_count = len(message_ids)
@@ -155,29 +155,8 @@ class GmailArchiver:
         )
 
         # Record run in state
-        # Try to use DBManager for v1.1 schema, fall back to ArchiveState for legacy
-        db_path = Path(self.state_db_path)
-        if db_path.exists():
-            try:
-                # DBManager already recorded this via _record_archive_run during each message
-                # So we don't need to record again here for v1.1 schema
-                pass
-            except Exception:
-                # Fall back to ArchiveState for legacy schema
-                with ArchiveState(self.state_db_path) as state:
-                    state.record_archive_run(
-                        query=query,
-                        messages_archived=archive_result['archived'],
-                        archive_file=output_file
-                    )
-        else:
-            # No database yet - ArchiveState will create it
-            with ArchiveState(self.state_db_path) as state:
-                state.record_archive_run(
-                    query=query,
-                    messages_archived=archive_result['archived'],
-                    archive_file=output_file
-                )
+        # DBManager already recorded this via _record_archive_run during each message
+        # for v1.1 schema, so nothing more to do here
 
         return {
             'messages_found': len(message_list),
@@ -205,28 +184,21 @@ class GmailArchiver:
             Dict with archived count and failed count
         """
         # Initialize DBManager and HybridStorage
-        # Check if database exists - if not, fall back to ArchiveState for backward compatibility
-        db_path = Path(self.state_db_path)
-        use_hybrid_storage = False
-
-        if db_path.exists():
-            try:
-                # Try to initialize DBManager - this validates v1.1 schema
-                self.db_manager = DBManager(str(db_path), validate_schema=True)
-                self.hybrid_storage = HybridStorage(self.db_manager)
-                use_hybrid_storage = True
-            except Exception:
-                # Fall back to ArchiveState if DBManager fails (e.g., old schema)
-                use_hybrid_storage = False
-
-        if use_hybrid_storage and self.hybrid_storage:
+        # DBManager will auto-create v1.1 database if it doesn't exist
+        try:
+            # Initialize DBManager - auto-creates v1.1 schema if needed
+            self.db_manager = DBManager(
+                str(self.state_db_path),
+                validate_schema=False,  # Don't validate to allow migration from v1.0
+                auto_create=True
+            )
+            self.hybrid_storage = HybridStorage(self.db_manager)
             return self._archive_messages_hybrid_storage(
                 message_ids, output_file, compress
             )
-        else:
-            return self._archive_messages_legacy(
-                message_ids, output_file, compress
-            )
+        except Exception as e:
+            # If DBManager fails completely, we have a serious issue
+            raise RuntimeError(f"Failed to initialize database: {e}") from e
 
     def _archive_messages_hybrid_storage(
         self,

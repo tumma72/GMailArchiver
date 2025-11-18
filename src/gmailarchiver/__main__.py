@@ -220,7 +220,12 @@ def archive(
 
 @app.command()
 def validate(
-    archive_file: str = typer.Argument(..., help="Path to archive file to validate")
+    archive_file: str = typer.Argument(..., help="Path to archive file to validate"),
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database file"
+    ),
 ) -> None:
     """
     Validate an existing archive file.
@@ -235,8 +240,23 @@ def validate(
         console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
         raise typer.Exit(1)
 
+    # Check if database exists
+    db_path = Path(state_db)
+    if not db_path.exists():
+        console.print(f"[red]Error:[/red] Database not found: {state_db}\n")
+        console.print("The validate command needs a database to verify archive contents.")
+        console.print("\nOptions:")
+        console.print(
+            f"  • Import the archive first: "
+            f"[bold cyan]gmailarchiver import {archive_file}[/bold cyan]"
+        )
+        console.print(
+            "  • Use a different database: [bold cyan]--state-db /path/to/db[/bold cyan]\n"
+        )
+        raise typer.Exit(1)
+
     # Get expected message IDs from state database for this specific archive
-    with ArchiveState() as state:
+    with ArchiveState(state_db) as state:
         expected_ids = state.get_archived_message_ids_for_file(archive_file)
 
     validator = ArchiveValidator(archive_file)
@@ -359,7 +379,13 @@ def retry_delete_cmd(
 
 
 @app.command()
-def status() -> None:
+def status(
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database file"
+    ),
+) -> None:
     """
     Show archiving status and statistics.
 
@@ -368,7 +394,22 @@ def status() -> None:
     """
     console.print("\n[bold blue]Archive Status[/bold blue]\n")
 
-    with ArchiveState() as state:
+    # Check if database exists
+    db_path = Path(state_db)
+    if not db_path.exists():
+        console.print("[yellow]No archive database found[/yellow]\n")
+        console.print("To get started, run one of:")
+        console.print(
+            "  • [bold cyan]gmailarchiver archive 3y[/bold cyan] - "
+            "Archive emails older than 3 years"
+        )
+        console.print(
+            "  • [bold cyan]gmailarchiver import archive.mbox[/bold cyan] - "
+            "Import existing archive\n"
+        )
+        raise typer.Exit(0)
+
+    with ArchiveState(state_db) as state:
         # Overall stats
         total_archived = state.get_archived_count()
         console.print(f"Total messages archived: [bold]{total_archived:,}[/bold]\n")
@@ -1243,13 +1284,34 @@ def import_cmd(
                 manager._close()
                 console.print(f"[red]Migration failed:[/red] {e}")
                 raise typer.Exit(1)
+        elif version == "none":
+            # Empty database file exists - delete it and let DBManager create a fresh one
+            manager._close()
+            console.print(
+                "[yellow]Found empty database file, recreating with v1.1 schema...[/yellow]"
+            )
+            try:
+                db_path.unlink()
+            except Exception as e:
+                console.print(f"[red]Failed to delete empty database:[/red] {e}")
+                raise typer.Exit(1)
         elif version != "1.1":
             manager._close()
             console.print(f"[red]Error:[/red] Unsupported database schema version: {version}")
-            console.print("[yellow]Please run 'gmailarchiver migrate' manually[/yellow]")
+            console.print(
+                "\n[yellow]This database may be corrupted or "
+                "from an incompatible version.[/yellow]"
+            )
+            console.print("[cyan]Try one of:[/cyan]")
+            console.print("  • Delete the database: [bold]rm archive_state.db[/bold]")
+            console.print("  • Use a different database: [bold]--state-db /path/to/new.db[/bold]")
             raise typer.Exit(1)
+        else:
+            # version == "1.1", all good
+            pass
 
-        manager._close()
+        if version not in ("none",):  # Don't close if we deleted the database
+            manager._close()
     # If database doesn't exist, DBManager will auto-create it with v1.1 schema
 
     # Expand glob pattern
@@ -1320,6 +1382,19 @@ def import_cmd(
         console.print(f"[yellow]  Skipped duplicates: {total_skipped}[/yellow]")
     if total_failed > 0:
         console.print(f"[red]  Failed: {total_failed}[/red]")
+
+    # Show detailed error messages if there were failures
+    if total_failed > 0:
+        console.print("\n[bold red]Import Errors:[/bold red]")
+        for result in results:
+            if result.errors:
+                console.print(f"\n[cyan]{Path(result.archive_file).name}:[/cyan]")
+                for error in result.errors[:10]:  # Limit to first 10 errors per file
+                    console.print(f"  [red]•[/red] {error}")
+                if len(result.errors) > 10:
+                    console.print(
+                        f"  [dim]... and {len(result.errors) - 10} more errors[/dim]"
+                    )
 
     # Show performance metrics
     if total_imported > 0 and total_time > 0:
