@@ -973,7 +973,8 @@ def dedupe(
 @app.command(name="verify-offsets")
 def verify_offsets_cmd(
     archive_file: str = typer.Argument(..., help="Path to archive file"),
-    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path")
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Verify mbox offset accuracy for v1.1 databases.
@@ -984,78 +985,92 @@ def verify_offsets_cmd(
     Example:
         $ gmailarchiver verify-offsets archive_20250114.mbox.gz
         $ gmailarchiver verify-offsets test.mbox --state-db /path/to/archive_state.db
+        $ gmailarchiver verify-offsets archive.mbox --json
     """
-    console.print("\n[bold blue]Offset Verification[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("verify-offsets", f"Verifying offsets for {archive_file}")
 
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
-        raise typer.Exit(1)
+        output.error(
+            f"Archive file not found: {archive_file}",
+            suggestion="Check the file path or use 'gmailarchiver status' to list archives",
+            exit_code=1,
+        )
 
     db_path = Path(state_db)
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
+            exit_code=1,
+        )
 
     # Create validator and run verification
     try:
         validator = ArchiveValidator(archive_file, state_db)
-        result = validator.verify_offsets()
+
+        with output.progress_context("Verifying offsets", total=1) as progress:
+            task = progress.add_task("Offset verification", total=1) if progress else None
+            result = validator.verify_offsets()
+            if progress and task:
+                progress.update(task, completed=1)
 
         # Handle skipped (v1.0 schema)
         if result.skipped:
-            console.print("[yellow]Offset verification skipped (v1.0 schema)[/yellow]")
-            console.print(
-                "[dim]Run 'gmailarchiver migrate' to upgrade to v1.1 for offset tracking[/dim]\n"
-            )
+            output.warning("Offset verification skipped (v1.0 schema)")
+            output.suggest_next_steps([
+                "Upgrade to v1.1: gmailarchiver migrate",
+            ])
+            output.end_operation(success=True)
             return
 
-        # Display results
-        console.print(f"Total offsets checked: [cyan]{result.total_checked}[/cyan]")
-        console.print(f"Successful reads: [green]{result.successful_reads}[/green]")
-        console.print(f"Failed reads: [red]{result.failed_reads}[/red]")
-        console.print(f"Accuracy: [bold]{result.accuracy_percentage:.1f}%[/bold]\n")
+        # Build report data
+        report_data = {
+            "Total Offsets Checked": result.total_checked,
+            "Successful Reads": result.successful_reads,
+            "Failed Reads": result.failed_reads,
+            "Accuracy": f"{result.accuracy_percentage:.1f}%",
+        }
+
+        output.show_report("Offset Verification Results", report_data)
 
         # Success case
         if result.accuracy_percentage == 100.0:
-            from rich.panel import Panel
-            console.print(Panel(
-                f"[green]✓ All {result.total_checked} offsets verified successfully[/green]",
-                title="Verification Passed",
-                border_style="green"
-            ))
+            output.success(f"All {result.total_checked} offsets verified successfully")
+            output.end_operation(success=True)
             return
 
         # Failure case - show details
         if result.failures:
-            table = Table(title="Offset Verification Failures")
-            table.add_column("Failure Details", style="red")
+            output.warning(f"Found {len(result.failures)} offset verification failure(s):")
+            for failure in result.failures[:10]:  # Limit to first 10
+                output.info(f"  • {failure}")
 
-            for failure in result.failures[:20]:  # Limit to first 20
-                table.add_row(failure)
+            if len(result.failures) > 10:
+                output.info(f"  ... and {len(result.failures) - 10} more failures")
 
-            console.print(table)
+        # Suggest next steps
+        output.suggest_next_steps([
+            "Repair offsets: gmailarchiver repair --backfill --no-dry-run",
+            "Check database integrity: gmailarchiver verify-integrity",
+        ])
 
-            if len(result.failures) > 20:
-                console.print(
-                    f"[dim]... and {len(result.failures) - 20} more failures[/dim]\n"
-                )
-
-        console.print(
-            f"\n[red]Verification failed: {result.accuracy_percentage:.1f}% accuracy[/red]"
-        )
+        output.end_operation(success=False)
         raise typer.Exit(1)
 
     except Exception as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Offset verification failed: {e}", exit_code=1)
 
 
 @app.command(name="verify-consistency")
 def verify_consistency_cmd(
     archive_file: str = typer.Argument(..., help="Path to archive file"),
-    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path")
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Deep database consistency check.
@@ -1066,86 +1081,77 @@ def verify_consistency_cmd(
     Example:
         $ gmailarchiver verify-consistency archive_20250114.mbox.gz
         $ gmailarchiver verify-consistency test.mbox --state-db /path/to/archive_state.db
+        $ gmailarchiver verify-consistency archive.mbox --json
     """
-    console.print("\n[bold blue]Database Consistency Check[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("verify-consistency", f"Checking consistency for {archive_file}")
 
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
-        raise typer.Exit(1)
+        output.error(
+            f"Archive file not found: {archive_file}",
+            suggestion="Check the file path or use 'gmailarchiver status' to list archives",
+            exit_code=1,
+        )
 
     db_path = Path(state_db)
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
+            exit_code=1,
+        )
 
     # Create validator and run consistency check
     try:
         validator = ArchiveValidator(archive_file, state_db)
-        report = validator.verify_consistency()
 
-        # Display schema version
-        console.print(f"Schema version: [cyan]{report.schema_version}[/cyan]\n")
+        with output.progress_context("Running consistency checks", total=5) as progress:
+            task = progress.add_task("Consistency checks", total=5) if progress else None
+            report = validator.verify_consistency()
+            if progress and task:
+                progress.update(task, completed=5)
 
-        # Create results table
-        table = Table(title="Consistency Check Results")
-        table.add_column("Check", style="cyan")
-        table.add_column("Status", style="bold")
-
-        # Add results
-        table.add_row(
-            "Orphaned records",
-            f"[red]{report.orphaned_records}[/red]" if report.orphaned_records > 0
-            else "[green]0[/green]"
-        )
-        table.add_row(
-            "Missing records",
-            f"[red]{report.missing_records}[/red]" if report.missing_records > 0
-            else "[green]0[/green]"
-        )
-        table.add_row(
-            "Duplicate Gmail IDs",
-            f"[red]{report.duplicate_gmail_ids}[/red]" if report.duplicate_gmail_ids > 0
-            else "[green]0[/green]"
-        )
+        # Build report data
+        report_data = {
+            "Schema Version": report.schema_version,
+            "Orphaned Records": report.orphaned_records,
+            "Missing Records": report.missing_records,
+            "Duplicate Gmail IDs": report.duplicate_gmail_ids,
+        }
 
         if report.schema_version == "1.1":
-            table.add_row(
-                "Duplicate RFC Message-IDs",
-                f"[red]{report.duplicate_rfc_message_ids}[/red]"
-                if report.duplicate_rfc_message_ids > 0
-                else "[green]0[/green]"
-            )
-            table.add_row(
-                "FTS synchronized",
-                "[green]Yes[/green]" if report.fts_synced else "[red]No[/red]"
-            )
+            report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
+            report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
-        console.print(table)
+        output.show_report("Consistency Check Results", report_data)
 
         # Show errors if any
         if report.errors:
-            console.print("\n[bold red]Issues Found:[/bold red]")
+            output.warning(f"Found {len(report.errors)} issue(s):")
             for error in report.errors:
-                console.print(f"  • {error}")
+                output.info(f"  • {error}")
 
         # Overall status
         if report.passed:
-            from rich.panel import Panel
-            console.print(Panel(
-                "[green]✓ All consistency checks passed[/green]",
-                title="Consistency Check Passed",
-                border_style="green"
-            ))
+            output.success("All consistency checks passed")
+            output.end_operation(success=True)
             return
 
-        console.print("\n[red]Consistency check failed - issues detected[/red]\n")
+        # Suggest next steps
+        output.suggest_next_steps([
+            "Repair database: gmailarchiver repair --no-dry-run",
+            "Check integrity: gmailarchiver verify-integrity --verbose",
+        ])
+
+        output.end_operation(success=False)
         raise typer.Exit(1)
 
     except Exception as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Consistency check failed: {e}", exit_code=1)
 
 
 @app.command()
@@ -1617,6 +1623,7 @@ def verify_integrity_cmd(
         "--verbose",
         help="Show verbose output"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Verify database integrity and report issues.
@@ -1634,47 +1641,73 @@ def verify_integrity_cmd(
         $ gmailarchiver verify-integrity
         $ gmailarchiver verify-integrity --state-db /path/to/archive_state.db
         $ gmailarchiver verify-integrity --verbose
+        $ gmailarchiver verify-integrity --json
     """
     from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.output import OutputManager
 
-    console.print("\n[bold blue]Database Integrity Check[/bold blue]\n")
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("verify-integrity", "Checking database integrity")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database, or specify path with --state-db",
+            exit_code=1,
+        )
 
     try:
         # Initialize DBManager without schema validation to avoid errors
         db = DBManager(str(db_path), validate_schema=False)
-        issues = db.verify_database_integrity()
+
+        with output.progress_context("Running integrity checks", total=5) as progress:
+            task = progress.add_task("Integrity checks", total=5) if progress else None
+            issues = db.verify_database_integrity()
+            if progress and task:
+                progress.update(task, completed=5)
+
         db.close()
 
         if not issues:
-            console.print("[green]✓ Database integrity verified - no issues found[/green]\n")
+            output.success("Database integrity verified - no issues found")
+            output.end_operation(success=True)
             raise typer.Exit(0)
 
-        # Display issues in table
-        table = Table(title="Database Integrity Issues")
-        table.add_column("Issue", style="red")
+        # Build report data
+        report_data = {
+            "Total Issues": len(issues),
+            "Status": "FAILED",
+        }
 
-        for issue in issues:
-            table.add_row(issue)
+        # Add individual issues if verbose
+        if verbose:
+            for i, issue in enumerate(issues, 1):
+                report_data[f"Issue {i}"] = issue
 
-        console.print(table)
-        console.print(f"\n[yellow]Found {len(issues)} integrity issue(s)[/yellow]")
-        console.print("[cyan]Run 'gmailarchiver repair --no-dry-run' to fix these issues[/cyan]\n")
+        output.show_report("Database Integrity Results", report_data)
 
+        # Show all issues as warnings
+        if not verbose:
+            output.warning(f"Found {len(issues)} integrity issue(s):")
+            for issue in issues:
+                output.info(f"  • {issue}")
+
+        # Suggest next steps
+        output.suggest_next_steps([
+            "Fix issues: gmailarchiver repair --no-dry-run",
+            "Review issues in detail: gmailarchiver verify-integrity --verbose",
+        ])
+
+        output.end_operation(success=False)
         raise typer.Exit(1)
 
     except FileNotFoundError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"File not found: {e}", exit_code=1)
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Integrity check failed: {e}", exit_code=1)
 
 
 @app.command()
@@ -1694,6 +1727,7 @@ def repair(
         "--backfill",
         help="Fix invalid offsets by scanning mbox files"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Repair database integrity issues.
@@ -1711,110 +1745,125 @@ def repair(
         $ gmailarchiver repair --no-dry-run
         $ gmailarchiver repair --backfill --no-dry-run
         $ gmailarchiver repair --state-db /path/to/archive_state.db
+        $ gmailarchiver repair --json
     """
     from gmailarchiver.db_manager import DBManager
     from gmailarchiver.migration import MigrationManager
+    from gmailarchiver.output import OutputManager
 
-    console.print("\n[bold blue]Database Repair[/bold blue]\n")
+    output = OutputManager(json_mode=json_output)
+    operation_name = "repair (dry-run)" if dry_run else "repair"
+    output.start_operation(operation_name, "Repairing database")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database, or specify path with --state-db",
+            exit_code=1,
+        )
 
     # Get confirmation for non-dry-run
     if not dry_run:
-        console.print("[yellow]⚠ WARNING: This will modify the database[/yellow]\n")
+        output.warning("⚠ WARNING: This will modify the database")
         confirm = typer.confirm("Continue with database repair?", default=False)
         if not confirm:
-            console.print("[yellow]Repair cancelled[/yellow]\n")
+            output.info("Repair cancelled")
+            output.end_operation(success=True)
             raise typer.Exit(0)
 
     try:
         # Initialize DBManager without schema validation
         db = DBManager(str(db_path), validate_schema=False)
 
-        # Phase 1: Fix FTS sync issues
-        console.print("[cyan]Phase 1: Checking FTS synchronization...[/cyan]")
-        repairs = db.repair_database(dry_run=dry_run)
+        with output.progress_context("Running repair operations", total=2) as progress:
+            # Phase 1: Fix FTS sync issues
+            task = progress.add_task("Phase 1: FTS synchronization", total=2) if progress else None
+            output.info("Phase 1: Checking FTS synchronization...")
+            repairs = db.repair_database(dry_run=dry_run)
+            if progress and task:
+                progress.update(task, completed=1)
 
-        # Phase 2: Backfill invalid offsets if requested
-        if backfill:
-            console.print("[cyan]Phase 2: Checking for invalid offsets...[/cyan]")
-            invalid_msgs = db.get_messages_with_invalid_offsets()
+            # Phase 2: Backfill invalid offsets if requested
+            if backfill:
+                output.info("Phase 2: Checking for invalid offsets...")
+                invalid_msgs = db.get_messages_with_invalid_offsets()
 
-            if invalid_msgs:
-                console.print(
-                    f"[cyan]Found {len(invalid_msgs)} messages with invalid offsets[/cyan]"
-                )
+                if invalid_msgs:
+                    output.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
 
-                if not dry_run:
-                    # Use MigrationManager logic to scan mbox and backfill
-                    migrator = MigrationManager(db_path)
-                    backfilled = migrator.backfill_offsets_from_mbox(invalid_msgs)
-                    repairs['invalid_offsets_fixed'] = backfilled
-                    migrator._close()
+                    if not dry_run:
+                        # Use MigrationManager logic to scan mbox and backfill
+                        migrator = MigrationManager(db_path)
+                        backfilled = migrator.backfill_offsets_from_mbox(invalid_msgs)
+                        repairs['invalid_offsets_fixed'] = backfilled
+                        migrator._close()
+                    else:
+                        repairs['invalid_offsets_would_fix'] = len(invalid_msgs)
                 else:
-                    repairs['invalid_offsets_would_fix'] = len(invalid_msgs)
-            else:
-                console.print("[green]No invalid offsets found[/green]")
+                    output.success("No invalid offsets found")
+
+            if progress and task:
+                progress.update(task, completed=2)
 
         db.close()
 
         # Display results
-        _display_repair_results(console, repairs, dry_run)
+        _display_repair_results(output, repairs, dry_run)
+
+        total_repairs = sum(repairs.values())
+        output.end_operation(success=True if total_repairs >= 0 else False)
 
     except FileNotFoundError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"File not found: {e}", exit_code=1)
     except Exception as e:
-        console.print(f"[red]Repair failed:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Repair failed: {e}", exit_code=1)
 
 
 def _display_repair_results(
-    console: Console,
+    output: "OutputManager",
     repairs: dict[str, int],
     dry_run: bool
 ) -> None:
-    """Display repair results in a formatted table."""
-    console.print()
-
-    # Create results table
-    table = Table(title="Repair Results" if not dry_run else "Repair Preview (Dry Run)")
-    table.add_column("Repair Type", style="cyan")
-    table.add_column("Count", style="green" if not dry_run else "yellow", justify="right")
+    """Display repair results using OutputManager."""
+    # Build report data
+    report_data = {}
 
     # Add FTS repairs
     if 'orphaned_fts_removed' in repairs and repairs['orphaned_fts_removed'] > 0:
         action = "Removed" if not dry_run else "Would remove"
-        table.add_row(f"{action} orphaned FTS records", str(repairs['orphaned_fts_removed']))
+        report_data[f"{action} orphaned FTS records"] = repairs['orphaned_fts_removed']
 
     if 'missing_fts_added' in repairs and repairs['missing_fts_added'] > 0:
         action = "Added" if not dry_run else "Would add"
-        table.add_row(f"{action} missing FTS records", str(repairs['missing_fts_added']))
+        report_data[f"{action} missing FTS records"] = repairs['missing_fts_added']
 
     # Add offset backfill repairs
     if 'invalid_offsets_fixed' in repairs and repairs['invalid_offsets_fixed'] > 0:
-        table.add_row("Backfilled invalid offsets", str(repairs['invalid_offsets_fixed']))
+        report_data["Backfilled invalid offsets"] = repairs['invalid_offsets_fixed']
 
     if 'invalid_offsets_would_fix' in repairs and repairs['invalid_offsets_would_fix'] > 0:
-        table.add_row("Would backfill invalid offsets", str(repairs['invalid_offsets_would_fix']))
-
-    console.print(table)
+        report_data["Would backfill invalid offsets"] = repairs['invalid_offsets_would_fix']
 
     # Summary message
     total_repairs = sum(repairs.values())
 
+    title = "Repair Results" if not dry_run else "Repair Preview (Dry Run)"
+    report_data["Total"] = total_repairs
+
+    output.show_report(title, report_data)
+
     if total_repairs == 0:
-        console.print("\n[green]✓ No repairs needed - database is clean[/green]\n")
+        output.success("No repairs needed - database is clean")
     elif dry_run:
-        console.print(f"\n[yellow]Would perform {total_repairs} repair(s)[/yellow]")
-        console.print("[cyan]Run with --no-dry-run to apply these repairs[/cyan]\n")
+        output.warning(f"Would perform {total_repairs} repair(s)")
+        output.suggest_next_steps([
+            "Apply repairs: gmailarchiver repair --no-dry-run",
+        ])
     else:
-        console.print(f"\n[green]✓ Successfully performed {total_repairs} repair(s)[/green]\n")
+        output.success(f"Successfully performed {total_repairs} repair(s)")
 
 
 @app.command()
