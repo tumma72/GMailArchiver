@@ -5,11 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Documentation Structure
 
 - **README.md**: User-focused documentation for installing and using Gmail Archiver
-- **CONTRIBUTING.md**: Comprehensive developer guide (setup, testing, architecture, pull requests)
+- **CONTRIBUTING.md**: Comprehensive developer guide (setup, testing, pull requests)
+- **ARCHITECTURE.md**: **Single source of truth** for system architecture, design decisions, and technical details
 - **CLAUDE.md** (this file): Quick reference for AI assistants working on the codebase
 - **CHANGELOG.md**: Version history and release notes
+- **docs/PLAN.md**: Development roadmap and feature planning
+- **docs/OUTPUT_SYSTEM.md**: Unified output system documentation
 
-For detailed architecture, database schema, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For detailed architecture, database schema, and design decisions, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Project Overview
 
@@ -94,13 +97,15 @@ git push origin v1.0.2
 
 ## Architecture
 
+**Note:** This section provides a quick reference only. For complete architectural details, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ### Core Components
 
 **src/gmailarchiver/__main__.py**
 - CLI entry point using Typer
-- Defines all commands: `archive`, `validate`, `status`, `retry-delete`, `auth-reset`
-- Handles user interaction, confirmations, and Rich console output
-- Orchestrates the archiving workflow
+- Defines 17+ commands (see Commands section below)
+- Uses OutputManager for consistent Rich/JSON output
+- Orchestrates workflows via DBManager and HybridStorage
 
 **src/gmailarchiver/auth.py** (`GmailAuthenticator`)
 - OAuth2 authentication flow
@@ -116,25 +121,70 @@ git push origin v1.0.2
 - Batch operations for efficient API usage (default: 10 messages per batch)
 - Methods: `list_messages()`, `get_message()`, `delete_message()`, `trash_message()`
 
-**src/gmailarchiver/archiver.py** (`GmailArchiver`)
-- Main archiving orchestrator
-- Coordinates between Gmail client, state tracking, and file I/O
-- Supports compression: gzip, lzma, zstd (Python 3.14 native)
-- Incremental mode: skips already-archived messages
-- Handles mbox file creation and lock file management
+**src/gmailarchiver/db_manager.py** (`DBManager`) **(v1.1.0+)**
+- **Single source of truth** for all database operations
+- Centralized SQL queries (no direct SQL in other modules)
+- Transaction management with automatic rollback
+- Audit trail recording for all operations
+- Built-in integrity validation and repair utilities
+- Prevents SQL injection via parameterized queries
 
-**src/gmailarchiver/state.py** (`ArchiveState`)
-- SQLite database for tracking archived messages
-- Two tables: `archived_messages` (message metadata) and `archive_runs` (run history)
-- Context manager interface for automatic connection handling
-- Transaction support with auto-commit/rollback
-- Path validation to prevent path traversal attacks
+**src/gmailarchiver/hybrid_storage.py** (`HybridStorage`) **(v1.1.0+)**
+- **Transactional coordinator** for mbox + database operations
+- Ensures atomic writes (both succeed or both rollback)
+- Two-phase commit pattern with staging area
+- Automatic validation after every write
+- Prevents database/mbox divergence
+
+**src/gmailarchiver/output.py** (`OutputManager`) **(v1.2.0+)**
+- **Unified output system** for all commands
+- Rich terminal output with progress bars and status indicators
+- JSON output mode for scripting (`--json` flag)
+- Actionable next-steps suggestions on errors
+- uv-style progress tracking
+
+**src/gmailarchiver/archiver.py** (`GmailArchiver`)
+- Gmail archiving orchestrator
+- Uses HybridStorage for atomic operations
+- Supports compression: gzip, lzma, zstd (Python 3.14 native)
+- Incremental mode via DBManager
+- Lock file management for mbox safety
+
+**src/gmailarchiver/importer.py** (`ArchiveImporter`) **(v1.1.0+)**
+- Import existing mbox archives into database
+- Supports glob patterns and all compression formats
+- Deduplication support during import
+- Progress tracking via OutputManager
+
+**src/gmailarchiver/consolidator.py** (`ArchiveConsolidator`) **(v1.1.0+)**
+- Merge multiple archives into one
+- Optional deduplication and sorting
+- Atomic operations via HybridStorage
+- Updates all database offsets transactionally
+
+**src/gmailarchiver/deduplicator.py** (`MessageDeduplicator`) **(v1.1.0+)**
+- Message-ID based deduplication (100% precision)
+- Cross-archive duplicate detection
+- Preserves newest copy by date
+- Safety: never modifies in-place, creates new archive
+
+**src/gmailarchiver/search.py** (`MessageSearcher`) **(v1.1.0+)**
+- Full-text search via SQLite FTS5
+- Gmail-style query syntax
+- BM25 ranking for relevance
+- Returns metadata + mbox offsets for O(1) retrieval
 
 **src/gmailarchiver/validator.py** (`ArchiveValidator`)
 - Multi-layer validation before deletion
 - Validates: message count, database cross-check, content integrity, spot-check sampling
 - Supports all compression formats (gzip, lzma, zstd)
 - Decompresses to temporary files for validation
+
+**src/gmailarchiver/migration.py** (`MigrationManager`) **(v1.1.0+)**
+- Automatic schema migration (v1.0 → v1.1)
+- Scans mbox files to backfill offsets and Message-IDs
+- Automatic backups before migration
+- Rollback support if migration fails
 
 **src/gmailarchiver/utils.py**
 - Utility functions: age parsing (`parse_age`), date conversions (`datetime_to_gmail_query`)
@@ -154,6 +204,37 @@ git push origin v1.0.2
 - Bundled OAuth2 credentials (installed application type)
 - Eliminates need for manual Google Cloud Console setup
 
+### Available Commands
+
+**Core Archiving:**
+- `archive` - Archive Gmail messages older than threshold
+- `validate` - Validate archive file integrity
+- `retry-delete` - Retry deletion of archived messages
+- `auth-reset` - Clear OAuth token and re-authenticate
+
+**Archive Management (v1.1.0+):**
+- `import` - Import existing mbox files into database
+- `consolidate` - Merge multiple archives into one
+- `dedupe` / `dedupe-report` - Find and remove duplicate messages
+- `search` - Search archived messages (metadata + full-text)
+
+**Database Operations (v1.1.0+):**
+- `verify-integrity` - Check database health
+- `verify-consistency` - Deep consistency check (database ↔ mbox)
+- `verify-offsets` - Validate mbox offset accuracy
+- `repair` - Fix database issues (with `--backfill` for migration repairs)
+- `db-info` - Show database statistics
+- `status` - Show archiving statistics
+
+**Schema Management (v1.1.0+):**
+- `migrate` - Upgrade database schema (v1.0 → v1.1)
+- `rollback` - Restore from backup
+
+**All commands support:**
+- `--json` flag for JSON output (scripting/automation) *(v1.2.0+)*
+- Rich terminal output with progress bars
+- Clear error messages with next-steps suggestions
+
 ### Data Flow
 
 1. **Authentication Flow**:
@@ -161,18 +242,27 @@ git push origin v1.0.2
    - If missing/invalid, launches OAuth2 flow with bundled credentials
    - Stores token for future runs
 
-2. **Archive Flow**:
+2. **Archive Flow** (via HybridStorage):
    - Parse age threshold → Generate Gmail query (e.g., "before:2022/01/01")
    - Query Gmail API via `GmailClient.list_messages()`
-   - Filter out already-archived messages using `ArchiveState` (incremental mode)
+   - Filter out already-archived messages via `DBManager` (incremental mode)
    - Fetch full messages in batches (default: 10 per batch)
-   - Write to mbox file (with optional compression)
-   - Record metadata in `ArchiveState` database
-   - Validate archive with `ArchiveValidator`
+   - **Atomic write via HybridStorage**:
+     1. Write to staging area
+     2. Append to mbox + capture offset
+     3. Record in database via `DBManager` (with audit trail)
+     4. Automatic validation
+     5. Rollback if any step fails
    - Optionally trash/delete messages (with confirmation)
 
-3. **Validation Flow**:
-   - Load expected message IDs from `ArchiveState` database
+3. **Search Flow** (v1.1.0+):
+   - Parse query syntax (Gmail-compatible)
+   - Query SQLite FTS5 index via `DBManager`
+   - Return results with mbox_offset for O(1) message retrieval
+   - No mbox access needed for search (database-only)
+
+4. **Validation Flow**:
+   - Load expected message IDs from database via `DBManager`
    - Decompress archive if needed (to temp file)
    - Count messages in mbox
    - Cross-check against database
@@ -181,40 +271,69 @@ git push origin v1.0.2
 
 ### Database Schema
 
-**archived_messages**
+**Note:** This shows the v1.1.0 schema. For complete schema details and migration strategy, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#data-architecture).
+
+**messages** (v1.1.0+ - replaces `archived_messages`):
 - `gmail_id` (PK): Gmail message ID
-- `archived_timestamp`: ISO 8601 timestamp
-- `archive_file`: Path to archive file
-- `subject`, `from_addr`, `message_date`: Email metadata
+- `rfc_message_id` (UNIQUE): RFC 2822 Message-ID (for deduplication)
+- `thread_id`: Gmail thread ID
+- `mbox_offset`, `mbox_length`: For O(1) message retrieval
+- `archive_file`: Path to mbox file
+- `subject`, `from_addr`, `to_addr`, `message_date`: Email metadata
+- `body_preview`: First 1000 chars (for FTS and UI)
 - `checksum`: SHA256 for integrity
 
-**archive_runs**
+**messages_fts** (v1.1.0+ - FTS5 virtual table):
+- Full-text search index with BM25 ranking
+- Indexes: subject, from_addr, to_addr, body_preview
+- Auto-synced with messages table via triggers
+
+**archive_runs**:
 - `run_id` (PK): Auto-increment
 - `run_timestamp`: ISO 8601 timestamp
-- `query`: Gmail search query used
+- `operation`: Type of operation (archive, import, consolidate, dedupe, repair)
+- `query`: Gmail search query or operation notes
 - `messages_archived`: Count of messages
 - `archive_file`: Archive file path
 
 ### Safety Architecture
 
+**Note:** For detailed integrity architecture, see [ARCHITECTURE.md](docs/ARCHITECTURE.md#data-integrity-architecture).
+
 The tool implements multiple safety layers:
+- **Atomic operations**: HybridStorage ensures mbox + database both succeed or both rollback
+- **Automatic validation**: After every write operation, consistency is verified
+- **Audit trail**: All operations recorded in archive_runs (archive, import, consolidate, dedupe, repair)
 - **Dry-run mode**: Preview without changes
-- **Incremental mode**: Prevents duplicate archiving via SQLite tracking
-- **Validation**: Multi-layer checks before deletion
+- **Incremental mode**: Prevents duplicate archiving via DBManager
+- **Validation commands**: verify-integrity, verify-consistency, verify-offsets
+- **Repair command**: Fix database issues with --backfill for migration repairs
 - **Trash-first workflow**: Reversible deletion (30-day recovery)
 - **Explicit confirmation**: Type exact phrase for permanent deletion
 - **Rate limiting**: Exponential backoff for API limits
 - **Path validation**: Prevents path traversal attacks
-- **Transaction safety**: Database operations with auto-rollback on errors
+- **Transaction safety**: DBManager handles all database operations with auto-rollback
 
 ## Testing Strategy
+
+**Current status**: 650+ tests, 96% coverage
 
 - Tests use `pytest` with coverage reporting
 - Mocking pattern: Use unittest.mock for Gmail API (no live API calls in tests)
 - Test organization matches source structure (`test_auth.py` → `auth.py`)
 - Path validators tested with both valid and malicious inputs
-- State tracking tested with temporary databases (`validate_path=False`)
+- DBManager tested with temporary databases and rollback scenarios
+- HybridStorage tested for atomicity (kill during write, corrupt database)
+- OutputManager tested for Rich output, JSON mode, progress tracking
 - Auth tests mock OAuth2 flow components (`Flow`, `Credentials`, etc.)
+
+**Key test modules:**
+- `test_db_manager.py` - Database operations, transactions, integrity checks
+- `test_hybrid_storage.py` - Atomic operations, two-phase commit, validation
+- `test_output.py` - OutputManager modes, progress bars, JSON output
+- `test_migration.py` - Schema migrations, backfill, rollback
+- `test_deduplicator.py` - Message-ID deduplication logic
+- `test_search.py` - FTS5 queries, Gmail syntax parsing
 
 ## Code Style and Quality
 
