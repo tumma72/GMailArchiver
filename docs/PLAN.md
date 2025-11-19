@@ -301,9 +301,11 @@ gmailarchiver dedupe --no-dry-run --auto-verify
 
 ---
 
-### Tier 2: Automation & Convenience (Week 4)
+### Tier 2: Automation & Convenience ✅ COMPLETE (2025-11-19)
 
-#### 4. `schedule` Command - Automated Maintenance
+**Goal**: Automate common maintenance tasks
+
+#### 4. `schedule` Command - Automated Maintenance ✅ COMPLETE
 
 **Problem**: No automated health checks, users must remember to run manually.
 
@@ -332,15 +334,15 @@ gmailarchiver schedule disable check
 **Impact**: HIGH (long-term data integrity)
 
 **Acceptance Criteria**:
-- [ ] Creates platform-specific scheduled task
-- [ ] Logging to file
-- [ ] List/disable commands work
-- [ ] Handles missing cron gracefully
-- [ ] Tests: 90%+ coverage (platform-dependent)
+- [x] Creates platform-specific scheduled task
+- [x] Logging to file
+- [x] List/disable commands work
+- [x] Handles missing cron gracefully
+- [x] Tests: 90%+ coverage (platform-dependent)
 
 ---
 
-#### 5. `compress` Command - Post-Hoc Compression
+#### 5. `compress` Command - Post-Hoc Compression ✅ COMPLETE
 
 **Problem**: Users must choose compression at archive time, can't compress later.
 
@@ -369,16 +371,16 @@ gmailarchiver compress archives/*.mbox --format zstd --keep-original
 **Impact**: MEDIUM (user convenience)
 
 **Acceptance Criteria**:
-- [ ] Compresses mbox files
-- [ ] Updates database paths atomically
-- [ ] Validates before deletion
-- [ ] --keep-original flag works
-- [ ] Batch processing support
-- [ ] Tests: 95%+ coverage
+- [x] Compresses mbox files
+- [x] Updates database paths atomically
+- [x] Validates before deletion
+- [x] --keep-original flag works
+- [x] Batch processing support
+- [x] Tests: 95%+ coverage
 
 ---
 
-#### 6. `doctor` Command - Comprehensive Diagnostics
+#### 6. `doctor` Command - Comprehensive Diagnostics ✅ COMPLETE
 
 **Problem**: Hard to troubleshoot issues, no unified diagnostics.
 
@@ -420,10 +422,18 @@ gmailarchiver doctor
 **Impact**: MEDIUM (troubleshooting)
 
 **Acceptance Criteria**:
-- [ ] All diagnostic checks implemented
-- [ ] Clear, actionable output
-- [ ] Suggestions for issues found
-- [ ] Tests: 90%+ coverage
+- [x] All diagnostic checks implemented
+- [x] Clear, actionable output
+- [x] Suggestions for issues found
+- [x] Tests: 90%+ coverage
+
+**Completion Summary**:
+- **Total features**: 3 (schedule, compress, doctor)
+- **New commands**: 3 (schedule, compress, doctor)
+- **Tests added**: 141 (72 + 25 + 44)
+- **Time to complete**: As planned (7-9 days)
+- **TDD methodology**: All tests written FIRST
+- **Impact**: HIGH - Automation and user experience improvements
 
 ---
 
@@ -608,15 +618,20 @@ Before merging:
    - ✅ Implemented `extract` command (3 days)
    - ✅ Implemented `check` meta-command (1 day)
    - ✅ Added `--auto-verify` flags (1 day)
-5. **Start Tier 2**: Automation & Convenience
-   - Implement `schedule` command (3-4 days)
-   - Implement `compress` command (2 days)
-   - Implement `doctor` command (2-3 days)
+5. ✅ **Tier 2: Automation & Convenience** - COMPLETE (2025-11-19)
+   - ✅ Implemented `schedule` command (3-4 days, 72 tests)
+   - ✅ Implemented `compress` command (2 days, 25 tests)
+   - ✅ Implemented `doctor` command (2-3 days, 44 tests)
+6. **Evaluate Tier 3**: Polish features (optional)
+   - Search enhancements (--with-preview, --interactive)
+   - Cleanup options (--remove-sources)
+   - Progress estimation improvements
 
 ### This Month
 - ✅ Complete output system migration (Tier 0) - DONE
 - ✅ Complete v1.2.0 Tier 1 (extract, check, auto-verify) - DONE
-- **IN PROGRESS**: Begin Tier 2 automation features (schedule, compress, doctor)
+- ✅ Complete v1.2.0 Tier 2 (schedule, compress, doctor) - DONE
+- **NEXT**: Evaluate Tier 3 polish features or prepare v1.2.0 release
 
 ### This Quarter
 - Complete v1.2.0 (all tiers)
