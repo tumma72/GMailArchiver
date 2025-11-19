@@ -405,6 +405,29 @@ class DBManager:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_message_by_rfc_message_id(self, rfc_message_id: str) -> dict[str, Any] | None:
+        """
+        Retrieve message metadata by RFC 2822 Message-ID.
+
+        Args:
+            rfc_message_id: RFC 2822 Message-ID header value
+
+        Returns:
+            Dictionary with message metadata, or None if not found
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                   to_addr, cc_addr, date, archived_timestamp, archive_file,
+                   mbox_offset, mbox_length, body_preview, checksum,
+                   size_bytes, labels, account_id
+            FROM messages WHERE rfc_message_id = ?
+            """,
+            (rfc_message_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
     def get_message_location(self, gmail_id: str) -> tuple[str, int, int] | None:
         """
         Get mbox file location for O(1) message access.

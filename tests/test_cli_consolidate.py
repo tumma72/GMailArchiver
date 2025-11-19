@@ -491,3 +491,47 @@ class TestConsolidateCommand:
 
         assert result.exit_code == 0
         assert output_file.exists()
+
+    def test_consolidate_with_auto_verify_clean(
+        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+    ):
+        """Test consolidate with --auto-verify on clean archive."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "merged.mbox"
+
+        result = runner.invoke(app, [
+            'consolidate',
+            str(sample_mbox_files[0]),
+            str(sample_mbox_files[1]),
+            '-o', str(output_file),
+            '--state-db', str(v1_1_database),
+            '--auto-verify'
+        ])
+
+        assert result.exit_code == 0
+        # Should show verification running
+        assert 'verif' in result.stdout.lower()
+        # Should show verification passed
+        assert 'passed' in result.stdout.lower() or 'ok' in result.stdout.lower()
+
+    def test_consolidate_with_auto_verify_without_flag(
+        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+    ):
+        """Test consolidate without --auto-verify does not verify."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "merged.mbox"
+
+        result = runner.invoke(app, [
+            'consolidate',
+            str(sample_mbox_files[0]),
+            str(sample_mbox_files[1]),
+            '-o', str(output_file),
+            '--state-db', str(v1_1_database)
+        ])
+
+        assert result.exit_code == 0
+        # Should NOT show verification-specific messages beyond suggested next steps
+        # Count occurrences - should only appear in "next steps" suggestion
+        verify_count = result.stdout.lower().count('verify')
+        # Should have at least one mention in next steps, but not extra "Running verification"
+        assert verify_count < 3  # Not running verification automatically

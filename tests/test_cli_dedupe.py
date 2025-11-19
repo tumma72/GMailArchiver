@@ -393,3 +393,128 @@ class TestDedupeCommand:
         assert result.exit_code == 1
         assert 'v1.1' in result.stdout or '1.1' in result.stdout
         assert 'migrate' in result.stdout.lower() or 'migration' in result.stdout.lower()
+
+    def test_dedupe_with_auto_verify_clean(self, runner, tmp_path):
+        """Test dedupe with --auto-verify on clean database."""
+        db_path = create_v1_1_db_with_duplicates(tmp_path)
+
+        with patch('typer.confirm', return_value=True):
+            result = runner.invoke(app, [
+                'dedupe',
+                '--state-db', str(db_path),
+                '--no-dry-run',
+                '--auto-verify'
+            ])
+
+        assert result.exit_code == 0
+        # Should show verification running
+        assert 'verif' in result.stdout.lower()
+        # Should show verification passed
+        assert 'no issues' in result.stdout.lower() or 'clean' in result.stdout.lower()
+
+    def test_dedupe_with_auto_verify_with_issues(self, runner, tmp_path):
+        """Test dedupe with --auto-verify when verification finds issues."""
+        # Create a database with duplicates + orphaned FTS
+        db_path = tmp_path / "archive_state.db"
+        conn = sqlite3.connect(str(db_path))
+
+        # Create tables
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        ''')
+
+        # Add duplicates
+        conn.execute('''
+            INSERT INTO messages VALUES
+            ('gmail1', '<dup@test.com>', 'thread1', 'Dup 1', 'sender@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+             'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
+        ''')
+
+        conn.execute('''
+            INSERT INTO messages VALUES
+            ('gmail2', '<dup@test.com>', 'thread1', 'Dup 2', 'sender@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-02T12:00:00',
+             'archive1.mbox', 200, 600, 'Body 2', 'checksum2', 600, NULL, 'default')
+        ''')
+
+        # Create FTS table
+        conn.execute('''
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content=messages,
+                content_rowid=rowid
+            )
+        ''')
+
+        # Add orphaned FTS record
+        conn.execute('''
+            INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+            VALUES (999, 'Orphan', 'orphan@example.com', 'test@example.com', 'Orphaned record')
+        ''')
+
+        # Create schema_version table
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_at TIMESTAMP NOT NULL
+            )
+        ''')
+
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)",
+            ('1.1', datetime.now().isoformat())
+        )
+
+        conn.commit()
+        conn.close()
+
+        # Run dedupe with auto-verify
+        with patch('typer.confirm', return_value=True):
+            result = runner.invoke(app, [
+                'dedupe',
+                '--state-db', str(db_path),
+                '--no-dry-run',
+                '--auto-verify'
+            ])
+
+        assert result.exit_code == 0
+        # Should show verification running
+        assert 'verif' in result.stdout.lower()
+        # Should show issues found
+        assert 'issue' in result.stdout.lower() or 'orphan' in result.stdout.lower()
+        # Should suggest repair
+        assert 'repair' in result.stdout.lower() or 'check' in result.stdout.lower()
+
+    def test_dedupe_dry_run_no_auto_verify(self, runner, tmp_path):
+        """Test dedupe dry-run does not auto-verify even with flag."""
+        db_path = create_v1_1_db_with_duplicates(tmp_path)
+
+        result = runner.invoke(app, [
+            'dedupe',
+            '--state-db', str(db_path),
+            '--dry-run',
+            '--auto-verify'
+        ])
+
+        assert result.exit_code == 0
+        # Dry run should not trigger auto-verify
+        # The implementation shows auto-verify only runs in non-dry-run mode

@@ -308,3 +308,78 @@ class TestImportCommand:
         # Should show table with file names
         assert 'test1.mbox' in result.stdout
         assert 'test2.mbox' in result.stdout
+
+    def test_import_with_auto_verify_clean(self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch):
+        """Test import with --auto-verify on clean database."""
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, [
+            'import',
+            str(sample_mbox),
+            '--state-db', str(v1_1_database),
+            '--auto-verify'
+        ])
+
+        assert result.exit_code == 0
+        # Should show verification running
+        assert 'verif' in result.stdout.lower()
+        # Should show verification passed
+        assert 'no issues' in result.stdout.lower() or 'clean' in result.stdout.lower()
+
+    def test_import_with_auto_verify_with_issues(self, runner, tmp_path, monkeypatch):
+        """Test import with --auto-verify when verification finds issues."""
+        monkeypatch.chdir(tmp_path)
+
+        # Create a database with orphaned FTS records
+        db_path = tmp_path / "archive_state.db"
+        manager = MigrationManager(db_path)
+        manager._connect()
+        manager._create_enhanced_schema(manager.conn)
+
+        # Add message to messages table
+        manager.conn.execute('''
+            INSERT INTO messages VALUES
+            ('gmail1', '<msg1@example.com>', 'thread1', 'Message 1', 'sender@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+             'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
+        ''')
+
+        # Add orphaned FTS record (rowid that doesn't exist in messages)
+        manager.conn.execute('''
+            INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+            VALUES (999, 'Orphan', 'orphan@example.com', 'test@example.com', 'Orphaned record')
+        ''')
+
+        manager.conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)",
+            ('1.1', datetime.now().isoformat())
+        )
+
+        manager.conn.commit()
+        manager._close()
+
+        # Create mbox to import
+        mbox_path = tmp_path / "test.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+        msg = mailbox.mboxMessage()
+        msg['From'] = 'test@example.com'
+        msg['Subject'] = 'Test'
+        msg['Message-ID'] = '<test@example.com>'
+        msg.set_payload('Test')
+        mbox.add(msg)
+        mbox.close()
+
+        result = runner.invoke(app, [
+            'import',
+            str(mbox_path),
+            '--state-db', str(db_path),
+            '--auto-verify'
+        ])
+
+        assert result.exit_code == 0  # Import itself succeeds
+        # Should show verification running
+        assert 'verif' in result.stdout.lower()
+        # Should show issues found
+        assert 'issue' in result.stdout.lower() or 'orphan' in result.stdout.lower()
+        # Should suggest repair
+        assert 'repair' in result.stdout.lower() or 'check' in result.stdout.lower()
