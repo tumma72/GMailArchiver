@@ -770,6 +770,7 @@ def dedupe_report(
         "--state-db",
         help="Path to state database file"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Show deduplication analysis without making changes.
@@ -780,71 +781,74 @@ def dedupe_report(
     Example:
         $ gmailarchiver dedupe-report
         $ gmailarchiver dedupe-report --state-db /path/to/archive_state.db
+        $ gmailarchiver dedupe-report --json
     """
-    console.print("\n[bold blue]Deduplication Report[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("dedupe-report", "Analyzing duplicates")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
+            exit_code=1,
+        )
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
         with MessageDeduplicator(str(db_path)) as dedup:
-            # Find duplicates
-            duplicates = dedup.find_duplicates()
+            with output.progress_context("Analyzing duplicates", total=None) as progress:
+                # Find duplicates
+                duplicates = dedup.find_duplicates()
 
-            # Generate report
-            report = dedup.generate_report(duplicates)
+                # Generate report
+                report = dedup.generate_report(duplicates)
 
             # Display results
             if report.duplicate_message_ids == 0:
-                console.print("[green]No duplicate messages found![/green]\n")
+                output.success("No duplicate messages found!")
+                output.end_operation(success=True)
                 return
 
-            # Display summary statistics
-            console.print(f"Total messages analyzed: [bold]{report.total_messages:,}[/bold]")
-            console.print(
-                f"Duplicate Message-IDs found: [cyan]{report.duplicate_message_ids:,}[/cyan]"
-            )
-            console.print(
-                f"Total duplicate messages: [yellow]{report.total_duplicate_messages:,}[/yellow]"
-            )
-            console.print(
-                f"Messages to remove: [red]{report.messages_to_remove:,}[/red]"
-            )
-            console.print(
-                f"Space recoverable: [green]{format_bytes(report.space_recoverable)}[/green]\n"
-            )
+            # Build report data
+            report_data = {
+                "Total Messages": f"{report.total_messages:,}",
+                "Duplicate Message-IDs": report.duplicate_message_ids,
+                "Total Duplicate Messages": report.total_duplicate_messages,
+                "Messages to Remove": report.messages_to_remove,
+                "Space Recoverable": format_bytes(report.space_recoverable),
+            }
 
-            # Display breakdown by archive file
+            output.show_report("Deduplication Analysis", report_data)
+
+            # Show breakdown by archive file
             if report.breakdown_by_archive:
-                table = Table(title="Breakdown by Archive File")
-                table.add_column("Archive File", style="cyan")
-                table.add_column("Duplicates to Remove", style="yellow", justify="right")
-                table.add_column("Space Recoverable", style="green", justify="right")
-
+                output.info("\nBreakdown by archive file:")
                 for archive_file, stats in sorted(report.breakdown_by_archive.items()):
-                    table.add_row(
-                        archive_file,
-                        str(stats['messages_to_remove']),
-                        format_bytes(stats['space_recoverable'])
+                    output.info(
+                        f"  • {archive_file}: {stats['messages_to_remove']} duplicates, "
+                        f"{format_bytes(stats['space_recoverable'])} recoverable"
                     )
 
-                console.print(table)
-                console.print()
+            output.suggest_next_steps([
+                "Remove duplicates (dry run): gmailarchiver dedupe --dry-run",
+                "Remove duplicates: gmailarchiver dedupe --strategy newest --no-dry-run",
+            ])
+
+            output.end_operation(success=True)
 
     except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        console.print(
-            "\n[yellow]Hint:[/yellow] Run 'gmailarchiver migrate' to upgrade your database"
+        output.error(
+            str(e),
+            suggestion="Run 'gmailarchiver migrate' to upgrade your database",
+            exit_code=1,
         )
-        raise typer.Exit(1)
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Deduplication analysis failed: {e}", exit_code=1)
 
 
 @app.command()
@@ -864,6 +868,7 @@ def dedupe(
         "--dry-run/--no-dry-run",
         help="Preview changes without executing"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Remove duplicate messages from archive database.
@@ -880,94 +885,114 @@ def dedupe(
         $ gmailarchiver dedupe --dry-run
         $ gmailarchiver dedupe --strategy newest --no-dry-run
         $ gmailarchiver dedupe --strategy largest --no-dry-run
+        $ gmailarchiver dedupe --json
     """
-    console.print("\n[bold blue]Deduplication[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    operation_name = "dedupe (dry-run)" if dry_run else "dedupe"
+    output.start_operation(operation_name, f"Removing duplicates (strategy: {strategy})")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
+            exit_code=1,
+        )
 
     # Validate strategy
     valid_strategies = ['newest', 'largest', 'first']
     if strategy not in valid_strategies:
-        console.print(
-            f"[red]Error:[/red] Invalid strategy: {strategy}. "
-            f"Must be one of: {', '.join(valid_strategies)}"
+        output.error(
+            f"Invalid strategy: {strategy}",
+            suggestion=f"Must be one of: {', '.join(valid_strategies)}",
+            exit_code=1,
         )
-        raise typer.Exit(1)
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
         with MessageDeduplicator(str(db_path)) as dedup:
-            # Find duplicates
-            duplicates = dedup.find_duplicates()
+            with output.progress_context("Finding duplicates", total=None) as progress:
+                # Find duplicates
+                duplicates = dedup.find_duplicates()
 
             # Check if there are duplicates
             if not duplicates:
-                console.print("[green]No duplicate messages found![/green]\n")
+                output.success("No duplicate messages found!")
+                output.end_operation(success=True)
                 return
 
             # Show what will be done
             report = dedup.generate_report(duplicates)
 
-            console.print(f"Strategy: [cyan]{strategy}[/cyan]")
-            console.print(
-                f"Duplicate Message-IDs: [yellow]{report.duplicate_message_ids:,}[/yellow]"
-            )
-            console.print(f"Messages to remove: [red]{report.messages_to_remove:,}[/red]")
-            console.print(
-                f"Space to save: [green]{format_bytes(report.space_recoverable)}[/green]\n"
-            )
+            report_data = {
+                "Strategy": strategy,
+                "Duplicate Message-IDs": report.duplicate_message_ids,
+                "Messages to Remove": report.messages_to_remove,
+                "Space to Save": format_bytes(report.space_recoverable),
+            }
 
             if dry_run:
-                console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
+                output.warning("DRY RUN - No changes will be made")
 
-                # Show preview of what would be removed
-                result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
+                with output.progress_context("Analyzing duplicates", total=None) as progress:
+                    # Show preview of what would be removed
+                    result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
 
-                console.print(f"Would remove: [red]{result.messages_removed:,}[/red] messages")
-                console.print(f"Would keep: [green]{result.messages_kept:,}[/green] messages")
-                console.print(f"Would save: [cyan]{format_bytes(result.space_saved)}[/cyan]\n")
+                report_data["Would Remove"] = f"{result.messages_removed:,} messages"
+                report_data["Would Keep"] = f"{result.messages_kept:,} messages"
+                report_data["Would Save"] = format_bytes(result.space_saved)
 
-                console.print(
-                    "[dim]Run with --no-dry-run to actually remove duplicates[/dim]\n"
-                )
+                output.show_report("Deduplication Preview (Dry Run)", report_data)
+
+                output.suggest_next_steps([
+                    f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run",
+                ])
 
             else:
                 # Confirm before proceeding
-                console.print(
-                    "[bold yellow]⚠ WARNING: This will permanently remove "
-                    "duplicate messages from the database[/bold yellow]"
+                output.warning(
+                    "⚠ WARNING: This will permanently remove duplicate messages from the database"
                 )
-                console.print("The mbox files themselves will not be modified.\n")
+                output.info("The mbox files themselves will not be modified.")
 
                 if not typer.confirm(
                     f"Remove {report.messages_to_remove:,} duplicate messages "
                     f"using '{strategy}' strategy?"
                 ):
-                    console.print("[yellow]Cancelled[/yellow]\n")
+                    output.info("Cancelled")
+                    output.end_operation(success=True)
                     return
 
                 # Perform deduplication
-                result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
+                with output.progress_context("Removing duplicates", total=None) as progress:
+                    result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
 
-                console.print("\n[bold green]✓ Deduplication completed![/bold green]\n")
-                console.print(f"Removed: [red]{result.messages_removed:,}[/red] messages")
-                console.print(f"Kept: [green]{result.messages_kept:,}[/green] messages")
-                console.print(f"Space saved: [cyan]{format_bytes(result.space_saved)}[/cyan]\n")
+                report_data["Removed"] = f"{result.messages_removed:,} messages"
+                report_data["Kept"] = f"{result.messages_kept:,} messages"
+                report_data["Space Saved"] = format_bytes(result.space_saved)
+
+                output.show_report("Deduplication Results", report_data)
+                output.success("Deduplication completed!")
+
+                output.suggest_next_steps([
+                    "Verify database: gmailarchiver verify-integrity",
+                    "Consolidate archives: gmailarchiver consolidate archive*.mbox -o merged.mbox",
+                ])
+
+            output.end_operation(success=True)
 
     except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        console.print(
-            "\n[yellow]Hint:[/yellow] Run 'gmailarchiver migrate' to upgrade your database"
+        output.error(
+            str(e),
+            suggestion="Run 'gmailarchiver migrate' to upgrade your database",
+            exit_code=1,
         )
-        raise typer.Exit(1)
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Deduplication failed: {e}", exit_code=1)
 
 
 @app.command(name="verify-offsets")
@@ -1467,12 +1492,13 @@ def import_cmd(
 @app.command()
 def consolidate(
     archives: list[str] = typer.Argument(..., help="Archive files or glob patterns"),
-    output: str = typer.Option(..., "-o", "--output", help="Output archive file"),
+    output_file: str = typer.Option(..., "-o", "--output", help="Output archive file"),
     sort: bool = typer.Option(True, help="Sort messages chronologically"),
     dedupe: bool = typer.Option(True, help="Remove duplicate messages"),
     dedupe_strategy: str = typer.Option("newest", help="Dedup strategy: newest/largest/first"),
     compress: str | None = typer.Option(None, help="Compression: gzip/lzma/zstd"),
-    state_db: str = typer.Option("archive_state.db", help="State database path")
+    state_db: str = typer.Option("archive_state.db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Consolidate multiple archives into one.
@@ -1485,14 +1511,15 @@ def consolidate(
         $ gmailarchiver consolidate old1.mbox old2.mbox -o consolidated.mbox.gz
         $ gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
         $ gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
+        $ gmailarchiver consolidate archive*.mbox -o merged.mbox --json
     """
     import glob
 
-    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from gmailarchiver.consolidator import ArchiveConsolidator
+    from gmailarchiver.output import OutputManager
 
-    from .consolidator import ArchiveConsolidator
-
-    console.print("\n[bold blue]Archive Consolidation[/bold blue]\n")
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("consolidate", f"Consolidating to {output_file}")
 
     # 1. Expand glob patterns
     all_files = []
@@ -1503,26 +1530,31 @@ def consolidate(
             if Path(pattern).exists():
                 all_files.append(pattern)
             else:
-                console.print(f"[yellow]Warning: No files match pattern: {pattern}[/yellow]")
+                output.warning(f"No files match pattern: {pattern}")
         else:
             all_files.extend(matches)
 
     if not all_files:
-        console.print("[red]Error: No archive files found[/red]")
-        raise typer.Exit(1)
+        output.error(
+            "No archive files found",
+            suggestion="Check file paths or glob patterns",
+            exit_code=1,
+        )
 
-    console.print(f"Found {len(all_files)} archive(s) to consolidate\n")
+    output.info(f"Found {len(all_files)} archive(s) to consolidate")
 
     # 2. Validate dedupe strategy
     valid_strategies = ['newest', 'largest', 'first']
     if dedupe_strategy not in valid_strategies:
-        console.print(f"[red]Error: Invalid dedupe strategy: {dedupe_strategy}[/red]")
-        console.print(f"[yellow]Valid strategies: {', '.join(valid_strategies)}[/yellow]")
-        raise typer.Exit(1)
+        output.error(
+            f"Invalid dedupe strategy: {dedupe_strategy}",
+            suggestion=f"Valid strategies: {', '.join(valid_strategies)}",
+            exit_code=1,
+        )
 
     # 3. Auto-detect compression from output extension
     if compress is None:
-        output_path = Path(output)
+        output_path = Path(output_file)
         if output_path.suffix == '.gz':
             compress = 'gzip'
         elif output_path.suffix == '.xz':
@@ -1531,69 +1563,64 @@ def consolidate(
             compress = 'zstd'
 
     # 4. Check if output file exists
-    output_path = Path(output)
+    output_path = Path(output_file)
     if output_path.exists():
-        overwrite = typer.confirm(f"Output file exists: {output}. Overwrite?")
+        overwrite = typer.confirm(f"Output file exists: {output_file}. Overwrite?")
         if not overwrite:
-            console.print("[yellow]Consolidation cancelled[/yellow]")
+            output.info("Consolidation cancelled")
+            output.end_operation(success=True)
             raise typer.Exit(0)
 
     # 5. Consolidate with progress
     consolidator = ArchiveConsolidator(state_db)
 
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        ) as progress:
-            task = progress.add_task("Consolidating archives...", total=None)
-
+        with output.progress_context("Consolidating archives", total=None) as progress:
             # Convert file paths to list[str | Path] for type compatibility
             source_paths: list[str | Path] = [Path(f) for f in all_files]
 
             result = consolidator.consolidate(
                 source_archives=source_paths,
-                output_archive=output,
+                output_archive=output_file,
                 sort_by_date=sort,
                 deduplicate=dedupe,
                 dedupe_strategy=dedupe_strategy,
                 compress=compress
             )
 
-            progress.update(task, completed=True)
+        # 6. Build report data
+        report_data = {
+            "Source Archives": len(result.source_files),
+            "Total Messages": result.total_messages,
+            "Duplicates Removed": result.duplicates_removed,
+            "Messages Consolidated": result.messages_consolidated,
+            "Sorted by Date": "Yes" if result.sort_applied else "No",
+        }
 
-        # 6. Display summary
-        table = Table(title="Consolidation Summary")
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="green")
-
-        table.add_row("Source archives", str(len(result.source_files)))
-        table.add_row("Total messages", str(result.total_messages))
-        table.add_row("Duplicates removed", str(result.duplicates_removed))
-        table.add_row("Messages consolidated", str(result.messages_consolidated))
-        table.add_row("Sorted by date", "Yes" if result.sort_applied else "No")
         if result.compression_used:
-            table.add_row("Compression", result.compression_used)
-
-        console.print(table)
+            report_data["Compression"] = result.compression_used
 
         # 7. Performance metrics
         if result.execution_time_ms > 0:
             rate = (result.messages_consolidated / result.execution_time_ms) * 1000
-            console.print("\n[green]✓ Consolidation complete![/green]")
-            console.print(f"[dim]Performance: {rate:.1f} messages/second[/dim]")
-            console.print(f"[dim]Output: {result.output_file}[/dim]\n")
+            report_data["Performance"] = f"{rate:.1f} messages/second"
+
+        output.show_report("Consolidation Summary", report_data)
+        output.success(f"Consolidation complete! Output: {result.output_file}")
+
+        output.suggest_next_steps([
+            "Verify consolidated archive: gmailarchiver validate " + result.output_file,
+            "Search messages: gmailarchiver search <query>",
+        ])
+
+        output.end_operation(success=True)
 
     except ValueError as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Validation error: {e}", exit_code=1)
     except FileNotFoundError as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"File not found: {e}", exit_code=1)
     except Exception as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Consolidation failed: {e}", exit_code=1)
 
 
 @app.command(name="verify-integrity")
