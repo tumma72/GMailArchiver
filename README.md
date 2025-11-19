@@ -334,6 +334,22 @@ gmailarchiver verify-offsets archive_20250114.mbox.gz
 gmailarchiver verify-consistency archive_20250114.mbox.gz
 ```
 
+### Database Maintenance Commands (v1.1+)
+
+```bash
+# Verify database integrity (comprehensive checks)
+gmailarchiver verify-integrity
+
+# Fix database issues (dry run - preview only)
+gmailarchiver repair
+
+# Fix database issues (actually repair)
+gmailarchiver repair --no-dry-run
+
+# Repair with offset backfilling (for v1.1.0-beta.1 users)
+gmailarchiver repair --backfill --no-dry-run
+```
+
 ### Retry Failed Operations (v1.1+)
 
 ```bash
