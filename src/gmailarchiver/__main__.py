@@ -1314,6 +1314,10 @@ def search(
     output_dir: str | None = typer.Option(
         None, "--output-dir", help="Directory for extracted messages (required with --extract)"
     ),
+    with_preview: bool = typer.Option(False, "--with-preview", help="Show message body preview"),
+    interactive: bool = typer.Option(
+        False, "--interactive", help="Interactive message selection for extraction"
+    ),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
@@ -1327,6 +1331,8 @@ def search(
         $ gmailarchiver search --after 2024-01-01 --before 2024-12-31
         $ gmailarchiver search "meeting notes" --json
         $ gmailarchiver search "from:alice" --extract --output-dir /tmp/emails
+        $ gmailarchiver search "meeting" --with-preview
+        $ gmailarchiver search "important" --interactive
     """
     import json
     import time
@@ -1338,11 +1344,26 @@ def search(
 
     output = OutputManager(json_mode=json_output)
 
-    # Validate extract flags
+    # Validate flags
     if extract and not output_dir:
         output.error(
             "--extract requires --output-dir",
             suggestion="Specify output directory: --output-dir /path/to/directory",
+            exit_code=1,
+        )
+
+    # Interactive mode is mutually exclusive with some flags
+    if interactive and json_output:
+        output.error(
+            "--interactive cannot be used with --json",
+            suggestion="Remove --json flag for interactive mode",
+            exit_code=1,
+        )
+
+    if interactive and extract:
+        output.error(
+            "--interactive cannot be used with --extract",
+            suggestion="Use --interactive alone (extraction is part of interactive mode)",
             exit_code=1,
         )
 
@@ -1425,8 +1446,9 @@ def search(
         # Format output
         if json_output:
             # Output JSON array
-            data = [
-                {
+            data = []
+            for r in results.results:
+                entry = {
                     "gmail_id": r.gmail_id,
                     "rfc_message_id": r.rfc_message_id,
                     "date": r.date,
@@ -1437,8 +1459,14 @@ def search(
                     "mbox_offset": r.mbox_offset,
                     "relevance_score": r.relevance_score,
                 }
-                for r in results.results
-            ]
+                # Add body_preview if --with-preview flag is used
+                if with_preview:
+                    preview = r.body_preview or ""
+                    # Truncate to 200 chars
+                    if len(preview) > 200:
+                        preview = preview[:200] + "..."
+                    entry["body_preview"] = preview
+                data.append(entry)
             print(json.dumps(data, indent=2))
         else:
             # Rich table output
@@ -1453,35 +1481,55 @@ def search(
                 output.end_operation(success=True)
                 return
 
-            table = Table(title=f"Search Results ({results.total_results} found)")
-            table.add_column("Date", style="cyan", width=12)
-            table.add_column("From", style="green", width=30)
-            table.add_column("Subject", style="yellow", width=40)
-            table.add_column("Archive", style="magenta", width=30)
+            # Display results based on --with-preview flag
+            if with_preview:
+                # Display with preview (list format)
+                console.print(f"\n[bold cyan]Search Results ({results.total_results} found)[/bold cyan]\n")
 
-            for result in results.results:
-                # Truncate long fields
-                if len(result.from_addr) > 28:
-                    from_display = result.from_addr[:28] + "..."
-                else:
-                    from_display = result.from_addr
+                for idx, result in enumerate(results.results, 1):
+                    # Truncate preview to 200 chars
+                    preview = result.body_preview or ""
+                    if len(preview) > 200:
+                        preview = preview[:200] + "..."
+                    preview_display = preview if preview else "(no preview)"
 
-                if len(result.subject) > 38:
-                    subject_display = result.subject[:38] + "..."
-                else:
-                    subject_display = result.subject or "(no subject)"
+                    console.print(f"[bold]{idx}. Subject:[/bold] {result.subject or '(no subject)'}")
+                    console.print(f"   [cyan]From:[/cyan] {result.from_addr}")
+                    console.print(f"   [cyan]Date:[/cyan] {result.date[:10] if result.date else 'N/A'}")
+                    console.print(f"   [yellow]Preview:[/yellow] {preview_display}")
+                    console.print(f"   [magenta]Gmail ID:[/magenta] {result.gmail_id}")
+                    console.print()
+            else:
+                # Display table (default)
+                table = Table(title=f"Search Results ({results.total_results} found)")
+                table.add_column("Date", style="cyan", width=12)
+                table.add_column("From", style="green", width=30)
+                table.add_column("Subject", style="yellow", width=40)
+                table.add_column("Archive", style="magenta", width=30)
 
-                archive_display = Path(result.archive_file).name
+                for result in results.results:
+                    # Truncate long fields
+                    if len(result.from_addr) > 28:
+                        from_display = result.from_addr[:28] + "..."
+                    else:
+                        from_display = result.from_addr
 
-                table.add_row(
-                    result.date[:10] if result.date else "N/A",
-                    from_display,
-                    subject_display,
-                    archive_display,
-                )
+                    if len(result.subject) > 38:
+                        subject_display = result.subject[:38] + "..."
+                    else:
+                        subject_display = result.subject or "(no subject)"
 
-            console.print(table)
-            console.print()
+                    archive_display = Path(result.archive_file).name
+
+                    table.add_row(
+                        result.date[:10] if result.date else "N/A",
+                        from_display,
+                        subject_display,
+                        archive_display,
+                    )
+
+                console.print(table)
+                console.print()
 
             # Show summary
             report_data = {
@@ -1490,6 +1538,94 @@ def search(
                 "Execution Time": f"{execution_time_ms:.2f}ms",
             }
             output.show_report("Search Summary", report_data)
+
+        # Interactive mode: allow user to select messages for extraction
+        if interactive and not json_output:
+            try:
+                import questionary
+            except ImportError:
+                output.error(
+                    "Interactive mode requires 'questionary' package",
+                    suggestion="Install with: pip install questionary",
+                    exit_code=1,
+                )
+
+            # Build choices for interactive selection
+            choices = []
+            for idx, result in enumerate(results.results, 1):
+                subject_display = result.subject or "(no subject)"
+                if len(subject_display) > 50:
+                    subject_display = subject_display[:50] + "..."
+
+                choice_label = (
+                    f"{idx}. {subject_display} "
+                    f"(from: {result.from_addr[:30]}, "
+                    f"date: {result.date[:10] if result.date else 'N/A'})"
+                )
+                choices.append(questionary.Choice(title=choice_label, value=result.gmail_id))
+
+            # Prompt user to select messages
+            console.print()
+            selected_ids = questionary.checkbox(
+                "Select messages to extract (space to select, enter to confirm):",
+                choices=choices,
+            ).ask()
+
+            # Handle cancellation or no selection
+            if not selected_ids:
+                output.info("No messages selected. Cancelled.")
+                output.end_operation(success=True)
+                return
+
+            # Prompt for output directory
+            default_output_dir = "./extracted"
+            output_dir_str = questionary.path(
+                "Output directory for extracted messages:",
+                default=default_output_dir,
+                only_directories=True,
+            ).ask()
+
+            if not output_dir_str:
+                output.info("No output directory specified. Cancelled.")
+                output.end_operation(success=True)
+                return
+
+            # Extract selected messages
+            from gmailarchiver.extractor import MessageExtractor
+
+            output.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
+
+            with MessageExtractor(state_db) as extractor:
+                with output.progress_context(
+                    "Extracting messages", total=len(selected_ids)
+                ) as progress:
+                    task = (
+                        progress.add_task("Extracting", total=len(selected_ids)) if progress else None
+                    )
+
+                    stats = extractor.batch_extract(selected_ids, Path(output_dir_str))
+
+                    if progress and task:
+                        progress.update(task, completed=len(selected_ids))
+
+            # Show extraction summary
+            extraction_report = {
+                "Messages Selected": len(selected_ids),
+                "Messages Extracted": stats["extracted"],
+                "Failed": stats["failed"],
+                "Output Directory": output_dir_str,
+            }
+            output.show_report("Extraction Summary", extraction_report)
+
+            if stats["errors"]:
+                output.warning(f"Encountered {len(stats['errors'])} error(s):")
+                for error in stats["errors"][:5]:  # Show first 5 errors
+                    output.info(f"  • {error}")
+                if len(stats["errors"]) > 5:
+                    output.info(f"  ... and {len(stats['errors']) - 5} more")
+
+            output.end_operation(success=True)
+            return
 
         # Extract messages if requested
         if extract:
