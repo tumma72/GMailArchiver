@@ -1318,7 +1318,8 @@ def import_cmd(
     archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
     account_id: str = typer.Option("default", help="Account identifier"),
     skip_duplicates: bool = typer.Option(True, help="Skip duplicate messages"),
-    state_db: str = typer.Option("archive_state.db", help="State database path")
+    state_db: str = typer.Option("archive_state.db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Import existing mbox archives into v1.1 database.
@@ -1331,16 +1332,17 @@ def import_cmd(
         $ gmailarchiver import archive_*.mbox.gz --skip-duplicates
         $ gmailarchiver import "archives/*.mbox.zst" --account-id gmail_work
         $ gmailarchiver import old_archive.mbox --state-db /path/to/archive_state.db
+        $ gmailarchiver import archive.mbox --json
     """
     import glob
     import time
 
-    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+    from gmailarchiver.importer import ArchiveImporter
+    from gmailarchiver.migration import MigrationManager
+    from gmailarchiver.output import OutputManager
 
-    from .importer import ArchiveImporter
-    from .migration import MigrationManager
-
-    console.print("\n[bold blue]Import Archive[/bold blue]\n")
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("import", f"Importing archives: {archive_pattern}")
 
     db_path = Path(state_db)
 
@@ -1351,36 +1353,28 @@ def import_cmd(
 
         if version == "1.0":
             # Auto-migrate v1.0 to v1.1
-            console.print("[yellow]Detected v1.0 database, auto-migrating to v1.1...[/yellow]")
+            output.warning("Detected v1.0 database, auto-migrating to v1.1...")
             try:
                 manager.migrate_v1_to_v1_1()
-                console.print("[green]✓[/green] Migration completed successfully\n")
+                output.success("Migration completed successfully")
             except Exception as e:
                 manager._close()
-                console.print(f"[red]Migration failed:[/red] {e}")
-                raise typer.Exit(1)
+                output.error(f"Migration failed: {e}", exit_code=1)
         elif version == "none":
             # Empty database file exists - delete it and let DBManager create a fresh one
             manager._close()
-            console.print(
-                "[yellow]Found empty database file, recreating with v1.1 schema...[/yellow]"
-            )
+            output.warning("Found empty database file, recreating with v1.1 schema...")
             try:
                 db_path.unlink()
             except Exception as e:
-                console.print(f"[red]Failed to delete empty database:[/red] {e}")
-                raise typer.Exit(1)
+                output.error(f"Failed to delete empty database: {e}", exit_code=1)
         elif version != "1.1":
             manager._close()
-            console.print(f"[red]Error:[/red] Unsupported database schema version: {version}")
-            console.print(
-                "\n[yellow]This database may be corrupted or "
-                "from an incompatible version.[/yellow]"
+            output.error(
+                f"Unsupported database schema version: {version}",
+                suggestion="Delete the database or use --state-db with a different path",
+                exit_code=1,
             )
-            console.print("[cyan]Try one of:[/cyan]")
-            console.print("  • Delete the database: [bold]rm archive_state.db[/bold]")
-            console.print("  • Use a different database: [bold]--state-db /path/to/new.db[/bold]")
-            raise typer.Exit(1)
         else:
             # version == "1.1", all good
             pass
@@ -1392,23 +1386,21 @@ def import_cmd(
     # Expand glob pattern
     files = glob.glob(archive_pattern)
     if not files:
-        console.print(f"[red]Error:[/red] No files match pattern: {archive_pattern}")
-        raise typer.Exit(1)
+        output.error(
+            f"No files match pattern: {archive_pattern}",
+            suggestion="Check the file path or glob pattern",
+            exit_code=1,
+        )
 
-    console.print(f"Found {len(files)} file(s) to import\n")
+    output.info(f"Found {len(files)} file(s) to import")
 
     # Import each file with progress
     importer = ArchiveImporter(state_db)
     results = []
     start_time = time.perf_counter()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        console=console
-    ) as progress:
-        task = progress.add_task(f"Importing {len(files)} file(s)...", total=len(files))
+    with output.progress_context(f"Importing {len(files)} file(s)", total=len(files)) as progress:
+        task = progress.add_task("Import", total=len(files)) if progress else None
 
         for file_path in files:
             try:
@@ -1418,65 +1410,58 @@ def import_cmd(
                     skip_duplicates=skip_duplicates
                 )
                 results.append(result)
-                progress.advance(task)
+                if progress and task:
+                    progress.update(task, advance=1)
             except Exception as e:
-                console.print(f"\n[red]Error importing {file_path}:[/red] {e}")
-                progress.advance(task)
+                output.error(f"Error importing {file_path}: {e}")
+                if progress and task:
+                    progress.update(task, advance=1)
 
     total_time = time.perf_counter() - start_time
 
-    # Display summary table
-    table = Table(title="Import Summary")
-    table.add_column("Archive File", style="cyan")
-    table.add_column("Imported", style="green", justify="right")
-    table.add_column("Skipped", style="yellow", justify="right")
-    table.add_column("Failed", style="red", justify="right")
-    table.add_column("Time (ms)", style="magenta", justify="right")
+    # Calculate totals
+    total_imported = sum(r.messages_imported for r in results)
+    total_skipped = sum(r.messages_skipped for r in results)
+    total_failed = sum(r.messages_failed for r in results)
 
-    total_imported = 0
-    total_skipped = 0
-    total_failed = 0
+    # Build report data
+    report_data = {
+        "Files Imported": len(files),
+        "Total Messages Imported": total_imported,
+        "Skipped Duplicates": total_skipped,
+        "Failed": total_failed,
+    }
 
-    for result in results:
-        table.add_row(
-            Path(result.archive_file).name,
-            str(result.messages_imported),
-            str(result.messages_skipped),
-            str(result.messages_failed),
-            f"{result.execution_time_ms:.2f}"
-        )
-        total_imported += result.messages_imported
-        total_skipped += result.messages_skipped
-        total_failed += result.messages_failed
+    # Add performance metrics
+    if total_imported > 0 and total_time > 0:
+        rate = total_imported / total_time
+        report_data["Performance"] = f"{rate:.1f} messages/second"
 
-    console.print(table)
-
-    # Show aggregate statistics
-    console.print(f"\n[green]✓ Total messages imported: {total_imported}[/green]")
-    if total_skipped > 0:
-        console.print(f"[yellow]  Skipped duplicates: {total_skipped}[/yellow]")
-    if total_failed > 0:
-        console.print(f"[red]  Failed: {total_failed}[/red]")
+    output.show_report("Import Summary", report_data)
 
     # Show detailed error messages if there were failures
     if total_failed > 0:
-        console.print("\n[bold red]Import Errors:[/bold red]")
+        output.warning(f"Found {total_failed} import error(s):")
         for result in results:
             if result.errors:
-                console.print(f"\n[cyan]{Path(result.archive_file).name}:[/cyan]")
+                output.info(f"\n{Path(result.archive_file).name}:")
                 for error in result.errors[:10]:  # Limit to first 10 errors per file
-                    console.print(f"  [red]•[/red] {error}")
+                    output.info(f"  • {error}")
                 if len(result.errors) > 10:
-                    console.print(
-                        f"  [dim]... and {len(result.errors) - 10} more errors[/dim]"
-                    )
+                    output.info(f"  ... and {len(result.errors) - 10} more errors")
 
-    # Show performance metrics
-    if total_imported > 0 and total_time > 0:
-        rate = total_imported / total_time
-        console.print(f"\n[dim]Performance: {rate:.1f} messages/second[/dim]")
+        output.suggest_next_steps([
+            "Check database integrity: gmailarchiver verify-integrity",
+            "Review error messages above for details",
+        ])
 
-    console.print()
+    if total_imported > 0:
+        output.suggest_next_steps([
+            "Search imported messages: gmailarchiver search <query>",
+            "Verify database: gmailarchiver verify-integrity",
+        ])
+
+    output.end_operation(success=total_failed == 0)
 
 
 @app.command()
