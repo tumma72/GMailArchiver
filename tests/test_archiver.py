@@ -5,7 +5,7 @@ import lzma
 import tempfile
 from compression import zstd
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -1169,7 +1169,7 @@ class TestExceptionHandling:
         import email
         import tempfile
         from pathlib import Path
-        from unittest.mock import MagicMock, Mock, patch
+        from unittest.mock import Mock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
@@ -1223,7 +1223,7 @@ class TestExceptionHandling:
         import email
         import tempfile
         from pathlib import Path
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)

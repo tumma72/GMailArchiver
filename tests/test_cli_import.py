@@ -235,7 +235,10 @@ class TestImportCommand:
 
         # Should succeed with auto-migration
         assert result.exit_code == 0
-        assert 'auto-migrating' in result.stdout.lower() or 'migration completed' in result.stdout.lower()
+        assert (
+            'auto-migrating' in result.stdout.lower()
+            or 'migration completed' in result.stdout.lower()
+        )
 
     def test_import_shows_progress_and_statistics(
         self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch
