@@ -535,14 +535,14 @@ class TestOffsetVerification:
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
-                 '2025-01-01', 'archive.mbox', offset1, length1)
+                 '2025-01-01', str(mbox_path), offset1, length1)
             )
             conn.execute(
                 '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
-                 '2025-01-01', 'archive.mbox', offset2, length2)
+                 '2025-01-01', str(mbox_path), offset2, length2)
             )
             conn.commit()
             conn.close()
@@ -559,6 +559,75 @@ class TestOffsetVerification:
         finally:
             mbox_path.unlink()
             db_path.unlink()
+
+    def test_verify_offsets_compressed_archive(self) -> None:
+        """Test verify_offsets with a gzip-compressed archive."""
+        # Create uncompressed mbox and corresponding compressed archive
+        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+            mbox_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = Path(f.name)
+
+        with tempfile.NamedTemporaryFile(suffix='.mbox.gz', delete=False) as f:
+            gz_path = Path(f.name)
+
+        try:
+            # Create mbox with a single message
+            mbox = mailbox.mbox(str(mbox_path))
+            msg = mailbox.mboxMessage()
+            msg['Message-ID'] = '<msg1@example.com>'
+            msg['From'] = 'test@example.com'
+            msg['Subject'] = 'Test compressed'
+            msg.set_payload('Body')
+            mbox.add(msg)
+            mbox.close()
+
+            # Compute offset and length in the uncompressed mbox
+            with open(mbox_path, 'rb') as f_in:
+                content = f_in.read()
+                offset = content.find(b'From ')
+                length = len(content) - offset
+
+            # Compress to gzip archive
+            with open(mbox_path, 'rb') as f_in:
+                with gzip.open(gz_path, 'wb') as f_out:
+                    f_out.write(f_in.read())
+
+            # Create v1.1 database referencing the compressed archive file
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL
+                )
+            ''')
+            conn.execute(
+                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                   archive_file, mbox_offset, mbox_length)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(gz_path), offset, length)
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(gz_path), str(db_path))
+            result = validator.verify_offsets()
+
+            assert result.total_checked == 1
+            assert result.successful_reads == 1
+            assert result.failed_reads == 0
+            assert result.accuracy_percentage == 100.0
+            assert len(result.failures) == 0
+
+        finally:
+            mbox_path.unlink()
+            db_path.unlink()
+            gz_path.unlink()
 
     def test_verify_offsets_corrupted_offset(self) -> None:
         """Test verify_offsets with corrupted offset (fails gracefully)."""
@@ -594,7 +663,7 @@ class TestOffsetVerification:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 99999, 100)
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 99999, 100)
             )
             conn.commit()
             conn.close()
@@ -652,7 +721,7 @@ class TestOffsetVerification:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<wrong@example.com>', '2025-01-01', 'archive.mbox', offset, length)
+                ('gmail1', '<wrong@example.com>', '2025-01-01', str(mbox_path), offset, length)
             )
             conn.commit()
             conn.close()
@@ -751,7 +820,7 @@ class TestOffsetVerification:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox',
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path),
                  offset, actual_length + 1000)
             )
             conn.commit()
@@ -823,14 +892,14 @@ class TestConsistencyChecks:
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
-                 '2025-01-01', 'archive.mbox', 0, 100)
+                 '2025-01-01', str(mbox_path), 0, 100)
             )
             conn.execute(
                 '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
-                 '2025-01-01', 'archive.mbox', 100, 100)
+                 '2025-01-01', str(mbox_path), 100, 100)
             )
             # Sync FTS5
             conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
@@ -884,13 +953,13 @@ class TestConsistencyChecks:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
             )
             conn.execute(
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail2', '<orphan@example.com>', '2025-01-01', 'archive.mbox', 100, 100)
+                ('gmail2', '<orphan@example.com>', '2025-01-01', str(mbox_path), 100, 100)
             )
             conn.commit()
             conn.close()
@@ -943,7 +1012,7 @@ class TestConsistencyChecks:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
             )
             conn.commit()
             conn.close()
@@ -999,7 +1068,7 @@ class TestConsistencyChecks:
                 '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
                    VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', 'archive.mbox', 0, 100)
+                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
             )
             # Don't sync FTS5 - create desync
             conn.commit()

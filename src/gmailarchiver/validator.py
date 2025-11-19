@@ -119,6 +119,8 @@ class ArchiveValidator:
             'passed': False
         }
 
+        schema_version = self._detect_schema_version()
+
         # Decompress archive if needed
         mbox_path, is_temp = self._get_mbox_path()
 
@@ -144,12 +146,29 @@ class ArchiveValidator:
             if self.state_db_path.exists():
                 try:
                     conn = sqlite3.connect(str(self.state_db_path))
-                    cursor = conn.execute('SELECT COUNT(*) FROM archived_messages')
-                    db_count_result = cursor.fetchone()
-                    db_count = db_count_result[0] if db_count_result else 0
+                    db_count = 0
+
+                    if schema_version == "1.1":
+                        archive_str = str(self.archive_path)
+                        archive_name = self.archive_path.name
+                        cursor = conn.execute(
+                            """
+                            SELECT COUNT(*) FROM messages
+                            WHERE archive_file = ? OR archive_file = ?
+                            """,
+                            (archive_str, archive_name),
+                        )
+                        row = cursor.fetchone()
+                        db_count = row[0] if row else 0
+                    else:
+                        # v1.0 or unknown schema: fall back to archived_messages total
+                        cursor = conn.execute("SELECT COUNT(*) FROM archived_messages")
+                        row = cursor.fetchone()
+                        db_count = row[0] if row else 0
+
                     conn.close()
 
-                    if db_count >= expected_count:
+                    if db_count == expected_count:
                         results['database_check'] = True
                     else:
                         results['errors'].append(
@@ -183,11 +202,25 @@ class ArchiveValidator:
                     conn = sqlite3.connect(str(self.state_db_path))
                     found = 0
 
+                    archive_str = str(self.archive_path)
+                    archive_name = self.archive_path.name
+
                     for msg_id in sample_ids:
-                        cursor = conn.execute(
-                            'SELECT 1 FROM archived_messages WHERE gmail_id = ?',
-                            (msg_id,)
-                        )
+                        if schema_version == "1.1":
+                            cursor = conn.execute(
+                                """
+                                SELECT 1 FROM messages
+                                WHERE gmail_id = ?
+                                  AND (archive_file = ? OR archive_file = ?)
+                                """,
+                                (msg_id, archive_str, archive_name),
+                            )
+                        else:
+                            cursor = conn.execute(
+                                "SELECT 1 FROM archived_messages WHERE gmail_id = ?",
+                                (msg_id,),
+                            )
+
                         if cursor.fetchone():
                             found += 1
 
@@ -329,13 +362,21 @@ class ArchiveValidator:
                 skipped=True
             )
 
+        archive_str = str(self.archive_path)
+        archive_name = self.archive_path.name
+
         # Get mbox path (decompress if needed)
         mbox_path, is_temp = self._get_mbox_path()
 
         try:
             conn = sqlite3.connect(str(self.state_db_path))
             cursor = conn.execute(
-                'SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length FROM messages'
+                """
+                SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length
+                FROM messages
+                WHERE archive_file = ? OR archive_file = ?
+                """,
+                (archive_str, archive_name),
             )
             records = cursor.fetchall()
             conn.close()
@@ -444,8 +485,17 @@ class ArchiveValidator:
             conn = sqlite3.connect(str(self.state_db_path))
 
             if schema_version == "1.1":
-                # v1.1 schema checks
-                cursor = conn.execute('SELECT rfc_message_id FROM messages')
+                # v1.1 schema checks (per-archive)
+                archive_str = str(self.archive_path)
+                archive_name = self.archive_path.name
+
+                cursor = conn.execute(
+                    """
+                    SELECT rfc_message_id FROM messages
+                    WHERE archive_file = ? OR archive_file = ?
+                    """,
+                    (archive_str, archive_name),
+                )
                 db_message_ids = {row[0] for row in cursor.fetchall()}
 
                 # Check for orphaned records (in DB but not in mbox)
