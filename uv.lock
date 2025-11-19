@@ -102,7 +102,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gmailarchiver"
+name = "gmail-archiver-cli"
 source = { editable = "." }
 dependencies = [
     { name = "google-api-python-client" },
