@@ -1,0 +1,113 @@
+name: Release and Publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write  # For trusted publishing to PyPI
+
+jobs:
+  release-and-publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Extract version from tag
+        id: tag_version
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$TAG_VERSION" >> $GITHUB_OUTPUT
+          echo "Expected version from tag: $TAG_VERSION"
+
+      - name: Build package
+        run: uv build
+
+      - name: Verify built version matches tag
+        run: |
+          TAG_VERSION="${{ steps.tag_version.outputs.version }}"
+          # Extract version from built wheel filename
+          WHEEL_FILE=$(ls dist/*.whl)
+          BUILT_VERSION=$(echo "$WHEEL_FILE" | sed -n 's/.*gmail_archiver_cli-\([^-]*\)-.*/\1/p')
+
+          echo "Tag version: $TAG_VERSION"
+          echo "Built version: $BUILT_VERSION"
+
+          if [ "$BUILT_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ ERROR: Built version ($BUILT_VERSION) does not match tag version ($TAG_VERSION)"
+            echo "This usually means there are commits after the tag."
+            echo "Please ensure the tag is on the latest commit before releasing."
+            exit 1
+          fi
+
+          echo "✅ Version verification passed: $BUILT_VERSION"
+
+      - name: Verify package contents
+        run: |
+          echo "=== Wheel contents ==="
+          unzip -l dist/*.whl | head -50
+          echo ""
+          echo "=== Source distribution contents ==="
+          tar -tzf dist/*.tar.gz | head -50
+
+      - name: Extract changelog for version
+        id: changelog
+        run: |
+          VERSION=${{ steps.tag_version.outputs.version }}
+          # Extract the section for this version from CHANGELOG.md
+          NOTES=$(awk "/## \[$VERSION\]/{flag=1; next} /## \[/{flag=0} flag" CHANGELOG.md)
+
+          # Save to file to preserve formatting
+          echo "$NOTES" > release_notes.md
+          echo "Extracted release notes for version $VERSION"
+          cat release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Release v${{ steps.tag_version.outputs.version }}
+          body_path: release_notes.md
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          echo "Publishing to PyPI..."
+          uvx twine upload dist/* --username __token__ --password "$PYPI_TOKEN"
+
+      - name: Verify PyPI publication
+        run: |
+          VERSION=${{ steps.tag_version.outputs.version }}
+          echo "Waiting for PyPI to index the package..."
+          sleep 30
+
+          if pip index versions gmail-archiver-cli | grep -q "$VERSION"; then
+            echo "✅ Package successfully published to PyPI: $VERSION"
+          else
+            echo "⚠️  Package not yet indexed on PyPI (may take a few minutes)"
+          fi

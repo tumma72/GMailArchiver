@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2025-11-19
+
+### Fixed
+- **Release Process**: Fixed GitHub releases having development versions instead of clean release versions
+  - Consolidated release and publish workflows into single `release-and-publish.yml`
+  - Added version verification to ensure built version matches git tag
+  - Removed duplicate builds that caused version mismatches
+  - GitHub releases now have correct version numbers (e.g., `1.1.4` not `1.1.5.dev0+...`)
+
+- **Test Suite**: Fixed all test failures after Phase 0 refactoring
+  - Updated archiver tests to use new DBManager and HybridStorage mocks
+  - Fixed tests expecting FileNotFoundError to use `auto_create=False` parameter
+  - Updated import test to verify auto-migration behavior
+  - All 619 tests now passing
+
+- **Code Quality**: Fixed ruff linting and mypy type checking errors
+  - Fixed import sorting and removed unused imports
+  - Fixed line length violations
+  - Removed duplicate import statements
+
+### Added
+- **Release Documentation**: Added RELEASE.md with comprehensive release workflow
+  - Documents proper tag creation process
+  - Explains version verification
+  - Includes troubleshooting for common issues
+  - Provides emergency procedures for bad releases
+
 ## [1.1.3] - 2025-11-18
 
 ### Fixed
