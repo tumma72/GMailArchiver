@@ -3179,6 +3179,174 @@ def compress(
 
 
 @app.command()
+def doctor(
+    state_db: str = typer.Option(
+        "archive_state.db", "--state-db", help="Path to state database file"
+    ),
+    fix: bool = typer.Option(False, "--fix", help="Automatically fix issues where possible"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Run system diagnostics and health checks.
+
+    Performs comprehensive checks:
+    - Database schema and integrity
+    - Python version and dependencies
+    - OAuth token validity
+    - Disk space and permissions
+    - Stale lock files
+
+    Use --fix to automatically repair fixable issues.
+
+    Examples:
+        $ gmailarchiver doctor
+        $ gmailarchiver doctor --fix
+        $ gmailarchiver doctor --json
+    """
+    from gmailarchiver.doctor import CheckSeverity, Doctor
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("doctor", "Running system diagnostics")
+
+    # Initialize doctor
+    doctor = Doctor(state_db, validate_schema=False, auto_create=False)
+
+    # Run diagnostics
+    with output.progress_context("Running diagnostic checks", total=12) as progress:
+        task = progress.add_task("Checking...", total=12) if progress else None
+
+        report = doctor.run_diagnostics()
+
+        if progress and task:
+            progress.update(task, completed=12)
+
+    # Show results in Rich format
+    if not json_output:
+        from rich.table import Table
+
+        # Create results table
+        table = Table(title="Diagnostic Results", show_header=True)
+        table.add_column("Check", style="cyan", no_wrap=True)
+        table.add_column("Status", no_wrap=True)
+        table.add_column("Message")
+
+        for check in report.checks:
+            # Color-code status
+            if check.severity == CheckSeverity.OK:
+                status = "[green]✓ OK[/green]"
+            elif check.severity == CheckSeverity.WARNING:
+                status = "[yellow]⚠ WARNING[/yellow]"
+            else:  # ERROR
+                status = "[red]✗ ERROR[/red]"
+
+            # Add fixable indicator
+            message = check.message
+            if check.fixable and check.severity != CheckSeverity.OK:
+                message += " [dim](fixable)[/dim]"
+
+            table.add_row(check.name, status, message)
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        # Show summary
+        if report.overall_status == CheckSeverity.OK:
+            output.success(
+                f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)"
+            )
+        elif report.overall_status == CheckSeverity.WARNING:
+            output.warning(
+                f"Found {report.warnings} warning(s), {report.errors} error(s), "
+                f"{report.checks_passed} passed"
+            )
+        else:  # ERROR
+            output.error(
+                f"Found {report.errors} error(s), {report.warnings} warning(s), "
+                f"{report.checks_passed} passed",
+                exit_code=0,  # Don't exit, continue to show suggestions
+            )
+
+        # Show fixable issues
+        if report.fixable_issues:
+            output.info(
+                f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:"
+            )
+            for issue in report.fixable_issues:
+                output.info(f"  • {issue}")
+
+            if not fix:
+                output.suggest_next_steps(["Run with --fix to auto-repair: gmailarchiver doctor --fix"])
+
+    # Run auto-fix if requested
+    if fix and report.fixable_issues:
+        output.info("\nRunning auto-fix...")
+
+        with output.progress_context("Fixing issues", total=len(report.fixable_issues)) as progress:
+            task = progress.add_task("Fixing...", total=len(report.fixable_issues)) if progress else None
+
+            fix_results = doctor.run_auto_fix()
+
+            if progress and task:
+                progress.update(task, completed=len(report.fixable_issues))
+
+        # Show fix results
+        if not json_output:
+            fix_table = Table(title="Auto-Fix Results", show_header=True)
+            fix_table.add_column("Check", style="cyan")
+            fix_table.add_column("Status", no_wrap=True)
+            fix_table.add_column("Message")
+
+            for fix_result in fix_results:
+                status = "[green]✓ FIXED[/green]" if fix_result.success else "[red]✗ FAILED[/red]"
+                fix_table.add_row(fix_result.check_name, status, fix_result.message)
+
+            console.print()
+            console.print(fix_table)
+            console.print()
+
+        # Show success/failure summary
+        fixed_count = sum(1 for r in fix_results if r.success)
+        failed_count = len(fix_results) - fixed_count
+
+        if fixed_count > 0 and failed_count == 0:
+            output.success(f"Successfully fixed {fixed_count} issue(s)")
+            output.suggest_next_steps(
+                [
+                    "Verify fixes: gmailarchiver doctor",
+                    "Check database: gmailarchiver verify-integrity",
+                ]
+            )
+        elif fixed_count > 0:
+            output.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
+        else:
+            output.error(f"Failed to fix {failed_count} issue(s)", exit_code=0)
+
+    # JSON output mode
+    if json_output:
+        report_dict = report.to_dict()
+        output.show_report("Doctor Report", report_dict)
+
+        if fix and report.fixable_issues:
+            fix_dict = {
+                "fixed": sum(1 for r in fix_results if r.success),
+                "failed": sum(1 for r in fix_results if not r.success),
+                "results": [
+                    {
+                        "check": r.check_name,
+                        "success": r.success,
+                        "message": r.message,
+                    }
+                    for r in fix_results
+                ],
+            }
+            output.show_report("Fix Results", fix_dict)
+
+    output.end_operation(success=True)
+
+
+@app.command()
 def auth_reset() -> None:
     """
     Reset authentication (revoke and delete token).
