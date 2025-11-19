@@ -1947,6 +1947,12 @@ def consolidate(
     auto_verify: bool = typer.Option(
         False, "--auto-verify", help="Run verification after consolidation"
     ),
+    remove_sources: bool = typer.Option(
+        False, "--remove-sources", help="Remove source files after successful consolidation"
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation prompts"
+    ),
     state_db: str = typer.Option("archive_state.db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -1963,6 +1969,7 @@ def consolidate(
         $ gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
         $ gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
         $ gmailarchiver consolidate archive*.mbox -o merged.mbox --json
+        $ gmailarchiver consolidate archive*.mbox -o merged.mbox --remove-sources --yes
     """
     import glob
 
@@ -2114,6 +2121,99 @@ def consolidate(
                     )
             except Exception as e:
                 output.warning(f"Verification failed: {e}")
+
+        # 8. Remove source files if requested
+        if remove_sources:
+            try:
+                # Validate output before removing sources
+                output.info("\nValidating consolidated archive before cleanup...")
+                validator = ArchiveValidator(result.output_file, state_db)
+
+                # Basic validation check
+                if not validator.validate_all():
+                    output.error(
+                        "Output validation failed - source files NOT removed",
+                        suggestion="Fix validation issues before using --remove-sources",
+                        exit_code=1,
+                    )
+
+                # Determine which files to remove (exclude output file)
+                output_path_resolved = Path(output_file).resolve()
+                files_to_remove = []
+                total_size = 0
+
+                for source_file in all_files:
+                    source_path = Path(source_file).resolve()
+                    # Never remove the output file
+                    if source_path != output_path_resolved:
+                        if source_path.exists():
+                            total_size += source_path.stat().st_size
+                            files_to_remove.append(source_path)
+
+                if not files_to_remove:
+                    output.info("No source files to remove (output file is the only file)")
+                else:
+                    # Determine if we should proceed with removal
+                    # Auto-confirm if --yes or --json is provided
+                    should_remove = yes or json_output
+
+                    if not should_remove:
+                        # Show confirmation prompt
+                        output.info(f"\nThe following {len(files_to_remove)} source file(s) will be removed:")
+                        for file_path in files_to_remove:
+                            output.info(f"  • {file_path}")
+                        output.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
+
+                        should_remove = typer.confirm("\nRemove source files?")
+                        if not should_remove:
+                            output.info("Source file removal cancelled - files kept")
+
+                    if should_remove:
+                        # Proceed with removal
+                        removed_count = 0
+                        freed_space = 0
+                        failed_removals = []
+
+                        for file_path in files_to_remove:
+                            try:
+                                file_size = file_path.stat().st_size
+                                file_path.unlink()
+                                removed_count += 1
+                                freed_space += file_size
+                            except FileNotFoundError:
+                                # File already deleted - that's OK
+                                pass
+                            except PermissionError as e:
+                                failed_removals.append(f"{file_path}: {e}")
+                            except Exception as e:
+                                failed_removals.append(f"{file_path}: {e}")
+
+                        # Report results
+                        if removed_count > 0:
+                            output.success(
+                                f"Removed {removed_count} source file(s) - "
+                                f"Space freed: {format_bytes(freed_space)}"
+                            )
+
+                            # Add cleanup data to JSON events for scripting
+                            if json_output:
+                                output._json_events.append({
+                                    "event": "cleanup",
+                                    "removed_files": removed_count,
+                                    "space_freed_bytes": freed_space,
+                                    "failed_removals": len(failed_removals),
+                                })
+
+                        if failed_removals:
+                            output.warning(f"Failed to remove {len(failed_removals)} file(s):")
+                            for failure in failed_removals[:3]:
+                                output.info(f"  • {failure}")
+                            if len(failed_removals) > 3:
+                                output.info(f"  ... and {len(failed_removals) - 3} more")
+
+            except Exception as e:
+                output.warning(f"Source file cleanup failed: {e}")
+                output.info("Consolidation succeeded but source files were NOT removed")
 
         output.end_operation(success=True)
 
