@@ -88,27 +88,21 @@ def archive(
         "--credentials",
         help="Custom OAuth2 credentials file (optional, uses bundled by default)"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Archive Gmail messages older than the specified threshold.
 
     Examples:
-
-        Archive emails older than 3 years:
         $ gmailarchiver archive 3y
-
-        Archive with zstd compression (fastest, recommended):
         $ gmailarchiver archive 3y --compress zstd
-
-        Archive with gzip compression:
         $ gmailarchiver archive 3y --compress gzip
-
-        Archive and move to trash:
         $ gmailarchiver archive 3y --trash
-
-        Dry run to preview:
         $ gmailarchiver archive 6m --dry-run
+        $ gmailarchiver archive 3y --json
     """
+    from gmailarchiver.output import OutputManager
+
     # Generate default output filename if not provided
     if not output:
         timestamp = datetime.now().strftime('%Y%m%d')
@@ -121,17 +115,24 @@ def archive(
             extension = '.mbox.zst'
         output = f"archive_{timestamp}{extension}"
 
-    # Authenticate
-    console.print("\n[bold blue]Gmail Archiver[/bold blue]\n")
+    out = OutputManager(json_mode=json_output)
+    operation_mode = "archive (dry-run)" if dry_run else "archive"
+    out.start_operation(operation_mode, f"Archiving messages older than {age_threshold}")
 
+    # Authenticate
     try:
         # credentials=None uses bundled OAuth credentials
         # token_file=None uses ~/.config/gmailarchiver/token.json
+        out.info("Authenticating with Gmail...")
         authenticator = GmailAuthenticator(credentials_file=credentials)
         creds = authenticator.authenticate()
+        out.success("Authentication successful")
     except FileNotFoundError as e:
-        console.print(f"[red]Error:[/red] {e}", style="red")
-        raise typer.Exit(1)
+        out.error(
+            str(e),
+            suggestion="Check credentials file path or use bundled credentials",
+            exit_code=1,
+        )
 
     # Initialize clients
     gmail_client = GmailClient(creds)
@@ -139,24 +140,37 @@ def archive(
 
     # Perform archiving
     try:
-        result = archiver.archive(
-            age_threshold=age_threshold,
-            output_file=output,
-            compress=compress,
-            incremental=incremental,
-            dry_run=dry_run
-        )
+        with out.progress_context("Archiving messages", total=None) as progress:
+            result = archiver.archive(
+                age_threshold=age_threshold,
+                output_file=output,
+                compress=compress,
+                incremental=incremental,
+                dry_run=dry_run
+            )
 
         if dry_run:
-            console.print("\n[yellow]DRY RUN completed - no changes made[/yellow]")
+            out.warning("DRY RUN completed - no changes made")
+            report_data = {
+                "Messages Found": result['messages_archived'],
+                "Output File": output,
+                "Mode": "Dry Run (no changes made)",
+            }
+            out.show_report("Archive Preview", report_data)
+            out.end_operation(success=True)
             return
 
         if result['messages_archived'] == 0:
-            console.print("\n[yellow]No messages to archive[/yellow]")
+            out.warning("No messages to archive")
+            out.suggest_next_steps([
+                "Check your age threshold",
+                "Verify messages exist in Gmail matching the criteria",
+            ])
+            out.end_operation(success=True)
             return
 
         # Validate archive
-        console.print("\n[bold]Validating archive...[/bold]")
+        out.info("Validating archive...")
 
         # Get the actual message IDs that were archived
         with ArchiveState() as state:
@@ -166,36 +180,46 @@ def archive(
         validation_passed = archiver.validate_archive(output, archived_ids)
 
         if not validation_passed:
-            console.print("\n[red]⚠ Archive validation failed![/red]")
-            console.print("Archive may be incomplete. Deletion cancelled for safety.")
-            raise typer.Exit(1)
+            out.error(
+                "Archive validation failed!",
+                suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
+                exit_code=1,
+            )
+
+        out.success("Archive validation passed")
 
         # Handle deletion if requested
         if trash or delete:
             if not validation_passed:
-                console.print("\n[red]Cannot delete: Archive validation failed[/red]")
-                raise typer.Exit(1)
+                out.error(
+                    "Cannot delete: Archive validation failed",
+                    suggestion="Resolve validation issues before attempting deletion",
+                    exit_code=1,
+                )
 
             if delete:
                 # Permanent deletion requires explicit confirmation
-                console.print("\n[bold red]⚠ WARNING: PERMANENT DELETION[/bold red]")
+                out.warning("⚠ WARNING: PERMANENT DELETION")
                 msg_count = result['messages_archived']
-                console.print(f"This will permanently delete {msg_count} messages.")
-                console.print("This action CANNOT be undone!\n")
+                out.warning(f"This will permanently delete {msg_count} messages.")
+                out.warning("This action CANNOT be undone!")
 
                 confirmation = typer.prompt(
-                    f"Type 'DELETE {result['messages_archived']} MESSAGES' to confirm"
+                    f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
                 )
 
                 if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
-                    console.print("[yellow]Deletion cancelled[/yellow]")
+                    out.info("Deletion cancelled")
+                    out.end_operation(success=True)
                     return
 
                 # Perform permanent deletion
-                archiver.delete_archived_messages(
-                    list(archived_ids),
-                    permanent=True
-                )
+                with out.progress_context("Permanently deleting messages", total=None) as progress:
+                    archiver.delete_archived_messages(
+                        list(archived_ids),
+                        permanent=True
+                    )
+                out.success("Messages permanently deleted")
 
             elif trash:
                 # Move to trash with confirmation
@@ -203,19 +227,49 @@ def archive(
                     f"\nMove {result['messages_archived']} messages to trash? "
                     "(30-day recovery period)"
                 ):
-                    console.print("[yellow]Cancelled[/yellow]")
+                    out.info("Cancelled")
+                    out.end_operation(success=True)
                     return
 
-                archiver.delete_archived_messages(
-                    list(archived_ids),
-                    permanent=False
-                )
+                with out.progress_context("Moving messages to trash", total=None) as progress:
+                    archiver.delete_archived_messages(
+                        list(archived_ids),
+                        permanent=False
+                    )
+                out.success("Messages moved to trash")
 
-        console.print("\n[bold green]✓ Archive completed successfully![/bold green]\n")
+        # Build final report
+        report_data = {
+            "Messages Archived": result['messages_archived'],
+            "Archive File": output,
+            "Incremental Mode": "Yes" if incremental else "No",
+        }
+
+        if compress:
+            report_data["Compression"] = compress
+
+        if trash:
+            report_data["Gmail Status"] = "Moved to trash (30-day recovery)"
+        elif delete:
+            report_data["Gmail Status"] = "Permanently deleted"
+
+        out.show_report("Archive Summary", report_data)
+        out.success("Archive completed successfully!")
+
+        # Suggest next steps
+        next_steps = [
+            f"Validate archive: gmailarchiver validate {output}",
+        ]
+
+        if not trash and not delete:
+            next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
+            next_steps.append(f"Permanently delete: gmailarchiver retry-delete {output} --permanent")
+
+        out.suggest_next_steps(next_steps)
+        out.end_operation(success=True)
 
     except Exception as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        out.error(f"Archive operation failed: {e}", exit_code=1)
 
 
 @app.command()
@@ -454,39 +508,48 @@ def status(
         "--state-db",
         help="Path to state database file"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Show archiving status and statistics.
 
-    Example:
+    Examples:
         $ gmailarchiver status
+        $ gmailarchiver status --json
     """
-    console.print("\n[bold blue]Archive Status[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("status", "Retrieving archive statistics")
 
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        console.print("[yellow]No archive database found[/yellow]\n")
-        console.print("To get started, run one of:")
-        console.print(
-            "  • [bold cyan]gmailarchiver archive 3y[/bold cyan] - "
-            "Archive emails older than 3 years"
-        )
-        console.print(
-            "  • [bold cyan]gmailarchiver import archive.mbox[/bold cyan] - "
-            "Import existing archive\n"
-        )
+        output.warning("No archive database found")
+        output.suggest_next_steps([
+            "Archive emails: gmailarchiver archive 3y",
+            "Import existing archive: gmailarchiver import archive.mbox",
+        ])
+        output.end_operation(success=True)
         raise typer.Exit(0)
 
     with ArchiveState(state_db) as state:
         # Overall stats
         total_archived = state.get_archived_count()
-        console.print(f"Total messages archived: [bold]{total_archived:,}[/bold]\n")
 
         # Recent runs
         recent_runs = state.get_archive_runs(limit=10)
 
-        if recent_runs:
+        # Build report data
+        report_data = {
+            "Total Messages Archived": f"{total_archived:,}",
+            "Recent Archive Runs": len(recent_runs),
+        }
+
+        output.show_report("Archive Status", report_data)
+
+        # Display recent runs table (Rich only, not in JSON)
+        if not json_output and recent_runs:
             table = Table(title="Recent Archive Runs")
             table.add_column("Run ID", style="cyan")
             table.add_column("Timestamp", style="magenta")
@@ -504,10 +567,11 @@ def status(
                 )
 
             console.print(table)
-        else:
-            console.print("[yellow]No archive runs found[/yellow]")
+            console.print()
+        elif not recent_runs:
+            output.warning("No archive runs found")
 
-    console.print()
+    output.end_operation(success=True)
 
 
 @app.command()
@@ -517,6 +581,7 @@ def migrate(
         "--state-db",
         help="Path to state database file"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Migrate database schema to latest version (v1.1.0).
@@ -524,66 +589,102 @@ def migrate(
     Automatically detects schema version and migrates from v1.0 to v1.1
     with enhanced features including mbox offset tracking and full-text search.
 
-    Example:
+    Examples:
         $ gmailarchiver migrate
         $ gmailarchiver migrate --state-db /path/to/archive_state.db
+        $ gmailarchiver migrate --json
     """
-    console.print("\n[bold blue]Database Migration[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("migrate", "Migrating database schema")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Check the database path or use --state-db to specify location",
+            exit_code=1,
+        )
 
     # Initialize migration manager
     manager = MigrationManager(db_path)
 
     # Detect current schema version
     current_version = manager.detect_schema_version()
-    console.print(f"Current schema version: [cyan]{current_version}[/cyan]")
 
     # Check if migration is needed
     if current_version == "1.1":
-        console.print("\n[green]Database is already at version 1.1 (up to date)[/green]\n")
+        output.success("Database is already at version 1.1 (up to date)")
+        output.end_operation(success=True)
+        manager._close()
         return
 
     if current_version == "none":
-        console.print("\n[yellow]Database appears to be empty or invalid[/yellow]")
-        raise typer.Exit(1)
+        output.error(
+            "Database appears to be empty or invalid",
+            suggestion="Create a new database with 'gmailarchiver archive' or 'gmailarchiver import'",
+            exit_code=1,
+        )
 
     # Show migration info
-    console.print("\n[bold]Migration from v1.0 to v1.1 will:[/bold]")
-    console.print("  • Create backup of current database")
-    console.print("  • Add enhanced schema with mbox offset tracking")
-    console.print("  • Enable full-text search capabilities")
-    console.print("  • Add multi-account support (future-ready)")
-    console.print("  • Preserve all existing message data\n")
+    output.info(f"Current schema version: {current_version}")
+    output.info("\nMigration from v1.0 to v1.1 will:")
+    output.info("  • Create backup of current database")
+    output.info("  • Add enhanced schema with mbox offset tracking")
+    output.info("  • Enable full-text search capabilities")
+    output.info("  • Add multi-account support (future-ready)")
+    output.info("  • Preserve all existing message data")
 
     # Confirm migration
-    if not typer.confirm("Proceed with migration?"):
-        console.print("[yellow]Migration cancelled[/yellow]")
+    if not typer.confirm("\nProceed with migration?"):
+        output.info("Migration cancelled")
+        output.end_operation(success=True)
+        manager._close()
         return
 
     try:
-        # Create backup
-        backup_path = manager.create_backup()
-        console.print(f"[green]Backup created:[/green] {backup_path}\n")
+        # Create backup with progress
+        with output.progress_context("Creating backup", total=3) as progress:
+            task = progress.add_task("Migration", total=3) if progress else None
 
-        # Run migration
-        manager.migrate_v1_to_v1_1()
+            backup_path = manager.create_backup()
+            if progress and task:
+                progress.update(task, advance=1)
 
-        # Validate migration
-        console.print("\n[bold]Validating migration...[/bold]")
-        manager.validate_migration()
+            output.success(f"Backup created: {backup_path}")
 
-        console.print("\n[bold green]✓ Migration completed successfully![/bold green]")
-        console.print(f"[dim]Backup saved at: {backup_path}[/dim]\n")
+            # Run migration
+            manager.migrate_v1_to_v1_1()
+            if progress and task:
+                progress.update(task, advance=1)
+
+            # Validate migration
+            manager.validate_migration()
+            if progress and task:
+                progress.update(task, advance=1)
+
+        # Build report data
+        report_data = {
+            "From Version": current_version,
+            "To Version": "1.1",
+            "Backup Location": str(backup_path),
+        }
+
+        output.show_report("Migration Summary", report_data)
+        output.success("Migration completed successfully!")
+
+        output.suggest_next_steps([
+            "Verify integrity: gmailarchiver verify-integrity",
+            "Search messages: gmailarchiver search <query>",
+        ])
+
+        output.end_operation(success=True)
 
     except Exception as e:
-        console.print(f"\n[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Migration failed: {e}", exit_code=1)
     finally:
         manager._close()
 
@@ -595,46 +696,62 @@ def db_info(
         "--state-db",
         help="Path to state database file"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Display database information and statistics.
 
     Shows schema version, message count, database size, and recent archive runs.
 
-    Example:
+    Examples:
         $ gmailarchiver db-info
         $ gmailarchiver db-info --state-db /path/to/archive_state.db
+        $ gmailarchiver db-info --json
     """
-    console.print("\n[bold blue]Database Information[/bold blue]\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("db-info", "Retrieving database information")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        console.print(f"[yellow]Database not found:[/yellow] {state_db}")
-        console.print("[dim]No archive database exists yet[/dim]\n")
+        output.warning(f"Database not found: {state_db}")
+        output.suggest_next_steps([
+            "Create database: gmailarchiver archive 3y",
+            "Import archive: gmailarchiver import archive.mbox",
+        ])
+        output.end_operation(success=True)
         return
 
     # Detect schema version
     manager = MigrationManager(db_path)
     version = manager.detect_schema_version()
 
-    console.print(f"Schema version: [cyan]{version}[/cyan]")
-
     # Show database file size
     db_size = db_path.stat().st_size
-    console.print(f"Database size: [cyan]{format_bytes(db_size)}[/cyan]\n")
 
     # Get message count and recent runs
     try:
         with ArchiveState(db_path=str(db_path), validate_path=False) as state:
             total_messages = state.get_archived_count()
-            console.print(f"Total messages archived: [bold]{total_messages:,}[/bold]\n")
 
             # Show recent archive runs
             recent_runs = state.get_archive_runs(limit=5)
 
-            if recent_runs:
+            # Build report data
+            report_data = {
+                "Schema Version": version,
+                "Database Size": format_bytes(db_size),
+                "Total Messages": f"{total_messages:,}",
+                "Recent Archive Runs": len(recent_runs),
+            }
+
+            output.show_report("Database Information", report_data)
+
+            # Display recent runs table (Rich only, not in JSON)
+            if not json_output and recent_runs:
                 table = Table(title="Recent Archive Runs (Last 5)")
                 table.add_column("Run ID", style="cyan", justify="right")
                 table.add_column("Timestamp", style="magenta")
@@ -650,16 +767,16 @@ def db_info(
                     )
 
                 console.print(table)
-            else:
-                console.print("[yellow]No archive runs found[/yellow]")
+                console.print()
+            elif not recent_runs:
+                output.warning("No archive runs found")
+
+            output.end_operation(success=True)
 
     except Exception as e:
-        console.print(f"[red]Error reading database:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Error reading database: {e}", exit_code=1)
     finally:
         manager._close()
-
-    console.print()
 
 
 @app.command()
@@ -1199,6 +1316,7 @@ def search(
         $ gmailarchiver search "invoice payment" --limit 50
         $ gmailarchiver search --from alice@example.com --subject meeting
         $ gmailarchiver search --after 2024-01-01 --before 2024-12-31
+        $ gmailarchiver search "meeting notes" --json
     """
     import json
     import time
@@ -1206,16 +1324,18 @@ def search(
 
     from .migration import MigrationManager
     from .search import SearchEngine
+    from gmailarchiver.output import OutputManager
 
-    # Don't print header if JSON output
-    if not json_output:
-        console.print("\n[bold blue]Search Archived Messages[/bold blue]\n")
+    output = OutputManager(json_mode=json_output)
 
     # Check database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}")
-        raise typer.Exit(1)
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' or 'gmailarchiver import' to create database",
+            exit_code=1,
+        )
 
     # Check schema version (require v1.1)
     manager = MigrationManager(db_path)
@@ -1223,26 +1343,32 @@ def search(
     manager._close()
 
     if schema_version != "1.1":
-        console.print("[red]Error:[/red] Search requires v1.1 database schema")
-        console.print("[yellow]Run 'gmailarchiver migrate' to upgrade[/yellow]")
-        raise typer.Exit(1)
+        output.error(
+            "Search requires v1.1 database schema",
+            suggestion="Run 'gmailarchiver migrate' to upgrade",
+            exit_code=1,
+        )
 
     # Validate dates if provided
     if after:
         try:
             datetime.strptime(after, '%Y-%m-%d')
         except ValueError:
-            console.print(f"[red]Error:[/red] Invalid date format: {after}")
-            console.print("[yellow]Use YYYY-MM-DD format (e.g., 2024-01-15)[/yellow]")
-            raise typer.Exit(1)
+            output.error(
+                f"Invalid date format: {after}",
+                suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
+                exit_code=1,
+            )
 
     if before:
         try:
             datetime.strptime(before, '%Y-%m-%d')
         except ValueError:
-            console.print(f"[red]Error:[/red] Invalid date format: {before}")
-            console.print("[yellow]Use YYYY-MM-DD format (e.g., 2024-01-15)[/yellow]")
-            raise typer.Exit(1)
+            output.error(
+                f"Invalid date format: {before}",
+                suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
+                exit_code=1,
+            )
 
     # Build query string from filters if no query provided
     if not query:
@@ -1259,10 +1385,15 @@ def search(
             query_parts.append(f"before:{before}")
 
         if not query_parts:
-            console.print("[red]Error:[/red] No search query or filters provided")
-            raise typer.Exit(1)
+            output.error(
+                "No search query or filters provided",
+                suggestion="Provide a query argument or use filters like --from, --subject, etc.",
+                exit_code=1,
+            )
 
         query = " ".join(query_parts)
+
+    output.start_operation("search", f"Searching: {query}")
 
     # Execute search
     try:
@@ -1294,7 +1425,12 @@ def search(
         else:
             # Rich table output
             if results.total_results == 0:
-                console.print("[yellow]No results found[/yellow]\n")
+                output.warning("No results found")
+                output.suggest_next_steps([
+                    "Try a broader search query",
+                    "Check query syntax with: gmailarchiver search --help",
+                ])
+                output.end_operation(success=True)
                 return
 
             table = Table(title=f"Search Results ({results.total_results} found)")
@@ -1325,17 +1461,22 @@ def search(
                 )
 
             console.print(table)
-            console.print(
-                f"\n[dim]Found {results.total_results} results "
-                f"in {execution_time_ms:.2f}ms[/dim]\n"
-            )
+            console.print()
+
+            # Show summary
+            report_data = {
+                "Query": query,
+                "Results Found": results.total_results,
+                "Execution Time": f"{execution_time_ms:.2f}ms",
+            }
+            output.show_report("Search Summary", report_data)
+
+        output.end_operation(success=True)
 
     except ValueError as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Search query error: {e}", exit_code=1)
     except Exception as e:
-        console.print(f"[red]Error:[/red] {e}")
-        raise typer.Exit(1)
+        output.error(f"Search failed: {e}", exit_code=1)
 
 
 @app.command(name="import")
