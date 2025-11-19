@@ -27,6 +27,217 @@ from rich.progress import (
 from rich.table import Table
 
 
+class ProgressTracker:
+    """Tracks progress with ETA calculation and rate smoothing.
+
+    Provides:
+    - ETA (Estimated Time of Arrival) calculation
+    - Elapsed time tracking
+    - Rate calculation with exponential moving average
+    - Format strings: [elapsed<remaining, rate]
+    - Configurable units (msg/s, MB/s, items/s)
+    """
+
+    # Minimum number of items before showing ETA
+    MIN_SAMPLES = 5
+
+    # Exponential moving average smoothing factor
+    SMOOTHING_FACTOR = 0.3
+
+    def __init__(self, total: int | None = None, unit: str = "items") -> None:
+        """Initialize progress tracker.
+
+        Args:
+            total: Total number of items to process (None if unknown)
+            unit: Unit name for rate display (msg, MB, items, etc.)
+        """
+        self.total = total
+        self.unit = unit
+        self.completed = 0
+        self._start_time: float | None = None
+        self._last_update_time: float | None = None
+        self._smoothed_rate: float | None = None
+
+    def start(self) -> None:
+        """Start tracking progress."""
+        self._start_time = time.perf_counter()
+        self._last_update_time = self._start_time
+        self.completed = 0
+        self._smoothed_rate = None
+
+    def update(self, completed: int | None = None, advance: int | None = None) -> None:
+        """Update progress and recalculate rate.
+
+        Args:
+            completed: New total completed count (mutually exclusive with advance)
+            advance: Amount to increment (mutually exclusive with completed)
+        """
+        if completed is not None:
+            self.completed = completed
+        elif advance is not None:
+            self.completed += advance
+
+        # Update rate calculation
+        self._update_rate()
+
+    def _update_rate(self) -> None:
+        """Update smoothed rate using exponential moving average."""
+        if self._start_time is None or self.completed == 0:
+            return
+
+        current_time = time.perf_counter()
+        elapsed = current_time - self._start_time
+
+        # Avoid division by zero
+        if elapsed <= 0:
+            return
+
+        # Calculate current rate
+        current_rate = self.completed / elapsed
+
+        # Apply exponential moving average
+        if self._smoothed_rate is None:
+            # First rate calculation
+            self._smoothed_rate = current_rate
+        else:
+            # Smooth with previous rate
+            self._smoothed_rate = (
+                self.SMOOTHING_FACTOR * current_rate
+                + (1 - self.SMOOTHING_FACTOR) * self._smoothed_rate
+            )
+
+        self._last_update_time = current_time
+
+    def get_elapsed(self) -> float:
+        """Get elapsed time in seconds.
+
+        Returns:
+            Elapsed seconds since start (0 if not started)
+        """
+        if self._start_time is None:
+            return 0.0
+
+        elapsed = time.perf_counter() - self._start_time
+        # Never return negative (handle clock adjustments)
+        return max(0.0, elapsed)
+
+    def get_elapsed_formatted(self) -> str:
+        """Get formatted elapsed time string.
+
+        Returns:
+            Time string in format MM:SS or HH:MM:SS
+        """
+        elapsed = self.get_elapsed()
+        return self._format_time(elapsed)
+
+    def calculate_eta(self) -> float | None:
+        """Calculate estimated time of arrival (time remaining).
+
+        Returns:
+            Estimated seconds remaining, or None if not enough data
+        """
+        # Need to know total to calculate ETA
+        if self.total is None:
+            return None
+
+        # Need minimum samples
+        if self.completed < self.MIN_SAMPLES:
+            return None
+
+        # Need valid rate
+        rate = self.get_rate()
+        if rate is None or rate <= 0:
+            return None
+
+        # Already complete or past total
+        if self.completed >= self.total:
+            return None
+
+        # Calculate remaining items and time
+        remaining_items = self.total - self.completed
+        eta = remaining_items / rate
+
+        return max(0.0, eta)
+
+    def get_eta_formatted(self) -> str:
+        """Get formatted ETA string.
+
+        Returns:
+            Time string in format MM:SS or HH:MM:SS, or empty if no ETA
+        """
+        eta = self.calculate_eta()
+        if eta is None:
+            return ""
+        return self._format_time(eta)
+
+    def get_rate(self) -> float | None:
+        """Get current smoothed processing rate.
+
+        Returns:
+            Items per second, or None if not enough data
+        """
+        if self._start_time is None or self.completed == 0:
+            return None
+
+        return self._smoothed_rate
+
+    def get_rate_formatted(self) -> str:
+        """Get formatted rate string.
+
+        Returns:
+            Rate string like "5.00 msg/s" or empty if no rate
+        """
+        rate = self.get_rate()
+        if rate is None:
+            return ""
+
+        return f"{rate:.2f} {self.unit}/s"
+
+    def get_progress_string(self) -> str:
+        """Get complete progress string with elapsed, ETA, and rate.
+
+        Returns:
+            Format: [elapsed<remaining, rate] or [elapsed] if no ETA
+            Example: [00:30<00:30, 5.00 msg/s]
+        """
+        if self._start_time is None:
+            return ""
+
+        elapsed_str = self.get_elapsed_formatted()
+        eta_str = self.get_eta_formatted()
+        rate_str = self.get_rate_formatted()
+
+        if eta_str and rate_str:
+            # Full format: [elapsed<eta, rate]
+            return f"[{elapsed_str}<{eta_str}, {rate_str}]"
+        elif rate_str:
+            # No ETA yet, but have rate: [elapsed, rate]
+            return f"[{elapsed_str}, {rate_str}]"
+        else:
+            # Only elapsed time
+            return f"[{elapsed_str}]"
+
+    @staticmethod
+    def _format_time(seconds: float) -> str:
+        """Format seconds as MM:SS or HH:MM:SS.
+
+        Args:
+            seconds: Time in seconds
+
+        Returns:
+            Formatted time string
+        """
+        total_seconds = int(seconds)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes:02d}:{secs:02d}"
+
+
 @dataclass
 class TaskResult:
     """Result of a completed task."""
