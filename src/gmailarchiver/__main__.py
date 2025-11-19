@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -2135,6 +2136,350 @@ def _display_repair_results(
         ])
     else:
         output.success(f"Successfully performed {total_repairs} repair(s)")
+
+
+@app.command()
+def check(
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database file"
+    ),
+    auto_repair: bool = typer.Option(
+        False,
+        "--auto-repair",
+        help="Automatically repair issues found"
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="Show detailed check results"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Run all health checks in one command.
+
+    Performs comprehensive database health checks:
+    - Database integrity (orphaned/missing FTS records, invalid offsets, duplicates)
+    - Database consistency (database ↔ mbox sync)
+    - Offset accuracy (v1.1 schema only)
+    - FTS synchronization
+
+    With --auto-repair, automatically fixes issues and re-checks.
+
+    Examples:
+        $ gmailarchiver check
+        $ gmailarchiver check --auto-repair
+        $ gmailarchiver check --verbose
+        $ gmailarchiver check --json
+    """
+    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.migration import MigrationManager
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("check", "Running all health checks")
+
+    db_path = Path(state_db)
+
+    # Check if database exists
+    if not db_path.exists():
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database, or specify path with --state-db",
+            exit_code=1,
+        )
+
+    # Detect schema version
+    manager = MigrationManager(db_path)
+    schema_version = manager.detect_schema_version()
+    manager._close()
+
+    if schema_version == "none":
+        output.error(
+            "Database is empty or invalid",
+            suggestion="Create a new database with 'gmailarchiver archive' or 'gmailarchiver import'",
+            exit_code=1,
+        )
+
+    # Initialize results dictionary
+    check_results: dict[str, Any] = {
+        "database_integrity": {"passed": False, "issues": []},
+        "database_consistency": {"passed": False, "checked": False, "report": None},
+        "offset_accuracy": {"passed": False, "checked": False, "result": None},
+        "fts_synchronization": {"passed": False, "issues": []},
+    }
+
+    # ==================== CHECK 1: Database Integrity ====================
+    output.info("1. Checking database integrity...")
+    try:
+        db = DBManager(str(db_path), validate_schema=False)
+        issues = db.verify_database_integrity()
+        db.close()
+
+        if not issues:
+            check_results["database_integrity"]["passed"] = True
+            if verbose:
+                output.success("  ✓ Database integrity: OK")
+        else:
+            check_results["database_integrity"]["issues"] = issues
+            if verbose:
+                output.warning(f"  ✗ Database integrity: {len(issues)} issue(s)")
+                for issue in issues[:5]:  # Show first 5 in verbose
+                    output.info(f"    • {issue}")
+    except Exception as e:
+        check_results["database_integrity"]["issues"] = [str(e)]
+        if verbose:
+            output.warning(f"  ✗ Database integrity check failed: {e}")
+
+    # ==================== CHECK 2: FTS Synchronization ====================
+    # FTS sync is part of database integrity check above
+    # Extract FTS-specific issues from the integrity issues
+    fts_issues = [
+        issue for issue in check_results["database_integrity"]["issues"]
+        if "FTS" in issue or "fts" in issue.lower()
+    ]
+    if not fts_issues:
+        check_results["fts_synchronization"]["passed"] = True
+        if verbose:
+            output.success("  ✓ FTS synchronization: OK")
+    else:
+        check_results["fts_synchronization"]["issues"] = fts_issues
+        if verbose:
+            output.warning(f"  ✗ FTS synchronization: {len(fts_issues)} issue(s)")
+
+    # ==================== CHECK 3: Database Consistency ====================
+    # Only run if there are mbox files referenced in database
+    output.info("2. Checking database consistency...")
+    try:
+        db = DBManager(str(db_path), validate_schema=False)
+        cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+        has_archives = cursor.fetchone() is not None
+        db.close()
+
+        if has_archives:
+            # Get first archive file for consistency check
+            db = DBManager(str(db_path), validate_schema=False)
+            cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+            archive_file = cursor.fetchone()[0]
+            db.close()
+
+            # Check if archive file exists
+            if Path(archive_file).exists():
+                validator = ArchiveValidator(archive_file, state_db)
+                report = validator.verify_consistency()
+                check_results["database_consistency"]["checked"] = True
+                check_results["database_consistency"]["report"] = report
+                check_results["database_consistency"]["passed"] = report.passed
+
+                if verbose:
+                    if report.passed:
+                        output.success("  ✓ Database consistency: OK")
+                    else:
+                        output.warning(
+                            f"  ✗ Database consistency: {len(report.errors)} issue(s)"
+                        )
+            else:
+                # Archive file doesn't exist, skip consistency check
+                if verbose:
+                    output.info("  ⊘ Database consistency: Skipped (archive file not found)")
+                check_results["database_consistency"]["checked"] = False
+                check_results["database_consistency"]["passed"] = True  # Don't fail if file missing
+        else:
+            # No archive files in database, skip check
+            if verbose:
+                output.info("  ⊘ Database consistency: Skipped (no archives in database)")
+            check_results["database_consistency"]["checked"] = False
+            check_results["database_consistency"]["passed"] = True  # Don't fail if no archives
+
+    except Exception as e:
+        check_results["database_consistency"]["issues"] = [str(e)]
+        if verbose:
+            output.warning(f"  ✗ Database consistency check failed: {e}")
+
+    # ==================== CHECK 4: Offset Accuracy ====================
+    # Only for v1.1 databases
+    output.info("3. Checking offset accuracy...")
+    if schema_version == "1.1":
+        try:
+            # Get first archive file for offset verification
+            db = DBManager(str(db_path), validate_schema=False)
+            cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+            row = cursor.fetchone()
+            db.close()
+
+            if row and Path(row[0]).exists():
+                archive_file = row[0]
+                validator = ArchiveValidator(archive_file, state_db)
+                result = validator.verify_offsets()
+
+                check_results["offset_accuracy"]["checked"] = True
+                check_results["offset_accuracy"]["result"] = result
+
+                if result.accuracy_percentage == 100.0:
+                    check_results["offset_accuracy"]["passed"] = True
+                    if verbose:
+                        output.success(
+                            f"  ✓ Offset accuracy: 100% ({result.total_checked:,} checked)"
+                        )
+                else:
+                    check_results["offset_accuracy"]["passed"] = False
+                    if verbose:
+                        output.warning(
+                            f"  ✗ Offset accuracy: {result.accuracy_percentage:.1f}% "
+                            f"({result.successful_reads:,}/{result.total_checked:,})"
+                        )
+            else:
+                # No archive files or file doesn't exist
+                if verbose:
+                    output.info("  ⊘ Offset accuracy: Skipped (no accessible archives)")
+                check_results["offset_accuracy"]["checked"] = False
+                check_results["offset_accuracy"]["passed"] = True  # Don't fail if no files
+
+        except Exception as e:
+            check_results["offset_accuracy"]["issues"] = [str(e)]
+            if verbose:
+                output.warning(f"  ✗ Offset accuracy check failed: {e}")
+    else:
+        # v1.0 schema doesn't have offsets
+        if verbose:
+            output.info("  ⊘ Offset accuracy: Skipped (v1.0 schema)")
+        check_results["offset_accuracy"]["checked"] = False
+        check_results["offset_accuracy"]["passed"] = True  # Don't fail for v1.0
+
+    # ==================== SUMMARY ====================
+    output.info("")  # Blank line
+
+    # Determine overall status
+    all_passed = (
+        check_results["database_integrity"]["passed"]
+        and check_results["database_consistency"]["passed"]
+        and check_results["offset_accuracy"]["passed"]
+        and check_results["fts_synchronization"]["passed"]
+    )
+
+    # Build summary report
+    report_data: dict[str, str] = {}
+
+    # Database integrity
+    if check_results["database_integrity"]["passed"]:
+        report_data["Database integrity"] = "✓ OK"
+    else:
+        issue_count = len(check_results["database_integrity"]["issues"])
+        report_data["Database integrity"] = f"✗ {issue_count} issue(s)"
+
+    # Database consistency
+    if not check_results["database_consistency"]["checked"]:
+        report_data["Database consistency"] = "⊘ Skipped"
+    elif check_results["database_consistency"]["passed"]:
+        report_data["Database consistency"] = "✓ OK"
+    else:
+        consistency_report = check_results["database_consistency"]["report"]
+        issue_count = len(consistency_report.errors) if consistency_report else 0
+        report_data["Database consistency"] = f"✗ {issue_count} issue(s)"
+
+    # Offset accuracy
+    if not check_results["offset_accuracy"]["checked"]:
+        report_data["Offset accuracy"] = "⊘ Skipped"
+    elif check_results["offset_accuracy"]["passed"]:
+        result = check_results["offset_accuracy"]["result"]
+        if result:
+            report_data["Offset accuracy"] = f"✓ 100% ({result.total_checked:,} checked)"
+        else:
+            report_data["Offset accuracy"] = "✓ OK"
+    else:
+        result = check_results["offset_accuracy"]["result"]
+        if result:
+            report_data["Offset accuracy"] = (
+                f"✗ {result.accuracy_percentage:.1f}% "
+                f"({result.successful_reads:,}/{result.total_checked:,})"
+            )
+        else:
+            report_data["Offset accuracy"] = "✗ Failed"
+
+    # FTS synchronization
+    if check_results["fts_synchronization"]["passed"]:
+        report_data["FTS synchronization"] = "✓ OK"
+    else:
+        fts_issue_count = len(check_results["fts_synchronization"]["issues"])
+        report_data["FTS synchronization"] = f"✗ {fts_issue_count} issue(s)"
+
+    # Overall status
+    report_data["Overall"] = "✓ HEALTHY" if all_passed else "✗ ISSUES FOUND"
+
+    output.show_report("Health Check Summary", report_data)
+
+    # ==================== AUTO-REPAIR ====================
+    if not all_passed and auto_repair:
+        output.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
+
+        try:
+            db = DBManager(str(db_path), validate_schema=False)
+            repairs = db.repair_database(dry_run=False)
+            db.close()
+
+            # Show repair results
+            total_repairs = sum(repairs.values())
+            if total_repairs > 0:
+                output.success(f"Performed {total_repairs} repair(s)")
+
+                # Re-run checks to verify repairs
+                output.info("\nRe-checking after repairs...")
+
+                db = DBManager(str(db_path), validate_schema=False)
+                post_repair_issues = db.verify_database_integrity()
+                db.close()
+
+                if not post_repair_issues:
+                    output.success("All issues resolved!")
+                    output.end_operation(success=True)
+                    raise typer.Exit(0)
+                else:
+                    output.warning(f"{len(post_repair_issues)} issue(s) remain after repair")
+                    output.suggest_next_steps([
+                        "Some issues may require manual intervention",
+                        "Check remaining issues: gmailarchiver verify-integrity --verbose",
+                    ])
+                    output.end_operation(success=False, summary="Repair incomplete")
+                    raise typer.Exit(2)  # Exit code 2 = repair failed
+            else:
+                output.warning("No automatic repairs available for these issues")
+                output.suggest_next_steps([
+                    "Manual intervention may be required",
+                    "Check details: gmailarchiver verify-integrity --verbose",
+                ])
+                output.end_operation(success=False)
+                raise typer.Exit(2)
+
+        except Exception as e:
+            output.error(f"Auto-repair failed: {e}", exit_code=2)
+
+    # ==================== EXIT ====================
+    if all_passed:
+        output.success("All checks passed - database is healthy!")
+        output.end_operation(success=True)
+        raise typer.Exit(0)
+    else:
+        # Show suggestions for failed checks
+        suggestions = []
+
+        if not check_results["database_integrity"]["passed"]:
+            suggestions.append("Fix database issues: gmailarchiver repair --no-dry-run")
+
+        if not check_results["offset_accuracy"]["passed"]:
+            suggestions.append(
+                "Repair offsets: gmailarchiver repair --backfill --no-dry-run"
+            )
+
+        suggestions.append("View detailed issues: gmailarchiver check --verbose")
+
+        if not auto_repair:
+            suggestions.append("Auto-fix issues: gmailarchiver check --auto-repair")
+
+        output.suggest_next_steps(suggestions)
+        output.end_operation(success=False)
+        raise typer.Exit(1)
 
 
 @app.command()
