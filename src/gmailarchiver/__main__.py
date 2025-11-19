@@ -1305,6 +1305,8 @@ def search(
     after: str | None = typer.Option(None, "--after", help="After date (YYYY-MM-DD)"),
     before: str | None = typer.Option(None, "--before", help="Before date (YYYY-MM-DD)"),
     limit: int = typer.Option(100, help="Maximum results"),
+    extract: bool = typer.Option(False, "--extract", help="Extract all search results"),
+    output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for extracted messages (required with --extract)"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON")
 ) -> None:
@@ -1317,6 +1319,7 @@ def search(
         $ gmailarchiver search --from alice@example.com --subject meeting
         $ gmailarchiver search --after 2024-01-01 --before 2024-12-31
         $ gmailarchiver search "meeting notes" --json
+        $ gmailarchiver search "from:alice" --extract --output-dir /tmp/emails
     """
     import json
     import time
@@ -1327,6 +1330,14 @@ def search(
     from gmailarchiver.output import OutputManager
 
     output = OutputManager(json_mode=json_output)
+
+    # Validate extract flags
+    if extract and not output_dir:
+        output.error(
+            "--extract requires --output-dir",
+            suggestion="Specify output directory: --output-dir /path/to/directory",
+            exit_code=1,
+        )
 
     # Check database exists
     db_path = Path(state_db)
@@ -1471,12 +1482,119 @@ def search(
             }
             output.show_report("Search Summary", report_data)
 
+        # Extract messages if requested
+        if extract:
+            from gmailarchiver.extractor import MessageExtractor
+
+            output.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
+
+            gmail_ids = [r.gmail_id for r in results.results]
+
+            with MessageExtractor(state_db) as extractor:
+                with output.progress_context("Extracting messages", total=len(gmail_ids)) as progress:
+                    task = progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
+
+                    stats = extractor.batch_extract(gmail_ids, Path(output_dir))
+
+                    if progress and task:
+                        progress.update(task, completed=len(gmail_ids))
+
+            # Show extraction summary
+            extraction_report = {
+                "Messages Extracted": stats['extracted'],
+                "Failed": stats['failed'],
+                "Output Directory": output_dir,
+            }
+            output.show_report("Extraction Summary", extraction_report)
+
+            if stats['errors']:
+                output.warning(f"Encountered {len(stats['errors'])} error(s):")
+                for error in stats['errors'][:5]:  # Show first 5 errors
+                    output.info(f"  • {error}")
+                if len(stats['errors']) > 5:
+                    output.info(f"  ... and {len(stats['errors']) - 5} more")
+
         output.end_operation(success=True)
 
     except ValueError as e:
         output.error(f"Search query error: {e}", exit_code=1)
     except Exception as e:
         output.error(f"Search failed: {e}", exit_code=1)
+
+
+@app.command()
+def extract(
+    message_id: str = typer.Argument(..., help="Gmail ID or RFC Message-ID to extract"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output file path (stdout if not specified)"),
+    archive: str | None = typer.Option(None, "--archive", help="Archive file (auto-detect from database if not specified)"),
+    format: str = typer.Option("raw", "--format", help="Output format: raw (default), eml, json"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Extract full message from archive.
+
+    Retrieves a message by Gmail ID or RFC Message-ID and outputs it to stdout
+    or a file. Transparently handles compressed archives.
+
+    Examples:
+        $ gmailarchiver extract abc123def456
+        $ gmailarchiver extract abc123def456 --output message.eml
+        $ gmailarchiver extract "<message-id@example.com>" --output msg.eml
+        $ gmailarchiver extract abc123 --archive archive.mbox.zst
+        $ gmailarchiver extract abc123 --json
+    """
+    from gmailarchiver.extractor import MessageExtractor, ExtractorError
+    from gmailarchiver.output import OutputManager
+
+    out = OutputManager(json_mode=json_output)
+
+    # Check database exists
+    db_path = Path(state_db)
+    if not db_path.exists():
+        out.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' or 'gmailarchiver import' to create database",
+            exit_code=1,
+        )
+
+    out.start_operation("extract", f"Extracting message: {message_id}")
+
+    try:
+        with MessageExtractor(state_db) as extractor:
+            # Try extracting by gmail_id first, then by rfc_message_id
+            try:
+                message_bytes = extractor.extract_by_gmail_id(message_id, output)
+            except ExtractorError:
+                # Not found by gmail_id, try rfc_message_id
+                try:
+                    message_bytes = extractor.extract_by_rfc_message_id(message_id, output)
+                except ExtractorError as e:
+                    out.error(
+                        f"Message not found: {message_id}",
+                        suggestion="Verify the message ID or search for messages: gmailarchiver search",
+                        exit_code=1,
+                    )
+
+        # Show success
+        if output:
+            out.success(f"Message extracted to {output}")
+            out.show_report("Extraction Summary", {
+                "Message ID": message_id,
+                "Output File": output,
+                "Size": format_bytes(len(message_bytes)),
+            })
+        else:
+            # Message already written to stdout, just show summary in JSON mode
+            if json_output:
+                out.info(f"Extracted {len(message_bytes)} bytes")
+
+        out.end_operation(success=True)
+
+    except ExtractorError as e:
+        out.error(f"Extraction failed: {e}", exit_code=1)
+    except Exception as e:
+        out.error(f"Unexpected error: {e}", exit_code=1)
 
 
 @app.command(name="import")
