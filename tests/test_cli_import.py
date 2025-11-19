@@ -200,7 +200,7 @@ class TestImportCommand:
         )
 
     def test_import_database_error_handling(self, runner, tmp_path, monkeypatch):
-        """Test import with database error shows error handling."""
+        """Test import auto-migrates v1.0 databases."""
         monkeypatch.chdir(tmp_path)
 
         # Create mbox but no database
@@ -214,7 +214,7 @@ class TestImportCommand:
         mbox.add(msg)
         mbox.close()
 
-        # Non-existent database should be created, but use v1.0 schema error
+        # Create v1.0 database to test auto-migration
         v1_0_db = tmp_path / "v1_0.db"
         conn = sqlite3.connect(str(v1_0_db))
         conn.execute('''
@@ -233,9 +233,9 @@ class TestImportCommand:
             '--state-db', str(v1_0_db)
         ])
 
-        # Should fail with schema version error
-        assert result.exit_code == 1
-        assert 'v1.1' in result.stdout.lower() or 'schema' in result.stdout.lower()
+        # Should succeed with auto-migration
+        assert result.exit_code == 0
+        assert 'auto-migrating' in result.stdout.lower() or 'migration completed' in result.stdout.lower()
 
     def test_import_shows_progress_and_statistics(
         self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch

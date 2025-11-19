@@ -175,7 +175,7 @@ class TestDBManagerInitialization:
         """Test connecting to a non-existent database path."""
         # Should raise error when database doesn't exist
         with pytest.raises(FileNotFoundError):
-            DBManager(temp_db_path)
+            DBManager(temp_db_path, auto_create=False)
 
     def test_validate_schema_on_init(self, v11_db: str) -> None:
         """Test that schema is validated on initialization."""
@@ -197,7 +197,7 @@ class TestDBManagerInitialization:
         """Test handling of invalid database path."""
 
         with pytest.raises((FileNotFoundError, ValueError)):
-            DBManager("/invalid/path/to/database.db")
+            DBManager("/invalid/path/to/database.db", auto_create=False)
 
     def test_context_manager_interface(self, v11_db: str) -> None:
         """Test using DBManager as a context manager."""
@@ -1192,9 +1192,9 @@ class TestExceptionHandling:
         if os.path.exists(temp_db_path):
             os.remove(temp_db_path)
 
-        # Should raise FileNotFoundError
+        # Should raise FileNotFoundError when auto_create=False
         with pytest.raises(FileNotFoundError):
-            DBManager(temp_db_path, validate_schema=False)
+            DBManager(temp_db_path, validate_schema=False, auto_create=False)
 
 
 class TestRepairDatabaseCoverage:
