@@ -6,9 +6,10 @@ readme = "README.md"
 requires-python = ">=3.14"
 license = {text = "Apache-2.0"}
 authors = [{name = "GMailArchiver Contributors"}]
+maintainers = [{name = "GMailArchiver Contributors"}]
 keywords = ["gmail", "email", "archive", "backup", "mbox", "cli"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: Apache Software License",
@@ -31,8 +32,11 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/tumma72/GMailArchiver"
+Documentation = "https://github.com/tumma72/GMailArchiver#readme"
 Repository = "https://github.com/tumma72/GMailArchiver"
-Issues = "https://github.com/tumma72/GMailArchiver/issues"
+"Bug Tracker" = "https://github.com/tumma72/GMailArchiver/issues"
+Changelog = "https://github.com/tumma72/GMailArchiver/blob/main/CHANGELOG.md"
+"Release Notes" = "https://github.com/tumma72/GMailArchiver/releases"
 
 [project.optional-dependencies]
 dev = [
