@@ -26,10 +26,7 @@ def version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
-app = typer.Typer(
-    help="Archive old Gmail messages to local mbox files",
-    no_args_is_help=True
-)
+app = typer.Typer(help="Archive old Gmail messages to local mbox files", no_args_is_help=True)
 console = Console()
 
 
@@ -41,8 +38,8 @@ def main(
         "-v",
         callback=version_callback,
         is_eager=True,
-        help="Show version and exit"
-    )
+        help="Show version and exit",
+    ),
 ) -> None:
     """Gmail Archiver - Archive old Gmail messages to local mbox files."""
     pass
@@ -51,43 +48,31 @@ def main(
 @app.command()
 def archive(
     age_threshold: str = typer.Argument(
-        ...,
-        help="Age threshold (e.g., '3y' for 3 years, '6m' for 6 months, '2w' for 2 weeks)"
+        ..., help="Age threshold (e.g., '3y' for 3 years, '6m' for 6 months, '2w' for 2 weeks)"
     ),
     output: str = typer.Option(
-        None,
-        "--output", "-o",
-        help="Output file path (default: archive_YYYYMMDD.mbox[.gz])"
+        None, "--output", "-o", help="Output file path (default: archive_YYYYMMDD.mbox[.gz])"
     ),
     compress: str | None = typer.Option(
         None,
-        "--compress", "-c",
-        help="Compression format: 'gzip', 'lzma', or 'zstd' (fastest, recommended)"
+        "--compress",
+        "-c",
+        help="Compression format: 'gzip', 'lzma', or 'zstd' (fastest, recommended)",
     ),
     incremental: bool = typer.Option(
-        True,
-        "--incremental/--no-incremental",
-        help="Skip already-archived messages"
+        True, "--incremental/--no-incremental", help="Skip already-archived messages"
     ),
     trash: bool = typer.Option(
-        False,
-        "--trash",
-        help="Move archived messages to trash (30-day recovery)"
+        False, "--trash", help="Move archived messages to trash (30-day recovery)"
     ),
     delete: bool = typer.Option(
-        False,
-        "--delete",
-        help="Permanently delete archived messages (IRREVERSIBLE!)"
+        False, "--delete", help="Permanently delete archived messages (IRREVERSIBLE!)"
     ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Preview without making changes"
-    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview without making changes"),
     credentials: str | None = typer.Option(
         None,
         "--credentials",
-        help="Custom OAuth2 credentials file (optional, uses bundled by default)"
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)",
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -106,14 +91,14 @@ def archive(
 
     # Generate default output filename if not provided
     if not output:
-        timestamp = datetime.now().strftime('%Y%m%d')
-        extension = '.mbox'
-        if compress == 'gzip':
-            extension = '.mbox.gz'
-        elif compress == 'lzma':
-            extension = '.mbox.xz'
-        elif compress == 'zstd':
-            extension = '.mbox.zst'
+        timestamp = datetime.now().strftime("%Y%m%d")
+        extension = ".mbox"
+        if compress == "gzip":
+            extension = ".mbox.gz"
+        elif compress == "lzma":
+            extension = ".mbox.xz"
+        elif compress == "zstd":
+            extension = ".mbox.zst"
         output = f"archive_{timestamp}{extension}"
 
     out = OutputManager(json_mode=json_output)
@@ -147,13 +132,13 @@ def archive(
                 output_file=output,
                 compress=compress,
                 incremental=incremental,
-                dry_run=dry_run
+                dry_run=dry_run,
             )
 
         if dry_run:
             out.warning("DRY RUN completed - no changes made")
             report_data = {
-                "Messages Found": result['messages_archived'],
+                "Messages Found": result["messages_archived"],
                 "Output File": output,
                 "Mode": "Dry Run (no changes made)",
             }
@@ -161,12 +146,14 @@ def archive(
             out.end_operation(success=True)
             return
 
-        if result['messages_archived'] == 0:
+        if result["messages_archived"] == 0:
             out.warning("No messages to archive")
-            out.suggest_next_steps([
-                "Check your age threshold",
-                "Verify messages exist in Gmail matching the criteria",
-            ])
+            out.suggest_next_steps(
+                [
+                    "Check your age threshold",
+                    "Verify messages exist in Gmail matching the criteria",
+                ]
+            )
             out.end_operation(success=True)
             return
 
@@ -201,7 +188,7 @@ def archive(
             if delete:
                 # Permanent deletion requires explicit confirmation
                 out.warning("⚠ WARNING: PERMANENT DELETION")
-                msg_count = result['messages_archived']
+                msg_count = result["messages_archived"]
                 out.warning(f"This will permanently delete {msg_count} messages.")
                 out.warning("This action CANNOT be undone!")
 
@@ -216,10 +203,7 @@ def archive(
 
                 # Perform permanent deletion
                 with out.progress_context("Permanently deleting messages", total=None) as progress:
-                    archiver.delete_archived_messages(
-                        list(archived_ids),
-                        permanent=True
-                    )
+                    archiver.delete_archived_messages(list(archived_ids), permanent=True)
                 out.success("Messages permanently deleted")
 
             elif trash:
@@ -233,15 +217,12 @@ def archive(
                     return
 
                 with out.progress_context("Moving messages to trash", total=None) as progress:
-                    archiver.delete_archived_messages(
-                        list(archived_ids),
-                        permanent=False
-                    )
+                    archiver.delete_archived_messages(list(archived_ids), permanent=False)
                 out.success("Messages moved to trash")
 
         # Build final report
         report_data = {
-            "Messages Archived": result['messages_archived'],
+            "Messages Archived": result["messages_archived"],
             "Archive File": output,
             "Incremental Mode": "Yes" if incremental else "No",
         }
@@ -264,7 +245,9 @@ def archive(
 
         if not trash and not delete:
             next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
-            next_steps.append(f"Permanently delete: gmailarchiver retry-delete {output} --permanent")
+            next_steps.append(
+                f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
+            )
 
         out.suggest_next_steps(next_steps)
         out.end_operation(success=True)
@@ -277,9 +260,7 @@ def archive(
 def validate(
     archive_file: str = typer.Argument(..., help="Path to archive file to validate"),
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -368,14 +349,11 @@ def validate(
             )
 
         if not results["integrity_check"]:
-            suggestions.append(
-                "Check archive file for corruption or try re-downloading"
-            )
+            suggestions.append("Check archive file for corruption or try re-downloading")
 
         if not results["count_check"] or not results["spot_check"]:
             suggestions.append(
-                "Verify database integrity: gmailarchiver verify-integrity --state-db "
-                f"{state_db}"
+                f"Verify database integrity: gmailarchiver verify-integrity --state-db {state_db}"
             )
             suggestions.append(
                 f"Repair database if needed: gmailarchiver repair --no-dry-run --state-db "
@@ -399,7 +377,7 @@ def retry_delete_cmd(
     credentials: str | None = typer.Option(
         None,
         "--credentials",
-        help="Custom OAuth2 credentials file (optional, uses bundled by default)"
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)",
     ),
 ) -> None:
     """
@@ -441,11 +419,10 @@ def retry_delete_cmd(
 
         # 3. Validate deletion scope
         console.print("Validating permissions...")
-        if not authenticator.validate_scopes(['https://mail.google.com/']):
+        if not authenticator.validate_scopes(["https://mail.google.com/"]):
             console.print("\n[red]Error: Missing deletion permission[/red]")
             console.print(
-                "\nYour current authorization doesn't include "
-                "permission to delete messages."
+                "\nYour current authorization doesn't include permission to delete messages."
             )
             console.print("This was likely caused by using an older version of the app.")
             console.print("\n[bold yellow]To fix this:[/bold yellow]")
@@ -464,18 +441,13 @@ def retry_delete_cmd(
         # 6. Delete messages with appropriate confirmation
         if permanent:
             console.print("[bold red]⚠ WARNING: PERMANENT DELETION[/bold red]")
-            console.print(
-                f"This will [bold]permanently delete[/bold] {len(message_ids)} messages."
-            )
+            console.print(f"This will [bold]permanently delete[/bold] {len(message_ids)} messages.")
             console.print("[red]This action CANNOT be undone![/red]")
             console.print(
-                "\nDeleted messages will be gone forever - "
-                "not in trash, not recoverable.\n"
+                "\nDeleted messages will be gone forever - not in trash, not recoverable.\n"
             )
 
-            confirmation = typer.prompt(
-                f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm"
-            )
+            confirmation = typer.prompt(f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm")
             if confirmation != f"DELETE {len(message_ids)} MESSAGES":
                 console.print("[yellow]Deletion cancelled[/yellow]")
                 return
@@ -505,9 +477,7 @@ def retry_delete_cmd(
 @app.command()
 def status(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -527,10 +497,12 @@ def status(
     db_path = Path(state_db)
     if not db_path.exists():
         output.warning("No archive database found")
-        output.suggest_next_steps([
-            "Archive emails: gmailarchiver archive 3y",
-            "Import existing archive: gmailarchiver import archive.mbox",
-        ])
+        output.suggest_next_steps(
+            [
+                "Archive emails: gmailarchiver archive 3y",
+                "Import existing archive: gmailarchiver import archive.mbox",
+            ]
+        )
         output.end_operation(success=True)
         raise typer.Exit(0)
 
@@ -560,11 +532,11 @@ def status(
 
             for run in recent_runs:
                 table.add_row(
-                    str(run['run_id']),
-                    run['timestamp'][:19],  # Truncate timestamp
-                    run['query'],
-                    str(run['messages_archived']),
-                    run['archive_file']
+                    str(run["run_id"]),
+                    run["timestamp"][:19],  # Truncate timestamp
+                    run["query"],
+                    str(run["messages_archived"]),
+                    run["archive_file"],
                 )
 
             console.print(table)
@@ -578,9 +550,7 @@ def status(
 @app.command()
 def migrate(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -677,10 +647,12 @@ def migrate(
         output.show_report("Migration Summary", report_data)
         output.success("Migration completed successfully!")
 
-        output.suggest_next_steps([
-            "Verify integrity: gmailarchiver verify-integrity",
-            "Search messages: gmailarchiver search <query>",
-        ])
+        output.suggest_next_steps(
+            [
+                "Verify integrity: gmailarchiver verify-integrity",
+                "Search messages: gmailarchiver search <query>",
+            ]
+        )
 
         output.end_operation(success=True)
 
@@ -693,9 +665,7 @@ def migrate(
 @app.command(name="db-info")
 def db_info(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -719,10 +689,12 @@ def db_info(
     # Check if database exists
     if not db_path.exists():
         output.warning(f"Database not found: {state_db}")
-        output.suggest_next_steps([
-            "Create database: gmailarchiver archive 3y",
-            "Import archive: gmailarchiver import archive.mbox",
-        ])
+        output.suggest_next_steps(
+            [
+                "Create database: gmailarchiver archive 3y",
+                "Import archive: gmailarchiver import archive.mbox",
+            ]
+        )
         output.end_operation(success=True)
         return
 
@@ -761,10 +733,10 @@ def db_info(
 
                 for run in recent_runs:
                     table.add_row(
-                        str(run['run_id']),
-                        run['timestamp'][:19],  # Truncate timestamp
-                        str(run['messages_archived']),
-                        run['archive_file']
+                        str(run["run_id"]),
+                        run["timestamp"][:19],  # Truncate timestamp
+                        str(run["messages_archived"]),
+                        run["archive_file"],
                     )
 
                 console.print(table)
@@ -783,14 +755,10 @@ def db_info(
 @app.command()
 def rollback(
     backup_file: str | None = typer.Option(
-        None,
-        "--backup-file",
-        help="Path to backup file for rollback"
+        None, "--backup-file", help="Path to backup file for rollback"
     ),
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
 ) -> None:
     """
@@ -828,7 +796,7 @@ def rollback(
             size = format_bytes(backup.stat().st_size)
             # Extract timestamp from filename
             # Format: archive_state.db.backup.20250114_120000
-            parts = backup.name.split('.')
+            parts = backup.name.split(".")
             if len(parts) >= 3:
                 timestamp_str = parts[-1]
                 # Convert YYYYMMDD_HHMMSS to readable format
@@ -884,9 +852,7 @@ def rollback(
 @app.command(name="dedupe-report")
 def dedupe_report(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -952,10 +918,12 @@ def dedupe_report(
                         f"{format_bytes(stats['space_recoverable'])} recoverable"
                     )
 
-            output.suggest_next_steps([
-                "Remove duplicates (dry run): gmailarchiver dedupe --dry-run",
-                "Remove duplicates: gmailarchiver dedupe --strategy newest --no-dry-run",
-            ])
+            output.suggest_next_steps(
+                [
+                    "Remove duplicates (dry run): gmailarchiver dedupe --dry-run",
+                    "Remove duplicates: gmailarchiver dedupe --strategy newest --no-dry-run",
+                ]
+            )
 
             output.end_operation(success=True)
 
@@ -972,21 +940,17 @@ def dedupe_report(
 @app.command()
 def dedupe(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     strategy: str = typer.Option(
-        "newest",
-        "--strategy",
-        help="Which copy to keep: 'newest', 'largest', or 'first'"
+        "newest", "--strategy", help="Which copy to keep: 'newest', 'largest', or 'first'"
     ),
     dry_run: bool = typer.Option(
-        True,
-        "--dry-run/--no-dry-run",
-        help="Preview changes without executing"
+        True, "--dry-run/--no-dry-run", help="Preview changes without executing"
     ),
-    auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after deduplication"),
+    auto_verify: bool = typer.Option(
+        False, "--auto-verify", help="Run verification after deduplication"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -1024,7 +988,7 @@ def dedupe(
         )
 
     # Validate strategy
-    valid_strategies = ['newest', 'largest', 'first']
+    valid_strategies = ["newest", "largest", "first"]
     if strategy not in valid_strategies:
         output.error(
             f"Invalid strategy: {strategy}",
@@ -1068,9 +1032,11 @@ def dedupe(
 
                 output.show_report("Deduplication Preview (Dry Run)", report_data)
 
-                output.suggest_next_steps([
-                    f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run",
-                ])
+                output.suggest_next_steps(
+                    [
+                        f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run",
+                    ]
+                )
 
             else:
                 # Confirm before proceeding
@@ -1098,10 +1064,12 @@ def dedupe(
                 output.show_report("Deduplication Results", report_data)
                 output.success("Deduplication completed!")
 
-                output.suggest_next_steps([
-                    "Verify database: gmailarchiver verify-integrity",
-                    "Consolidate archives: gmailarchiver consolidate archive*.mbox -o merged.mbox",
-                ])
+                output.suggest_next_steps(
+                    [
+                        "Verify database: gmailarchiver verify-integrity",
+                        "Consolidate archives: gmailarchiver consolidate archive*.mbox -o merged.mbox",
+                    ]
+                )
 
                 # Auto-verify if requested (only for non-dry-run)
                 if auto_verify:
@@ -1122,10 +1090,12 @@ def dedupe(
                             if len(issues) > 5:
                                 output.info(f"  ... and {len(issues) - 5} more issues")
 
-                            output.suggest_next_steps([
-                                "Fix issues automatically: gmailarchiver check --auto-repair",
-                                "View all issues: gmailarchiver verify-integrity --verbose",
-                            ])
+                            output.suggest_next_steps(
+                                [
+                                    "Fix issues automatically: gmailarchiver check --auto-repair",
+                                    "View all issues: gmailarchiver verify-integrity --verbose",
+                                ]
+                            )
                     except Exception as e:
                         output.warning(f"Verification failed: {e}")
 
@@ -1193,9 +1163,11 @@ def verify_offsets_cmd(
         # Handle skipped (v1.0 schema)
         if result.skipped:
             output.warning("Offset verification skipped (v1.0 schema)")
-            output.suggest_next_steps([
-                "Upgrade to v1.1: gmailarchiver migrate",
-            ])
+            output.suggest_next_steps(
+                [
+                    "Upgrade to v1.1: gmailarchiver migrate",
+                ]
+            )
             output.end_operation(success=True)
             return
 
@@ -1225,10 +1197,12 @@ def verify_offsets_cmd(
                 output.info(f"  ... and {len(result.failures) - 10} more failures")
 
         # Suggest next steps
-        output.suggest_next_steps([
-            "Repair offsets: gmailarchiver repair --backfill --no-dry-run",
-            "Check database integrity: gmailarchiver verify-integrity",
-        ])
+        output.suggest_next_steps(
+            [
+                "Repair offsets: gmailarchiver repair --backfill --no-dry-run",
+                "Check database integrity: gmailarchiver verify-integrity",
+            ]
+        )
 
         output.end_operation(success=False)
         raise typer.Exit(1)
@@ -1313,10 +1287,12 @@ def verify_consistency_cmd(
             return
 
         # Suggest next steps
-        output.suggest_next_steps([
-            "Repair database: gmailarchiver repair --no-dry-run",
-            "Check integrity: gmailarchiver verify-integrity --verbose",
-        ])
+        output.suggest_next_steps(
+            [
+                "Repair database: gmailarchiver repair --no-dry-run",
+                "Check integrity: gmailarchiver verify-integrity --verbose",
+            ]
+        )
 
         output.end_operation(success=False)
         raise typer.Exit(1)
@@ -1335,9 +1311,11 @@ def search(
     before: str | None = typer.Option(None, "--before", help="Before date (YYYY-MM-DD)"),
     limit: int = typer.Option(100, help="Maximum results"),
     extract: bool = typer.Option(False, "--extract", help="Extract all search results"),
-    output_dir: str | None = typer.Option(None, "--output-dir", help="Directory for extracted messages (required with --extract)"),
+    output_dir: str | None = typer.Option(
+        None, "--output-dir", help="Directory for extracted messages (required with --extract)"
+    ),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON")
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """
     Search archived messages.
@@ -1392,7 +1370,7 @@ def search(
     # Validate dates if provided
     if after:
         try:
-            datetime.strptime(after, '%Y-%m-%d')
+            datetime.strptime(after, "%Y-%m-%d")
         except ValueError:
             output.error(
                 f"Invalid date format: {after}",
@@ -1402,7 +1380,7 @@ def search(
 
     if before:
         try:
-            datetime.strptime(before, '%Y-%m-%d')
+            datetime.strptime(before, "%Y-%m-%d")
         except ValueError:
             output.error(
                 f"Invalid date format: {before}",
@@ -1449,15 +1427,15 @@ def search(
             # Output JSON array
             data = [
                 {
-                    'gmail_id': r.gmail_id,
-                    'rfc_message_id': r.rfc_message_id,
-                    'date': r.date,
-                    'from': r.from_addr,
-                    'to': r.to_addr,
-                    'subject': r.subject,
-                    'archive_file': r.archive_file,
-                    'mbox_offset': r.mbox_offset,
-                    'relevance_score': r.relevance_score
+                    "gmail_id": r.gmail_id,
+                    "rfc_message_id": r.rfc_message_id,
+                    "date": r.date,
+                    "from": r.from_addr,
+                    "to": r.to_addr,
+                    "subject": r.subject,
+                    "archive_file": r.archive_file,
+                    "mbox_offset": r.mbox_offset,
+                    "relevance_score": r.relevance_score,
                 }
                 for r in results.results
             ]
@@ -1466,10 +1444,12 @@ def search(
             # Rich table output
             if results.total_results == 0:
                 output.warning("No results found")
-                output.suggest_next_steps([
-                    "Try a broader search query",
-                    "Check query syntax with: gmailarchiver search --help",
-                ])
+                output.suggest_next_steps(
+                    [
+                        "Try a broader search query",
+                        "Check query syntax with: gmailarchiver search --help",
+                    ]
+                )
                 output.end_operation(success=True)
                 return
 
@@ -1497,7 +1477,7 @@ def search(
                     result.date[:10] if result.date else "N/A",
                     from_display,
                     subject_display,
-                    archive_display
+                    archive_display,
                 )
 
             console.print(table)
@@ -1520,8 +1500,12 @@ def search(
             gmail_ids = [r.gmail_id for r in results.results]
 
             with MessageExtractor(state_db) as extractor:
-                with output.progress_context("Extracting messages", total=len(gmail_ids)) as progress:
-                    task = progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
+                with output.progress_context(
+                    "Extracting messages", total=len(gmail_ids)
+                ) as progress:
+                    task = (
+                        progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
+                    )
 
                     stats = extractor.batch_extract(gmail_ids, Path(output_dir))
 
@@ -1530,17 +1514,17 @@ def search(
 
             # Show extraction summary
             extraction_report = {
-                "Messages Extracted": stats['extracted'],
-                "Failed": stats['failed'],
+                "Messages Extracted": stats["extracted"],
+                "Failed": stats["failed"],
                 "Output Directory": output_dir,
             }
             output.show_report("Extraction Summary", extraction_report)
 
-            if stats['errors']:
+            if stats["errors"]:
                 output.warning(f"Encountered {len(stats['errors'])} error(s):")
-                for error in stats['errors'][:5]:  # Show first 5 errors
+                for error in stats["errors"][:5]:  # Show first 5 errors
                     output.info(f"  • {error}")
-                if len(stats['errors']) > 5:
+                if len(stats["errors"]) > 5:
                     output.info(f"  ... and {len(stats['errors']) - 5} more")
 
         output.end_operation(success=True)
@@ -1554,8 +1538,12 @@ def search(
 @app.command()
 def extract(
     message_id: str = typer.Argument(..., help="Gmail ID or RFC Message-ID to extract"),
-    output: str | None = typer.Option(None, "--output", "-o", help="Output file path (stdout if not specified)"),
-    archive: str | None = typer.Option(None, "--archive", help="Archive file (auto-detect from database if not specified)"),
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Output file path (stdout if not specified)"
+    ),
+    archive: str | None = typer.Option(
+        None, "--archive", help="Archive file (auto-detect from database if not specified)"
+    ),
     format: str = typer.Option("raw", "--format", help="Output format: raw (default), eml, json"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -1608,11 +1596,14 @@ def extract(
         # Show success
         if output:
             out.success(f"Message extracted to {output}")
-            out.show_report("Extraction Summary", {
-                "Message ID": message_id,
-                "Output File": output,
-                "Size": format_bytes(len(message_bytes)),
-            })
+            out.show_report(
+                "Extraction Summary",
+                {
+                    "Message ID": message_id,
+                    "Output File": output,
+                    "Size": format_bytes(len(message_bytes)),
+                },
+            )
         else:
             # Message already written to stdout, just show summary in JSON mode
             if json_output:
@@ -1720,9 +1711,7 @@ def import_cmd(
         for file_path in files:
             try:
                 result = importer.import_archive(
-                    file_path,
-                    account_id=account_id,
-                    skip_duplicates=skip_duplicates
+                    file_path, account_id=account_id, skip_duplicates=skip_duplicates
                 )
                 results.append(result)
                 if progress and task:
@@ -1765,16 +1754,20 @@ def import_cmd(
                 if len(result.errors) > 10:
                     output.info(f"  ... and {len(result.errors) - 10} more errors")
 
-        output.suggest_next_steps([
-            "Check database integrity: gmailarchiver verify-integrity",
-            "Review error messages above for details",
-        ])
+        output.suggest_next_steps(
+            [
+                "Check database integrity: gmailarchiver verify-integrity",
+                "Review error messages above for details",
+            ]
+        )
 
     if total_imported > 0:
-        output.suggest_next_steps([
-            "Search imported messages: gmailarchiver search <query>",
-            "Verify database: gmailarchiver verify-integrity",
-        ])
+        output.suggest_next_steps(
+            [
+                "Search imported messages: gmailarchiver search <query>",
+                "Verify database: gmailarchiver verify-integrity",
+            ]
+        )
 
     # Auto-verify if requested
     if auto_verify and total_failed == 0:
@@ -1795,10 +1788,12 @@ def import_cmd(
                 if len(issues) > 5:
                     output.info(f"  ... and {len(issues) - 5} more issues")
 
-                output.suggest_next_steps([
-                    "Fix issues automatically: gmailarchiver check --auto-repair",
-                    "View all issues: gmailarchiver verify-integrity --verbose",
-                ])
+                output.suggest_next_steps(
+                    [
+                        "Fix issues automatically: gmailarchiver check --auto-repair",
+                        "View all issues: gmailarchiver verify-integrity --verbose",
+                    ]
+                )
         except Exception as e:
             output.warning(f"Verification failed: {e}")
 
@@ -1813,7 +1808,9 @@ def consolidate(
     dedupe: bool = typer.Option(True, help="Remove duplicate messages"),
     dedupe_strategy: str = typer.Option("newest", help="Dedup strategy: newest/largest/first"),
     compress: str | None = typer.Option(None, help="Compression: gzip/lzma/zstd"),
-    auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after consolidation"),
+    auto_verify: bool = typer.Option(
+        False, "--auto-verify", help="Run verification after consolidation"
+    ),
     state_db: str = typer.Option("archive_state.db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -1862,7 +1859,7 @@ def consolidate(
     output.info(f"Found {len(all_files)} archive(s) to consolidate")
 
     # 2. Validate dedupe strategy
-    valid_strategies = ['newest', 'largest', 'first']
+    valid_strategies = ["newest", "largest", "first"]
     if dedupe_strategy not in valid_strategies:
         output.error(
             f"Invalid dedupe strategy: {dedupe_strategy}",
@@ -1873,12 +1870,12 @@ def consolidate(
     # 3. Auto-detect compression from output extension
     if compress is None:
         output_path = Path(output_file)
-        if output_path.suffix == '.gz':
-            compress = 'gzip'
-        elif output_path.suffix == '.xz':
-            compress = 'lzma'
-        elif output_path.suffix == '.zst':
-            compress = 'zstd'
+        if output_path.suffix == ".gz":
+            compress = "gzip"
+        elif output_path.suffix == ".xz":
+            compress = "lzma"
+        elif output_path.suffix == ".zst":
+            compress = "zstd"
 
     # 4. Check if output file exists
     output_path = Path(output_file)
@@ -1903,7 +1900,7 @@ def consolidate(
                 sort_by_date=sort,
                 deduplicate=dedupe,
                 dedupe_strategy=dedupe_strategy,
-                compress=compress
+                compress=compress,
             )
 
         # 6. Build report data
@@ -1926,10 +1923,12 @@ def consolidate(
         output.show_report("Consolidation Summary", report_data)
         output.success(f"Consolidation complete! Output: {result.output_file}")
 
-        output.suggest_next_steps([
-            "Verify consolidated archive: gmailarchiver validate " + result.output_file,
-            "Search messages: gmailarchiver search <query>",
-        ])
+        output.suggest_next_steps(
+            [
+                "Verify consolidated archive: gmailarchiver validate " + result.output_file,
+                "Search messages: gmailarchiver search <query>",
+            ]
+        )
 
         # Auto-verify if requested
         if auto_verify:
@@ -1952,7 +1951,9 @@ def consolidate(
                 }
 
                 if report.schema_version == "1.1":
-                    verify_report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
+                    verify_report_data["Duplicate RFC Message-IDs"] = (
+                        report.duplicate_rfc_message_ids
+                    )
                     verify_report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
                 output.show_report("Verification Results", verify_report_data)
@@ -1969,10 +1970,12 @@ def consolidate(
                 if report.passed:
                     output.success("Verification complete - all consistency checks passed")
                 else:
-                    output.suggest_next_steps([
-                        "Fix issues automatically: gmailarchiver check --auto-repair",
-                        "View all issues: gmailarchiver verify-integrity --verbose",
-                    ])
+                    output.suggest_next_steps(
+                        [
+                            "Fix issues automatically: gmailarchiver check --auto-repair",
+                            "View all issues: gmailarchiver verify-integrity --verbose",
+                        ]
+                    )
             except Exception as e:
                 output.warning(f"Verification failed: {e}")
 
@@ -1989,15 +1992,9 @@ def consolidate(
 @app.command(name="verify-integrity")
 def verify_integrity_cmd(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        help="Show verbose output"
-    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Show verbose output"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -2071,10 +2068,12 @@ def verify_integrity_cmd(
                 output.info(f"  • {issue}")
 
         # Suggest next steps
-        output.suggest_next_steps([
-            "Fix issues: gmailarchiver repair --no-dry-run",
-            "Review issues in detail: gmailarchiver verify-integrity --verbose",
-        ])
+        output.suggest_next_steps(
+            [
+                "Fix issues: gmailarchiver repair --no-dry-run",
+                "Review issues in detail: gmailarchiver verify-integrity --verbose",
+            ]
+        )
 
         output.end_operation(success=False)
         raise typer.Exit(1)
@@ -2088,19 +2087,15 @@ def verify_integrity_cmd(
 @app.command()
 def repair(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     dry_run: bool = typer.Option(
         True,
         "--dry-run/--no-dry-run",
-        help="Show what would be fixed without making changes (default: True)"
+        help="Show what would be fixed without making changes (default: True)",
     ),
     backfill: bool = typer.Option(
-        False,
-        "--backfill",
-        help="Fix invalid offsets by scanning mbox files"
+        False, "--backfill", help="Fix invalid offsets by scanning mbox files"
     ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -2173,10 +2168,10 @@ def repair(
                         # Use MigrationManager logic to scan mbox and backfill
                         migrator = MigrationManager(db_path)
                         backfilled = migrator.backfill_offsets_from_mbox(invalid_msgs)
-                        repairs['invalid_offsets_fixed'] = backfilled
+                        repairs["invalid_offsets_fixed"] = backfilled
                         migrator._close()
                     else:
-                        repairs['invalid_offsets_would_fix'] = len(invalid_msgs)
+                        repairs["invalid_offsets_would_fix"] = len(invalid_msgs)
                 else:
                     output.success("No invalid offsets found")
 
@@ -2198,29 +2193,27 @@ def repair(
 
 
 def _display_repair_results(
-    output: "OutputManager",
-    repairs: dict[str, int],
-    dry_run: bool
+    output: "OutputManager", repairs: dict[str, int], dry_run: bool
 ) -> None:
     """Display repair results using OutputManager."""
     # Build report data
     report_data = {}
 
     # Add FTS repairs
-    if 'orphaned_fts_removed' in repairs and repairs['orphaned_fts_removed'] > 0:
+    if "orphaned_fts_removed" in repairs and repairs["orphaned_fts_removed"] > 0:
         action = "Removed" if not dry_run else "Would remove"
-        report_data[f"{action} orphaned FTS records"] = repairs['orphaned_fts_removed']
+        report_data[f"{action} orphaned FTS records"] = repairs["orphaned_fts_removed"]
 
-    if 'missing_fts_added' in repairs and repairs['missing_fts_added'] > 0:
+    if "missing_fts_added" in repairs and repairs["missing_fts_added"] > 0:
         action = "Added" if not dry_run else "Would add"
-        report_data[f"{action} missing FTS records"] = repairs['missing_fts_added']
+        report_data[f"{action} missing FTS records"] = repairs["missing_fts_added"]
 
     # Add offset backfill repairs
-    if 'invalid_offsets_fixed' in repairs and repairs['invalid_offsets_fixed'] > 0:
-        report_data["Backfilled invalid offsets"] = repairs['invalid_offsets_fixed']
+    if "invalid_offsets_fixed" in repairs and repairs["invalid_offsets_fixed"] > 0:
+        report_data["Backfilled invalid offsets"] = repairs["invalid_offsets_fixed"]
 
-    if 'invalid_offsets_would_fix' in repairs and repairs['invalid_offsets_would_fix'] > 0:
-        report_data["Would backfill invalid offsets"] = repairs['invalid_offsets_would_fix']
+    if "invalid_offsets_would_fix" in repairs and repairs["invalid_offsets_would_fix"] > 0:
+        report_data["Would backfill invalid offsets"] = repairs["invalid_offsets_would_fix"]
 
     # Summary message
     total_repairs = sum(repairs.values())
@@ -2234,9 +2227,11 @@ def _display_repair_results(
         output.success("No repairs needed - database is clean")
     elif dry_run:
         output.warning(f"Would perform {total_repairs} repair(s)")
-        output.suggest_next_steps([
-            "Apply repairs: gmailarchiver repair --no-dry-run",
-        ])
+        output.suggest_next_steps(
+            [
+                "Apply repairs: gmailarchiver repair --no-dry-run",
+            ]
+        )
     else:
         output.success(f"Successfully performed {total_repairs} repair(s)")
 
@@ -2244,20 +2239,12 @@ def _display_repair_results(
 @app.command()
 def check(
     state_db: str = typer.Option(
-        "archive_state.db",
-        "--state-db",
-        help="Path to state database file"
+        "archive_state.db", "--state-db", help="Path to state database file"
     ),
     auto_repair: bool = typer.Option(
-        False,
-        "--auto-repair",
-        help="Automatically repair issues found"
+        False, "--auto-repair", help="Automatically repair issues found"
     ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        help="Show detailed check results"
-    ),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed check results"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -2340,7 +2327,8 @@ def check(
     # FTS sync is part of database integrity check above
     # Extract FTS-specific issues from the integrity issues
     fts_issues = [
-        issue for issue in check_results["database_integrity"]["issues"]
+        issue
+        for issue in check_results["database_integrity"]["issues"]
         if "FTS" in issue or "fts" in issue.lower()
     ]
     if not fts_issues:
@@ -2380,9 +2368,7 @@ def check(
                     if report.passed:
                         output.success("  ✓ Database consistency: OK")
                     else:
-                        output.warning(
-                            f"  ✗ Database consistency: {len(report.errors)} issue(s)"
-                        )
+                        output.warning(f"  ✗ Database consistency: {len(report.errors)} issue(s)")
             else:
                 # Archive file doesn't exist, skip consistency check
                 if verbose:
@@ -2540,18 +2526,22 @@ def check(
                     raise typer.Exit(0)
                 else:
                     output.warning(f"{len(post_repair_issues)} issue(s) remain after repair")
-                    output.suggest_next_steps([
-                        "Some issues may require manual intervention",
-                        "Check remaining issues: gmailarchiver verify-integrity --verbose",
-                    ])
+                    output.suggest_next_steps(
+                        [
+                            "Some issues may require manual intervention",
+                            "Check remaining issues: gmailarchiver verify-integrity --verbose",
+                        ]
+                    )
                     output.end_operation(success=False, summary="Repair incomplete")
                     raise typer.Exit(2)  # Exit code 2 = repair failed
             else:
                 output.warning("No automatic repairs available for these issues")
-                output.suggest_next_steps([
-                    "Manual intervention may be required",
-                    "Check details: gmailarchiver verify-integrity --verbose",
-                ])
+                output.suggest_next_steps(
+                    [
+                        "Manual intervention may be required",
+                        "Check details: gmailarchiver verify-integrity --verbose",
+                    ]
+                )
                 output.end_operation(success=False)
                 raise typer.Exit(2)
 
@@ -2571,9 +2561,7 @@ def check(
             suggestions.append("Fix database issues: gmailarchiver repair --no-dry-run")
 
         if not check_results["offset_accuracy"]["passed"]:
-            suggestions.append(
-                "Repair offsets: gmailarchiver repair --backfill --no-dry-run"
-            )
+            suggestions.append("Repair offsets: gmailarchiver repair --backfill --no-dry-run")
 
         suggestions.append("View detailed issues: gmailarchiver check --verbose")
 
@@ -2628,9 +2616,11 @@ def schedule_list(
         if not schedules:
             msg = "No enabled schedules found" if enabled_only else "No schedules configured"
             output.warning(msg)
-            output.suggest_next_steps([
-                "Add a schedule: gmailarchiver schedule add check --daily --time 02:00",
-            ])
+            output.suggest_next_steps(
+                [
+                    "Add a schedule: gmailarchiver schedule add check --daily --time 02:00",
+                ]
+            )
             output.end_operation(success=True)
             return
 
@@ -2669,10 +2659,12 @@ def schedule_list(
         console.print(table)
         console.print()
 
-        output.suggest_next_steps([
-            "Add schedule: gmailarchiver schedule add <command> --daily --time HH:MM",
-            "Remove schedule: gmailarchiver schedule remove <id>",
-        ])
+        output.suggest_next_steps(
+            [
+                "Add schedule: gmailarchiver schedule add <command> --daily --time HH:MM",
+                "Remove schedule: gmailarchiver schedule remove <id>",
+            ]
+        )
         output.end_operation(success=True)
 
     except Exception as e:
@@ -2685,10 +2677,14 @@ def schedule_add(
     daily: bool = typer.Option(False, "--daily", help="Run daily"),
     weekly: bool = typer.Option(False, "--weekly", help="Run weekly"),
     monthly: bool = typer.Option(False, "--monthly", help="Run monthly"),
-    day: str | None = typer.Option(None, "--day", help="Day of week (Sun-Sat) or day of month (1-31)"),
+    day: str | None = typer.Option(
+        None, "--day", help="Day of week (Sun-Sat) or day of month (1-31)"
+    ),
     time: str = typer.Option("02:00", "--time", help="Time to run (HH:MM)"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
-    install: bool = typer.Option(True, "--install/--no-install", help="Install on system scheduler"),
+    install: bool = typer.Option(
+        True, "--install/--no-install", help="Install on system scheduler"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -2740,13 +2736,20 @@ def schedule_add(
             )
         # Parse day name to day_of_week (0=Sunday)
         day_names = {
-            "sunday": 0, "sun": 0,
-            "monday": 1, "mon": 1,
-            "tuesday": 2, "tue": 2,
-            "wednesday": 3, "wed": 3,
-            "thursday": 4, "thu": 4,
-            "friday": 5, "fri": 5,
-            "saturday": 6, "sat": 6,
+            "sunday": 0,
+            "sun": 0,
+            "monday": 1,
+            "mon": 1,
+            "tuesday": 2,
+            "tue": 2,
+            "wednesday": 3,
+            "wed": 3,
+            "thursday": 4,
+            "thu": 4,
+            "friday": 5,
+            "fri": 5,
+            "saturday": 6,
+            "sat": 6,
         }
         day_lower = day.lower()
         if day_lower not in day_names:
@@ -2805,10 +2808,12 @@ def schedule_add(
                 output.success("Schedule installed on system scheduler")
             except UnsupportedPlatformError as e:
                 output.warning(str(e))
-                output.suggest_next_steps([
-                    "Manually configure your system scheduler (cron, Task Scheduler, etc.)",
-                    f"Run: gmailarchiver {command}",
-                ])
+                output.suggest_next_steps(
+                    [
+                        "Manually configure your system scheduler (cron, Task Scheduler, etc.)",
+                        f"Run: gmailarchiver {command}",
+                    ]
+                )
             except Exception as e:
                 output.warning(f"Failed to install on system scheduler: {e}")
                 output.info("Schedule saved in database but not installed on system")
@@ -2828,10 +2833,12 @@ def schedule_add(
 
         output.show_report("Schedule Details", report_data)
 
-        output.suggest_next_steps([
-            "View schedules: gmailarchiver schedule list",
-            "Remove schedule: gmailarchiver schedule remove " + str(schedule_id),
-        ])
+        output.suggest_next_steps(
+            [
+                "View schedules: gmailarchiver schedule list",
+                "Remove schedule: gmailarchiver schedule remove " + str(schedule_id),
+            ]
+        )
 
         output.end_operation(success=True)
 
@@ -2845,7 +2852,9 @@ def schedule_add(
 def schedule_remove(
     schedule_id: int = typer.Argument(..., help="Schedule ID to remove"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
-    uninstall: bool = typer.Option(True, "--uninstall/--no-uninstall", help="Uninstall from system scheduler"),
+    uninstall: bool = typer.Option(
+        True, "--uninstall/--no-uninstall", help="Uninstall from system scheduler"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -2900,9 +2909,11 @@ def schedule_remove(
 
         if success:
             output.success(f"Schedule {schedule_id} removed successfully")
-            output.suggest_next_steps([
-                "View remaining schedules: gmailarchiver schedule list",
-            ])
+            output.suggest_next_steps(
+                [
+                    "View remaining schedules: gmailarchiver schedule list",
+                ]
+            )
             output.end_operation(success=True)
         else:
             output.error(f"Failed to remove schedule {schedule_id}", exit_code=1)
@@ -2943,9 +2954,11 @@ def schedule_enable(
 
         if success:
             output.success(f"Schedule {schedule_id} enabled")
-            output.suggest_next_steps([
-                "View schedules: gmailarchiver schedule list",
-            ])
+            output.suggest_next_steps(
+                [
+                    "View schedules: gmailarchiver schedule list",
+                ]
+            )
             output.end_operation(success=True)
         else:
             output.error(
@@ -2990,10 +3003,12 @@ def schedule_disable(
 
         if success:
             output.success(f"Schedule {schedule_id} disabled")
-            output.suggest_next_steps([
-                "View schedules: gmailarchiver schedule list",
-                "Re-enable: gmailarchiver schedule enable " + str(schedule_id),
-            ])
+            output.suggest_next_steps(
+                [
+                    "View schedules: gmailarchiver schedule list",
+                    "Re-enable: gmailarchiver schedule enable " + str(schedule_id),
+                ]
+            )
             output.end_operation(success=True)
         else:
             output.error(
@@ -3004,6 +3019,163 @@ def schedule_disable(
 
     except Exception as e:
         output.error(f"Failed to disable schedule: {e}", exit_code=1)
+
+
+@app.command()
+def compress(
+    files: list[str] = typer.Argument(..., help="Mbox file paths or glob patterns to compress"),
+    format: str = typer.Option(
+        "zstd", "--format", "-f", help="Compression format: gzip, lzma, or zstd"
+    ),
+    in_place: bool = typer.Option(
+        False, "--in-place", help="Replace original files with compressed versions"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Preview compression without actually compressing"
+    ),
+    state_db: str = typer.Option("archive_state.db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Compress mbox archive files to save disk space.
+
+    Supports three compression formats:
+    - gzip (.mbox.gz): Good compression, widely compatible
+    - lzma (.mbox.xz): Best compression ratio
+    - zstd (.mbox.zst): Fastest, good compression (default, Python 3.14 native)
+
+    When using --in-place, the original file is replaced with the compressed
+    version, and the database is updated to point to the new file.
+
+    Examples:
+        $ gmailarchiver compress archive.mbox
+        $ gmailarchiver compress archive.mbox --format gzip
+        $ gmailarchiver compress archive_*.mbox --in-place
+        $ gmailarchiver compress archive.mbox --dry-run
+        $ gmailarchiver compress archive.mbox --json
+    """
+    import glob
+
+    from gmailarchiver.compressor import ArchiveCompressor
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.utils import format_bytes
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("compress", f"Compressing archives with {format} compression")
+
+    # Expand glob patterns
+    expanded_files = []
+    for pattern in files:
+        matches = glob.glob(pattern)
+        if matches:
+            expanded_files.extend(matches)
+        else:
+            # If no matches, treat as literal filename (will fail later if doesn't exist)
+            expanded_files.append(pattern)
+
+    if not expanded_files:
+        output.error(
+            "No files specified",
+            suggestion="Provide mbox file paths or glob patterns",
+            exit_code=1,
+        )
+
+    output.info(f"Found {len(expanded_files)} file(s) to compress")
+
+    if dry_run:
+        output.info("[bold yellow]DRY RUN MODE - No actual compression will occur[/bold yellow]")
+
+    try:
+        compressor = ArchiveCompressor(state_db)
+
+        # Compress files with progress tracking
+        with output.progress_context(
+            f"Compressing {len(expanded_files)} file(s)", total=len(expanded_files)
+        ) as progress:
+            task = progress.add_task("Compress", total=len(expanded_files)) if progress else None
+
+            result = compressor.compress(
+                files=expanded_files, format=format, in_place=in_place, dry_run=dry_run
+            )
+
+            if progress and task:
+                progress.update(task, completed=len(expanded_files))
+
+        # Build report data
+        if dry_run:
+            report_data = {
+                "Total Files": result.total_files,
+                "Files to Compress": result.total_files - result.files_skipped,
+                "Files to Skip": result.files_skipped,
+                "Original Size": format_bytes(result.original_size),
+                "Estimated Compressed Size": format_bytes(result.estimated_compressed_size),
+                "Estimated Space Saved": format_bytes(result.estimated_space_saved),
+                "Estimated Compression Ratio": f"{result.estimated_compression_ratio:.2f}x",
+                "Execution Time": f"{result.execution_time_ms:.1f} ms",
+            }
+            output.show_report("Compression Preview (Dry Run)", report_data)
+
+            if result.files_skipped > 0:
+                output.info("\nSkipped files (already compressed):")
+                for file_result in result.file_results:
+                    if file_result.skipped:
+                        file_name = Path(file_result.source_file).name
+                        output.info(f"  • {file_name}: {file_result.skip_reason}")
+
+            files_str = " ".join(files)
+            output.suggest_next_steps(
+                [
+                    f"Run without --dry-run to compress: "
+                    f"gmailarchiver compress {files_str} --format {format}",
+                    f"Use --in-place to replace originals: "
+                    f"gmailarchiver compress {files_str} --in-place",
+                ]
+            )
+        else:
+            report_data = {
+                "Files Compressed": result.files_compressed,
+                "Files Skipped": result.files_skipped,
+                "Total Files": result.total_files,
+                "Original Size": format_bytes(result.original_size),
+                "Compressed Size": format_bytes(result.compressed_size),
+                "Space Saved": format_bytes(result.space_saved),
+                "Compression Ratio": f"{result.compression_ratio:.2f}x",
+                "Execution Time": f"{result.execution_time_ms:.1f} ms",
+            }
+            output.show_report("Compression Summary", report_data)
+
+            if result.files_skipped > 0:
+                output.info("\nSkipped files (already compressed):")
+                for file_result in result.file_results:
+                    if file_result.skipped:
+                        file_name = Path(file_result.source_file).name
+                        output.info(f"  • {file_name}: {file_result.skip_reason}")
+
+            if result.files_compressed > 0:
+                output.success(
+                    f"Successfully compressed {result.files_compressed} file(s), "
+                    f"saved {format_bytes(result.space_saved)}"
+                )
+
+                output.suggest_next_steps(
+                    [
+                        "Verify integrity: gmailarchiver verify-integrity",
+                        "Search archived messages: gmailarchiver search <query>",
+                    ]
+                )
+
+        output.end_operation(success=True)
+
+    except ValueError as e:
+        output.error(f"Compression failed: {e}", exit_code=1)
+    except FileNotFoundError as e:
+        output.error(
+            f"File not found: {e}",
+            suggestion="Check the file path or glob pattern",
+            exit_code=1,
+        )
+    except Exception as e:
+        output.error(f"Unexpected error: {e}", exit_code=1)
 
 
 @app.command()
