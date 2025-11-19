@@ -2585,6 +2585,427 @@ def check(
         raise typer.Exit(1)
 
 
+# ==================== SCHEDULE COMMAND ====================
+
+schedule_app = typer.Typer(help="Manage automated maintenance schedules", no_args_is_help=True)
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("list")
+def schedule_list(
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    enabled_only: bool = typer.Option(False, "--enabled-only", help="Show only enabled schedules"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    List all scheduled tasks.
+
+    Shows all configured maintenance schedules with their frequency, time, and status.
+
+    Examples:
+        $ gmailarchiver schedule list
+        $ gmailarchiver schedule list --enabled-only
+        $ gmailarchiver schedule list --json
+    """
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.scheduler import Scheduler
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("schedule-list", "Listing schedules")
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database",
+            exit_code=1,
+        )
+
+    try:
+        with Scheduler(str(db_path)) as scheduler:
+            schedules = scheduler.list_schedules(enabled_only=enabled_only)
+
+        if not schedules:
+            msg = "No enabled schedules found" if enabled_only else "No schedules configured"
+            output.warning(msg)
+            output.suggest_next_steps([
+                "Add a schedule: gmailarchiver schedule add check --daily --time 02:00",
+            ])
+            output.end_operation(success=True)
+            return
+
+        # Build table
+        table = Table(title=f"Scheduled Tasks ({len(schedules)} total)")
+        table.add_column("ID", style="cyan", width=6)
+        table.add_column("Command", style="green", width=25)
+        table.add_column("Frequency", style="yellow", width=12)
+        table.add_column("When", style="magenta", width=20)
+        table.add_column("Status", style="blue", width=10)
+        table.add_column("Last Run", style="dim", width=18)
+
+        for schedule in schedules:
+            # Format "When" column
+            when_parts = [schedule.time]
+            if schedule.frequency == "weekly" and schedule.day_of_week is not None:
+                days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                when_parts.insert(0, days[schedule.day_of_week])
+            elif schedule.frequency == "monthly" and schedule.day_of_month is not None:
+                when_parts.insert(0, f"Day {schedule.day_of_month}")
+
+            when_str = " ".join(when_parts)
+            status = "Enabled" if schedule.enabled else "Disabled"
+            last_run = schedule.last_run[:19] if schedule.last_run else "Never"
+
+            table.add_row(
+                str(schedule.id),
+                schedule.command,
+                schedule.frequency,
+                when_str,
+                status,
+                last_run,
+            )
+
+        console.print()
+        console.print(table)
+        console.print()
+
+        output.suggest_next_steps([
+            "Add schedule: gmailarchiver schedule add <command> --daily --time HH:MM",
+            "Remove schedule: gmailarchiver schedule remove <id>",
+        ])
+        output.end_operation(success=True)
+
+    except Exception as e:
+        output.error(f"Failed to list schedules: {e}", exit_code=1)
+
+
+@schedule_app.command("add")
+def schedule_add(
+    command: str = typer.Argument(..., help="Command to run (e.g., 'check', 'archive 3y')"),
+    daily: bool = typer.Option(False, "--daily", help="Run daily"),
+    weekly: bool = typer.Option(False, "--weekly", help="Run weekly"),
+    monthly: bool = typer.Option(False, "--monthly", help="Run monthly"),
+    day: str | None = typer.Option(None, "--day", help="Day of week (Sun-Sat) or day of month (1-31)"),
+    time: str = typer.Option("02:00", "--time", help="Time to run (HH:MM)"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    install: bool = typer.Option(True, "--install/--no-install", help="Install on system scheduler"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Add a new scheduled task.
+
+    Creates a new maintenance schedule and optionally installs it on the system scheduler
+    (systemd on Linux, launchd on macOS, Task Scheduler on Windows).
+
+    Examples:
+        $ gmailarchiver schedule add check --daily --time 02:00
+        $ gmailarchiver schedule add "archive 3y" --weekly --day Sunday --time 03:00
+        $ gmailarchiver schedule add verify-integrity --monthly --day 1 --time 04:00
+        $ gmailarchiver schedule add check --daily --time 02:00 --no-install
+    """
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.platform_scheduler import get_platform_scheduler, UnsupportedPlatformError
+    from gmailarchiver.scheduler import Scheduler, ScheduleValidationError
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("schedule-add", f"Adding schedule: {command}")
+
+    # Validate frequency
+    frequency_count = sum([daily, weekly, monthly])
+    if frequency_count == 0:
+        output.error(
+            "No frequency specified",
+            suggestion="Use --daily, --weekly, or --monthly",
+            exit_code=1,
+        )
+    elif frequency_count > 1:
+        output.error(
+            "Multiple frequencies specified",
+            suggestion="Use only one of: --daily, --weekly, --monthly",
+            exit_code=1,
+        )
+
+    # Determine frequency
+    if daily:
+        frequency = "daily"
+        day_of_week = None
+        day_of_month = None
+    elif weekly:
+        frequency = "weekly"
+        if not day:
+            output.error(
+                "Weekly schedules require --day",
+                suggestion="Use --day with day name (e.g., Sunday, Monday, ...)",
+                exit_code=1,
+            )
+        # Parse day name to day_of_week (0=Sunday)
+        day_names = {
+            "sunday": 0, "sun": 0,
+            "monday": 1, "mon": 1,
+            "tuesday": 2, "tue": 2,
+            "wednesday": 3, "wed": 3,
+            "thursday": 4, "thu": 4,
+            "friday": 5, "fri": 5,
+            "saturday": 6, "sat": 6,
+        }
+        day_lower = day.lower()
+        if day_lower not in day_names:
+            output.error(
+                f"Invalid day name: {day}",
+                suggestion="Use day name: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday",
+                exit_code=1,
+            )
+        day_of_week = day_names[day_lower]
+        day_of_month = None
+    else:  # monthly
+        frequency = "monthly"
+        if not day:
+            output.error(
+                "Monthly schedules require --day",
+                suggestion="Use --day with day of month (1-31)",
+                exit_code=1,
+            )
+        try:
+            day_of_month = int(day)
+            if not (1 <= day_of_month <= 31):
+                raise ValueError("Day must be 1-31")
+        except ValueError:
+            output.error(
+                f"Invalid day of month: {day}",
+                suggestion="Use a number between 1 and 31",
+                exit_code=1,
+            )
+        day_of_week = None
+
+    db_path = Path(state_db)
+
+    try:
+        with Scheduler(str(db_path)) as scheduler:
+            schedule_id = scheduler.add_schedule(
+                command=command,
+                frequency=frequency,
+                time=time,
+                day_of_week=day_of_week,
+                day_of_month=day_of_month,
+            )
+
+            schedule = scheduler.get_schedule(schedule_id)
+
+        if not schedule:
+            output.error("Failed to retrieve created schedule", exit_code=1)
+
+        output.success(f"Schedule created with ID: {schedule_id}")
+
+        # Install on system scheduler if requested
+        if install:
+            try:
+                platform_scheduler = get_platform_scheduler()
+                output.info("Installing on system scheduler...")
+                platform_scheduler.install(schedule)
+                output.success("Schedule installed on system scheduler")
+            except UnsupportedPlatformError as e:
+                output.warning(str(e))
+                output.suggest_next_steps([
+                    "Manually configure your system scheduler (cron, Task Scheduler, etc.)",
+                    f"Run: gmailarchiver {command}",
+                ])
+            except Exception as e:
+                output.warning(f"Failed to install on system scheduler: {e}")
+                output.info("Schedule saved in database but not installed on system")
+
+        # Show schedule details
+        report_data = {
+            "ID": schedule_id,
+            "Command": command,
+            "Frequency": frequency,
+            "Time": time,
+        }
+        if day_of_week is not None:
+            days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            report_data["Day"] = days[day_of_week]
+        if day_of_month is not None:
+            report_data["Day"] = str(day_of_month)
+
+        output.show_report("Schedule Details", report_data)
+
+        output.suggest_next_steps([
+            "View schedules: gmailarchiver schedule list",
+            "Remove schedule: gmailarchiver schedule remove " + str(schedule_id),
+        ])
+
+        output.end_operation(success=True)
+
+    except ScheduleValidationError as e:
+        output.error(f"Validation error: {e}", exit_code=1)
+    except Exception as e:
+        output.error(f"Failed to add schedule: {e}", exit_code=1)
+
+
+@schedule_app.command("remove")
+def schedule_remove(
+    schedule_id: int = typer.Argument(..., help="Schedule ID to remove"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    uninstall: bool = typer.Option(True, "--uninstall/--no-uninstall", help="Uninstall from system scheduler"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Remove a scheduled task.
+
+    Removes a schedule from the database and optionally uninstalls it from the system scheduler.
+
+    Examples:
+        $ gmailarchiver schedule remove 1
+        $ gmailarchiver schedule remove 2 --no-uninstall
+    """
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.platform_scheduler import get_platform_scheduler, UnsupportedPlatformError
+    from gmailarchiver.scheduler import Scheduler
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("schedule-remove", f"Removing schedule ID: {schedule_id}")
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database",
+            exit_code=1,
+        )
+
+    try:
+        with Scheduler(str(db_path)) as scheduler:
+            # Get schedule before removing
+            schedule = scheduler.get_schedule(schedule_id)
+            if not schedule:
+                output.error(
+                    f"Schedule not found: ID {schedule_id}",
+                    suggestion="List schedules: gmailarchiver schedule list",
+                    exit_code=1,
+                )
+
+            # Uninstall from system scheduler if requested
+            if uninstall:
+                try:
+                    platform_scheduler = get_platform_scheduler()
+                    output.info("Uninstalling from system scheduler...")
+                    platform_scheduler.uninstall(schedule)
+                    output.success("Schedule uninstalled from system scheduler")
+                except UnsupportedPlatformError as e:
+                    output.warning(str(e))
+                except Exception as e:
+                    output.warning(f"Failed to uninstall from system scheduler: {e}")
+
+            # Remove from database
+            success = scheduler.remove_schedule(schedule_id)
+
+        if success:
+            output.success(f"Schedule {schedule_id} removed successfully")
+            output.suggest_next_steps([
+                "View remaining schedules: gmailarchiver schedule list",
+            ])
+            output.end_operation(success=True)
+        else:
+            output.error(f"Failed to remove schedule {schedule_id}", exit_code=1)
+
+    except Exception as e:
+        output.error(f"Failed to remove schedule: {e}", exit_code=1)
+
+
+@schedule_app.command("enable")
+def schedule_enable(
+    schedule_id: int = typer.Argument(..., help="Schedule ID to enable"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Enable a disabled schedule.
+
+    Examples:
+        $ gmailarchiver schedule enable 1
+    """
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.scheduler import Scheduler
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("schedule-enable", f"Enabling schedule ID: {schedule_id}")
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database",
+            exit_code=1,
+        )
+
+    try:
+        with Scheduler(str(db_path)) as scheduler:
+            success = scheduler.enable_schedule(schedule_id)
+
+        if success:
+            output.success(f"Schedule {schedule_id} enabled")
+            output.suggest_next_steps([
+                "View schedules: gmailarchiver schedule list",
+            ])
+            output.end_operation(success=True)
+        else:
+            output.error(
+                f"Schedule not found: ID {schedule_id}",
+                suggestion="List schedules: gmailarchiver schedule list",
+                exit_code=1,
+            )
+
+    except Exception as e:
+        output.error(f"Failed to enable schedule: {e}", exit_code=1)
+
+
+@schedule_app.command("disable")
+def schedule_disable(
+    schedule_id: int = typer.Argument(..., help="Schedule ID to disable"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Disable a schedule without removing it.
+
+    Examples:
+        $ gmailarchiver schedule disable 1
+    """
+    from gmailarchiver.output import OutputManager
+    from gmailarchiver.scheduler import Scheduler
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("schedule-disable", f"Disabling schedule ID: {schedule_id}")
+
+    db_path = Path(state_db)
+    if not db_path.exists():
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create a database",
+            exit_code=1,
+        )
+
+    try:
+        with Scheduler(str(db_path)) as scheduler:
+            success = scheduler.disable_schedule(schedule_id)
+
+        if success:
+            output.success(f"Schedule {schedule_id} disabled")
+            output.suggest_next_steps([
+                "View schedules: gmailarchiver schedule list",
+                "Re-enable: gmailarchiver schedule enable " + str(schedule_id),
+            ])
+            output.end_operation(success=True)
+        else:
+            output.error(
+                f"Schedule not found: ID {schedule_id}",
+                suggestion="List schedules: gmailarchiver schedule list",
+                exit_code=1,
+            )
+
+    except Exception as e:
+        output.error(f"Failed to disable schedule: {e}", exit_code=1)
+
+
 @app.command()
 def auth_reset() -> None:
     """
