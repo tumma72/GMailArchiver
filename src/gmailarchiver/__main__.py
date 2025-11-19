@@ -986,6 +986,7 @@ def dedupe(
         "--dry-run/--no-dry-run",
         help="Preview changes without executing"
     ),
+    auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after deduplication"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -1002,6 +1003,7 @@ def dedupe(
     Example:
         $ gmailarchiver dedupe --dry-run
         $ gmailarchiver dedupe --strategy newest --no-dry-run
+        $ gmailarchiver dedupe --strategy newest --no-dry-run --auto-verify
         $ gmailarchiver dedupe --strategy largest --no-dry-run
         $ gmailarchiver dedupe --json
     """
@@ -1100,6 +1102,32 @@ def dedupe(
                     "Verify database: gmailarchiver verify-integrity",
                     "Consolidate archives: gmailarchiver consolidate archive*.mbox -o merged.mbox",
                 ])
+
+                # Auto-verify if requested (only for non-dry-run)
+                if auto_verify:
+                    from gmailarchiver.db_manager import DBManager
+
+                    output.info("\nRunning verification...")
+                    try:
+                        db = DBManager(str(db_path), validate_schema=False)
+                        issues = db.verify_database_integrity()
+                        db.close()
+
+                        if not issues:
+                            output.success("Verification complete - no issues found")
+                        else:
+                            output.warning(f"Verification found {len(issues)} issue(s):")
+                            for issue in issues[:5]:  # Show first 5 issues
+                                output.info(f"  • {issue}")
+                            if len(issues) > 5:
+                                output.info(f"  ... and {len(issues) - 5} more issues")
+
+                            output.suggest_next_steps([
+                                "Fix issues automatically: gmailarchiver check --auto-repair",
+                                "View all issues: gmailarchiver verify-integrity --verbose",
+                            ])
+                    except Exception as e:
+                        output.warning(f"Verification failed: {e}")
 
             output.end_operation(success=True)
 
@@ -1603,6 +1631,7 @@ def import_cmd(
     archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
     account_id: str = typer.Option("default", help="Account identifier"),
     skip_duplicates: bool = typer.Option(True, help="Skip duplicate messages"),
+    auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after import"),
     state_db: str = typer.Option("archive_state.db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -1615,6 +1644,7 @@ def import_cmd(
     Examples:
         $ gmailarchiver import archive_2024.mbox
         $ gmailarchiver import archive_*.mbox.gz --skip-duplicates
+        $ gmailarchiver import archive_*.mbox.gz --auto-verify
         $ gmailarchiver import "archives/*.mbox.zst" --account-id gmail_work
         $ gmailarchiver import old_archive.mbox --state-db /path/to/archive_state.db
         $ gmailarchiver import archive.mbox --json
@@ -1746,6 +1776,32 @@ def import_cmd(
             "Verify database: gmailarchiver verify-integrity",
         ])
 
+    # Auto-verify if requested
+    if auto_verify and total_failed == 0:
+        from gmailarchiver.db_manager import DBManager
+
+        output.info("\nRunning verification...")
+        try:
+            db = DBManager(str(db_path), validate_schema=False)
+            issues = db.verify_database_integrity()
+            db.close()
+
+            if not issues:
+                output.success("Verification complete - no issues found")
+            else:
+                output.warning(f"Verification found {len(issues)} issue(s):")
+                for issue in issues[:5]:  # Show first 5 issues
+                    output.info(f"  • {issue}")
+                if len(issues) > 5:
+                    output.info(f"  ... and {len(issues) - 5} more issues")
+
+                output.suggest_next_steps([
+                    "Fix issues automatically: gmailarchiver check --auto-repair",
+                    "View all issues: gmailarchiver verify-integrity --verbose",
+                ])
+        except Exception as e:
+            output.warning(f"Verification failed: {e}")
+
     output.end_operation(success=total_failed == 0)
 
 
@@ -1757,6 +1813,7 @@ def consolidate(
     dedupe: bool = typer.Option(True, help="Remove duplicate messages"),
     dedupe_strategy: str = typer.Option("newest", help="Dedup strategy: newest/largest/first"),
     compress: str | None = typer.Option(None, help="Compression: gzip/lzma/zstd"),
+    auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after consolidation"),
     state_db: str = typer.Option("archive_state.db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
@@ -1769,6 +1826,7 @@ def consolidate(
     Examples:
         $ gmailarchiver consolidate archive_*.mbox -o merged.mbox
         $ gmailarchiver consolidate old1.mbox old2.mbox -o consolidated.mbox.gz
+        $ gmailarchiver consolidate archive_*.mbox -o merged.mbox --auto-verify
         $ gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
         $ gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
         $ gmailarchiver consolidate archive*.mbox -o merged.mbox --json
@@ -1872,6 +1930,51 @@ def consolidate(
             "Verify consolidated archive: gmailarchiver validate " + result.output_file,
             "Search messages: gmailarchiver search <query>",
         ])
+
+        # Auto-verify if requested
+        if auto_verify:
+            output.info("\nRunning verification...")
+            try:
+                validator = ArchiveValidator(result.output_file, state_db)
+
+                with output.progress_context("Running consistency checks", total=5) as progress:
+                    task = progress.add_task("Consistency checks", total=5) if progress else None
+                    report = validator.verify_consistency()
+                    if progress and task:
+                        progress.update(task, completed=5)
+
+                # Build verification report data
+                verify_report_data = {
+                    "Schema Version": report.schema_version,
+                    "Orphaned Records": report.orphaned_records,
+                    "Missing Records": report.missing_records,
+                    "Duplicate Gmail IDs": report.duplicate_gmail_ids,
+                }
+
+                if report.schema_version == "1.1":
+                    verify_report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
+                    verify_report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
+
+                output.show_report("Verification Results", verify_report_data)
+
+                # Show errors if any
+                if report.errors:
+                    output.warning(f"Found {len(report.errors)} issue(s):")
+                    for error in report.errors[:5]:
+                        output.info(f"  • {error}")
+                    if len(report.errors) > 5:
+                        output.info(f"  ... and {len(report.errors) - 5} more issues")
+
+                # Overall status
+                if report.passed:
+                    output.success("Verification complete - all consistency checks passed")
+                else:
+                    output.suggest_next_steps([
+                        "Fix issues automatically: gmailarchiver check --auto-repair",
+                        "View all issues: gmailarchiver verify-integrity --verbose",
+                    ])
+            except Exception as e:
+                output.warning(f"Verification failed: {e}")
 
         output.end_operation(success=True)
 
