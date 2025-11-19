@@ -1,1238 +1,618 @@
-# Gmail Archiver: Strategic Plan & Roadmap
+# Gmail Archiver: Development Roadmap
 
-**Last Updated:** 2025-11-15
-**Status:** Active Development
-**Current Version:** 1.1.0 (Stable Release)
-
----
-
-## Executive Summary
-
-Gmail Archiver is evolving from a focused CLI archival tool into a comprehensive email management platform. This document outlines the strategic direction, architectural decisions, and implementation roadmap based on extensive research and analysis of email archiving best practices.
-
-### Core Strategic Pillars
-
-1. **Archive Consolidation** - Import and manage existing mbox archives with deduplication
-2. **Searchability** - Transform archives from write-only backups to searchable knowledge bases
-3. **Accessibility** - Lower barriers to entry for non-technical users
-4. **Multi-Account Support** - Enable professional users to manage multiple email accounts (future)
-
-### Key Architectural Decision
-
-**Hybrid Model: mbox Storage + SQLite Indexing**
-
-After comprehensive analysis, we're adopting the "Thunderbird model":
-- **mbox files** remain the authoritative source (RFC 4155 standard)
-- **SQLite database** provides indexing, metadata, and full-text search
-- Combines portability with searchability
-- Zero vendor lock-in
-- Standards-compliant for legal/archival requirements
+**Last Updated**: 2025-11-19
+**Current Version**: 1.1.0 (Stable Release)
+**Status**: Phase 0 Complete, Planning v1.2
 
 ---
 
-## 🏗️ Architectural Decision: Hybrid Model
-
-### Why Hybrid?
-
-**✅ Advantages:**
-- **Portability**: mbox is RFC 4155 standard, universally compatible
-- **Searchability**: SQLite FTS5 enables fast full-text search
-- **Safety**: Database corruption doesn't lose emails (rebuild from mbox)
-- **Performance**: O(1) message access via `mbox_offset` in database
-- **Zero lock-in**: Users can use mbox with any email client
-- **Standards compliance**: Legal and archival acceptance
-
-**❌ Rejected: Pure Database-First**
-- Vendor lock-in risk
-- Not a standard archival format
-- Compliance concerns (binary database vs text files)
-- Total loss if database corrupts without mbox fallback
-- Harder to migrate away from tool
-
-**❌ Rejected: Pure mbox-First**
-- No native search capability
-- Poor random access performance (linear scanning)
-- Can't efficiently add advanced features (deduplication, threading)
-- Feature ceiling limits growth potential
-
-### Implementation Model
-
-```
-Storage Layer:        mbox files (compressed)
-                      ↓
-Index Layer:          SQLite database
-                      ├─ Message metadata
-                      ├─ mbox_offset (O(1) access)
-                      └─ FTS5 full-text index
-                      ↓
-Application Layer:    CLI + Web UI
-```
-
-### Expert Validation
-
-External expert analysis validated this approach:
-> "The hybrid 'Thunderbird model' is spot on. It balances data portability with modern features and is the most resilient and future-proof architecture."
-
-Key insight: Store `mbox_offset` for O(1) seeking instead of full mbox scans.
-
----
-
-## 🗄️ Database Schema Design
-
-### Enhanced Schema (v1.1.0)
-
-```sql
--- ============================================================================
--- MESSAGES TABLE (Core hybrid model)
--- ============================================================================
-CREATE TABLE messages (
-    -- Primary identifiers
-    gmail_id TEXT PRIMARY KEY,              -- Gmail API ID
-    rfc_message_id TEXT UNIQUE NOT NULL,    -- RFC 2822 Message-ID (dedup key!)
-    thread_id TEXT,                         -- Gmail thread ID
-
-    -- Email metadata
-    subject TEXT,
-    from_addr TEXT,
-    to_addr TEXT,
-    cc_addr TEXT,
-    date TIMESTAMP,
-    archived_timestamp TIMESTAMP,
-
-    -- HYBRID MODEL: Reference to mbox storage
-    archive_file TEXT NOT NULL,             -- Path to mbox file
-    mbox_offset INTEGER NOT NULL,           -- Byte offset (O(1) access!)
-    mbox_length INTEGER NOT NULL,           -- Message length in bytes
-
-    -- Content preview for FTS and UI
-    body_preview TEXT,                      -- First 1000 chars
-
-    -- Integrity
-    checksum TEXT,                          -- SHA256
-    size_bytes INTEGER,
-
-    -- Gmail-specific
-    labels TEXT,                            -- JSON array
-
-    -- Multi-account (future)
-    account_id TEXT DEFAULT 'default',
-
-    FOREIGN KEY (account_id) REFERENCES accounts(account_id)
-);
-
--- Performance indexes
-CREATE INDEX idx_rfc_message_id ON messages(rfc_message_id);
-CREATE INDEX idx_thread_id ON messages(thread_id);
-CREATE INDEX idx_archive_file ON messages(archive_file);
-CREATE INDEX idx_date ON messages(date);
-CREATE INDEX idx_from ON messages(from_addr);
-CREATE INDEX idx_subject ON messages(subject);
-
--- ============================================================================
--- FULL-TEXT SEARCH (FTS5)
--- ============================================================================
-CREATE VIRTUAL TABLE messages_fts USING fts5(
-    subject,
-    from_addr,
-    to_addr,
-    body_preview,
-    content='messages',
-    content_rowid='rowid'
-);
-
--- Auto-sync triggers
-CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-    VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
-END;
-
-CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
-    UPDATE messages_fts
-    SET subject = new.subject,
-        from_addr = new.from_addr,
-        to_addr = new.to_addr,
-        body_preview = new.body_preview
-    WHERE rowid = new.rowid;
-END;
-
-CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.rowid;
-END;
-
--- ============================================================================
--- ACCOUNTS TABLE (Multi-account support - v3.0.0)
--- ============================================================================
-CREATE TABLE accounts (
-    account_id TEXT PRIMARY KEY,
-    email TEXT NOT NULL UNIQUE,
-    display_name TEXT,
-    provider TEXT DEFAULT 'gmail',          -- gmail, outlook, icloud
-    added_timestamp TEXT,
-    last_sync_timestamp TEXT
-);
-
--- ============================================================================
--- ARCHIVE RUNS (Existing - keep for audit trail)
--- ============================================================================
-CREATE TABLE archive_runs (
-    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_timestamp TEXT,
-    query TEXT,
-    messages_archived INTEGER,
-    archive_file TEXT,
-    account_id TEXT DEFAULT 'default'
-);
-```
-
-### O(1) Message Access Implementation
-
-```python
-# During archiving: Capture offset before writing
-mbox_file = mailbox.mbox(archive_path)
-mbox_file.lock()
-
-# Get current end-of-file position
-with open(archive_path, 'rb') as f:
-    f.seek(0, 2)  # Seek to end
-    current_offset = f.tell()
-
-# Write message
-mbox_file.add(email_message)
-mbox_file.flush()
-
-# Calculate length
-with open(archive_path, 'rb') as f:
-    f.seek(0, 2)
-    message_length = f.tell() - current_offset
-
-# Store in database
-state.record_message(
-    gmail_id=msg_id,
-    rfc_message_id=rfc_msg_id,
-    mbox_offset=current_offset,
-    mbox_length=message_length,
-    ...
-)
-
-# Later: Retrieve specific message in O(1) time
-with open(archive_path, 'rb') as f:
-    f.seek(mbox_offset)
-    raw_message = f.read(mbox_length)
-    email_message = email.message_from_bytes(raw_message)
-```
-
-### Migration Strategy (v1.0.x → v1.1.0)
-
-```python
-# Auto-detect schema version
-def migrate_database(db_path):
-    """Migrate from v1.0.x to v1.1.0 schema"""
-
-    # 1. Backup existing database
-    shutil.copy(db_path, f"{db_path}.backup.{timestamp}")
-
-    # 2. Check current schema version
-    version = get_schema_version(db_path)
-
-    if version == "1.0":
-        # 3. Rename old table
-        conn.execute("ALTER TABLE archived_messages RENAME TO archived_messages_old")
-
-        # 4. Create new schema
-        create_messages_table(conn)
-
-        # 5. Migrate data
-        for row in conn.execute("SELECT * FROM archived_messages_old"):
-            # Parse mbox to get offset (one-time cost)
-            offset, length = find_message_in_mbox(row['archive_file'], row['gmail_id'])
-
-            conn.execute("""
-                INSERT INTO messages
-                (gmail_id, rfc_message_id, ..., mbox_offset, mbox_length)
-                VALUES (?, ?, ..., ?, ?)
-            """, (row['gmail_id'], extract_rfc_id(row), ..., offset, length))
-
-        # 6. Drop old table
-        conn.execute("DROP TABLE archived_messages_old")
-
-        # 7. Update schema version
-        set_schema_version(conn, "1.1")
-
-        # 8. Vacuum to reclaim space
-        conn.execute("VACUUM")
-```
-
----
-
-## 📅 Phased Roadmap
-
-### Phase 0: Architecture Refactoring 🔴🔴 BLOCKING (v1.1.0-beta.2)
-
-**Timeline:** 2-3 weeks
-**Theme:** Critical architectural fixes for data integrity
-**Status:** In Progress (Discovered during v1.1.0-beta.1 testing)
-**Blocks:** All v1.1.0 features
-
-#### Background: Critical Issues Discovered
-
-During v1.1.0-beta.1 user testing, we discovered fundamental architectural flaws that compromise data integrity:
-
-**Issue 1: Migration Creates Placeholder Records**
-- Migration generates `rfc_message_id='<gmail_id@migration>'` instead of scanning mbox
-- All migrated messages have `mbox_offset=-1` (invalid)
-- Result: `verify-offsets` shows 0.0% accuracy for 16,132 messages
-- Impact: v1.1 features (search, O(1) access) don't work for migrated data
-
-**Issue 2: Missing Audit Trails**
-- `archive_runs` table not recording import/consolidate/dedupe operations
-- User imported 5 archives but only 1 run shows in database
-- Impossible to debug issues or understand system history
-
-**Issue 3: No Transactional Guarantees**
-- mbox write can succeed while database update fails (orphaned messages)
-- Database can be updated while mbox write fails (missing messages)
-- No atomicity between hybrid storage layers
-
-**Issue 4: SQL Scattered Across Codebase**
-- Direct SQL queries in 8+ modules
-- Inconsistent error handling
-- No centralized validation
-- Hard to optimize or maintain
-
-**Issue 5: Commands Assume State**
-- `consolidate` doesn't verify database updates succeeded
-- `validate` fails with inconsistent counts
-- No prerequisite checks before operations
-
-**User Feedback:**
-> "Even as a power user, it is starting to become complicated to figure out which commands to run in which sequence and what their effect will be on the database and the mbox files. [...] I would suggest to: a) Review the architecture to ensure data integrity b) Build in more validation and verification c) Design more ergonomic commands which encapsulate all necessary operations d) Design a hybrid storage class which transactionally ensures changes are atomic"
-
-#### Refactoring Goals
-
-1. **DBManager Class** - Single source of truth for database operations
-   - Centralize ALL SQL queries (no direct SQL in other modules)
-   - Enforce parameterized queries (SQL injection prevention)
-   - Transaction management with automatic rollback
-   - Audit trail for ALL operations (fixes missing archive_runs)
-   - Built-in integrity validation
-
-2. **HybridStorage Class** - Transactional coordinator
-   - Atomic operations across mbox + database
-   - Two-phase commit pattern
-   - Automatic validation after every write
-   - Staging area to prevent partial writes
-   - Clear rollback on failures
-
-3. **Self-Contained Commands** - Each command handles prerequisites
-   - Verify state before operation
-   - Perform atomic operation via HybridStorage
-   - Validate results after operation
-   - Record in audit trail
-   - Clear error messages with recovery instructions
-
-4. **Data Integrity Layer** - Built-in verification
-   - `verify-integrity` command (comprehensive checks)
-   - `repair` command (fix common issues)
-   - Automatic consistency checks after writes
-   - Migration repair (backfill placeholder records)
-
-#### Implementation Plan
-
-**Week 1: Foundation (DBManager)**
-- [ ] Create `src/gmailarchiver/db_manager.py`
-- [ ] Implement core CRUD operations
-- [ ] Add transaction support with context manager
-- [ ] Implement audit trail recording (`_record_archive_run`)
-- [ ] Add integrity checks (`verify_database_integrity`)
-- [ ] Add repair utilities (`repair_database`)
-- [ ] Write comprehensive unit tests (95%+ coverage)
-
-**Week 2: Coordination (HybridStorage)**
-- [ ] Create `src/gmailarchiver/hybrid_storage.py`
-- [ ] Implement `archive_message()` with two-phase commit
-- [ ] Implement `consolidate_archives()` with atomicity
-- [ ] Add staging area management
-- [ ] Add validation methods (`_validate_message_consistency`)
-- [ ] Handle rollback scenarios
-- [ ] Write integration tests for atomic operations
-
-**Week 3: Migration & Refactoring**
-- [ ] Update `migration.py` to use DBManager
-- [ ] Fix migration to scan mbox files (not create placeholders)
-- [ ] Create `repair --backfill` command for v1.1.0-beta.1 users
-- [ ] Refactor `archiver.py` to use HybridStorage
-- [ ] Refactor `importer.py` to use HybridStorage
-- [ ] Refactor `consolidator.py` to use HybridStorage
-- [ ] Remove all direct SQL from modules
-- [ ] Update all commands to be self-contained
-
-**Week 4: Verification & Testing**
-- [ ] Create `verify-integrity` command
-- [ ] Create `repair` command
-- [ ] Comprehensive integration tests
-- [ ] Chaos testing (kill during write, corrupt database)
-- [ ] Performance regression tests
-- [ ] Migration testing (v1.0 → v1.1, beta.1 → beta.2)
-- [ ] Documentation updates
-
-#### Success Criteria
-
-- ✅ 100% of SQL queries in DBManager (zero direct queries elsewhere)
-- ✅ All write operations are atomic (mbox + database both succeed or both fail)
-- ✅ Audit trail complete (archive_runs records all operations)
+## Quick Context: What's Been Built
+
+### ✅ Phase 0: Architecture Refactoring (COMPLETE)
+
+**Delivered** (v1.1.0-beta.2 → v1.1.0):
+- `DBManager`: Centralized database operations (213 LOC, 95%+ coverage)
+- `HybridStorage`: Atomic mbox + database coordinator (499 LOC, 87% coverage)
+- `verify-integrity` + `repair` commands with `--backfill` support
+- Migration system: v1.0 → v1.1 auto-upgrade
+- All modules refactored to use DBManager/HybridStorage
+- **619 tests passing** (96% coverage)
+
+**Success Criteria Met**:
+- ✅ 100% SQL centralized in DBManager
+- ✅ All write operations atomic
+- ✅ Complete audit trail (archive_runs)
 - ✅ Migration backfills real data (no placeholders)
-- ✅ `verify-integrity` shows 0 issues on clean database
-- ✅ `verify-offsets` shows 100% accuracy
-- ✅ Test coverage maintained at 95%+
-- ✅ All existing functionality preserved
-- ✅ Clear upgrade path for v1.1.0-beta.1 users
+- ✅ Comprehensive validation commands
 
-#### Deliverables
+**Outcome**: Solid architectural foundation for future features.
 
-**New Components:**
-1. `src/gmailarchiver/db_manager.py` - Database operations manager
-2. `src/gmailarchiver/hybrid_storage.py` - Transactional coordinator
-3. `verify-integrity` command - Comprehensive database checks
-4. `repair` command - Fix common issues
-5. `repair --backfill` - Fix v1.1.0-beta.1 placeholder records
+### ✅ Version 1.1.0 - "Foundation" (COMPLETE)
 
-**Updated Components:**
-1. `migration.py` - Scan mbox files instead of placeholders
-2. `archiver.py` - Use HybridStorage
-3. `importer.py` - Use HybridStorage
-4. `consolidator.py` - Use HybridStorage
-5. `deduplicator.py` - Use DBManager
-6. `search.py` - Use DBManager
-7. All commands - Self-contained with prerequisites/validation
+**Delivered**:
+- Enhanced database schema (v1.1) with mbox offset tracking
+- FTS5 full-text search with BM25 ranking
+- Import existing archives (glob patterns, all compression formats)
+- Message deduplication (RFC Message-ID based, 100% precision)
+- Archive consolidation (merge + sort + dedupe)
+- Search with Gmail-style syntax
+- Comprehensive validation suite
 
-**Documentation:**
-1. ARCHITECTURE.md - New sections for DBManager and HybridStorage
-2. MIGRATION_GUIDE.md - v1.1.0-beta.1 → v1.1.0-beta.2 upgrade
-3. CHANGELOG.md - Breaking changes and fixes
-4. README.md - Updated command examples
+**Key Metrics Achieved**:
+- Import: 10,145 messages/second
+- Search: 0.85ms for 1000 messages (118x faster than target)
+- Consolidation: 3.57s for 10k messages
+- Test coverage: 96%
 
-#### Risk Assessment
+**Status**: Released, stable, production-ready
 
-**High Priority Risks:**
+---
 
-1. **Breaking Changes for Beta Users** (Probability: High, Impact: Medium)
-   - Mitigation: Provide automatic repair tool
-   - Mitigation: Clear upgrade documentation
-   - Mitigation: Maintain backward compatibility where possible
+## Strategic Direction: Ergonomics First
 
-2. **Regression During Refactoring** (Probability: Medium, Impact: High)
-   - Mitigation: Comprehensive test suite (maintain 95%+ coverage)
-   - Mitigation: Integration tests for all workflows
-   - Mitigation: Beta testing period before final release
+**Key Insight from User Feedback**:
+> "It's becoming complicated to figure out which commands to run in which sequence and what their effect will be."
 
-3. **Performance Overhead** (Probability: Low, Impact: Medium)
-   - Validation adds overhead to operations
-   - Mitigation: Target < 5% overhead
-   - Mitigation: Performance regression tests
-   - Mitigation: Optional `--skip-validation` flag for power users
+**New Focus**: Enhance usability of existing features before adding new ones.
 
-#### Migration Path for v1.1.0-beta.1 Users
+### The Problem
 
+**Current state**:
+- ✅ `archive`: Complete workflow (Gmail → mbox → database → validate → compress)
+- ❌ `search`: Returns pointers but can't extract messages
+- ❌ `import`: No auto-verification (users must remember to run verify commands)
+- ❌ Maintenance: Requires 4+ manual commands (verify-integrity → repair → verify again)
+
+**Example of poor ergonomics**:
 ```bash
-# Upgrade to v1.1.0-beta.2
-pip install --upgrade gmailarchiver
+# User wants to search and read an email
+$ gmailarchiver search "important contract"
+# Shows: gmail_id=abc123, offset=1234567, file=archive.mbox.zst
+# Now what? Can't extract the message! 😞
 
-# Detect issues
-gmailarchiver verify-integrity
-# Output:
-# ❌ 16,132 messages with invalid offsets
-# ❌ 4 import operations missing from archive_runs
-# ❌ 1,478 duplicate Message-IDs found
-
-# Repair placeholder records
-gmailarchiver repair --backfill
-# Scans all mbox files and backfills:
-# - Real RFC Message-IDs
-# - Accurate mbox_offset and mbox_length
-# - Missing metadata (thread_id, body_preview)
-
-# Verify fix
-gmailarchiver verify-offsets archive_20251114.mbox
-# Output: ✅ 100% accurate (16,132/16,132 valid)
-
-# Verify database
-gmailarchiver verify-integrity
-# Output: ✅ No issues found
+# User wants to import safely
+$ gmailarchiver import archives/*.mbox.gz
+$ gmailarchiver verify-integrity    # Easy to forget
+$ gmailarchiver repair --no-dry-run  # If issues found
+$ gmailarchiver verify-integrity    # Verify repair worked
+# Too many manual steps! 😞
 ```
 
 ---
 
-### Version 1.1.0 - "Foundation" 🔴 CRITICAL (Depends on Phase 0)
+## Version 1.2.0 - "Ergonomics" 🔴 ACTIVE
 
-**Timeline:** 4-6 weeks
-**Theme:** Archive consolidation with enhanced indexing
-**Status:** Planned
+**Timeline**: 4-5 weeks
+**Theme**: Complete workflows, automation, user convenience
+**Goal**: Make existing features easier to use
 
-#### Features
+### Phase 0: Unified Output System ✅ COMPLETE
 
-1. **Enhanced Database Schema**
-   - Implement hybrid model with `mbox_offset`
-   - Add `rfc_message_id` for deduplication
-   - Add FTS5 virtual table
-   - Migration from v1.0.x schema
+**Problem**: Inconsistent output across commands, no progress feedback, no JSON mode.
 
-2. **Archive Import** (`gmailarchiver import`)
-   ```bash
-   gmailarchiver import ~/Documents/Mail\ Archives/old-archive.mbox.gz
-   gmailarchiver import ~/Documents/Mail\ Archives/*.mbox --account personal
-   ```
-   - Parse existing mbox files (all compression formats)
-   - Extract metadata and index in database
-   - Record `mbox_offset` for each message
-   - Progress tracking with Rich progress bars
-   - Handle malformed messages gracefully
+**Solution**: Created `OutputManager` class providing:
+- Rich-formatted terminal output with progress bars
+- JSON output mode (`--json` flag) for scripting
+- Actionable next-steps suggestions after errors
+- Real-time progress tracking with ETA
+- Task status indicators (✓/✗ emoji)
 
-3. **Message-ID Deduplication** (`gmailarchiver dedupe`)
-   ```bash
-   gmailarchiver dedupe --dry-run
-   gmailarchiver dedupe --consolidate-to archive.mbox.zst
-   ```
-   - Exact matching via RFC 2822 Message-ID
-   - Cross-archive deduplication
-   - Preserve newest copy (by date)
-   - Report space savings
-   - Safety: Always create new archive (never modify in-place)
+**Status**: Proof-of-concept complete
+- [x] Create `OutputManager` class (366 LOC)
+- [x] Update `validate` command as proof-of-concept
+- [x] Write comprehensive tests (31 tests, 85% coverage)
+- [x] Document system (docs/OUTPUT_SYSTEM.md)
+- [x] All quality gates pass (ruff, mypy, pytest)
 
-4. **Archive Consolidation** (`gmailarchiver consolidate`)
-   ```bash
-   gmailarchiver consolidate ~/Documents/Mail\ Archives/*.mbox \
-       --output consolidated.mbox.zst \
-       --dedupe
-   ```
-   - Merge multiple archives into one
-   - Optional deduplication during merge
-   - Progress tracking
-   - Maintains chronological order
+**Outcome**:
+- 650 total tests passing (no regressions)
+- Professional output matching uv/poetry style
+- Ready for rollout to all commands
 
-5. **Enhanced Search - Metadata** (`gmailarchiver search`)
-   ```bash
-   gmailarchiver search --from "boss@company.com"
-   gmailarchiver search --subject "invoice" --after 2023-01-01
-   gmailarchiver search --before 2020-12-31 --has-attachment
-   ```
-   - SQL queries against indexed metadata
-   - Gmail-style query syntax
-   - Rich table output with highlighting
-   - Export results to various formats
-
-6. **Archive Verification** (`gmailarchiver verify`)
-   ```bash
-   gmailarchiver verify archive.mbox.zst --deep
-   gmailarchiver verify --all
-   ```
-   - Count messages vs database expectations
-   - Checksum verification (spot-check or deep)
-   - Report corruption or inconsistencies
-   - Suggest repair actions
-
-#### Success Criteria
-
-- ✅ Import 10,000 messages in < 60 seconds
-- ✅ 100% Message-ID deduplication accuracy
-- ✅ Zero data loss during migration
-- ✅ Maintain 95%+ test coverage
-- ✅ All existing functionality preserved
-
-#### Implementation Checklist
-
-**Week 1-2: Schema & Migration**
-- [ ] Design migration script with rollback
-- [ ] Implement enhanced schema
-- [ ] Add `mbox_offset` tracking to archiver
-- [ ] Write comprehensive migration tests
-- [ ] Test with real user data (10k+ messages)
-
-**Week 3-4: Import & Deduplication**
-- [ ] Implement mbox parser for import
-- [ ] Add RFC Message-ID extraction
-- [ ] Implement deduplication logic
-- [ ] Add progress tracking
-- [ ] Test with malformed mbox files
-
-**Week 5-6: Search & Polish**
-- [ ] Implement metadata search
-- [ ] Add query syntax parser
-- [ ] Create Rich UI for results
-- [ ] Documentation updates
-- [ ] Release candidate testing
+**Next**: Migrate remaining commands to use `OutputManager`
 
 ---
 
-### Version 1.2.0 - "Search" 🟡 HIGH
+### Tier 0: Output System Migration (Week 1)
 
-**Timeline:** 2-3 weeks
-**Theme:** Advanced search and discovery
-**Status:** Planned
+**Goal**: Migrate all commands to unified output system
 
-#### Features
+#### Priority 1: Verification Commands (Days 1-2)
+- [ ] `verify-integrity` - Database health check
+- [ ] `verify-consistency` - Deep consistency check
+- [ ] `verify-offsets` - Offset validation
+- [ ] `repair` - Database repair
 
-1. **Full-Text Search (FTS5)**
-   ```bash
-   gmailarchiver search "project timeline" --fuzzy
-   gmailarchiver search "important AND meeting" --highlight
-   ```
-   - Index email body content (not just metadata)
-   - Boolean operators: AND, OR, NOT, parentheses
-   - Fuzzy matching (stemming, synonyms)
-   - Relevance ranking
-   - Snippet extraction with highlights
-
-2. **Advanced Query Language**
-   ```bash
-   gmailarchiver search 'from:boss@company.com "quarterly review"'
-   gmailarchiver search 'after:2023-01-01 before:2024-01-01 has:attachment'
-   gmailarchiver search 'larger:5MB subject:invoice'
-   ```
-   - Gmail-compatible syntax
-   - Date range queries
-   - Size filters
-   - Attachment queries
-   - Label/tag filtering (future)
-
-3. **Indexing Infrastructure**
-   ```bash
-   gmailarchiver index --rebuild
-   gmailarchiver index --archive archive.mbox.zst
-   gmailarchiver index --optimize
-   ```
-   - Background indexing for new archives
-   - Manual indexing for imported archives
-   - Index optimization (VACUUM, ANALYZE)
-   - Progress tracking
-
-4. **Export Formats**
-   ```bash
-   gmailarchiver export --search "project timeline" --format mbox
-   gmailarchiver export --search "invoices" --format maildir
-   gmailarchiver export <gmail-id> --format eml
-   gmailarchiver export --all --format json
-   ```
-   - mbox (standard)
-   - Maildir (alternative standard)
-   - EML (individual messages)
-   - JSON (programmatic access)
-
-#### Success Criteria
-
-- ✅ Search response < 100ms for metadata
-- ✅ Search response < 500ms for full-text
-- ✅ Support 1M+ indexed messages
-- ✅ Export maintains data integrity
-- ✅ Index rebuild < 10 minutes for 100k messages
-
----
-
-### Version 2.0.0 - "Accessibility" 🟡 HIGH
-
-**Timeline:** 4-6 weeks
-**Theme:** Web UI and improved installation
-**Status:** Planned
-
-#### Features
-
-1. **Installation Script** (Priority Score: 72.0)
-   ```bash
-   # One-liner installation
-   curl -sSL https://install.gmailarchiver.io/install.sh | bash
-
-   # Or for PowerShell on Windows
-   irm https://install.gmailarchiver.io/install.ps1 | iex
-   ```
-   - Auto-detects OS and architecture
-   - Installs uv if needed
-   - Creates dedicated venv at `~/.gmailarchiver/venv`
-   - Adds launcher to PATH
-   - Reduces installation from 5+ steps to 1 command
-
-2. **Web UI Backend (FastAPI)**
-   - RESTful API for all operations
-   - WebSocket for real-time progress
-   - OAuth2 flow handling
-   - CORS protection (local-only by default)
-   - Auto-generated API docs (Swagger/ReDoc)
-
-3. **Web UI Frontend (Svelte 5 + SvelteKit)**
-   - **Technology Stack:**
-     - Svelte 5 with SvelteKit for routing
-     - Tailwind CSS for styling
-     - shadcn-svelte for UI components
-     - TypeScript for type safety
-
-   - **Features:**
-     - Search interface with real-time results
-     - Email list view (virtualized for performance)
-     - Email detail view with HTML rendering
-     - Attachment preview and download
-     - Dark mode support
-     - Mobile-responsive design
-
-4. **Serve Command** (`gmailarchiver serve`)
-   ```bash
-   gmailarchiver serve
-   # Opens http://localhost:8080 in browser
-
-   gmailarchiver serve --port 3000 --no-browser
-   ```
-   - Single command to start web UI
-   - Auto-opens default browser
-   - Background process management
-   - Graceful shutdown (Ctrl+C)
-
-5. **OAuth Flow in Web UI**
-   - Browser-based OAuth consent
-   - No manual credential file needed
-   - Secure token storage
-   - Multi-account support UI (future)
-
-#### Architecture
-
-```
-src/gmailarchiver/web/
-├── backend/
-│   ├── api.py              # FastAPI app
-│   ├── routes/
-│   │   ├── auth.py
-│   │   ├── search.py
-│   │   ├── messages.py
-│   │   └── archives.py
-│   └── websocket.py        # Real-time updates
-│
-├── frontend/               # SvelteKit app (build-time only)
-│   ├── src/
-│   │   ├── routes/
-│   │   │   ├── +page.svelte           # Search
-│   │   │   ├── message/[id]/+page.svelte
-│   │   │   └── settings/+page.svelte
-│   │   ├── lib/
-│   │   │   ├── components/
-│   │   │   │   ├── EmailList.svelte
-│   │   │   │   ├── EmailViewer.svelte
-│   │   │   │   └── SearchBar.svelte
-│   │   │   └── api.ts
-│   │   └── app.html
-│   └── package.json
-│
-└── static/                 # Built assets (included in wheel)
-    ├── _app/
-    ├── index.html
-    └── favicon.png
-```
-
-#### Security
-
-- **Binding:** 127.0.0.1 only (no remote access by default)
-- **CSP Headers:** Prevent XSS attacks
-- **HTML Email Rendering:** iframe with sandbox attribute
-  ```html
-  <iframe
-    srcdoc="{emailHtml}"
-    sandbox="allow-same-origin"
-    style="width:100%;border:none;">
-  </iframe>
-  ```
-- **CSRF Protection:** Token-based
-- **Authentication:** None initially (local trust model)
-- **Future:** Optional password for remote access
-
-#### Success Criteria
-
-- ✅ Installation reduced from 5+ steps to 1 command
-- ✅ Web UI accessible to non-technical users
-- ✅ Page load < 100ms
-- ✅ Search results render < 200ms
-- ✅ Pass security audit (no XSS, CSRF vulnerabilities)
-- ✅ Mobile-responsive design
-
----
-
-### Version 2.1.0 - "Distribution" 🟢 MEDIUM
-
-**Timeline:** 2-3 weeks
-**Theme:** Standalone executables
-**Status:** Planned
-
-#### Features
-
-1. **PyInstaller Builds**
-   ```bash
-   # Build process (automated via GitHub Actions)
-   pyinstaller gmailarchiver.spec
-   ```
-   - Standalone executables for:
-     - macOS (Intel + Apple Silicon)
-     - Windows (x64)
-     - Linux (x64)
-   - No Python installation required
-   - Bundles all dependencies
-   - Target size: < 100MB per platform
-
-2. **Code Signing**
-   - **macOS:** Apple Developer ID signing + notarization
-   - **Windows:** Authenticode signing (prevents SmartScreen warnings)
-   - Builds trust with users
-   - Passes OS security checks
-
-3. **Auto-Update Mechanism**
-   ```python
-   # Check for updates on startup
-   if newer_version_available():
-       prompt_user_to_update()
-   ```
-   - GitHub Releases API for version checking
-   - One-click update process
-   - Rollback capability
-
-4. **GitHub Actions CI/CD**
-   ```yaml
-   # .github/workflows/release.yml
-   - Build for macOS/Windows/Linux
-   - Code signing
-   - Upload to GitHub Releases
-   - Publish to PyPI
-   - Update download links
-   ```
-
-#### Success Criteria
-
-- ✅ Executable size < 100MB
-- ✅ Startup time < 2 seconds
-- ✅ Pass macOS Gatekeeper
-- ✅ No Windows SmartScreen warnings
-- ✅ Auto-update success rate > 95%
-
----
-
-### Version 3.0.0 - "Enterprise" 🔵 LOW
-
-**Timeline:** Future (3-6 months)
-**Theme:** Multi-account and advanced features
-**Status:** Deferred
-
-#### Features
-
-1. **Multi-Account Support**
-   ```bash
-   gmailarchiver account add work@company.com
-   gmailarchiver account add personal@gmail.com
-   gmailarchiver account list
-   gmailarchiver account default work@company.com
-
-   # Use with any command
-   gmailarchiver archive 1y --account personal
-   gmailarchiver search "project" --account work
-   ```
-
-2. **Web UI Write Operations**
-   - Archive triggering from UI
-   - Schedule archiving
-   - Configuration management
-   - Delete/trash operations
-
-3. **Thread Reconstruction**
-   - Group emails by thread
-   - Maintain conversation integrity
-   - Visualize thread relationships
-
-4. **Advanced Deduplication** (Optional)
-   - Content-based fuzzy matching
-   - Near-duplicate detection
-   - User review before deletion
-
-5. **Labels and Tags**
-   - Preserve Gmail labels
-   - User-defined tags
-   - Filter by label/tag
-
-6. **Scheduled Archiving**
-   ```bash
-   gmailarchiver schedule --every month --threshold 1y
-   gmailarchiver schedule list
-   gmailarchiver schedule disable
-   ```
-
-#### Note
-
-Multi-account support is deferred per user request: "Can wait until search is implemented."
-
----
-
-## 📊 Feature Prioritization Matrix
-
-All proposed features ranked by ROI score:
-
-**Formula:** `(User Value × Strategic Importance) / (Effort × Risk)`
-
-| Feature | User Value | Strategic | Effort | Risk | **Score** | Priority |
-|---------|-----------|-----------|--------|------|-----------|----------|
-| Install script | 9 | 8 | 1 | 1 | **72.0** | 🔴 CRITICAL |
-| Message-ID dedup | 10 | 9 | 2 | 1 | **45.0** | 🔴 CRITICAL |
-| Metadata search | 9 | 9 | 3 | 1 | **27.0** | 🟡 HIGH |
-| Enhanced index | 8 | 10 | 4 | 2 | **10.0** | 🔴 CRITICAL |
-| Full-text search (FTS5) | 10 | 9 | 5 | 2 | **9.0** | 🟡 HIGH |
-| Archive verification | 8 | 7 | 2 | 1 | **28.0** | 🟡 HIGH |
-| Archive import | 10 | 10 | 3 | 2 | **16.7** | 🔴 CRITICAL |
-| Web UI (Read-only) | 9 | 8 | 7 | 3 | **3.4** | 🟡 HIGH |
-| Multi-account | 7 | 8 | 6 | 3 | **3.1** | 🔵 LOW |
-| PyInstaller | 8 | 6 | 6 | 4 | **2.0** | 🟢 MEDIUM |
-| Consolidate archives | 8 | 7 | 3 | 2 | **9.3** | 🟡 HIGH |
-| Export formats | 7 | 6 | 3 | 2 | **7.0** | 🟢 MEDIUM |
-| Thread preservation | 6 | 7 | 5 | 3 | **2.8** | 🔵 LOW |
-| Fuzzy dedup | 5 | 4 | 6 | 8 | **0.4** | ⚪ AVOID |
-
-### Priority Legend
-
-- 🔴 **CRITICAL** - Must have for v1.1.0
-- 🟡 **HIGH** - Important for v1.2.0 or v2.0.0
-- 🟢 **MEDIUM** - Nice to have, schedule based on capacity
-- 🔵 **LOW** - Defer to future versions
-- ⚪ **AVOID** - High risk, low ROI
-
----
-
-## ⚠️ Risk Assessment & Mitigation
-
-### Critical Risks
-
-#### 1. Data Loss During Migration (v1.0.x → v1.1.0)
-
-**Probability:** Low
-**Impact:** Critical
-**Risk Score:** High
-
-**Mitigation:**
-- ✅ Automatic backup before migration (`.backup.{timestamp}`)
-- ✅ Dry-run mode for testing migration
-- ✅ Comprehensive test suite with real user data
-- ✅ 2-week beta testing period with opt-in users
-- ✅ Documented rollback procedure
-- ✅ Migration validation step (verify counts match)
-
-**Rollback Plan:**
-```bash
-# If migration fails
-gmailarchiver rollback
-# Restores from .backup file, drops new schema
-```
-
-#### 2. SQLite Performance at Scale
-
-**Probability:** Medium
-**Impact:** High
-**Risk Score:** Medium-High
-
-**Concerns:**
-- Large mailboxes (1M+ messages)
-- Database size growth
-- Query performance degradation
-
-**Mitigation:**
-- ✅ Proper indexing strategy (see schema)
-- ✅ Pagination everywhere (never load all results)
-- ✅ Regular VACUUM ANALYZE
-- ✅ Performance testing with 1M+ message dataset
-- ✅ Query optimization (EXPLAIN QUERY PLAN)
-- ✅ Consider sharding by year for very large archives (future)
-
-**Performance Benchmarks:**
+**Pattern**:
 ```python
-# Target benchmarks
-- Search (metadata): < 100ms
-- Search (full-text): < 500ms
-- Import: 100 messages/second
-- Message retrieval (via mbox_offset): < 10ms
+@app.command()
+def verify_integrity(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    # ... other args
+) -> None:
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("verify-integrity", "Checking database integrity")
+
+    with output.progress_context("Running checks", total=5) as progress:
+        # ... verification logic with progress updates
+
+    output.show_report("Integrity Results", results_dict)
+
+    if issues:
+        output.suggest_next_steps([
+            "Repair database: gmailarchiver repair --no-dry-run"
+        ])
+        output.end_operation(success=False)
+        raise typer.Exit(1)
+
+    output.end_operation(success=True)
 ```
 
-#### 3. XSS via HTML Email Rendering
+#### Priority 2: Data Operations (Days 3-4)
+- [ ] `import` - Archive import with progress
+- [ ] `consolidate` - Archive consolidation
+- [ ] `dedupe` / `dedupe-report` - Deduplication
 
-**Probability:** Medium
-**Impact:** High
-**Risk Score:** Medium-High
+#### Priority 3: Remaining Commands (Day 5)
+- [ ] `search` - Message search
+- [ ] `status` - Statistics
+- [ ] `db-info` - Database info
+- [ ] `migrate` - Schema migration
+- [ ] `archive` - Gmail archiving (most complex, already has some Rich)
 
-**Attack Vectors:**
-- Malicious JavaScript in HTML emails
-- External resource loading (tracking pixels, fonts)
-- CSS-based attacks
+**Acceptance Criteria**:
+- [ ] All commands support `--json` flag
+- [ ] All long operations show progress bars
+- [ ] All errors include next-steps suggestions
+- [ ] No plain text output (all use Rich)
+- [ ] Tests updated for new output patterns
+- [ ] 95%+ coverage maintained
 
-**Mitigation:**
-- ✅ iframe sandboxing: `sandbox="allow-same-origin"`
-- ✅ CSP headers: `script-src 'none'`
-- ✅ No external resource loading
-- ✅ DOMPurify or similar HTML sanitization (optional)
-- ✅ Security audit before v2.0.0 release
-- ✅ Plaintext fallback option
-
-**Example Implementation:**
-```html
-<!-- Safe HTML email rendering -->
-<iframe
-  srcdoc="{sanitizedHtml}"
-  sandbox="allow-same-origin"
-  csp="default-src 'none'; style-src 'unsafe-inline'"
-  style="width:100%;border:none;">
-</iframe>
-```
-
-### Medium Risks
-
-#### 4. Installation Complexity (Web UI)
-
-**Probability:** Medium
-**Impact:** Medium
-**Risk Score:** Medium
-
-**Concerns:**
-- Web UI requires Node.js at build time
-- Frontend bundling complexity
-- Cross-platform compatibility
-
-**Mitigation:**
-- ✅ Pre-built static assets included in wheel (no Node.js at runtime)
-- ✅ Fallback to CLI if web UI fails
-- ✅ Clear error messages for missing dependencies
-- ✅ One-line install script handles all setup
-
-#### 5. mbox Lock File Management
-
-**Probability:** Low
-**Impact:** Medium
-**Risk Score:** Low-Medium
-
-**Known Issue:** `.lock.lock` files can accumulate if process crashes
-
-**Mitigation:**
-- ✅ Defensive cleanup before/after mbox operations
-- ✅ Exception handling with finally blocks
-- ✅ Lock file detection and removal on startup
-
-### Low Risks
-
-#### 6. Malformed mbox Files During Import
-
-**Probability:** High
-**Impact:** Low
-**Risk Score:** Low
-
-**Mitigation:**
-- ✅ Robust parser with error recovery
-- ✅ Skip malformed messages with warning
-- ✅ Report skipped messages to user
-- ✅ Continue import rather than fail completely
+**Effort**: 5 days
+**Impact**: CRITICAL - Foundation for all UX improvements
 
 ---
 
-## 📈 Success Metrics
+### Tier 1: Critical Gaps (Week 2-3)
 
-### Version 1.1.0 Metrics
+#### 1. `extract` Command - Complete the Search Workflow
 
-**Performance:**
-- ✅ Import: 10,000 messages in < 60 seconds
-- ✅ Deduplication: 100% accuracy on Message-ID matching
-- ✅ Search (metadata): < 100ms response time
-- ✅ Database migration: < 2 minutes for 100k messages
+**Problem**: Search returns pointers (gmail_id, offset, archive_file) but no way to retrieve full message.
 
-**Quality:**
-- ✅ Test coverage: Maintain 95%+ (currently 96%)
-- ✅ Migration success rate: 100% (zero data loss)
-- ✅ Type checking: 100% mypy strict compliance
-- ✅ Linting: Zero ruff violations
+**Solution**:
+```bash
+# Extract single message
+gmailarchiver extract <gmail-id>                    # to stdout
+gmailarchiver extract <gmail-id> --output msg.eml  # to file
 
-**User Experience:**
-- ✅ CLI responsiveness: All commands feel instant (< 500ms perceived)
-- ✅ Progress tracking: Real-time updates for long operations
-- ✅ Error messages: Clear, actionable guidance
+# Extract from search results
+gmailarchiver search "query" --extract --output folder/
 
-### Version 1.2.0 Metrics
+# Works with compressed archives (transparent decompression)
+gmailarchiver extract abc123 --archive archive.mbox.zst
+```
 
-**Performance:**
-- ✅ Full-text search: < 500ms for 1M messages
-- ✅ Index building: < 10 minutes for 100k messages
-- ✅ Export: 1000 messages/second
+**Implementation**:
+- Read `mbox_offset` + `mbox_length` from database
+- Seek to position in mbox file
+- Transparently handle all compression formats (gzip, lzma, zstd)
+- Output formats: raw email (default), .eml, JSON
 
-**Functionality:**
-- ✅ Search recall: > 95% (find expected results)
-- ✅ Search precision: > 90% (relevant results only)
-- ✅ Export integrity: 100% (no data corruption)
+**Effort**: 3 days
+**Impact**: HIGH (completes essential workflow)
 
-### Version 2.0.0 Metrics
-
-**Accessibility:**
-- ✅ Installation time: < 2 minutes (from 10+ minutes)
-- ✅ Installation success rate: > 95% (first-try success)
-- ✅ Web UI adoption: > 50% of users try web UI
-
-**Performance:**
-- ✅ Web UI page load: < 100ms
-- ✅ Search results render: < 200ms
-- ✅ Email viewer load: < 500ms
-
-**Security:**
-- ✅ Security audit: Zero high/critical vulnerabilities
-- ✅ XSS tests: 100% pass rate
-- ✅ CSRF protection: Enabled and tested
-
-### Version 2.1.0 Metrics
-
-**Distribution:**
-- ✅ Executable size: < 100MB per platform
-- ✅ Startup time: < 2 seconds cold start
-- ✅ Gatekeeper pass rate: 100% (macOS)
-- ✅ SmartScreen warnings: 0% (Windows with signing)
-
-**User Experience:**
-- ✅ Auto-update success: > 95%
-- ✅ User satisfaction: Post-launch survey (target: 4.5/5)
+**Acceptance Criteria**:
+- [ ] Extract by gmail_id works
+- [ ] Extract by rfc_message_id works
+- [ ] Handles compressed archives (all formats)
+- [ ] Output to stdout or file
+- [ ] Integration with search (--extract flag)
+- [ ] Batch extraction support
+- [ ] Tests: 95%+ coverage
 
 ---
 
-## 🛠️ Implementation Guidelines
+#### 2. `check` Meta-Command - Unified Health Check
 
-### Development Standards
+**Problem**: Users must run 3-4 separate verify commands manually.
 
-All code must adhere to existing quality standards:
+**Solution**:
+```bash
+# Run all health checks in one command
+gmailarchiver check
 
-- **Line length:** 100 characters (ruff)
-- **Target version:** Python 3.14+
-- **Type checking:** Strict mypy (all functions typed)
-- **Test coverage:** 95%+ (currently 96%)
-- **Linting:** ruff with rules E, F, I, N, W, UP
-- **Documentation:** All public APIs documented
+# Output (example):
+# ✓ Database integrity: OK
+# ✓ Database consistency: OK
+# ✓ Offset accuracy: 100% (16,132/16,132)
+# ✓ FTS synchronization: OK
+# Overall: HEALTHY
 
-### Testing Strategy
+# With auto-repair
+gmailarchiver check --auto-repair
+# Automatically fixes issues found
+```
 
-**Unit Tests:**
-- All business logic functions
-- Mock external dependencies (Gmail API, filesystem)
-- Parameterized tests for edge cases
+**Runs**:
+1. `verify-integrity` (database health)
+2. `verify-consistency` (database ↔ mbox sync)
+3. `verify-offsets` (if v1.1 schema)
+4. FTS synchronization check
 
-**Integration Tests:**
-- Database migrations
-- mbox import/export workflows
-- Search functionality end-to-end
+**Features**:
+- Single consolidated report
+- Optional `--auto-repair` flag
+- Exit codes: 0 = healthy, 1 = issues, 2 = repair failed
 
-**Security Tests:**
-- Path traversal attempts
-- XSS attack vectors
-- SQL injection (via FTS5 queries)
+**Effort**: 1 day
+**Impact**: HIGH (simplifies maintenance)
 
-**Performance Tests:**
-- Import 100k messages
-- Search 1M message database
-- Concurrent operations
+**Acceptance Criteria**:
+- [ ] Runs all 4 verification checks
+- [ ] Consolidated output (single report)
+- [ ] --auto-repair flag works
+- [ ] Correct exit codes
+- [ ] Tests: 95%+ coverage
 
-### Code Review Checklist
+---
 
-Before merging any feature:
+#### 3. Auto-Verification Flags
 
+**Problem**: Import/consolidate/dedupe don't verify automatically.
+
+**Solution**:
+```bash
+# Import with automatic verification
+gmailarchiver import archives/*.mbox.gz --auto-verify
+
+# Consolidate with verification
+gmailarchiver consolidate src/*.mbox -o merged.mbox --auto-verify
+
+# Dedupe with verification
+gmailarchiver dedupe --no-dry-run --auto-verify
+```
+
+**Behavior**:
+- Runs appropriate verification after operation
+- Shows results
+- Offers auto-repair if issues found
+
+**Effort**: 1 day
+**Impact**: MEDIUM (prevents issues)
+
+**Acceptance Criteria**:
+- [ ] --auto-verify on import command
+- [ ] --auto-verify on consolidate command
+- [ ] --auto-verify on dedupe command
+- [ ] Verification runs automatically
+- [ ] User sees results
+- [ ] Tests: 95%+ coverage
+
+---
+
+### Tier 2: Automation & Convenience (Week 4)
+
+#### 4. `schedule` Command - Automated Maintenance
+
+**Problem**: No automated health checks, users must remember to run manually.
+
+**Solution**:
+```bash
+# Schedule nightly checks
+gmailarchiver schedule check --cron "0 2 * * *"
+
+# View scheduled jobs
+gmailarchiver schedule list
+
+# View logs
+gmailarchiver schedule logs --tail 50
+
+# Disable scheduling
+gmailarchiver schedule disable check
+```
+
+**Features**:
+- Creates cron job (Linux/macOS) or Task Scheduler (Windows)
+- Logs to `~/.gmailarchiver/logs/check-YYYY-MM-DD.log`
+- Optional email notifications on failure
+- Graceful handling if cron unavailable
+
+**Effort**: 3-4 days
+**Impact**: HIGH (long-term data integrity)
+
+**Acceptance Criteria**:
+- [ ] Creates platform-specific scheduled task
+- [ ] Logging to file
+- [ ] List/disable commands work
+- [ ] Handles missing cron gracefully
+- [ ] Tests: 90%+ coverage (platform-dependent)
+
+---
+
+#### 5. `compress` Command - Post-Hoc Compression
+
+**Problem**: Users must choose compression at archive time, can't compress later.
+
+**Solution**:
+```bash
+# Compress existing archive
+gmailarchiver compress archive.mbox --format zstd
+
+# Output:
+# Compressing archive.mbox → archive.mbox.zst
+# Original: 2.3 GB, Compressed: 487 MB (78.8% savings)
+# Updating database paths...
+# ✓ Complete
+
+# Batch compress
+gmailarchiver compress archives/*.mbox --format zstd --keep-original
+```
+
+**Features**:
+- Atomically updates database `archive_file` paths
+- Validates before deleting original
+- Optional `--keep-original` flag
+- Supports: gzip, lzma, zstd
+
+**Effort**: 2 days
+**Impact**: MEDIUM (user convenience)
+
+**Acceptance Criteria**:
+- [ ] Compresses mbox files
+- [ ] Updates database paths atomically
+- [ ] Validates before deletion
+- [ ] --keep-original flag works
+- [ ] Batch processing support
+- [ ] Tests: 95%+ coverage
+
+---
+
+#### 6. `doctor` Command - Comprehensive Diagnostics
+
+**Problem**: Hard to troubleshoot issues, no unified diagnostics.
+
+**Solution**:
+```bash
+gmailarchiver doctor
+
+# Output:
+# 🔍 Gmail Archiver Health Check
+#
+# Database:
+#   ✓ Schema: v1.1
+#   ✓ Integrity: OK
+#   ✓ Size: 245 MB
+#
+# Archives:
+#   ✓ Total: 3 files
+#   ⚠ Missing: old.mbox (150 messages affected)
+#
+# Authentication:
+#   ✓ OAuth token: Valid (expires 2025-12-15)
+#
+# Performance:
+#   ✓ Search: 12ms (metadata), 45ms (FTS)
+#
+# Recommendations:
+#   • Restore old.mbox from backup
+#   • Run vacuum (last: 5 days ago)
+```
+
+**Checks**:
+- Database (integrity, size, vacuum status)
+- Archives (existence, compression, accessibility)
+- Authentication (token validity, scopes)
+- Disk space
+- Performance metrics
+
+**Effort**: 2-3 days
+**Impact**: MEDIUM (troubleshooting)
+
+**Acceptance Criteria**:
+- [ ] All diagnostic checks implemented
+- [ ] Clear, actionable output
+- [ ] Suggestions for issues found
+- [ ] Tests: 90%+ coverage
+
+---
+
+### Tier 3: Polish (Week 5, as time allows)
+
+#### 7. Search Enhancements
+
+```bash
+# Show body preview
+gmailarchiver search "query" --with-preview
+
+# Interactive search
+gmailarchiver search --interactive
+```
+
+#### 8. Cleanup Options
+
+```bash
+# Remove sources after consolidation
+gmailarchiver consolidate src/*.mbox -o merged.mbox --remove-sources
+```
+
+#### 9. Progress Estimation
+
+```bash
+gmailarchiver archive 3y
+# Archiving: 1234/5678 (21%, ETA: 8m 42s)
+```
+
+---
+
+## Implementation Plan: v1.2.0
+
+### Week 1: Output System Migration
+- **Day 1-2**: Migrate verification commands
+  - verify-integrity, verify-consistency, verify-offsets, repair
+  - Add --json flag to all
+  - Update tests
+
+- **Day 3-4**: Migrate data operations
+  - import, consolidate, dedupe/dedupe-report
+  - Add progress bars
+  - Next-steps suggestions
+
+- **Day 5**: Migrate remaining commands
+  - search, status, db-info, migrate, archive
+  - Ensure consistency
+
+### Week 2: Core Workflows
+- **Day 1-3**: Implement `extract` command
+  - Day 1: Core extraction logic (offset seeking, decompression)
+  - Day 2: Integration with search, output formats
+  - Day 3: Tests, documentation, edge cases
+
+- **Day 4**: Implement `check` meta-command
+  - Consolidate verify-* commands
+  - Single report output
+  - --auto-repair flag
+
+- **Day 5**: Implement `--auto-verify` flags
+  - Add to import, consolidate, dedupe
+  - Integration tests
+
+### Week 3: Additional Features
+- **Day 1-3**: Implement `schedule` command
+  - Day 1: Cron job creation (Linux/macOS)
+  - Day 2: Task Scheduler (Windows), logging
+  - Day 3: Tests, cross-platform validation
+
+- **Day 4-5**: Implement `compress` command
+  - Compression logic, database updates
+  - Atomic operations, validation
+  - Tests
+
+### Week 4: Diagnostics & Polish
+- **Day 1-2**: Implement `doctor` command
+  - All diagnostic checks
+  - Report formatting, recommendations
+
+- **Day 3-5**: Polish & testing
+  - Search enhancements
+  - Cleanup options
+  - Comprehensive integration tests
+  - Documentation updates
+
+### Week 5: Release Preparation
+- Beta testing period
+- Documentation review
+- CHANGELOG.md update
+- Release v1.2.0
+
+---
+
+## Success Metrics: v1.2.0
+
+### Output System (Phase 0) ✅
+- ✅ Unified OutputManager class created
+- ✅ Progress bars with ETA for long operations
+- ✅ JSON output mode for automation
+- ✅ Next-steps suggestions on all errors
+- ✅ 650 tests passing (31 new for output module)
+
+### User Experience (Post-Migration)
+- ✅ All commands show real-time progress (no silent operations)
+- ✅ Professional Rich-formatted output across all commands
+- ✅ Consistent `--json` flag for scripting
+- ✅ Search → extract workflow: < 2 commands (was: impossible)
+- ✅ Health check: 1 command (was: 4+ commands)
+- ✅ Import → verify → repair: 1 command (was: 3+ commands)
+
+### Automation
+- ✅ Zero-touch scheduled checks (set once, forget)
+- ✅ Automatic repair suggestions
+- ✅ Comprehensive diagnostics in 1 command
+- ✅ JSON output for CI/CD integration
+
+### Quality
+- ✅ Test coverage: 95%+
+- ✅ All new commands documented
+- ✅ Zero regressions
+- ✅ All quality gates pass (ruff, mypy, pytest)
+
+---
+
+## Future Considerations (v2.0+)
+
+**Deferred until v1.2 ergonomics complete**:
+
+### v2.0 - Accessibility
+- Web UI (read-only)
+- One-line installation script
+- GUI for non-technical users
+
+### v2.1 - Distribution
+- Standalone executables (PyInstaller)
+- Code signing (macOS/Windows)
+- Auto-update mechanism
+
+### v3.0 - Enterprise
+- Multi-account support
+- Thread reconstruction
+- Advanced features
+
+**Rationale for deferral**: Perfect the CLI experience first. Web UI and executables amplify existing UX (good or bad).
+
+---
+
+## Development Standards
+
+All code must meet:
+- **Line length**: 100 characters (ruff)
+- **Python version**: 3.14+
+- **Type checking**: Strict mypy
+- **Test coverage**: 95%+
+- **Linting**: ruff (rules: E, F, I, N, W, UP)
+
+---
+
+## Code Review Checklist
+
+Before merging:
 - [ ] All tests pass (pytest)
-- [ ] Test coverage maintained (95%+)
+- [ ] Coverage maintained (95%+)
 - [ ] Type checking passes (mypy)
 - [ ] Linting passes (ruff)
 - [ ] Documentation updated
 - [ ] CHANGELOG.md updated
-- [ ] Security considerations reviewed
-- [ ] Performance impact assessed
+- [ ] User testing completed
 
 ---
 
-## 🎯 Next Steps
+## Next Steps
 
-### Immediate Actions (Week 1)
+### Immediate (This Week)
+1. ✅ **Output system proof-of-concept** - COMPLETE
+2. ✅ **Update PLAN.md** with migration as Phase 0 - COMPLETE
+3. **Start Week 1**: Migrate all commands to OutputManager
+   - Days 1-2: verify-integrity, verify-consistency, verify-offsets, repair
+   - Days 3-4: import, consolidate, dedupe
+   - Day 5: search, status, db-info, migrate, archive
 
-1. **Review and Approve Plan**
-   - Validate architectural decisions
-   - Confirm roadmap priorities
-   - Approve technology choices
+### This Month
+- Complete output system migration (Week 1)
+- Complete v1.2.0 Tier 1 (extract, check, auto-verify) (Week 2)
+- Begin Tier 2 automation features (Week 3-4)
 
-2. **Set Up Project Board**
-   - Create GitHub project for v1.1.0
-   - Break down features into issues
-   - Assign initial tasks
-
-3. **Begin v1.1.0 Sprint 1**
-   - Design migration script
-   - Implement enhanced schema
-   - Write migration tests
-
-### First Sprint Checklist (Week 1-2)
-
-**Schema & Migration:**
-- [ ] Design comprehensive migration script
-- [ ] Add `mbox_offset` tracking to archiver.py
-- [ ] Implement FTS5 table creation
-- [ ] Write migration tests (happy path + edge cases)
-- [ ] Test with real user data (10k+ messages)
-- [ ] Document rollback procedure
-
-**Tooling:**
-- [ ] Add migration command: `gmailarchiver migrate`
-- [ ] Add schema inspection: `gmailarchiver db info`
-- [ ] Add backup command: `gmailarchiver backup`
-
-**Documentation:**
-- [ ] Update CONTRIBUTING.md with new schema
-- [ ] Document migration process
-- [ ] Add troubleshooting guide
+### This Quarter
+- Complete v1.2.0 (all tiers)
+- Beta testing with real users
+- Release v1.2.0 stable
+- Gather feedback for v2.0 planning
 
 ---
 
-## 📚 References
+**For detailed technical analysis, see**: [ERGONOMICS_ANALYSIS.md](./ERGONOMICS_ANALYSIS.md)
 
-### Industry Research
+**For architectural details, see**: [ARCHITECTURE.md](./ARCHITECTURE.md)
 
-- **Email Archiving Best Practices:** RFC 4155 (mbox), RFC 5322 (Internet Message Format)
-- **Competing Tools:** MailStore, Thunderbird, Aid4Mail
-- **User Pain Points:** Lack of search (#1), difficult installation, poor performance at scale
-
-### Technology Stack
-
-- **SQLite FTS5:** https://www.sqlite.org/fts5.html
-- **FastAPI:** https://fastapi.tiangolo.com/
-- **Svelte 5:** https://svelte.dev/
-- **shadcn-svelte:** https://www.shadcn-svelte.com/
-- **PyInstaller:** https://pyinstaller.org/
-
-### Standards Compliance
-
-- **RFC 4155:** mbox format specification
-- **RFC 5322:** Internet Message Format
-- **RFC 2822:** Message-ID specification (deduplication key)
+**For contribution guidelines, see**: [CONTRIBUTING.md](../CONTRIBUTING.md)
 
 ---
 
-## 📝 Changelog
-
-### 2025-11-14 (Update 2 - Critical Pivot)
-- **CRITICAL**: Added Phase 0: Architecture Refactoring (v1.1.0-beta.2)
-- Documented 5 critical data integrity issues discovered during beta testing
-- Introduced DBManager class for centralized database operations
-- Introduced HybridStorage class for transactional coordination
-- Updated ARCHITECTURE.md with comprehensive integrity architecture
-- Defined 4-week implementation plan for architectural fixes
-- Updated v1.1.0 to depend on Phase 0 completion
-- Added migration path for v1.1.0-beta.1 users
-- Comprehensive risk assessment for refactoring
-
-### 2025-11-14 (Update 1)
-- Initial strategic plan created
-- Architectural decision: Hybrid model (mbox + SQLite)
-- Roadmap defined: v1.1.0 → v1.2.0 → v2.0.0 → v2.1.0 → v3.0.0
-- Prioritization matrix completed
-- Risk assessment documented
-- Success metrics defined
-
----
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup and contribution guidelines.
-
-For questions or discussions about this plan, open an issue on GitHub with the `planning` label.
-
----
-
-**End of Strategic Plan**
+**End of Roadmap**

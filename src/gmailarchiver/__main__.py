@@ -226,45 +226,114 @@ def validate(
         "--state-db",
         help="Path to state database file"
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Validate an existing archive file.
 
     Example:
         $ gmailarchiver validate archive_20250113.mbox.gz
+        $ gmailarchiver validate archive.mbox --json
     """
-    console.print(f"\n[bold]Validating archive:[/bold] {archive_file}\n")
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("validate", f"Validating {archive_file}")
 
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        console.print(f"[red]Error:[/red] Archive file not found: {archive_file}")
-        raise typer.Exit(1)
+        output.error(
+            f"Archive file not found: {archive_file}",
+            suggestion="Check the file path or use 'gmailarchiver status' to list archives",
+            exit_code=1,
+        )
 
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        console.print(f"[red]Error:[/red] Database not found: {state_db}\n")
-        console.print("The validate command needs a database to verify archive contents.")
-        console.print("\nOptions:")
-        console.print(
-            f"  • Import the archive first: "
-            f"[bold cyan]gmailarchiver import {archive_file}[/bold cyan]"
+        output.error(
+            f"Database not found: {state_db}",
+            suggestion=(
+                f"Import the archive first: 'gmailarchiver import {archive_file}' "
+                f"or specify database path with --state-db"
+            ),
+            exit_code=1,
         )
-        console.print(
-            "  • Use a different database: [bold cyan]--state-db /path/to/db[/bold cyan]\n"
-        )
-        raise typer.Exit(1)
 
     # Get expected message IDs from state database for this specific archive
-    with ArchiveState(state_db) as state:
-        expected_ids = state.get_archived_message_ids_for_file(archive_file)
+    try:
+        with ArchiveState(state_db) as state:
+            expected_ids = state.get_archived_message_ids_for_file(archive_file)
+    except Exception as e:
+        output.error(f"Failed to read database: {e}", exit_code=1)
 
-    validator = ArchiveValidator(archive_file)
-    results = validator.validate_comprehensive(expected_ids)
-    validator.report(results)
+    # Run validation with progress tracking
+    validator = ArchiveValidator(archive_file, state_db)
 
-    if not results['passed']:
+    output.info(f"Validating {len(expected_ids):,} expected messages...")
+
+    with output.progress_context("Running validation checks", total=4) as progress:
+        task = progress.add_task("Validation", total=4) if progress else None
+
+        # Run comprehensive validation
+        results = validator.validate_comprehensive(expected_ids)
+
+        if progress and task:
+            progress.update(task, completed=4)
+
+    # Show results
+    checks = [
+        ("Count Check", results["count_check"]),
+        ("Database Check", results["database_check"]),
+        ("Integrity Check", results["integrity_check"]),
+        ("Spot Check", results["spot_check"]),
+    ]
+
+    # Build report data
+    report_data = {
+        check_name: "✓ PASSED" if passed else "✗ FAILED" for check_name, passed in checks
+    }
+
+    output.show_report("Validation Results", report_data)
+
+    # Show errors if any
+    if results["errors"]:
+        output.warning(f"Found {len(results['errors'])} error(s):")
+        for error in results["errors"]:
+            output.info(f"  • {error}")
+
+    # Suggest next steps on failure
+    if not results["passed"]:
+        suggestions = []
+
+        if not results["database_check"]:
+            suggestions.append(
+                "Import archive into database: "
+                f"gmailarchiver import {archive_file} --state-db {state_db}"
+            )
+
+        if not results["integrity_check"]:
+            suggestions.append(
+                "Check archive file for corruption or try re-downloading"
+            )
+
+        if not results["count_check"] or not results["spot_check"]:
+            suggestions.append(
+                "Verify database integrity: gmailarchiver verify-integrity --state-db "
+                f"{state_db}"
+            )
+            suggestions.append(
+                f"Repair database if needed: gmailarchiver repair --no-dry-run --state-db "
+                f"{state_db}"
+            )
+
+        if suggestions:
+            output.suggest_next_steps(suggestions)
+
+        output.end_operation(success=False, summary="Validation failed")
         raise typer.Exit(1)
+
+    output.end_operation(success=True, summary="All validation checks passed")
 
 
 @app.command("retry-delete")
