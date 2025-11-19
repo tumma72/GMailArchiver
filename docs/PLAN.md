@@ -176,9 +176,9 @@ def verify_integrity(
 
 ---
 
-### Tier 1: Critical Gaps (Week 2-3)
+### Tier 1: Critical Gaps ✅ COMPLETE (2025-11-19)
 
-#### 1. `extract` Command - Complete the Search Workflow
+#### 1. `extract` Command - Complete the Search Workflow ✅ COMPLETE
 
 **Problem**: Search returns pointers (gmail_id, offset, archive_file) but no way to retrieve full message.
 
@@ -205,17 +205,17 @@ gmailarchiver extract abc123 --archive archive.mbox.zst
 **Impact**: HIGH (completes essential workflow)
 
 **Acceptance Criteria**:
-- [ ] Extract by gmail_id works
-- [ ] Extract by rfc_message_id works
-- [ ] Handles compressed archives (all formats)
-- [ ] Output to stdout or file
-- [ ] Integration with search (--extract flag)
-- [ ] Batch extraction support
-- [ ] Tests: 95%+ coverage
+- [x] Extract by gmail_id works
+- [x] Extract by rfc_message_id works
+- [x] Handles compressed archives (all formats)
+- [x] Output to stdout or file
+- [x] Integration with search (--extract flag)
+- [x] Batch extraction support
+- [x] Tests: 95%+ coverage
 
 ---
 
-#### 2. `check` Meta-Command - Unified Health Check
+#### 2. `check` Meta-Command - Unified Health Check ✅ COMPLETE
 
 **Problem**: Users must run 3-4 separate verify commands manually.
 
@@ -251,15 +251,15 @@ gmailarchiver check --auto-repair
 **Impact**: HIGH (simplifies maintenance)
 
 **Acceptance Criteria**:
-- [ ] Runs all 4 verification checks
-- [ ] Consolidated output (single report)
-- [ ] --auto-repair flag works
-- [ ] Correct exit codes
-- [ ] Tests: 95%+ coverage
+- [x] Runs all 4 verification checks
+- [x] Consolidated output (single report)
+- [x] --auto-repair flag works
+- [x] Correct exit codes
+- [x] Tests: 95%+ coverage
 
 ---
 
-#### 3. Auto-Verification Flags
+#### 3. Auto-Verification Flags ✅ COMPLETE
 
 **Problem**: Import/consolidate/dedupe don't verify automatically.
 
@@ -284,12 +284,20 @@ gmailarchiver dedupe --no-dry-run --auto-verify
 **Impact**: MEDIUM (prevents issues)
 
 **Acceptance Criteria**:
-- [ ] --auto-verify on import command
-- [ ] --auto-verify on consolidate command
-- [ ] --auto-verify on dedupe command
-- [ ] Verification runs automatically
-- [ ] User sees results
-- [ ] Tests: 95%+ coverage
+- [x] --auto-verify on import command
+- [x] --auto-verify on consolidate command
+- [x] --auto-verify on dedupe command
+- [x] Verification runs automatically
+- [x] User sees results
+- [x] Tests: 95%+ coverage
+
+**Completion Summary**:
+- **Total features**: 3 (extract, check, --auto-verify)
+- **New command**: extract (message retrieval with search integration)
+- **New command**: check (unified health checks with auto-repair)
+- **Enhanced commands**: import, consolidate, dedupe (with --auto-verify)
+- **Time to complete**: As planned (5 days)
+- **Impact**: CRITICAL - Completed core workflow gaps and simplified maintenance
 
 ---
 
@@ -596,15 +604,19 @@ Before merging:
    - ✅ All 13 commands migrated to OutputManager
    - ✅ Universal --json flag support
    - ✅ Progress bars and next-steps suggestions
-4. **Start Tier 1**: Critical Gaps (extract, check, auto-verify)
-   - Implement `extract` command (3 days)
-   - Implement `check` meta-command (1 day)
-   - Add `--auto-verify` flags (1 day)
+4. ✅ **Tier 1: Critical Gaps** - COMPLETE (2025-11-19)
+   - ✅ Implemented `extract` command (3 days)
+   - ✅ Implemented `check` meta-command (1 day)
+   - ✅ Added `--auto-verify` flags (1 day)
+5. **Start Tier 2**: Automation & Convenience
+   - Implement `schedule` command (3-4 days)
+   - Implement `compress` command (2 days)
+   - Implement `doctor` command (2-3 days)
 
 ### This Month
 - ✅ Complete output system migration (Tier 0) - DONE
-- **IN PROGRESS**: Complete v1.2.0 Tier 1 (extract, check, auto-verify)
-- Begin Tier 2 automation features (schedule, compress, doctor)
+- ✅ Complete v1.2.0 Tier 1 (extract, check, auto-verify) - DONE
+- **IN PROGRESS**: Begin Tier 2 automation features (schedule, compress, doctor)
 
 ### This Quarter
 - Complete v1.2.0 (all tiers)
