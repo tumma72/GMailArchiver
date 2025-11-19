@@ -1,5 +1,6 @@
 # Gmail Archiver
 
+[![PyPI version](https://img.shields.io/pypi/v/gmail-archiver-cli.svg)](https://pypi.org/project/gmail-archiver-cli/)
 [![Version](https://img.shields.io/github/v/release/tumma72/GMailArchiver)](https://github.com/tumma72/GMailArchiver/releases)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -102,27 +103,27 @@ Merge multiple archives into one:
 
 **Note**: OAuth2 credentials are bundled with the application. No manual Google Cloud setup required!
 
-### Install from PyPI (Coming Soon)
+### Install from PyPI (Recommended)
 
 ```bash
-pip install gmailarchiver
+pip install gmail-archiver-cli
 ```
 
-### Install from GitHub Release (Current Method)
+Or use pipx for isolated installation:
+
+```bash
+pipx install gmail-archiver-cli
+```
+
+### Install from GitHub Release (Alternative)
 
 1. Go to the [Releases page](https://github.com/tumma72/GMailArchiver/releases)
 2. Download the latest `.whl` file
 3. Install with pip:
 
 ```bash
-pip install gmailarchiver-*.whl
-```
-
-Or install directly from URL:
-
-```bash
-# Replace VERSION with the latest version (e.g., 1.0.3)
-pip install https://github.com/tumma72/GMailArchiver/releases/download/vVERSION/gmailarchiver-VERSION-py3-none-any.whl
+# Replace VERSION with the latest version (e.g., 1.1.3)
+pip install https://github.com/tumma72/GMailArchiver/releases/download/vVERSION/gmail_archiver_cli-VERSION-py3-none-any.whl
 ```
 
 ### Verify Installation

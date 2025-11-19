@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2025-11-18
+
+### Fixed
+- **Build Issue**: Removed duplicate config directory inclusion in wheel
+  - Fixed PyPI rejection due to duplicate filenames in wheel archive
+  - Config directory now included only once via packages declaration
+
+## [1.1.2] - 2025-11-18
+
+### Changed
+- **BREAKING**: Package renamed from `gmailarchiver` to `gmail-archiver-cli` for PyPI
+  - Old package name `gmailarchiver` was too similar to existing `pygmailarchive` package
+  - New name clearly distinguishes this as a modern CLI tool
+  - **Action Required**: Uninstall old package and install `gmail-archiver-cli`
+
+### Added
+- **First PyPI Release**: Package now available via `pip install gmail-archiver-cli`
+- **Detailed Import Error Reporting**: Failed imports now show specific error messages
+  - Displays up to 10 error messages per file with context
+  - Shows which archive file had errors and specific failure reasons
+  - Helps users diagnose and fix import issues
+
+### Fixed
+- **Auto-Migration**: Import command now automatically migrates v1.0 databases to v1.1
+  - Detects v1.0 schema and runs migration before import
+  - Creates proper v1.1 schema for new installations
+  - Handles empty database files by recreating them
+
+- **Archive Run Recording**: Fixed duplicate archive run entries
+  - Import operations now record single run entry per import
+  - Added `record_run` parameter to `DBManager.record_archived_message()`
+  - Added public `DBManager.record_archive_run()` method for bulk operations
+
+- **Error Messages**: Improved error messages for missing databases
+  - Status and validate commands now provide helpful next-step guidance
+  - Suggests running `archive` or `import` commands when database missing
+
 ## [1.1.0] - 2025-11-15
 
 ### 🎉 Stable Release
