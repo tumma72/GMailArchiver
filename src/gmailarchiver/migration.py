@@ -4,6 +4,7 @@ import email
 import hashlib
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from email.message import Message
 from pathlib import Path
@@ -442,88 +443,88 @@ class MigrationManager:
 
                     # Scan mbox file once and process all messages
                     try:
-                        mbox = mailbox.mbox(str(archive_path))
-                        file_size = archive_path.stat().st_size
-                        keys_list = list(mbox.keys())
+                        with closing(mailbox.mbox(str(archive_path))) as mbox:
+                            file_size = archive_path.stat().st_size
+                            keys_list = list(mbox.keys())
 
-                        for i, key in enumerate(keys_list):
-                            try:
-                                # Get offset from mbox._toc (private API but necessary)
-                                offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+                            for i, key in enumerate(keys_list):
+                                try:
+                                    # Get offset from mbox._toc (private API but necessary)
+                                    offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
 
-                                # Read message
-                                msg = mbox[key]
+                                    # Read message
+                                    msg = mbox[key]
 
-                                # Calculate length (same pattern as importer.py)
-                                if i < len(keys_list) - 1:
-                                    # Not the last message
-                                    next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
-                                    length = next_offset - offset
-                                else:
-                                    # Last message
-                                    length = file_size - offset
+                                    # Calculate length (same pattern as importer.py)
+                                    if i < len(keys_list) - 1:
+                                        # Not the last message
+                                        next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
+                                        length = next_offset - offset
+                                    else:
+                                        # Last message
+                                        length = file_size - offset
 
-                                # For migration, we take the first message from the mbox
-                                # Since v1.0 didn't track Message-IDs, we can't match by ID
-                                # We assume the order in v1.0 DB matches the order in mbox
-                                # This is a limitation of v1.0 migration
-                                # Better approach: match by subject + from + date
-                                # For now, just take the next available gmail_id
-                                if old_messages:
-                                    # Pop one gmail_id from the dict
-                                    gmail_id = next(iter(old_messages.keys()))
-                                    old_meta = old_messages.pop(gmail_id)
+                                    # For migration, we take the first message from the mbox
+                                    # Since v1.0 didn't track Message-IDs, we can't match by ID
+                                    # We assume the order in v1.0 DB matches the order in mbox
+                                    # This is a limitation of v1.0 migration
+                                    # Better approach: match by subject + from + date
+                                    # For now, just take the next available gmail_id
+                                    if old_messages:
+                                        # Pop one gmail_id from the dict
+                                        gmail_id = next(iter(old_messages.keys()))
+                                        old_meta = old_messages.pop(gmail_id)
 
-                                    # Extract RFC Message-ID
-                                    rfc_message_id = self._extract_rfc_message_id(msg)
+                                        # Extract RFC Message-ID
+                                        rfc_message_id = self._extract_rfc_message_id(msg)
 
-                                    # Extract thread ID
-                                    thread_id = self._extract_thread_id(msg)
+                                        # Extract thread ID
+                                        thread_id = self._extract_thread_id(msg)
 
-                                    # Extract body preview
-                                    body_preview = self._extract_body_preview(msg)
+                                        # Extract body preview
+                                        body_preview = self._extract_body_preview(msg)
 
-                                    # Calculate checksum
-                                    message_bytes = msg.as_bytes()
-                                    checksum = hashlib.sha256(message_bytes).hexdigest()
+                                        # Calculate checksum
+                                        message_bytes = msg.as_bytes()
+                                        checksum = hashlib.sha256(message_bytes).hexdigest()
 
-                                    # Insert with real metadata
-                                    conn.execute('''
-                                        INSERT INTO messages
-                                        (gmail_id, rfc_message_id, thread_id, subject, from_addr,
-                                         to_addr, cc_addr, date, archived_timestamp, archive_file,
-                                         mbox_offset, mbox_length, body_preview, checksum,
-                                         size_bytes, labels, account_id)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    ''', (
-                                        gmail_id,
-                                        rfc_message_id,
-                                        thread_id,
-                                        msg.get('Subject'),
-                                        msg.get('From'),
-                                        msg.get('To'),
-                                        msg.get('Cc'),
-                                        msg.get('Date'),
-                                        old_meta['archived_timestamp'],
-                                        archive_file,
-                                        offset,
-                                        length,
-                                        body_preview,
-                                        checksum,
-                                        len(message_bytes),
-                                        None,  # labels
-                                        'default'  # account_id
-                                    ))
+                                        # Insert with real metadata
+                                        conn.execute('''
+                                            INSERT INTO messages
+                                            (gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                                             to_addr, cc_addr, date, archived_timestamp, archive_file,
+                                             mbox_offset, mbox_length, body_preview, checksum,
+                                             size_bytes, labels, account_id)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        ''', (
+                                            gmail_id,
+                                            rfc_message_id,
+                                            thread_id,
+                                            msg.get('Subject'),
+                                            msg.get('From'),
+                                            msg.get('To'),
+                                            msg.get('Cc'),
+                                            msg.get('Date'),
+                                            old_meta['archived_timestamp'],
+                                            archive_file,
+                                            offset,
+                                            length,
+                                            body_preview,
+                                            checksum,
+                                            len(message_bytes),
+                                            None,  # labels
+                                            'default'  # account_id
+                                        ))
 
-                                    migrated_count += 1
+                                        migrated_count += 1
+                                        progress.update(task, advance=1)
+
+                                except Exception as e:
+                                    warn_msg = f"[yellow]Warning: Failed to process message {key}: {e}"
+                                    console.print(f"{warn_msg}[/yellow]")
+                                    skipped_count += 1
                                     progress.update(task, advance=1)
-
-                            except Exception as e:
-                                warn_msg = f"[yellow]Warning: Failed to process message {key}: {e}"
-                                console.print(f"{warn_msg}[/yellow]")
-                                skipped_count += 1
-                                progress.update(task, advance=1)
-                                continue
+                                    continue
 
                         # Handle any remaining old_messages that weren't in mbox
                         if old_messages:
@@ -694,50 +695,50 @@ class MigrationManager:
 
                 try:
                     # Scan mbox file
-                    mbox = mailbox.mbox(str(archive_path))
-                    file_size = archive_path.stat().st_size
-                    keys_list = list(mbox.keys())
+                    with closing(mailbox.mbox(str(archive_path))) as mbox:
+                        file_size = archive_path.stat().st_size
+                        keys_list = list(mbox.keys())
 
-                    for i, key in enumerate(keys_list):
-                        try:
-                            # Get offset from mbox._toc
-                            offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+                        for i, key in enumerate(keys_list):
+                            try:
+                                # Get offset from mbox._toc
+                                offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
 
-                            # Read message
-                            email_msg: Message[str, str] = mbox[key]
+                                # Read message
+                                email_msg: Message[str, str] = mbox[key]
 
-                            # Extract RFC Message-ID
-                            rfc_message_id = self._extract_rfc_message_id(email_msg)
+                                # Extract RFC Message-ID
+                                rfc_message_id = self._extract_rfc_message_id(email_msg)
 
-                            # Check if this is one of our invalid messages
-                            if rfc_message_id in msg_lookup:
-                                # Calculate length
-                                if i < len(keys_list) - 1:
-                                    next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
-                                    length = next_offset - offset
-                                else:
-                                    length = file_size - offset
+                                # Check if this is one of our invalid messages
+                                if rfc_message_id in msg_lookup:
+                                    # Calculate length
+                                    if i < len(keys_list) - 1:
+                                        next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
+                                        length = next_offset - offset
+                                    else:
+                                        length = file_size - offset
 
-                                # Update database with real offsets
-                                gmail_id = msg_lookup[rfc_message_id]['gmail_id']
+                                    # Update database with real offsets
+                                    gmail_id = msg_lookup[rfc_message_id]['gmail_id']
 
-                                conn.execute(
-                                    '''
-                                    UPDATE messages
-                                    SET mbox_offset = ?, mbox_length = ?
-                                    WHERE gmail_id = ?
-                                    ''',
-                                    (offset, length, gmail_id)
+                                    conn.execute(
+                                        '''
+                                        UPDATE messages
+                                        SET mbox_offset = ?, mbox_length = ?
+                                        WHERE gmail_id = ?
+                                        ''',
+                                        (offset, length, gmail_id)
+                                    )
+
+                                    backfilled += 1
+
+                            except Exception as e:
+                                # Skip this message but continue
+                                console.print(
+                                    f"[yellow]Warning: Failed to process message {key}: {e}[/yellow]"
                                 )
-
-                                backfilled += 1
-
-                        except Exception as e:
-                            # Skip this message but continue
-                            console.print(
-                                f"[yellow]Warning: Failed to process message {key}: {e}[/yellow]"
-                            )
-                            continue
+                                continue
 
                 except Exception as e:
                     console.print(
@@ -761,4 +762,13 @@ class MigrationManager:
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
+        self._close()
+
+    def __del__(self) -> None:
+        """Ensure database connection is closed on garbage collection.
+
+        This prevents ResourceWarning: unclosed database when a MigrationManager
+        is used without an explicit context manager or _close() call in tests
+        or CLI code paths.
+        """
         self._close()

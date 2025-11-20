@@ -56,32 +56,50 @@ def clean_db(tmp_path: Path) -> Path:
     # Create v1.1 schema
     create_v1_1_schema(conn)
 
-    # Insert test data
-    conn.execute('''
+    # Prepare archive content and compute accurate length
+    mbox_content = "From test\n\nTest message\n"
+    mbox_bytes = mbox_content.encode("utf-8")
+    mbox_path = tmp_path / "test.mbox"
+    mbox_length = len(mbox_bytes)
+
+    # Insert test data with real mbox_length
+    conn.execute(
+        '''
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test 1', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', str(tmp_path / 'test.mbox'), 0, 100, 'Test body'
-    ))
+        ''',
+        (
+            'msg1',
+            '<msg1@test.com>',
+            'Test 1',
+            'sender@test.com',
+            'recipient@test.com',
+            '2025-01-01T00:00:00',
+            str(mbox_path),
+            0,
+            mbox_length,
+            'Test body',
+        ),
+    )
 
     # Sync FTS
-    conn.execute('''
+    conn.execute(
+        '''
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-    ''')
+        '''
+    )
 
     conn.commit()
     conn.close()
 
     # Create the archive file
-    (tmp_path / "test.mbox").write_text("From test\n\nTest message\n")
+    mbox_path.write_bytes(mbox_bytes)
 
     return db_path
-
 
 @pytest.fixture
 def db_with_orphaned_fts(tmp_path: Path) -> Path:

@@ -25,6 +25,22 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
+from dataclasses import dataclass
+
+
+@dataclass
+class SearchResultEntry:
+    """A single search result entry."""
+    gmail_id: str
+    rfc_message_id: str
+    subject: str
+    from_addr: str
+    to_addr: str | None
+    date: str
+    body_preview: str | None
+    archive_file: str
+    mbox_offset: int
+    relevance_score: float | None
 
 
 class ProgressTracker:
@@ -65,14 +81,35 @@ class ProgressTracker:
         self.completed = 0
         self._smoothed_rate = None
 
-    def update(self, completed: int | None = None, advance: int | None = None) -> None:
+    def update(
+        self,
+        amount: int | None = None,
+        *,
+        completed: int | None = None,
+        advance: int | None = None,
+    ) -> None:
         """Update progress and recalculate rate.
 
         Args:
-            completed: New total completed count (mutually exclusive with advance)
-            advance: Amount to increment (mutually exclusive with completed)
+            amount: Positional increment value (shorthand for ``advance``).
+            completed: Set new total completed count.
+            advance: Amount to increment ``completed`` by.
+
+        Exactly one of ``amount``, ``completed``, or ``advance`` should be
+        provided. The positional ``amount`` parameter is primarily for
+        convenience in tests and simple callers.
         """
-        if completed is not None:
+        # Resolve which parameter was provided
+        provided = [p is not None for p in (amount, completed, advance)]
+        if sum(provided) == 0:
+            return
+        if sum(provided) > 1:
+            raise ValueError("Specify only one of amount, completed, or advance")
+
+        if amount is not None:
+            # Positional argument behaves like an advance increment
+            self.completed += amount
+        elif completed is not None:
             self.completed = completed
         elif advance is not None:
             self.completed += advance
@@ -271,6 +308,9 @@ class OutputManager:
         self.console = Console() if not json_mode else None
         self._completed_tasks: list[TaskResult] = []
         self._json_events: list[dict[str, Any]] = []
+        # Optional top-level JSON payload for commands that want to control
+        # the exact JSON output shape (e.g., search results as a list).
+        self._json_payload: Any | None = None
         self._operation_start_time: float | None = None
 
     def start_operation(self, name: str, description: str | None = None) -> None:
@@ -428,10 +468,7 @@ class OutputManager:
             )
             return
 
-        if self.quiet:
-            return
-
-        if not self.console:
+        if self.quiet or not self.console:
             return
 
         self.console.print()
@@ -447,19 +484,22 @@ class OutputManager:
 
             self.console.print(table)
 
-        # Tabular report
+        # Tabular report (list of dicts or rows)
         elif isinstance(data, Sequence) and data:
-            # Get columns from first row
             first_row = data[0]
-            table = Table(title=title)
 
-            for col in first_row.keys():
-                table.add_column(col, style="cyan")
+            # If we have a list of dicts, use keys from first row as headers
+            if isinstance(first_row, dict):
+                headers = list(first_row.keys())
+                rows: list[list[Any]] = [
+                    [row.get(col, "") for col in headers] for row in data  # type: ignore[union-attr]
+                ]
+            else:
+                # Fallback: infer column count from first row and use generic headers
+                headers = [f"col{i+1}" for i in range(len(first_row))]  # type: ignore[arg-type]
+                rows = [list(row) for row in data]  # type: ignore[arg-type]
 
-            for row in data:
-                table.add_row(*[str(v) for v in row.values()])
-
-            self.console.print(table)
+            self.show_table(title=title, headers=headers, rows=rows)
 
         # Show summary if provided
         if summary:
@@ -468,6 +508,46 @@ class OutputManager:
                 self.console.print(f"[bold]{key}:[/bold] {value}")
 
         self.console.print()
+
+    def show_table(
+        self,
+        title: str,
+        headers: Sequence[str],
+        rows: Sequence[Sequence[Any]],
+    ) -> None:
+        """Render a Rich table from structured data.
+
+        This helper centralizes table rendering logic so that commands can
+        pass plain headers/rows and let the OutputManager handle both Rich
+        output and JSON/quiet modes.
+
+        Args:
+            title: Optional table title
+            headers: Column headers
+            rows: Table rows (each row is a sequence of values)
+        """
+        if self.json_mode:
+            self._json_events.append(
+                {
+                    "event": "table",
+                    "title": title,
+                    "headers": list(headers),
+                    "rows": [[str(value) for value in row] for row in rows],
+                }
+            )
+            return
+
+        if self.quiet or not self.console:
+            return
+
+        table = Table(title=title)
+        for header in headers:
+            table.add_column(header, style="cyan")
+
+        for row in rows:
+            table.add_row(*[str(value) for value in row])
+
+        self.console.print(table)
 
     def suggest_next_steps(self, suggestions: Sequence[str]) -> None:
         """Show actionable next steps.
@@ -486,6 +566,14 @@ class OutputManager:
         for i, suggestion in enumerate(suggestions, 1):
             self.console.print(f"  {i}. {suggestion}")
         self.console.print()
+
+    def set_json_payload(self, payload: Any) -> None:
+        """Set explicit JSON payload for this operation.
+
+        When a payload is set, :meth:`end_operation` will flush this payload
+        as the top-level JSON value instead of the default "events" wrapper.
+        """
+        self._json_payload = payload
 
     def error(self, message: str, suggestion: str | None = None, exit_code: int = 1) -> None:
         """Show error message with optional suggestion.
@@ -579,7 +667,7 @@ class OutputManager:
                     "elapsed": elapsed,
                 }
             )
-            self._flush_json()
+            self._flush_json(success=success)
             return
 
         if self.quiet:
@@ -604,9 +692,32 @@ class OutputManager:
         if summary:
             self.console.print(f"{summary}\n")
 
-    def _flush_json(self) -> None:
-        """Flush accumulated JSON events to stdout."""
-        if self.json_mode:
-            output = {"events": self._json_events, "timestamp": time.time()}
-            print(json.dumps(output, indent=2))
+    def _flush_json(self, success: bool | None = None) -> None:
+        """Flush accumulated JSON events to stdout.
+
+        If a JSON payload has been set via :meth:`set_json_payload`, that
+        payload is emitted as the top-level JSON value. Otherwise, a default
+        object containing events and status information is emitted.
+        """
+        if not self.json_mode:
+            return
+
+        # If a payload is explicitly provided (e.g. search results), emit it
+        # directly so callers can rely on a stable top-level shape.
+        if self._json_payload is not None:
+            print(json.dumps(self._json_payload, indent=2))
+            self._json_payload = None
             self._json_events = []
+            return
+
+        # Default: emit structured events with high-level status
+        output: dict[str, Any] = {
+            "events": self._json_events,
+            "timestamp": time.time(),
+        }
+        if success is not None:
+            output["success"] = success
+            output["status"] = "ok" if success else "error"
+
+        print(json.dumps(output, indent=2))
+        self._json_events = []

@@ -24,6 +24,7 @@ import shutil
 import tempfile
 import uuid
 from compression import zstd
+from contextlib import closing
 from dataclasses import dataclass
 from email import policy
 from pathlib import Path
@@ -768,21 +769,19 @@ class HybridStorage:
 
         try:
             # Read mbox and verify each message
-            mbox_obj = mailbox.mbox(str(validate_path))
-            mbox_message_ids = set()
+            with closing(mailbox.mbox(str(validate_path))) as mbox_obj:
+                mbox_message_ids = set()
 
-            for key in mbox_obj.keys():
-                msg = mbox_obj[key]
-                msg_id = msg.get("Message-ID", "")
-                mbox_message_ids.add(msg_id)
+                for key in mbox_obj.keys():
+                    msg = mbox_obj[key]
+                    msg_id = msg.get("Message-ID", "")
+                    mbox_message_ids.add(msg_id)
 
-                # Verify in database
-                if msg_id not in db_message_ids:
-                    raise IntegrityError(
-                        f"Message {msg_id} in mbox but not in database"
-                    )
-
-            mbox_obj.close()
+                    # Verify in database
+                    if msg_id not in db_message_ids:
+                        raise IntegrityError(
+                            f"Message {msg_id} in mbox but not in database"
+                        )
 
             logger.debug(f"Mbox has {len(mbox_message_ids)} messages")
 
@@ -842,15 +841,13 @@ class HybridStorage:
 
         try:
             # Read mbox and verify message count and IDs
-            mbox_obj = mailbox.mbox(str(validate_path))
-            mbox_message_ids = set()
+            with closing(mailbox.mbox(str(validate_path))) as mbox_obj:
+                mbox_message_ids = set()
 
-            for key in mbox_obj.keys():
-                msg = mbox_obj[key]
-                msg_id = msg.get("Message-ID", "")
-                mbox_message_ids.add(msg_id)
-
-            mbox_obj.close()
+                for key in mbox_obj.keys():
+                    msg = mbox_obj[key]
+                    msg_id = msg.get("Message-ID", "")
+                    mbox_message_ids.add(msg_id)
 
             logger.debug(f"Consolidated archive has {len(mbox_message_ids)} messages")
 
@@ -926,36 +923,33 @@ class HybridStorage:
                 tmp_path = None
 
             try:
-                mbox_obj = mailbox.mbox(str(read_path))
+                with closing(mailbox.mbox(str(read_path))) as mbox_obj:
+                    for key in mbox_obj.keys():
+                        msg = mbox_obj[key]
+                        rfc_message_id = msg.get("Message-ID", "")
 
-                for key in mbox_obj.keys():
-                    msg = mbox_obj[key]
-                    rfc_message_id = msg.get("Message-ID", "")
+                        # Get gmail_id from database
+                        db_record = db_lookup.get(rfc_message_id)
+                        gmail_id = (
+                            db_record["gmail_id"] if db_record else "unknown"
+                        )
 
-                    # Get gmail_id from database
-                    db_record = db_lookup.get(rfc_message_id)
-                    gmail_id = (
-                        db_record["gmail_id"] if db_record else "unknown"
-                    )
+                        # Extract date for sorting
+                        date_str = msg.get("Date", "")
 
-                    # Extract date for sorting
-                    date_str = msg.get("Date", "")
+                        # Calculate size for dedup strategies
+                        size = len(msg.as_bytes())
 
-                    # Calculate size for dedup strategies
-                    size = len(msg.as_bytes())
-
-                    messages.append(
-                        {
-                            "message": msg,
-                            "rfc_message_id": rfc_message_id,
-                            "gmail_id": gmail_id,
-                            "source_archive": str(archive_path),
-                            "date": date_str,
-                            "size": size,
-                        }
-                    )
-
-                mbox_obj.close()
+                        messages.append(
+                            {
+                                "message": msg,
+                                "rfc_message_id": rfc_message_id,
+                                "gmail_id": gmail_id,
+                                "source_archive": str(archive_path),
+                                "date": date_str,
+                                "size": size,
+                            }
+                        )
 
             finally:
                 # Clean up temp file if created

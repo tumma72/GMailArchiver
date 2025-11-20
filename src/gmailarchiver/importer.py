@@ -285,137 +285,141 @@ class ArchiveImporter:
         try:
             # Open mbox file
             mbox = mailbox.mbox(str(mbox_path))
-
-            # DBManager will auto-create database with complete v1.1 schema if it doesn't exist
-            # We use validate_schema=False to allow working with databases in various states
-            with DBManager(self.state_db_path, validate_schema=False, auto_create=True) as db:
-                # Get existing RFC Message-IDs if skip_duplicates
-                existing_ids = set()
-                if skip_duplicates:
-                    try:
-                        cursor = db.conn.execute(
-                            "SELECT rfc_message_id FROM messages"
-                        )
-                        existing_ids = {row[0] for row in cursor.fetchall()}
-                    except Exception:
-                        # Table might not exist yet, continue
-                        pass
-
-                # Also track IDs seen in this import session (for intra-file duplicates)
-                session_ids = set()
-
-                # Process each message with offset tracking
-                for key in mbox.keys():
-                    try:
-                        # Get file position from mbox library
-                        # The _toc dict maps key to (offset, length) tuple
-                        # _toc is private but needed for offset calculation
-                        offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
-
-                        # Read message
-                        msg = mbox[key]
-
-                        # Extract RFC Message-ID
-                        rfc_message_id = self._extract_rfc_message_id(msg)
-
-                        # Skip duplicates (check both DB and this session)
-                        if skip_duplicates and (
-                            rfc_message_id in existing_ids or rfc_message_id in session_ids
-                        ):
-                            result.messages_skipped += 1
-                            continue
-
-                        # Calculate next message position to determine length
-                        keys_list = list(mbox.keys())
-                        key_index = keys_list.index(key)
-
-                        if key_index < len(keys_list) - 1:
-                            # Not the last message - length is distance to next message
-                            next_key = keys_list[key_index + 1]
-                            next_offset = mbox._toc[next_key][0]  # type: ignore[attr-defined]
-                            length = next_offset - offset
-                        else:
-                            # Last message - length is to end of file
-                            file_size = mbox_path.stat().st_size
-                            length = file_size - offset
-
-                        # Extract all metadata
-                        metadata = self._extract_metadata(
-                            msg,
-                            str(archive_path),  # Store original path (compressed if applicable)
-                            offset,
-                            length,
-                            account_id
-                        )
-
-                        # Insert into database using DBManager or direct SQL (for INSERT OR REPLACE)
+            
+            try:
+                # DBManager will auto-create database with complete v1.1 schema if it doesn't exist
+                # We use validate_schema=False to allow working with databases in various states
+                with DBManager(self.state_db_path, validate_schema=False, auto_create=True) as db:
+                    # Get existing RFC Message-IDs if skip_duplicates
+                    existing_ids = set()
+                    if skip_duplicates:
                         try:
-                            if skip_duplicates:
-                                # Use DBManager's INSERT (will fail on duplicates, caught above)
-                                # record_run=False because we'll record a single run at the end
-                                db.record_archived_message(**metadata, record_run=False)
-                                session_ids.add(rfc_message_id)
-                                result.messages_imported += 1
-                            else:
-                                # For skip_duplicates=False, use INSERT OR REPLACE directly
-                                # DBManager doesn't support OR REPLACE, so we use direct SQL
-                                # This is acceptable as it's a specific use case for importing
-                                from datetime import datetime
-                                archived_timestamp = datetime.now().isoformat()
+                            cursor = db.conn.execute(
+                                "SELECT rfc_message_id FROM messages"
+                            )
+                            existing_ids = {row[0] for row in cursor.fetchall()}
+                        except Exception:
+                            # Table might not exist yet, continue
+                            pass
 
-                                db.conn.execute(
-                                    """
-                                    INSERT OR REPLACE INTO messages (
-                                        gmail_id, rfc_message_id, thread_id, subject, from_addr,
-                                        to_addr, cc_addr, date, archived_timestamp, archive_file,
-                                        mbox_offset, mbox_length, body_preview, checksum,
-                                        size_bytes, labels, account_id
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """,
-                                    (
-                                        metadata['gmail_id'],
-                                        metadata['rfc_message_id'],
-                                        metadata['thread_id'],
-                                        metadata['subject'],
-                                        metadata['from_addr'],
-                                        metadata['to_addr'],
-                                        metadata['cc_addr'],
-                                        metadata['date'],
-                                        archived_timestamp,
-                                        metadata['archive_file'],
-                                        metadata['mbox_offset'],
-                                        metadata['mbox_length'],
-                                        metadata['body_preview'],
-                                        metadata['checksum'],
-                                        metadata['size_bytes'],
-                                        metadata['labels'],
-                                        metadata['account_id'],
-                                    ),
-                                )
-                                session_ids.add(rfc_message_id)
-                                result.messages_imported += 1
-                        except Exception as db_err:
-                            # Database constraint violation (e.g., unique constraint)
+                    # Also track IDs seen in this import session (for intra-file duplicates)
+                    session_ids = set()
+
+                    # Process each message with offset tracking
+                    for key in mbox.keys():
+                        try:
+                            # Get file position from mbox library
+                            # The _toc dict maps key to (offset, length) tuple
+                            # _toc is private but needed for offset calculation
+                            offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+
+                            # Read message
+                            msg = mbox[key]
+
+                            # Extract RFC Message-ID
+                            rfc_message_id = self._extract_rfc_message_id(msg)
+
+                            # Skip duplicates (check both DB and this session)
+                            if skip_duplicates and (
+                                rfc_message_id in existing_ids or rfc_message_id in session_ids
+                            ):
+                                result.messages_skipped += 1
+                                continue
+
+                            # Calculate next message position to determine length
+                            keys_list = list(mbox.keys())
+                            key_index = keys_list.index(key)
+
+                            if key_index < len(keys_list) - 1:
+                                # Not the last message - length is distance to next message
+                                next_key = keys_list[key_index + 1]
+                                next_offset = mbox._toc[next_key][0]  # type: ignore[attr-defined]
+                                length = next_offset - offset
+                            else:
+                                # Last message - length is to end of file
+                                file_size = mbox_path.stat().st_size
+                                length = file_size - offset
+
+                            # Extract all metadata
+                            metadata = self._extract_metadata(
+                                msg,
+                                str(archive_path),  # Store original path (compressed if applicable)
+                                offset,
+                                length,
+                                account_id
+                            )
+
+                            # Insert into database using DBManager or direct SQL (for INSERT OR REPLACE)
+                            try:
+                                if skip_duplicates:
+                                    # Use DBManager's INSERT (will fail on duplicates, caught above)
+                                    # record_run=False because we'll record a single run at the end
+                                    db.record_archived_message(**metadata, record_run=False)
+                                    session_ids.add(rfc_message_id)
+                                    result.messages_imported += 1
+                                else:
+                                    # For skip_duplicates=False, use INSERT OR REPLACE directly
+                                    # DBManager doesn't support OR REPLACE, so we use direct SQL
+                                    # This is acceptable as it's a specific use case for importing
+                                    from datetime import datetime
+                                    archived_timestamp = datetime.now().isoformat()
+
+                                    db.conn.execute(
+                                        """
+                                        INSERT OR REPLACE INTO messages (
+                                            gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                                            to_addr, cc_addr, date, archived_timestamp, archive_file,
+                                            mbox_offset, mbox_length, body_preview, checksum,
+                                            size_bytes, labels, account_id
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        """,
+                                        (
+                                            metadata['gmail_id'],
+                                            metadata['rfc_message_id'],
+                                            metadata['thread_id'],
+                                            metadata['subject'],
+                                            metadata['from_addr'],
+                                            metadata['to_addr'],
+                                            metadata['cc_addr'],
+                                            metadata['date'],
+                                            archived_timestamp,
+                                            metadata['archive_file'],
+                                            metadata['mbox_offset'],
+                                            metadata['mbox_length'],
+                                            metadata['body_preview'],
+                                            metadata['checksum'],
+                                            metadata['size_bytes'],
+                                            metadata['labels'],
+                                            metadata['account_id'],
+                                        ),
+                                    )
+                                    session_ids.add(rfc_message_id)
+                                    result.messages_imported += 1
+                            except Exception as db_err:
+                                # Database constraint violation (e.g., unique constraint)
+                                result.messages_failed += 1
+                                error_msg = f"Message {key}: Database error: {str(db_err)}"
+                                result.errors.append(error_msg)
+                                db.rollback()  # Rollback this message only
+                                continue
+
+                        except Exception as e:
                             result.messages_failed += 1
-                            error_msg = f"Message {key}: Database error: {str(db_err)}"
+                            error_msg = f"Message {key}: {str(e)}"
                             result.errors.append(error_msg)
-                            db.rollback()  # Rollback this message only
                             continue
 
-                    except Exception as e:
-                        result.messages_failed += 1
-                        error_msg = f"Message {key}: {str(e)}"
-                        result.errors.append(error_msg)
-                        continue
-
-                # Record a single archive run for this import operation
-                if result.messages_imported > 0:
-                    db.record_archive_run(
-                        operation="import",
-                        messages_count=result.messages_imported,
-                        archive_file=str(archive_path),
-                        account_id=account_id
-                    )
+                    # Record a single archive run for this import operation
+                    if result.messages_imported > 0:
+                        db.record_archive_run(
+                            operation="import",
+                            messages_count=result.messages_imported,
+                            archive_file=str(archive_path),
+                            account_id=account_id
+                        )
+            finally:
+                # Close mbox to prevent ResourceWarning
+                mbox.close()
 
         finally:
             # Clean up temporary file if created

@@ -9,6 +9,7 @@ import random
 import sqlite3
 import tempfile
 from compression import zstd
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -125,19 +126,32 @@ class ArchiveValidator:
         mbox_path, is_temp = self._get_mbox_path()
 
         try:
-            # 1. Count validation
+            # 1. Count validation + basic integrity over the same mbox handle
             try:
-                mbox = mailbox.mbox(str(mbox_path))
-                archive_count = len(mbox)
-                expected_count = len(expected_message_ids)
+                with closing(mailbox.mbox(str(mbox_path))) as mbox:
+                    archive_count = len(mbox)
+                    expected_count = len(expected_message_ids)
 
-                if archive_count == expected_count:
-                    results['count_check'] = True
-                else:
-                    results['errors'].append(
-                        f"Count mismatch: {archive_count} in archive vs "
-                        f"{expected_count} expected"
-                    )
+                    if archive_count == expected_count:
+                        results['count_check'] = True
+                    else:
+                        results['errors'].append(
+                            f"Count mismatch: {archive_count} in archive vs "
+                            f"{expected_count} expected"
+                        )
+
+                    # 3. Content integrity check
+                    try:
+                        message_count = 0
+                        for _msg in mbox:
+                            message_count += 1
+
+                        if message_count > 0:
+                            results['integrity_check'] = True
+                        else:
+                            results['errors'].append("Archive contains no readable messages")
+                    except Exception as e:
+                        results['errors'].append(f"Integrity check failed: {e}")
             except Exception as e:
                 results['errors'].append(f"Failed to read archive: {e}")
                 return results
@@ -178,19 +192,6 @@ class ArchiveValidator:
                     results['errors'].append(f"Database check failed: {e}")
             else:
                 results['errors'].append("State database not found")
-
-            # 3. Content integrity check
-            try:
-                message_count = 0
-                for msg in mbox:
-                    message_count += 1
-
-                if message_count > 0:
-                    results['integrity_check'] = True
-                else:
-                    results['errors'].append("Archive contains no readable messages")
-            except Exception as e:
-                results['errors'].append(f"Integrity check failed: {e}")
 
             # 4. Spot check sampling
             if expected_message_ids and self.state_db_path.exists():
@@ -249,6 +250,38 @@ class ArchiveValidator:
             if is_temp and mbox_path.exists():
                 mbox_path.unlink()
 
+    def validate_all(self) -> bool:
+        """
+        Quick validation to check if archive is readable and non-empty.
+        
+        Used for simple pre-deletion validation checks.
+        Handles both compressed and uncompressed archives.
+
+        Returns:
+            True if archive is readable and has messages
+        """
+        try:
+            # Get path to mbox file (decompress if necessary)
+            mbox_path, is_temp = self._get_mbox_path()
+            
+            try:
+                mbox = mailbox.mbox(str(mbox_path))
+                try:
+                    count = len(mbox)
+                    if count == 0:
+                        self.errors.append("Archive is empty")
+                        return False
+                    return True
+                finally:
+                    mbox.close()
+            finally:
+                # Clean up temporary file if created
+                if is_temp and mbox_path.exists():
+                    mbox_path.unlink()
+        except Exception as e:
+            self.errors.append(f"Archive validation failed: {e}")
+            return False
+
     def validate_count(self, expected_count: int) -> bool:
         """
         Validate archive message count.
@@ -260,9 +293,9 @@ class ArchiveValidator:
             True if counts match
         """
         try:
-            mbox = mailbox.mbox(str(self.archive_path))
-            actual_count = len(mbox)
-            return actual_count == expected_count
+            with closing(mailbox.mbox(str(self.archive_path))) as mbox:
+                actual_count = len(mbox)
+                return actual_count == expected_count
         except Exception as e:
             self.errors.append(f"Count validation failed: {e}")
             return False
@@ -474,12 +507,12 @@ class ArchiveValidator:
 
         try:
             # Get all Message-IDs from mbox
-            mbox = mailbox.mbox(str(mbox_path))
-            mbox_message_ids = set()
-            for msg in mbox:
-                msg_id = msg.get('Message-ID', '')
-                if msg_id:
-                    mbox_message_ids.add(msg_id)
+            with closing(mailbox.mbox(str(mbox_path))) as mbox:
+                mbox_message_ids = set()
+                for msg in mbox:
+                    msg_id = msg.get('Message-ID', '')
+                    if msg_id:
+                        mbox_message_ids.add(msg_id)
 
             # Get all Message-IDs from database
             conn = sqlite3.connect(str(self.state_db_path))

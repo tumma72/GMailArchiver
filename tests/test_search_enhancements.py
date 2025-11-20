@@ -15,58 +15,19 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def v11_db_with_messages():
-    """Create a temporary v1.1 database with sample messages for search testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / 'test_search_enhancements.db'
-        conn = sqlite3.connect(str(db_path))
+def v11_db_with_messages(v11_db_factory):
+    """Create a temporary v1.1 database with sample messages for search testing.
 
-        # Create v1.1 schema with messages table
-        conn.execute('''
-            CREATE TABLE messages (
-                gmail_id TEXT PRIMARY KEY,
-                rfc_message_id TEXT UNIQUE NOT NULL,
-                thread_id TEXT,
-                subject TEXT,
-                from_addr TEXT,
-                to_addr TEXT,
-                cc_addr TEXT,
-                date TIMESTAMP,
-                archived_timestamp TIMESTAMP,
-                archive_file TEXT NOT NULL,
-                mbox_offset INTEGER NOT NULL,
-                mbox_length INTEGER NOT NULL,
-                body_preview TEXT,
-                checksum TEXT,
-                size_bytes INTEGER,
-                labels TEXT,
-                account_id TEXT DEFAULT 'default'
-            )
-        ''')
+    Uses the shared v1.1 schema from conftest and only inserts the
+    test data required by these search enhancement tests.
+    """
+    db_path = v11_db_factory("test_search_enhancements.db")
+    tmpdir = Path(db_path).parent
+    conn = sqlite3.connect(str(db_path))
 
-        # Create FTS5 virtual table
-        conn.execute('''
-            CREATE VIRTUAL TABLE messages_fts USING fts5(
-                subject,
-                from_addr,
-                to_addr,
-                body_preview,
-                content='messages',
-                content_rowid='rowid',
-                tokenize='porter unicode61 remove_diacritics 1'
-            )
-        ''')
-
-        # Create auto-sync triggers
-        conn.execute('''
-            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
-                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
-            END
-        ''')
-
+    try:
         # Create test archive file
-        archive_file = Path(tmpdir) / 'test_archive.mbox'
+        archive_file = tmpdir / 'test_archive.mbox'
         with open(archive_file, 'w') as f:
             f.write("From test@example.com Mon Jan 01 00:00:00 2024\n")
             f.write("Subject: Test Message\n\n")
@@ -119,18 +80,22 @@ def v11_db_with_messages():
         ]
 
         for msg in sample_messages:
-            conn.execute('''
+            conn.execute(
+                '''
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', msg)
+                ''',
+                msg,
+            )
 
         conn.commit()
+    finally:
         conn.close()
 
-        yield str(db_path)
+    return str(db_path)
 
 
 class TestSearchWithPreview:
@@ -417,10 +382,23 @@ class TestSearchErrorHandling:
 class TestSearchPreviewTruncation:
     """Tests for body preview truncation logic."""
 
-    def test_preview_truncation_exactly_200_chars(self, v11_db_with_messages):
+    @pytest.fixture
+    def writable_conn(self, v11_db_with_messages):
+        """Provide a writable SQLite connection that is always closed.
+
+        Using a generator fixture with try/finally ensures the connection is
+        closed even if a test fails partway through.
+        """
+        conn = sqlite3.connect(v11_db_with_messages)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def test_preview_truncation_exactly_200_chars(self, v11_db_with_messages, writable_conn):
         """Test preview that's exactly 200 chars is not truncated."""
         # Insert message with exactly 200 char preview
-        conn = sqlite3.connect(v11_db_with_messages)
+        conn = writable_conn
         preview_200 = "X" * 200
         conn.execute('''
             INSERT INTO messages
@@ -434,25 +412,31 @@ class TestSearchPreviewTruncation:
               '/tmp/test.mbox', 1000, 200,
               preview_200, 'checksum_200', 200, '["INBOX"]', 'default'))
         conn.commit()
-        conn.close()
 
-        result = runner.invoke(
+        # Test JSON output for precise truncation behavior
+        result_json = runner.invoke(
+            app,
+            ["search", "Exactly 200", "--with-preview", "--json", "--state-db", v11_db_with_messages]
+        )
+        assert result_json.exit_code == 0
+        data = json.loads(result_json.stdout)
+        assert len(data) == 1
+        # Exactly 200 chars should NOT be truncated (no "...")
+        assert data[0]["body_preview"] == "X" * 200
+        assert not data[0]["body_preview"].endswith("...")
+
+        # Test rich output includes preview
+        result_rich = runner.invoke(
             app,
             ["search", "Exactly 200", "--with-preview", "--state-db", v11_db_with_messages]
         )
+        assert result_rich.exit_code == 0
+        assert "Preview:" in result_rich.stdout
+        assert "Subject: Exactly 200 chars" in result_rich.stdout
 
-        assert result.exit_code == 0
-        # Should NOT have "..." for exactly 200 chars
-        preview_line = [line for line in result.stdout.split('\n') if "Preview:" in line][0]
-        # Extract preview text
-        preview_text = preview_line.split("Preview:")[-1].strip()
-        # Should be exactly 200 chars, no truncation
-        assert len(preview_text) == 200
-        assert not preview_text.endswith("...")
-
-    def test_preview_truncation_201_chars(self, v11_db_with_messages):
+    def test_preview_truncation_201_chars(self, v11_db_with_messages, writable_conn):
         """Test preview with 201 chars gets truncated."""
-        conn = sqlite3.connect(v11_db_with_messages)
+        conn = writable_conn
         preview_201 = "X" * 201
         conn.execute('''
             INSERT INTO messages
@@ -466,16 +450,25 @@ class TestSearchPreviewTruncation:
               '/tmp/test.mbox', 1200, 201,
               preview_201, 'checksum_201', 201, '["INBOX"]', 'default'))
         conn.commit()
-        conn.close()
 
-        result = runner.invoke(
+        # Test JSON output for precise truncation behavior
+        result_json = runner.invoke(
+            app,
+            ["search", "Over 200", "--with-preview", "--json", "--state-db", v11_db_with_messages]
+        )
+        assert result_json.exit_code == 0
+        data = json.loads(result_json.stdout)
+        assert len(data) == 1
+        # More than 200 chars should be truncated to 200 + "..."
+        assert data[0]["body_preview"] == "X" * 200 + "..."
+        assert data[0]["body_preview"].endswith("...")
+        assert len(data[0]["body_preview"]) == 203
+
+        # Test rich output includes preview
+        result_rich = runner.invoke(
             app,
             ["search", "Over 200", "--with-preview", "--state-db", v11_db_with_messages]
         )
-
-        assert result.exit_code == 0
-        preview_line = [line for line in result.stdout.split('\n') if "Preview:" in line][0]
-        preview_text = preview_line.split("Preview:")[-1].strip()
-        # Should be truncated to 200 + "..."
-        assert preview_text.endswith("...")
-        assert len(preview_text) == 203  # 200 chars + "..."
+        assert result_rich.exit_code == 0
+        assert "Preview:" in result_rich.stdout
+        assert "Subject: Over 200 chars" in result_rich.stdout

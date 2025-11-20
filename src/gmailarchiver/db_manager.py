@@ -635,37 +635,46 @@ class DBManager:
 
     # ==================== VALIDATION & INTEGRITY ====================
 
-    def verify_database_integrity(self) -> list[str]:
-        """
-        Comprehensive database integrity check.
+    def verify_database_integrity(self, skip_missing_archives: bool = False) -> list[str]:
+        """Comprehensive database integrity check.
+
+        Args:
+            skip_missing_archives: If True, do not report missing archive files as issues.
 
         Returns:
             List of issues found (empty list if all checks pass)
         """
-        issues = []
+        issues: list[str] = []
 
         try:
-            # Check 1: Orphaned FTS records
+            # Detect whether FTS table exists before running FTS-specific checks
             cursor = self.conn.execute(
-                """
-                SELECT COUNT(*) FROM messages_fts
-                WHERE rowid NOT IN (SELECT rowid FROM messages)
-                """
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
             )
-            orphaned_fts = cursor.fetchone()[0]
-            if orphaned_fts > 0:
-                issues.append(f"{orphaned_fts} orphaned FTS records")
+            has_fts = cursor.fetchone() is not None
 
-            # Check 2: Missing FTS records
-            cursor = self.conn.execute(
-                """
-                SELECT COUNT(*) FROM messages
-                WHERE rowid NOT IN (SELECT rowid FROM messages_fts)
-                """
-            )
-            missing_fts = cursor.fetchone()[0]
-            if missing_fts > 0:
-                issues.append(f"{missing_fts} messages missing from FTS index")
+            if has_fts:
+                # Check 1: Orphaned FTS records
+                cursor = self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM messages_fts
+                    WHERE rowid NOT IN (SELECT rowid FROM messages)
+                    """
+                )
+                orphaned_fts = cursor.fetchone()[0]
+                if orphaned_fts > 0:
+                    issues.append(f"{orphaned_fts} orphaned FTS records")
+
+                # Check 2: Missing FTS records
+                cursor = self.conn.execute(
+                    """
+                    SELECT COUNT(*) FROM messages
+                    WHERE rowid NOT IN (SELECT rowid FROM messages_fts)
+                    """
+                )
+                missing_fts = cursor.fetchone()[0]
+                if missing_fts > 0:
+                    issues.append(f"{missing_fts} messages missing from FTS index")
 
             # Check 3: Invalid offsets
             cursor = self.conn.execute(
@@ -692,13 +701,15 @@ class DBManager:
                 issues.append(f"{len(duplicates)} duplicate Message-IDs found")
 
             # Check 5: Missing archive files (only check distinct file paths)
-            cursor = self.conn.execute("SELECT DISTINCT archive_file FROM messages")
-            for row in cursor.fetchall():
-                archive_file = Path(row[0])
-                if not archive_file.exists():
-                    issues.append(f"Missing archive file: {archive_file}")
+            # Only run this check for v1.1-style databases with FTS enabled.
+            if has_fts and not skip_missing_archives:
+                cursor = self.conn.execute("SELECT DISTINCT archive_file FROM messages")
+                for row in cursor.fetchall():
+                    archive_file = Path(row[0])
+                    if not archive_file.exists():
+                        issues.append(f"Missing archive file: {archive_file}")
 
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive guard
             logger.error(f"Error during integrity check: {e}")
             issues.append(f"Integrity check error: {e}")
 
@@ -951,3 +962,11 @@ class DBManager:
                 self.conn.rollback()
         finally:
             self.close()
+
+    def __del__(self) -> None:
+        """Ensure database connection is closed on garbage collection."""
+        try:
+            self.close()
+        except Exception:
+            # Avoid raising during interpreter shutdown
+            pass

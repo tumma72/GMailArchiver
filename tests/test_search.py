@@ -11,79 +11,15 @@ from gmailarchiver.search import SearchEngine
 
 
 @pytest.fixture
-def v11_db():
-    """Create a temporary v1.1 database with sample messages for testing."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / 'test_search.db'
-        conn = sqlite3.connect(str(db_path))
+def v11_db(v11_db_factory) -> str:
+    """Create a v1.1 database with sample messages for search tests.
 
-        # Create v1.1 schema with messages table
-        conn.execute('''
-            CREATE TABLE messages (
-                gmail_id TEXT PRIMARY KEY,
-                rfc_message_id TEXT UNIQUE NOT NULL,
-                thread_id TEXT,
-                subject TEXT,
-                from_addr TEXT,
-                to_addr TEXT,
-                cc_addr TEXT,
-                date TIMESTAMP,
-                archived_timestamp TIMESTAMP,
-                archive_file TEXT NOT NULL,
-                mbox_offset INTEGER NOT NULL,
-                mbox_length INTEGER NOT NULL,
-                body_preview TEXT,
-                checksum TEXT,
-                size_bytes INTEGER,
-                labels TEXT,
-                account_id TEXT DEFAULT 'default'
-            )
-        ''')
-
-        # Create FTS5 virtual table
-        conn.execute('''
-            CREATE VIRTUAL TABLE messages_fts USING fts5(
-                subject,
-                from_addr,
-                to_addr,
-                body_preview,
-                content='messages',
-                content_rowid='rowid',
-                tokenize='porter unicode61 remove_diacritics 1'
-            )
-        ''')
-
-        # Create auto-sync triggers
-        conn.execute('''
-            CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
-                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
-            END
-        ''')
-
-        conn.execute('''
-            CREATE TRIGGER messages_fts_update AFTER UPDATE ON messages BEGIN
-                UPDATE messages_fts
-                SET subject = new.subject,
-                    from_addr = new.from_addr,
-                    to_addr = new.to_addr,
-                    body_preview = new.body_preview
-                WHERE rowid = new.rowid;
-            END
-        ''')
-
-        conn.execute('''
-            CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
-                DELETE FROM messages_fts WHERE rowid = old.rowid;
-            END
-        ''')
-
-        # Create indexes
-        conn.execute('CREATE INDEX idx_rfc_message_id ON messages(rfc_message_id)')
-        conn.execute('CREATE INDEX idx_date ON messages(date)')
-        conn.execute('CREATE INDEX idx_from ON messages(from_addr)')
-        conn.execute('CREATE INDEX idx_subject ON messages(subject)')
-
+    Reuses the shared v1.1 schema from conftest and only populates
+    the sample messages needed by these tests.
+    """
+    db_path = v11_db_factory("test_search.db")
+    conn = sqlite3.connect(db_path)
+    try:
         # Insert sample messages
         sample_messages = [
             # Message 1: Meeting invitation from Alice
@@ -144,18 +80,22 @@ def v11_db():
         ]
 
         for msg in sample_messages:
-            conn.execute('''
+            conn.execute(
+                '''
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', msg)
+                ''',
+                msg,
+            )
 
         conn.commit()
+    finally:
         conn.close()
 
-        yield str(db_path)
+    return db_path
 
 
 class TestSearchEngineInit:

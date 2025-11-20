@@ -317,13 +317,12 @@ class ArchiveState:
         """Close database connection."""
         self.conn.close()
 
-    def __enter__(self) -> ArchiveState:
+    def __enter__(self) -> "ArchiveState":
         """Context manager entry - begins transaction."""
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """
-        Context manager exit - commits on success, rollbacks on exception.
+        """Context manager exit - commits on success, rollbacks on exception.
 
         Args:
             exc_type: Exception type if an exception occurred
@@ -337,3 +336,10 @@ class ArchiveState:
             # Exception occurred - rollback all changes
             self.conn.rollback()
         self.close()
+
+    def __del__(self) -> None:
+        """Ensure database connection is closed on garbage collection."""
+        try:
+            self.close()
+        except Exception:
+            pass

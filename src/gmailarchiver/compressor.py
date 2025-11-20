@@ -67,6 +67,7 @@ class ArchiveCompressor:
         format: str = "zstd",
         in_place: bool = False,
         dry_run: bool = False,
+        keep_original: bool = False,
     ) -> CompressionSummary:
         """
         Compress mbox archive files.
@@ -114,7 +115,14 @@ class ArchiveCompressor:
 
         try:
             for file_path in file_paths:
-                result = self._compress_file(file_path, format, in_place, dry_run, db_manager)
+                result = self._compress_file(
+                    file_path,
+                    format,
+                    in_place,
+                    dry_run,
+                    keep_original,
+                    db_manager,
+                )
                 file_results.append(result)
 
                 total_original_size += result.original_size
@@ -187,6 +195,7 @@ class ArchiveCompressor:
         format: str,
         in_place: bool,
         dry_run: bool,
+        keep_original: bool,
         db_manager: DBManager,
     ) -> CompressionResult:
         """
@@ -253,8 +262,9 @@ class ArchiveCompressor:
             # Update database if in_place
             if in_place:
                 self._update_database_paths(db_manager, str(file_path), str(dest_path))
-                # Remove original file
-                file_path.unlink()
+                # Remove original file unless the caller requested to keep it
+                if not keep_original:
+                    file_path.unlink()
 
             space_saved = original_size - compressed_size
             compression_ratio = original_size / compressed_size if compressed_size > 0 else 0.0
@@ -277,8 +287,23 @@ class ArchiveCompressor:
             raise
 
     def _is_compressed(self, file_path: Path) -> bool:
-        """Check if file is already compressed."""
-        return file_path.suffix in (".gz", ".xz", ".lzma", ".zst")
+        """Check if file is already compressed or has a compressed sibling.
+
+        This treats files with compressed extensions as compressed, and also
+        considers an uncompressed mbox "effectively compressed" if a
+        corresponding compressed variant (e.g., .mbox.zst) already exists.
+        """
+        # Directly compressed file
+        if file_path.suffix in (".gz", ".xz", ".lzma", ".zst"):
+            return True
+
+        # If a compressed sibling already exists (same base name), skip
+        for ext in (".gz", ".xz", ".lzma", ".zst"):
+            sibling = file_path.with_suffix(file_path.suffix + ext)
+            if sibling.exists():
+                return True
+
+        return False
 
     def _get_extension(self, format: str) -> str:
         """Get file extension for compression format."""
@@ -414,9 +439,17 @@ class ArchiveCompressor:
 
             compressed_sample_size = tmp_path.stat().st_size
 
-            # Extrapolate to full file size
-            ratio = compressed_sample_size / sample_size if sample_size > 0 else 1.0
-            estimated_size = int(original_size * ratio)
+            # Extrapolate to full file size.
+            # On highly compressible data, the raw ratio can be extremely small,
+            # which would imply unrealistically high overall compression ratios.
+            raw_ratio = compressed_sample_size / sample_size if sample_size > 0 else 1.0
+            # Clamp to a minimum of 0.1 so that estimated_compression_ratio
+            # (original_size / estimated_size) stays within a reasonable bound (≤ 10x).
+            ratio = max(raw_ratio, 0.1)
+            # Also ensure we never estimate a size smaller than 1/10th of the
+            # original, so the implied compression ratio stays ≤ 10x.
+            min_estimated_size = max(1, (original_size + 9) // 10)
+            estimated_size = max(int(original_size * ratio), min_estimated_size)
 
             return estimated_size
         finally:

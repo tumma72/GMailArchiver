@@ -128,20 +128,41 @@ def populate_db_from_mbox(db_path: Path, mbox_path: Path) -> None:
 
     try:
         for i, msg in enumerate(mbox):
-            gmail_id = f"gmail_{i}"
-            rfc_message_id = msg.get("Message-ID", f"<unknown{i}@example.com>")
+            gmail_id = f"gmail_{mbox_path.stem}_{i}"
+            base_message_id = msg.get("Message-ID")
+            if base_message_id and base_message_id.startswith("<") and base_message_id.endswith(">"):
+                # Make RFC Message-ID unique across different archives by
+                # suffixing the mailbox stem inside the angle brackets.
+                rfc_message_id = f"{base_message_id[:-1]}-{mbox_path.stem}>"
+            else:
+                rfc_message_id = f"<unknown{i}-{mbox_path.stem}@example.com>"
             subject = msg.get("Subject", "")
             from_addr = msg.get("From", "")
             to_addr = msg.get("To", "")
             date_str = msg.get("Date", "")
 
-            # Get mbox offset and length
-            offset = mbox._toc[i]
-            # Calculate length (approximate)
-            if i + 1 < len(mbox):
-                length = mbox._toc[i + 1] - offset
+            # Get mbox offset and length.
+            # Python's mailbox.mbox implementation changed in 3.14 so that
+            # _toc entries may be either integer offsets or (start, stop)
+            # tuples; support both shapes here.
+            toc_entry = mbox._toc[i]
+
+            if isinstance(toc_entry, tuple):
+                # Newer Python: (start, stop) or (start, stop, ...)
+                offset = toc_entry[0]
+                if len(toc_entry) > 1 and toc_entry[1] is not None:
+                    length = toc_entry[1] - toc_entry[0]
+                else:
+                    length = mbox_path.stat().st_size - offset
             else:
-                length = mbox_path.stat().st_size - offset
+                # Older behavior: integer offsets only
+                offset = toc_entry
+                if i + 1 < len(mbox):
+                    next_entry = mbox._toc[i + 1]
+                    next_offset = next_entry[0] if isinstance(next_entry, tuple) else next_entry
+                    length = next_offset - offset
+                else:
+                    length = mbox_path.stat().st_size - offset
 
             db.record_archived_message(
                 gmail_id=gmail_id,
@@ -153,7 +174,7 @@ def populate_db_from_mbox(db_path: Path, mbox_path: Path) -> None:
                 subject=subject,
                 from_addr=from_addr,
                 to_addr=to_addr,
-                message_date=date_str,
+                date=date_str,
                 body_preview=f"Preview {i}",
                 checksum=f"checksum_{i}",
                 size_bytes=length,
@@ -279,7 +300,41 @@ def test_compress_in_place_updates_db(temp_dir, state_db):
         messages = db.get_all_messages_for_archive(str(temp_dir / "test.mbox.zst"))
         assert len(messages) == 10
 
-        # Old path should have no messages
+        # Old path should have no messages and original file should be deleted
+        old_messages = db.get_all_messages_for_archive(str(mbox_path))
+        assert len(old_messages) == 0
+        assert not mbox_path.exists()
+    finally:
+        db.close()
+
+
+def test_compress_in_place_keep_original_preserves_source_file(temp_dir, state_db):
+    """Test in-place compression with keep_original keeps source file on disk."""
+    mbox_path = temp_dir / "test_keep.mbox"
+    create_test_mbox(mbox_path, message_count=5)
+    populate_db_from_mbox(state_db, mbox_path)
+
+    compressor = ArchiveCompressor(str(state_db))
+    compressor.compress(
+        files=[str(mbox_path)],
+        format="zstd",
+        in_place=True,
+        dry_run=False,
+        keep_original=True,
+    )
+
+    compressed_path = temp_dir / "test_keep.mbox.zst"
+
+    # Both original and compressed files should exist
+    assert mbox_path.exists()
+    assert compressed_path.exists()
+
+    # Database should point to the compressed path only
+    db = DBManager(str(state_db), validate_schema=False)
+    try:
+        new_messages = db.get_all_messages_for_archive(str(compressed_path))
+        assert len(new_messages) == 5
+
         old_messages = db.get_all_messages_for_archive(str(mbox_path))
         assert len(old_messages) == 0
     finally:

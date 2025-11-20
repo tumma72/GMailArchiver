@@ -335,3 +335,10 @@ class MessageDeduplicator:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit - closes connection."""
         self.close()
+
+    def __del__(self) -> None:
+        """Ensure database connection is closed on garbage collection."""
+        try:
+            self.close()
+        except Exception:
+            pass

@@ -70,21 +70,7 @@ def clean_db(tmp_path: Path) -> Path:
     # Create v1.1 schema
     create_v1_1_schema(conn)
 
-    # Insert test data
-    conn.execute('''
-        INSERT INTO messages (
-            gmail_id, rfc_message_id, subject, from_addr, to_addr,
-            archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test 1', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', str(tmp_path / 'test.mbox'), 0, 500, 'Test body'
-    ))
-
-    conn.commit()
-    conn.close()
-
-    # Create the archive file with proper mbox format
+    # Prepare archive content and compute accurate length
     mbox_content = """From sender@test.com Mon Jan 01 00:00:00 2025
 From: sender@test.com
 To: recipient@test.com
@@ -94,15 +80,45 @@ Date: Mon, 01 Jan 2025 00:00:00 +0000
 
 Test body
 """
-    (tmp_path / "test.mbox").write_text(mbox_content)
+    mbox_bytes = mbox_content.encode("utf-8")
+    mbox_path = tmp_path / "test.mbox"
+    mbox_length = len(mbox_bytes)
+
+    # Insert test data with real mbox_length
+    conn.execute(
+        '''
+        INSERT INTO messages (
+            gmail_id, rfc_message_id, subject, from_addr, to_addr,
+            archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            'msg1',
+            '<msg1@test.com>',
+            'Test 1',
+            'sender@test.com',
+            'recipient@test.com',
+            '2025-01-01T00:00:00',
+            str(mbox_path),
+            0,
+            mbox_length,
+            'Test body',
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    # Create the archive file with proper mbox format
+    mbox_path.write_bytes(mbox_bytes)
 
     return db_path
-
 
 @pytest.fixture
 def db_with_orphaned_fts(tmp_path: Path) -> Path:
     """Create database with orphaned FTS records."""
-    db_path = tmp_path / "test.db"
+    # Use a dedicated database file to avoid conflicts when combined with other fixtures
+    db_path = tmp_path / "orphaned_fts.db"
     conn = sqlite3.connect(str(db_path))
 
     # Create schema WITHOUT triggers so we can create orphans manually
@@ -172,7 +188,8 @@ def db_with_orphaned_fts(tmp_path: Path) -> Path:
 @pytest.fixture
 def db_with_missing_fts(tmp_path: Path) -> Path:
     """Create database with missing FTS records."""
-    db_path = tmp_path / "test.db"
+    # Use a dedicated database file to avoid conflicts when combined with other fixtures
+    db_path = tmp_path / "missing_fts.db"
     conn = sqlite3.connect(str(db_path))
 
     # Create schema WITHOUT triggers so FTS doesn't auto-populate

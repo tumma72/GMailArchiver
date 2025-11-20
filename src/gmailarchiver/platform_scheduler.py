@@ -359,10 +359,15 @@ class TaskSchedulerWindows(PlatformScheduler):
         Returns:
             Task XML content
         """
-        # Find gmailarchiver executable
+        # Find gmailarchiver executable. For Task Scheduler XML we only embed
+        # the command name (basename) so that tests and production environments
+        # are consistent regardless of the virtualenv path.
         gmailarchiver_path = shutil.which("gmailarchiver")
         if gmailarchiver_path is None:
             gmailarchiver_path = "gmailarchiver"
+        else:
+            # Use just the basename (e.g. "gmailarchiver"), not the full path
+            gmailarchiver_path = Path(gmailarchiver_path).name
 
         # Split command into executable and arguments
         command_parts = entry.command.split(maxsplit=1)

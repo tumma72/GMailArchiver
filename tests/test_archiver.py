@@ -1044,11 +1044,14 @@ class TestV11OffsetTracking:
 
             # Verify message can be extracted from mbox using offset
             mbox = mailbox.mbox(str(mbox_path))
-            assert len(mbox) == 1
-            # Get first message from mbox (use list() since mbox doesn't support direct indexing)
-            messages = list(mbox)
-            extracted_msg = messages[0]
-            assert extracted_msg['Subject'] == 'Test Subject'
+            try:
+                assert len(mbox) == 1
+                # Get first message from mbox (use list() since mbox doesn't support direct indexing)
+                messages = list(mbox)
+                extracted_msg = messages[0]
+                assert extracted_msg['Subject'] == 'Test Subject'
+            finally:
+                mbox.close()
 
 
 class TestExceptionHandling:

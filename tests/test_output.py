@@ -223,6 +223,29 @@ class TestSuccessWarningInfo:
         assert output._json_events[-1]["event"] == "info"
 
 
+class TestShowTable:
+    """Test show_table helper method."""
+
+    def test_show_table_normal_mode(self) -> None:
+        """Table is rendered via Rich in normal mode."""
+        output = OutputManager()
+        headers = ["col1", "col2"]
+        rows = [["a", "b"], ["c", "d"]]
+        with patch.object(output.console, "print") as mock_print:
+            output.show_table("Test Table", headers, rows)
+            mock_print.assert_called_once()
+
+    def test_show_table_json_mode(self) -> None:
+        """Table is recorded as JSON event in JSON mode."""
+        output = OutputManager(json_mode=True)
+        headers = ["col1", "col2"]
+        rows = [["1", "2"], ["3", "4"]]
+        output.show_table("Test Table", headers, rows)
+        assert output._json_events[-1]["event"] == "table"
+        assert output._json_events[-1]["headers"] == headers
+        assert output._json_events[-1]["rows"] == [["1", "2"], ["3", "4"]]
+
+
 class TestEndOperation:
     """Test end_operation method."""
 

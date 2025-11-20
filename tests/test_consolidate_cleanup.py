@@ -138,6 +138,8 @@ def add_messages_to_db(state_db: str, archive_file: str, num_messages: int = 5) 
     conn = sqlite3.connect(state_db)
     timestamp = datetime.now(UTC).isoformat()
 
+    archive_name = Path(archive_file).stem
+
     for i in range(num_messages):
         conn.execute('''
             INSERT INTO messages (
@@ -146,7 +148,7 @@ def add_messages_to_db(state_db: str, archive_file: str, num_messages: int = 5) 
                 mbox_offset, mbox_length, checksum, size_bytes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            f'gmail_{i}',
+            f'{archive_name}_gmail_{i}',
             f'<test{i}@example.com>',
             f'thread_{i}',
             f'Test Message {i}',
