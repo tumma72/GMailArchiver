@@ -7,7 +7,22 @@
 [![Tests](https://github.com/tumma72/GMailArchiver/workflows/Tests/badge.svg)](https://github.com/tumma72/GMailArchiver/actions)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/tumma72/bfb62663af32da529734c79e0e67fa23/raw/coverage-badge.json)](https://github.com/tumma72/GMailArchiver/actions)
 
-**A comprehensive email archival and search solution for Gmail** - Archive, compress, search, and manage your email history with confidence.
+**A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
+
+## 🎉 What's New in v1.2.0 - Ergonomics & Automation
+
+Version 1.2.0 brings **massive UX improvements** and **complete workflow automation**:
+
+- 🎨 **Unified Rich Output** - Beautiful terminal output with progress bars, ETA, and rate tracking
+- 📤 **Message Extraction** - Retrieve messages from search results
+- 🏥 **Health Check Command** - One command to check everything
+- ⏰ **Automated Scheduling** - Set up periodic health checks
+- 🗜️ **Post-hoc Compression** - Compress existing archives anytime
+- 🩺 **Doctor Command** - Comprehensive diagnostics
+- 🔍 **Search Enhancements** - Preview and interactive modes
+- 📊 **JSON Mode** - All commands support `--json` for scripting
+
+[See full changelog](#-version-history)
 
 ## Why Gmail Archiver?
 
@@ -17,82 +32,66 @@ Gmail offers 15GB of free storage shared across Google services, but that space 
 - **Long-term archival**: No built-in way to archive and compress old emails while keeping them searchable
 - **Data portability**: Difficult to export and search emails outside Gmail
 - **Storage optimization**: No automatic compression or deduplication
-- **Search performance**: Gmail search can be slow for large mailboxes
+- **Fast local search**: Gmail search can be slow for large mailboxes
 
 Gmail Archiver solves these problems by providing a **professional-grade archival solution** that:
 
 1. **Archives** old emails to portable mbox files (industry standard format)
 2. **Searches** archived emails with Gmail-style syntax (faster than Gmail itself!)
-3. **Compresses** archives with modern algorithms (zstd, lzma, gzip)
-4. **Validates** archives before deletion with multi-layer verification
-5. **Manages** your email history with deduplication and consolidation
-6. **Protects** your data with atomic transactions and safe deletion workflows
+3. **Extracts** individual messages from compressed archives
+4. **Compresses** archives with modern algorithms (zstd, lzma, gzip)
+5. **Validates** archives before deletion with multi-layer verification
+6. **Manages** your email history with deduplication and consolidation
+7. **Automates** maintenance with scheduled health checks
+8. **Protects** your data with atomic transactions and safe deletion workflows
 
 ### Key Benefits
 
 - **Reclaim Gmail storage**: Archive old emails and safely delete them from Gmail
 - **Keep emails searchable**: Lightning-fast full-text search (0.85ms for 1000 messages)
+- **Extract on demand**: Retrieve individual messages from compressed archives
 - **Maintain data sovereignty**: Your emails, your local storage, your control
+- **Automate maintenance**: Set-and-forget health checks
 - **Future-proof format**: mbox is a 40+ year old standard supported by all email clients
-- **Production-ready**: 619 automated tests, 92% code coverage, strict type safety
+- **Production-ready**: 989 automated tests, 93% code coverage, strict type safety
 
-## 🔔 Upgrading from v1.0.x?
+## ✨ Core Features
 
-See the [Migration Guide](MIGRATION_GUIDE.md) for v1.0 → v1.1 upgrade instructions.
+### 📥 Archiving & Deletion
+- **Smart Archiving**: Archive emails older than a specified threshold (e.g., "3y", "6m", "30d")
+- **Incremental Mode**: Skip already-archived messages for efficient recurring runs
+- **Safe Deletion Workflow**: Archive-only (default) → Trash (reversible) → Permanent (confirmed)
+- **Batch Operations**: Efficient API usage with automatic rate limiting
+- **Progress Tracking**: Real-time progress bars with ETA and processing rate
 
-**TL;DR**: Run `gmailarchiver migrate` on first v1.1 run. Automatic backup included.
+### 🔍 Search & Retrieval
+- **Full-Text Search (FTS5)**: Gmail-style query syntax with BM25 ranking
+- **Lightning Fast**: 0.85ms for 1000 messages (118x faster than target)
+- **Message Extraction**: Extract individual messages by ID or from search results
+- **Interactive Search**: Browse search results with a menu interface
+- **Preview Mode**: See message snippets in search results
+- **JSON Output**: All commands support `--json` for scripting
 
-## ✨ New in v1.1.0
+### 🗜️ Compression & Storage
+- **Modern Compression**: zstd (fastest), lzma (smallest), gzip (compatible)
+- **Post-hoc Compression**: Compress existing archives anytime
+- **Transparent Decompression**: Read compressed archives without extraction
+- **Smart Deduplication**: Remove duplicates across archives (100% precision)
+- **Archive Consolidation**: Merge multiple archives with automatic sorting
 
-### 🔍 Full-Text Search (FTS5)
-Search your archived messages with Gmail-style syntax:
-- **Search by sender**: `from:alice@example.com`
-- **Search by subject**: `subject:meeting`
-- **Search by date range**: `after:2024-01-01 before:2024-12-31`
-- **Full-text search**: `invoice payment`
-- **Performance**: 0.85ms for 1000 messages (118x faster than target)
+### 🛡️ Safety & Validation
+- **Multi-Layer Validation**: Message count, database cross-check, content integrity, spot-checks
+- **Unified Health Check**: One command checks database, archives, auth, performance
+- **Auto-Repair**: Automatic database repair with rollback support
+- **Atomic Operations**: All writes are transactional (succeed or rollback)
+- **Audit Trail**: Complete history of all operations
 
-### 📥 Import Existing Archives
-Import mbox files from other tools or previous archives:
-- Automatic metadata extraction
-- Accurate offset calculation for fast access
-- Support for compressed archives (gzip, lzma, zstd)
-- **Performance**: 10,000+ messages per second
-
-### 🔄 Deduplication
-Remove duplicate messages across archives:
-- 100% precision via RFC Message-ID
-- Multiple strategies (newest, largest, first)
-- Cross-archive detection
-
-### 📦 Archive Consolidation
-Merge multiple archives into one:
-- Chronological sorting
-- Integrated deduplication
-- Automatic offset recalculation
-- **Performance**: 10k messages in 3.57 seconds (16x faster than target)
-
-### ⚡ Performance Improvements
-
-| Component | Target | Achieved | Improvement |
-|-----------|--------|----------|-------------|
-| Search (1000 msgs) | <100ms | 0.85ms | 118x faster |
-| Import (10k msgs) | <60s | <1s | 60x faster |
-| Consolidate (10k msgs) | <60s | 3.57s | 16x faster |
-
-## ✨ Features
-
-- **📅 Smart Archiving**: Archive emails older than a specified threshold (e.g., "3y", "6m", "30d")
-- **♻️ Incremental Mode**: Skip already-archived messages for efficient recurring runs
-- **🗜️ Compression**: Support for gzip, lzma, and zstd (fastest, Python 3.14 native)
-- **✅ Multi-Layer Validation**: Validate archives before deletion with checksums and spot-checks
-- **🛡️ Safe Deletion Workflow**:
-  - Archive-only mode (default, safe)
-  - Trash mode (30-day recovery window)
-  - Permanent deletion (with explicit confirmation)
-- **📊 Progress Tracking**: Real-time progress bars for long operations
-- **💾 State Management**: SQLite database tracks archived messages and run history
-- **⚡ Batch Operations**: Efficient API usage with automatic rate limiting
+### ⚙️ Automation & Maintenance
+- **Scheduled Health Checks**: Platform-native cron/Task Scheduler integration
+- **Automatic Migration**: v1.0 → v1.1 → v1.2 schema upgrades with backup
+- **Comprehensive Diagnostics**: Doctor command analyzes everything
+- **Auto-Verification**: Optional validation after import/consolidate/dedupe
+- **Performance Metrics**: Track search latency, database size, vacuum status
 
 ## 📦 Installation
 
@@ -115,17 +114,6 @@ Or use pipx for isolated installation:
 pipx install gmail-archiver-cli
 ```
 
-### Install from GitHub Release (Alternative)
-
-1. Go to the [Releases page](https://github.com/tumma72/GMailArchiver/releases)
-2. Download the latest `.whl` file
-3. Install with pip:
-
-```bash
-# Replace VERSION with the latest version (e.g., 1.1.3)
-pip install https://github.com/tumma72/GMailArchiver/releases/download/vVERSION/gmail_archiver_cli-VERSION-py3-none-any.whl
-```
-
 ### Verify Installation
 
 ```bash
@@ -133,121 +121,364 @@ gmailarchiver --version
 gmailarchiver --help
 ```
 
-## 🔐 First Run - OAuth2 Authorization
+## 🚀 Quick Start
+
+### First Run - OAuth2 Authorization
 
 On first run, Gmail Archiver will automatically:
 
-1. **Open your browser** to Google's authorization page
-2. **Ask you to sign in** with your Google Account
-3. **Request permission** to access Gmail (read-only for archiving, modify for deletion)
-4. **Save an authorization token** to:
-   - **Linux/macOS**: `~/.config/gmailarchiver/token.json`
-   - **Windows**: `%APPDATA%\gmailarchiver\token.json`
+1. Open your browser to Google's authorization page
+2. Ask you to sign in with your Google Account
+3. Request permission to access Gmail
+4. Save an authorization token to `~/.config/gmailarchiver/token.json`
 
-**Security Note**: The bundled OAuth2 credentials follow Google's security model for "installed applications". The client secret is not confidential for desktop apps - security comes from user consent at authorization time.
-
-### Using Custom OAuth2 Credentials (Optional)
-
-If you prefer to use your own OAuth2 credentials:
-
-1. Create credentials in [Google Cloud Console](https://console.cloud.google.com/)
-2. Enable the Gmail API
-3. Create "Desktop app" OAuth 2.0 credentials
-4. Download the credentials JSON file
-5. Use with `--credentials` flag:
+### Basic Workflow
 
 ```bash
-gmailarchiver archive 3y --credentials /path/to/your/credentials.json
-```
-
-## 🚀 Quick Start
-
-### Basic Usage
-
-```bash
-# Preview what would be archived (dry run)
+# 1. Preview what will be archived (dry run)
 gmailarchiver archive 3y --dry-run
 
-# Archive emails older than 3 years
-gmailarchiver archive 3y
-
-# Archive with zstd compression (recommended - fastest)
+# 2. Archive emails older than 3 years with compression
 gmailarchiver archive 3y --compress zstd
-
-# Archive with custom filename
-gmailarchiver archive 6m --output my_archive.mbox.zst --compress zstd
-```
-
-### Age Formats
-
-| Format | Meaning |
-|--------|---------|
-| `3y` | 3 years |
-| `6m` | 6 months |
-| `2w` | 2 weeks |
-| `30d` | 30 days |
-
-### Complete Workflow (Recommended)
-
-```bash
-# 1. Preview what will be archived
-gmailarchiver archive 3y --dry-run
-
-# 2. Archive without deletion (using zstd compression)
-gmailarchiver archive 3y --compress zstd
-# → Creates: archive_20250113.mbox.zst
+# → Creates: archive_20250123.mbox.zst
 
 # 3. Validate the archive
-gmailarchiver validate archive_20250113.mbox.zst
+gmailarchiver validate archive_20250123.mbox.zst
 
-# 4. Move emails to trash (reversible for 30 days)
-gmailarchiver archive 3y --trash
+# 4. Search your archives
+gmailarchiver search "from:alice@example.com meeting"
 
-# 5. (Optional) Permanent deletion after verification
-#    ⚠️ Only after you've verified the archive!
-gmailarchiver archive 3y --delete
+# 5. Extract a message
+gmailarchiver extract msg_123abc --output message.eml
+
+# 6. Check overall health
+gmailarchiver check
+
+# 7. (Optional) Delete from Gmail after verification
+gmailarchiver archive 3y --trash  # Reversible (30 days)
 ```
 
-## 📝 All Commands
+## 📖 Complete Command Reference
 
-### Archive Command
+### 🗄️ Archive Management
+
+#### Archive Command
+Archive emails older than a specified age.
 
 ```bash
-# Archive with different time periods
-gmailarchiver archive 1y    # 1 year old
-gmailarchiver archive 6m    # 6 months old
-gmailarchiver archive 30d   # 30 days old
+# Basic archiving
+gmailarchiver archive 3y              # Archive emails older than 3 years
+gmailarchiver archive 6m              # Archive emails older than 6 months
+gmailarchiver archive 30d --dry-run   # Preview without archiving
 
-# Archive with compression options
-gmailarchiver archive 3y --compress zstd    # zstd (fastest, recommended)
-gmailarchiver archive 3y --compress gzip    # gzip (more compatible)
+# With compression (recommended)
+gmailarchiver archive 3y --compress zstd    # zstd (fastest, best ratio)
+gmailarchiver archive 3y --compress gzip    # gzip (most compatible)
 gmailarchiver archive 3y --compress lzma    # lzma (smallest size)
 
-# Archive and delete
-gmailarchiver archive 3y --trash            # Move to trash (reversible)
-gmailarchiver archive 3y --delete           # Permanent delete (requires confirmation)
+# With deletion
+gmailarchiver archive 3y --trash      # Move to trash (reversible for 30 days)
+gmailarchiver archive 3y --delete     # Permanent delete (requires confirmation)
 
-# Custom output file
-gmailarchiver archive 6m --output old_emails.mbox.gz --compress gzip
+# Custom output
+gmailarchiver archive 6m --output my_archive.mbox.zst --compress zstd
+
+# JSON output for scripting
+gmailarchiver archive 3y --json
 ```
 
-### Validation Command
+**Age formats**: `3y` (years), `6m` (months), `2w` (weeks), `30d` (days)
+
+#### Import Command
+Import existing mbox archives into the database.
 
 ```bash
-# Validate any archive (auto-detects compression)
-gmailarchiver validate archive_20250113.mbox
-gmailarchiver validate archive_20250113.mbox.gz
-gmailarchiver validate archive_20250113.mbox.zst
+# Import single archive
+gmailarchiver import old_archive.mbox
+
+# Import compressed archives (auto-detected)
+gmailarchiver import archive.mbox.gz
+gmailarchiver import archive.mbox.zst
+
+# Import multiple archives with glob
+gmailarchiver import "archives/*.mbox.gz"
+
+# Import with auto-verification
+gmailarchiver import archive.mbox --auto-verify
+
+# Import with custom account ID
+gmailarchiver import external.mbox --account-id backup_2024
+
+# JSON output
+gmailarchiver import archive.mbox --json
 ```
 
-### Status Command
+**Performance**: 10,000+ messages per second
+
+#### Consolidate Command
+Merge multiple archives into one.
+
+```bash
+# Merge archives
+gmailarchiver consolidate archive1.mbox archive2.mbox -o merged.mbox
+
+# Merge with deduplication and compression
+gmailarchiver consolidate *.mbox -o merged.mbox.zst \
+  --dedupe-strategy newest --compress zstd
+
+# Merge and remove source files after success
+gmailarchiver consolidate src/*.mbox -o merged.mbox --remove-sources
+
+# Merge with auto-verification
+gmailarchiver consolidate *.mbox -o merged.mbox --auto-verify
+
+# No sorting or deduplication
+gmailarchiver consolidate *.mbox -o merged.mbox --no-sort --no-dedupe
+
+# JSON output
+gmailarchiver consolidate *.mbox -o merged.mbox --json
+```
+
+**Features**: Chronological sorting, deduplication, compression, atomic operations
+
+#### Compress Command (v1.2.0+)
+Compress existing archives with automatic database updates.
+
+```bash
+# Compress an archive
+gmailarchiver compress archive.mbox --format zstd
+# → Creates archive.mbox.zst and updates database
+
+# Compress multiple archives
+gmailarchiver compress archives/*.mbox --format zstd
+
+# Keep original files
+gmailarchiver compress archive.mbox --format gzip --keep-original
+
+# Dry run (preview)
+gmailarchiver compress archive.mbox --format zstd --dry-run
+
+# JSON output
+gmailarchiver compress archive.mbox --format zstd --json
+```
+
+**Compression formats**: `zstd` (recommended), `gzip`, `lzma`
+
+### 🔍 Search & Retrieval
+
+#### Search Command
+Search archived messages with Gmail-style syntax.
+
+```bash
+# Basic search
+gmailarchiver search "meeting notes"
+gmailarchiver search "from:alice@example.com"
+gmailarchiver search "subject:invoice after:2024-01-01"
+
+# Search with filters
+gmailarchiver search --from alice@example.com --subject report
+gmailarchiver search --after 2024-01-01 --before 2024-12-31
+
+# Limit results
+gmailarchiver search "payment" --limit 50
+
+# Show body preview (v1.2.0+)
+gmailarchiver search "contract" --with-preview
+
+# Interactive mode (v1.2.0+)
+gmailarchiver search --interactive
+# → Browse results, select messages, extract on demand
+
+# Extract directly from search
+gmailarchiver search "important email" --extract --output messages/
+
+# JSON output
+gmailarchiver search "invoice" --json
+```
+
+**Query syntax**:
+- `from:user@example.com` - Search by sender
+- `to:user@example.com` - Search by recipient
+- `subject:meeting` - Search in subject
+- `after:2024-01-01` - Messages after date
+- `before:2024-12-31` - Messages before date
+- Free text - Full-text search in body
+
+**Performance**: 0.85ms for 1000 messages
+
+#### Extract Command (v1.2.0+)
+Extract individual messages from archives.
+
+```bash
+# Extract by Gmail ID
+gmailarchiver extract msg_123abc
+# → Outputs to stdout
+
+# Extract to file
+gmailarchiver extract msg_123abc --output message.eml
+
+# Extract by RFC Message-ID
+gmailarchiver extract "<abc123@example.com>" --output message.eml
+
+# Extract from specific archive
+gmailarchiver extract msg_123abc --archive archive.mbox.zst
+
+# Batch extract
+gmailarchiver extract msg_001 msg_002 msg_003 --output-dir messages/
+
+# JSON output (includes message metadata)
+gmailarchiver extract msg_123abc --json
+```
+
+**Features**: Works with compressed archives, supports batch operations
+
+### 🏥 Health & Maintenance
+
+#### Check Command (v1.2.0+)
+Unified health check - runs all verification checks.
+
+```bash
+# Run all health checks
+gmailarchiver check
+
+# With auto-repair
+gmailarchiver check --auto-repair
+
+# JSON output
+gmailarchiver check --json
+```
+
+**Checks performed**:
+- ✓ Database integrity (schema, foreign keys, constraints)
+- ✓ Database-mbox consistency (all messages accessible)
+- ✓ Mbox offset accuracy (v1.1+ databases)
+- ✓ FTS synchronization (search index up-to-date)
+
+**Exit codes**: 0 = healthy, 1 = issues found, 2 = repair failed
+
+#### Doctor Command (v1.2.0+)
+Comprehensive diagnostics and health report.
+
+```bash
+# Full diagnostic report
+gmailarchiver doctor
+
+# JSON output
+gmailarchiver doctor --json
+```
+
+**Diagnostics**:
+- 📊 Database health (schema, size, vacuum status)
+- 📦 Archive status (files, compression, accessibility)
+- 🔐 Authentication (token validity, scopes, expiration)
+- ⚡ Performance metrics (search latency)
+- 💾 Disk space monitoring
+- ✅ Actionable recommendations
+
+#### Verification Commands
+
+```bash
+# Verify database integrity
+gmailarchiver verify-integrity
+
+# Verify database-mbox consistency
+gmailarchiver verify-consistency archive.mbox.zst
+
+# Verify mbox offset accuracy (v1.1+ only)
+gmailarchiver verify-offsets archive.mbox.zst
+
+# Validate archive file
+gmailarchiver validate archive.mbox.zst
+
+# All support --json
+gmailarchiver verify-integrity --json
+```
+
+#### Repair Command
+
+```bash
+# Repair database (dry run - preview only)
+gmailarchiver repair
+
+# Actually repair database
+gmailarchiver repair --no-dry-run
+
+# Repair with offset backfilling (for migration issues)
+gmailarchiver repair --backfill --no-dry-run
+
+# JSON output
+gmailarchiver repair --json
+```
+
+### 🔄 Deduplication
+
+```bash
+# Analyze duplicates (report only)
+gmailarchiver dedupe-report
+
+# Remove duplicates with strategy
+gmailarchiver dedupe --strategy newest    # Keep newest copy
+gmailarchiver dedupe --strategy largest   # Keep largest copy
+gmailarchiver dedupe --strategy first     # Keep first found
+
+# With auto-verification (v1.2.0+)
+gmailarchiver dedupe --auto-verify --no-dry-run
+
+# Dry run (preview)
+gmailarchiver dedupe --dry-run
+
+# JSON output
+gmailarchiver dedupe-report --json
+```
+
+**Deduplication**: 100% precision via RFC Message-ID matching
+
+### ⏰ Automation (v1.2.0+)
+
+#### Schedule Command
+Set up automated maintenance with platform-native scheduling.
+
+```bash
+# Schedule nightly health checks (2 AM daily)
+gmailarchiver schedule check --cron "0 2 * * *"
+
+# Schedule weekly checks (Sunday 3 AM)
+gmailarchiver schedule check --cron "0 3 * * 0"
+
+# List scheduled jobs
+gmailarchiver schedule list
+
+# View logs
+gmailarchiver schedule logs
+gmailarchiver schedule logs --tail 50
+
+# Disable scheduling
+gmailarchiver schedule disable check
+
+# JSON output
+gmailarchiver schedule list --json
+```
+
+**Platform support**:
+- **Linux/macOS**: Uses cron
+- **Windows**: Uses Task Scheduler
+- Logs to: `~/.gmailarchiver/logs/check-YYYY-MM-DD.log`
+
+### 📊 Status & Information
 
 ```bash
 # Show archiving statistics
 gmailarchiver status
+
+# Show database schema and stats
+gmailarchiver db-info
+
+# Both support --json
+gmailarchiver status --json
+gmailarchiver db-info --json
 ```
 
-### Authentication Commands
+### 🔐 Authentication
 
 ```bash
 # Reset authentication (revoke and delete token)
@@ -257,223 +488,185 @@ gmailarchiver auth-reset
 gmailarchiver archive 3y --credentials my_credentials.json
 ```
 
-### Migration Commands (v1.1+)
+### 📈 Migration
 
 ```bash
-# Migrate v1.0 database to v1.1 (automatic on first run)
+# Migrate v1.0 → v1.1 (automatic on first v1.1+ run)
 gmailarchiver migrate
 
-# Show database schema version and statistics
-gmailarchiver db-info
-
 # Rollback to backup (if migration fails)
-gmailarchiver rollback --backup-file archive_state.db.backup.20250114_120000
+gmailarchiver rollback --backup-file archive_state.db.backup.YYYYMMDD_HHMMSS
 ```
 
-### Search Commands (v1.1+)
+## 🎨 JSON Mode for Scripting
+
+All commands support `--json` flag for machine-readable output:
 
 ```bash
-# Search with Gmail-style syntax
-gmailarchiver search "from:alice meeting"
-gmailarchiver search "subject:invoice after:2024-01-01"
-gmailarchiver search "payment" --limit 50
+# Get status as JSON
+gmailarchiver status --json
 
-# Search with filters
-gmailarchiver search --from alice@example.com --subject report
-gmailarchiver search --after 2024-01-01 --before 2024-12-31
+# Search and process results
+gmailarchiver search "invoice" --json | jq '.results[] | .subject'
 
-# JSON output for scripting
-gmailarchiver search "invoice" --json
+# Check health and parse results
+gmailarchiver check --json | jq '.checks[] | select(.status == "failed")'
+
+# Extract and parse message metadata
+gmailarchiver extract msg_123 --json | jq '.headers'
 ```
 
-### Import Commands (v1.1+)
+## 🎯 Common Workflows
+
+### Complete Archival Workflow
 
 ```bash
-# Import existing mbox archive
-gmailarchiver import old_archive.mbox
+# 1. Preview
+gmailarchiver archive 3y --dry-run
 
-# Import multiple archives with glob pattern
-gmailarchiver import "archive_*.mbox.gz"
+# 2. Archive with compression
+gmailarchiver archive 3y --compress zstd
 
-# Import with custom account ID
-gmailarchiver import external.mbox --account-id backup_2024
+# 3. Verify health
+gmailarchiver check
+
+# 4. Search to verify
+gmailarchiver search "after:2024-01-01"
+
+# 5. Delete from Gmail (after verification)
+gmailarchiver archive 3y --trash
 ```
 
-### Deduplication Commands (v1.1+)
+### Import and Consolidate
 
 ```bash
-# Analyze duplicates (preview only)
+# 1. Import multiple archives
+gmailarchiver import "old_archives/*.mbox.gz" --auto-verify
+
+# 2. Check for duplicates
 gmailarchiver dedupe-report
 
-# Remove duplicates (with confirmation)
-gmailarchiver dedupe --strategy newest
+# 3. Consolidate with deduplication
+gmailarchiver consolidate *.mbox -o master.mbox.zst \
+  --dedupe-strategy newest --remove-sources
 
-# Dry run
-gmailarchiver dedupe --dry-run
+# 4. Verify final archive
+gmailarchiver check
 ```
 
-### Consolidation Commands (v1.1+)
+### Search and Extract
 
 ```bash
-# Merge multiple archives
-gmailarchiver consolidate archive_*.mbox -o merged.mbox
+# 1. Search with preview
+gmailarchiver search "contract" --with-preview
 
-# Merge with options
-gmailarchiver consolidate old1.mbox old2.mbox -o consolidated.mbox.gz
-gmailarchiver consolidate "archives/*.mbox" --no-sort --no-dedupe -o unsorted.mbox
-gmailarchiver consolidate archive*.mbox -o merged.mbox.zst --dedupe-strategy newest
+# 2. Extract specific message
+gmailarchiver extract msg_123abc --output contract.eml
+
+# 3. Or use interactive mode
+gmailarchiver search --interactive
 ```
 
-### Enhanced Validation Commands (v1.1+)
+### Automated Maintenance
 
 ```bash
-# Verify mbox offset accuracy (v1.1 databases only)
-gmailarchiver verify-offsets archive_20250114.mbox.gz
+# 1. Set up nightly health checks
+gmailarchiver schedule check --cron "0 2 * * *"
 
-# Deep database consistency check
-gmailarchiver verify-consistency archive_20250114.mbox.gz
+# 2. View scheduled jobs
+gmailarchiver schedule list
+
+# 3. Check logs
+gmailarchiver schedule logs --tail 50
+
+# 4. Run manual diagnostics
+gmailarchiver doctor
 ```
 
-### Database Maintenance Commands (v1.1+)
+## 📊 Performance
 
-```bash
-# Verify database integrity (comprehensive checks)
-gmailarchiver verify-integrity
+| Operation | Dataset | Time | Rate |
+|-----------|---------|------|------|
+| Search (metadata) | 1,000 messages | 0.85ms | 1.2M msg/s |
+| Search (full-text) | 1,000 messages | 45ms | 22K msg/s |
+| Import | 10,000 messages | <1s | 10K+ msg/s |
+| Consolidate | 10,000 messages | 3.57s | 2.8K msg/s |
+| Extract | Single message | <10ms | N/A |
 
-# Fix database issues (dry run - preview only)
-gmailarchiver repair
+## 🔒 Security & Privacy
 
-# Fix database issues (actually repair)
-gmailarchiver repair --no-dry-run
+- **OAuth2 Flow**: Industry-standard authentication
+- **Scopes**: Minimum required permissions (gmail.modify for deletion)
+- **Token Storage**: XDG-compliant paths (`~/.config/gmailarchiver/`)
+- **Local Storage**: All data stored locally, no cloud dependencies
+- **Audit Trail**: Complete operation history in database
+- **Safe Deletion**: Trash-first workflow with 30-day recovery window
 
-# Repair with offset backfilling (for v1.1.0-beta.1 users)
-gmailarchiver repair --backfill --no-dry-run
-```
+## 📚 Additional Documentation
 
-### Retry Failed Operations (v1.1+)
+- [Architecture Documentation](docs/ARCHITECTURE.md) - System design and technical details
+- [Migration Guide](MIGRATION_GUIDE.md) - Upgrading from v1.0.x
+- [Contributing Guide](CONTRIBUTING.md) - Development setup and guidelines
+- [Changelog](CHANGELOG.md) - Version history and release notes
 
-```bash
-# Retry deletion after OAuth scope fix
-gmailarchiver retry-delete archive_20250114.mbox --permanent
+## 📜 Version History
 
-# Preview what will be retried (dry run)
-gmailarchiver retry-delete archive_20250114.mbox --dry-run
-```
+### v1.2.0 (2025-11-23) - Ergonomics & Automation
 
-## 🔄 Incremental Archiving
+**Major Features**:
+- Unified OutputManager with Rich output and JSON mode
+- 5 new commands: extract, check, schedule, compress, doctor
+- Progress bars with ETA and rate tracking
+- Search enhancements (--with-preview, --interactive)
+- Auto-verification flags (--auto-verify)
+- Cleanup options (--remove-sources)
 
-Gmail Archiver automatically tracks archived messages, so you can run it repeatedly without re-archiving the same emails:
+**Test Coverage**: 989 tests, 93% coverage
 
-```bash
-# First run - archives all emails older than 3 years
-gmailarchiver archive 3y --compress zstd
+### v1.1.0 (2025-11-15) - Search & Management
 
-# Future runs - only archives NEW emails older than 3 years
-gmailarchiver archive 3y --compress zstd
-```
+**Major Features**:
+- FTS5 full-text search with Gmail-style syntax
+- Import existing archives (10K+ msg/s)
+- Deduplication (100% precision)
+- Archive consolidation
+- Enhanced database schema (v1.1)
 
-The tool maintains a SQLite database (`archive_state.db`) that tracks which messages have been archived.
+**Test Coverage**: 650 tests, 96% coverage
 
-## 🛡️ Safety Features
+### v1.0.x - Initial Releases
 
-1. **Dry-run mode**: Preview operations without making changes (`--dry-run`)
-2. **Multi-layer validation**: Before deletion, validate:
-   - Message count matches
-   - Database cross-check
-   - Content integrity (checksums)
-   - Spot-check sampling
-3. **Trash-first workflow**: Move to trash (reversible for 30 days) before permanent deletion
-4. **Explicit confirmation**: Must type exact phrase to confirm permanent deletion
-5. **Incremental mode**: Prevents duplicate archiving of messages
-6. **Automatic rate limiting**: Handles Gmail API limits with exponential backoff
-7. **Atomic operations**: Database transactions with auto-rollback on errors
-
-## ⚡ Performance
-
-Typical performance with Gmail API rate limits:
-
-| Emails | Time |
-|--------|------|
-| 10,000 | ~25-30 minutes |
-| 50,000 | ~2-2.5 hours |
-| 100,000 | ~4-5 hours |
-
-**Tips for large mailboxes**:
-- Use `--compress zstd` for fastest compression
-- Consider splitting into smaller date ranges
-- Run during off-hours to avoid interruptions
-
-## 🔧 Troubleshooting
-
-### Authentication Issues
-
-**Problem**: "Credentials file not found" or authentication fails
-
-**Solution**:
-```bash
-# Reset authentication
-gmailarchiver auth-reset
-
-# Then run any command to re-authenticate
-gmailarchiver archive 3y --dry-run
-```
-
-### Rate Limit Errors
-
-**Problem**: "Rate limit exceeded" errors
-
-**Solution**: The tool automatically retries with exponential backoff. For very large mailboxes, consider:
-- Running during off-peak hours
-- Splitting into smaller date ranges (e.g., `1y` instead of `5y`)
-
-### Validation Failures
-
-**Problem**: Archive validation fails
-
-**Solution**: DO NOT delete until validation passes. Check:
-1. Archive file exists and is readable
-2. Sufficient disk space available
-3. State database not corrupted
-4. All messages were successfully archived
-
-If validation continues to fail, keep the archive and do not delete from Gmail.
-
-### Disk Space
-
-**Problem**: Running out of disk space
-
-**Solution**:
-- Use compression: `--compress zstd` (typically 50-70% space savings)
-- Archive smaller time ranges
-- Check available space before archiving: `df -h` (Linux/macOS) or `dir` (Windows)
+- Core archiving functionality
+- Multi-layer validation
+- Safe deletion workflows
+- Compression support (gzip, lzma, zstd)
 
 ## 🤝 Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development setup
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development environment setup
 - Testing guidelines
 - Code quality standards
 - Pull request process
 
 ## 📄 License
 
-Apache-2.0 License. See [LICENSE](LICENSE) for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## ⚠️ Disclaimer
+## 🙏 Acknowledgments
 
-This tool **permanently deletes emails** when using `--delete`. Always:
+- Built with Python 3.14 and modern type checking
+- Uses Gmail API for email access
+- Rich library for beautiful terminal output
+- SQLite FTS5 for full-text search
+- Python mbox for email archive handling
 
-- ✅ Test with `--dry-run` first
-- ✅ Validate archives before deletion
-- ✅ Use `--trash` for reversible deletion
-- ✅ Keep backups of important emails
+## 📧 Support
 
-**The authors are not responsible for data loss. Use at your own risk.**
+- **Issues**: [GitHub Issues](https://github.com/tumma72/GMailArchiver/issues)
+- **Documentation**: [docs/](docs/)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
 
-## 🔗 Links
+---
 
-- [GitHub Repository](https://github.com/tumma72/GMailArchiver)
-- [Issue Tracker](https://github.com/tumma72/GMailArchiver/issues)
-- [Changelog](CHANGELOG.md)
-- [Contributing Guide](CONTRIBUTING.md)
-- [Developer Documentation](CLAUDE.md)
+**Made with ❤️ for email power users who value privacy, control, and local data ownership.**
