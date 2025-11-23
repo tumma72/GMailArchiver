@@ -1046,7 +1046,8 @@ class TestV11OffsetTracking:
             mbox = mailbox.mbox(str(mbox_path))
             try:
                 assert len(mbox) == 1
-                # Get first message from mbox (use list() since mbox doesn't support direct indexing)
+                # Get first message from mbox (use list() since mbox
+                # doesn't support direct indexing)
                 messages = list(mbox)
                 extracted_msg = messages[0]
                 assert extracted_msg['Subject'] == 'Test Subject'

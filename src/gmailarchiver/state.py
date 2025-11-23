@@ -317,7 +317,7 @@ class ArchiveState:
         """Close database connection."""
         self.conn.close()
 
-    def __enter__(self) -> "ArchiveState":
+    def __enter__(self) -> ArchiveState:
         """Context manager entry - begins transaction."""
         return self
 

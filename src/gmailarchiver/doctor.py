@@ -456,7 +456,7 @@ class Doctor:
             micro = getattr(version_info, "micro")
         else:
             # Support tests that patch version_info with a simple tuple
-            major, minor, *rest = version_info  # type: ignore[misc]
+            major, minor, *rest = version_info
             micro = rest[0] if rest else 0
 
         version_tuple = (int(major), int(minor), int(micro))

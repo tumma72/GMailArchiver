@@ -309,7 +309,9 @@ class TestImportCommand:
         assert 'test1.mbox' in result.stdout
         assert 'test2.mbox' in result.stdout
 
-    def test_import_with_auto_verify_clean(self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch):
+    def test_import_with_auto_verify_clean(
+        self, runner, v1_1_database, sample_mbox, tmp_path, monkeypatch
+    ):
         """Test import with --auto-verify on clean database."""
         monkeypatch.chdir(tmp_path)
 

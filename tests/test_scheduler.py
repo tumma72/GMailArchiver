@@ -10,13 +10,12 @@ Following TDD: These tests are written FIRST, before implementation.
 """
 
 import sqlite3
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from gmailarchiver.scheduler import Scheduler, ScheduleEntry, ScheduleValidationError
+from gmailarchiver.scheduler import ScheduleEntry, Scheduler, ScheduleValidationError
 
 
 class TestSchedulerDatabase:

@@ -285,7 +285,7 @@ class ArchiveImporter:
         try:
             # Open mbox file
             mbox = mailbox.mbox(str(mbox_path))
-            
+
             try:
                 # DBManager will auto-create database with complete v1.1 schema if it doesn't exist
                 # We use validate_schema=False to allow working with databases in various states
@@ -349,7 +349,8 @@ class ArchiveImporter:
                                 account_id
                             )
 
-                            # Insert into database using DBManager or direct SQL (for INSERT OR REPLACE)
+                            # Insert into database using DBManager or direct
+                            # SQL (for INSERT OR REPLACE)
                             try:
                                 if skip_duplicates:
                                     # Use DBManager's INSERT (will fail on duplicates, caught above)
@@ -367,11 +368,14 @@ class ArchiveImporter:
                                     db.conn.execute(
                                         """
                                         INSERT OR REPLACE INTO messages (
-                                            gmail_id, rfc_message_id, thread_id, subject, from_addr,
-                                            to_addr, cc_addr, date, archived_timestamp, archive_file,
-                                            mbox_offset, mbox_length, body_preview, checksum,
-                                            size_bytes, labels, account_id
-                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            gmail_id, rfc_message_id, thread_id,
+                                            subject, from_addr, to_addr, cc_addr,
+                                            date, archived_timestamp, archive_file,
+                                            mbox_offset, mbox_length,
+                                            body_preview, checksum, size_bytes,
+                                            labels, account_id
+                                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                                  ?, ?, ?, ?, ?, ?, ?)
                                         """,
                                         (
                                             metadata['gmail_id'],

@@ -14,9 +14,9 @@ import gzip
 import lzma
 import sqlite3
 import tempfile
+from collections.abc import Generator
 from pathlib import Path
-from typing import Any, Generator
-
+from typing import Any
 
 # =============================================================================
 # Test-only SQLite connection wrapper
@@ -74,10 +74,9 @@ def _managed_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
 # therefore be cleanly closed on garbage collection.
 sqlite3.connect = _managed_connect  # type: ignore[assignment]
 
-import pytest
+import pytest  # noqa: E402
 
-from gmailarchiver.db_manager import DBManager
-
+from gmailarchiver.db_manager import DBManager  # noqa: E402
 
 # ============================================================================
 # Base Fixtures: Temporary Resources
@@ -85,9 +84,9 @@ from gmailarchiver.db_manager import DBManager
 
 
 @pytest.fixture
-def temp_dir() -> Generator[Path, None, None]:
+def temp_dir() -> Generator[Path]:
     """Create and cleanup temporary directory for testing.
-    
+
     Yields:
         Path to a temporary directory that is automatically cleaned up.
     """
@@ -112,7 +111,7 @@ def temp_db_path(temp_dir: Path) -> str:
 
 
 @pytest.fixture
-def v11_db(temp_db_path: str) -> Generator[str, None, None]:
+def v11_db(temp_db_path: str) -> Generator[str]:
     """Create a minimal v1.1-style database used by multiple test modules.
 
     The schema matches the v1.1 expectations (messages + FTS +
@@ -357,46 +356,46 @@ def v11_db_factory(temp_dir: Path):
 
 
 @pytest.fixture
-def temp_db(temp_dir: Path) -> Generator[Path, None, None]:
+def temp_db(temp_dir: Path) -> Generator[Path]:
     """Create temporary v1.1 database with automatic cleanup.
-    
+
     Ensures DBManager connections are properly closed to avoid ResourceWarnings.
-    
+
     Args:
         temp_dir: Temporary directory fixture
-        
+
     Yields:
         Path to created database file
     """
     db_path = temp_dir / "test.db"
-    
+
     # Create database and immediately close to ensure proper initialization
     db = DBManager(str(db_path))
     db.close()
-    
+
     yield db_path
-    
+
     # Cleanup: ensure no dangling connections
     # The database file will be deleted with temp_dir
 
 
 @pytest.fixture
-def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path, None, None]:
+def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
     """Create temporary v1.1 database with test messages and archive files.
-    
+
     This fixture populates the database with test messages and creates the
     corresponding archive files (both compressed and uncompressed) that the
     database records reference. All connections are properly closed.
-    
+
     Args:
         temp_dir: Temporary directory fixture
         sample_message: Sample email message bytes
-        
+
     Yields:
         Path to populated database file
     """
     db_path = temp_dir / "test.db"
-    
+
     # Create archive files first
     # Uncompressed mbox with msg001 and msg002
     mbox_path = temp_dir / 'archive.mbox'
@@ -408,11 +407,11 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path, None,
     ).replace(
         b'bob@example.com', b'alice@example.com'
     )
-    
+
     with open(mbox_path, 'wb') as f:
         f.write(msg1)
         f.write(msg2)
-    
+
     # Gzip compressed mbox with msg003
     gzip_path = temp_dir / 'archive.mbox.gz'
     msg3 = sample_message.replace(
@@ -422,10 +421,10 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path, None,
     ).replace(
         b'bob@example.com', b'alice@example.com'
     )
-    
+
     with gzip.open(gzip_path, 'wb') as f:
         f.write(msg3)
-    
+
     # Create database with v1.1 schema and insert records within a
     # context manager so changes are committed on success.
     with DBManager(str(db_path)) as db:
@@ -477,7 +476,7 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path, None,
             )
 
     yield db_path
-    
+
     # Cleanup: ensure no dangling connections
     # The database file and archive files will be deleted with temp_dir
 
@@ -490,7 +489,7 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path, None,
 @pytest.fixture
 def sample_message() -> bytes:
     """Sample email message for testing.
-    
+
     Returns:
         Raw email message bytes in mbox format
     """
@@ -508,16 +507,16 @@ This is a test message body.
 @pytest.fixture
 def uncompressed_mbox(temp_dir: Path, sample_message: bytes) -> Path:
     """Create uncompressed mbox archive file.
-    
+
     Args:
         temp_dir: Temporary directory fixture
         sample_message: Sample email message bytes
-        
+
     Returns:
         Path to created mbox file
     """
     mbox_path = temp_dir / 'archive.mbox'
-    
+
     # Write sample messages
     msg1 = sample_message
     msg2 = sample_message.replace(
@@ -525,61 +524,61 @@ def uncompressed_mbox(temp_dir: Path, sample_message: bytes) -> Path:
     ).replace(
         b'Test Message', b'Test Message 2'
     )
-    
+
     with open(mbox_path, 'wb') as f:
         f.write(msg1)
         f.write(msg2)
-    
+
     return mbox_path
 
 
 @pytest.fixture
 def compressed_mbox_gzip(temp_dir: Path, sample_message: bytes) -> Path:
     """Create gzip-compressed mbox archive file.
-    
+
     Args:
         temp_dir: Temporary directory fixture
         sample_message: Sample email message bytes
-        
+
     Returns:
         Path to created gzip mbox file
     """
     mbox_path = temp_dir / 'archive.mbox.gz'
-    
+
     msg1 = sample_message.replace(
         b'test001', b'test003'
     ).replace(
         b'alice', b'charlie'
     )
-    
+
     with gzip.open(mbox_path, 'wb') as f:
         f.write(msg1)
-    
+
     return mbox_path
 
 
 @pytest.fixture
 def compressed_mbox_lzma(temp_dir: Path, sample_message: bytes) -> Path:
     """Create lzma-compressed mbox archive file.
-    
+
     Args:
         temp_dir: Temporary directory fixture
         sample_message: Sample email message bytes
-        
+
     Returns:
         Path to created lzma mbox file
     """
     mbox_path = temp_dir / 'archive.mbox.xz'
-    
+
     msg1 = sample_message.replace(
         b'test001', b'test004'
     ).replace(
         b'alice', b'dave'
     )
-    
+
     with lzma.open(mbox_path, 'wb') as f:
         f.write(msg1)
-    
+
     return mbox_path
 
 
@@ -589,15 +588,15 @@ def compressed_mbox_lzma(temp_dir: Path, sample_message: bytes) -> Path:
 
 
 @pytest.fixture
-def db_connection(populated_db: Path) -> Generator[DBManager, None, None]:
+def db_connection(populated_db: Path) -> Generator[DBManager]:
     """Create managed database connection with automatic cleanup.
-    
+
     This fixture provides a DBManager instance that is properly closed
     at the end of the test to avoid ResourceWarnings.
-    
+
     Args:
         populated_db: Populated database fixture
-        
+
     Yields:
         DBManager instance connected to the test database
     """
@@ -610,14 +609,14 @@ def db_connection(populated_db: Path) -> Generator[DBManager, None, None]:
 
 
 @pytest.fixture
-def raw_db_connection(temp_db: Path) -> Generator[sqlite3.Connection, None, None]:
+def raw_db_connection(temp_db: Path) -> Generator[sqlite3.Connection]:
     """Create managed raw SQLite connection with automatic cleanup.
-    
+
     For tests that need direct SQLite access rather than DBManager.
-    
+
     Args:
         temp_db: Temporary database fixture
-        
+
     Yields:
         sqlite3.Connection instance
     """
@@ -637,10 +636,10 @@ def raw_db_connection(temp_db: Path) -> Generator[sqlite3.Connection, None, None
 @pytest.fixture
 def mock_db_path(temp_dir: Path) -> Path:
     """Provide a path for a mock database that will be cleaned up.
-    
+
     Args:
         temp_dir: Temporary directory fixture
-        
+
     Returns:
         Path to a database file (not created, just the path)
     """

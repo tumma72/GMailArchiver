@@ -11,10 +11,9 @@ the platform_scheduler module.
 """
 
 import sqlite3
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
+from typing import Any
 
 
 class ScheduleValidationError(Exception):
@@ -42,14 +41,14 @@ class ScheduleEntry:
     id: int
     command: str
     frequency: str
-    day_of_week: Optional[int]
-    day_of_month: Optional[int]
+    day_of_week: int | None
+    day_of_month: int | None
     time: str
     enabled: bool
     created_at: str
-    last_run: Optional[str]
+    last_run: str | None
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Convert ScheduleEntry to dictionary."""
         return asdict(self)
 
@@ -112,8 +111,8 @@ class Scheduler:
         command: str,
         frequency: str,
         time: str,
-        day_of_week: Optional[int] = None,
-        day_of_month: Optional[int] = None,
+        day_of_week: int | None = None,
+        day_of_month: int | None = None,
     ) -> int:
         """Add a new schedule.
 
@@ -145,15 +144,17 @@ class Scheduler:
         )
         self.conn.commit()
 
-        return cursor.lastrowid
+        schedule_id = cursor.lastrowid
+        assert schedule_id is not None, "Failed to get lastrowid from database"
+        return schedule_id
 
     def _validate_schedule(
         self,
         command: str,
         frequency: str,
         time: str,
-        day_of_week: Optional[int],
-        day_of_month: Optional[int],
+        day_of_week: int | None,
+        day_of_month: int | None,
     ) -> None:
         """Validate schedule parameters.
 
@@ -277,7 +278,7 @@ class Scheduler:
 
         return schedules
 
-    def get_schedule(self, schedule_id: int) -> Optional[ScheduleEntry]:
+    def get_schedule(self, schedule_id: int) -> ScheduleEntry | None:
         """Get a specific schedule by ID.
 
         Args:
@@ -380,11 +381,16 @@ class Scheduler:
         if self.conn:
             self.conn.close()
 
-    def __enter__(self) -> "Scheduler":
+    def __enter__(self) -> Scheduler:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
         """Context manager exit."""
         self.close()
 

@@ -130,7 +130,11 @@ def populate_db_from_mbox(db_path: Path, mbox_path: Path) -> None:
         for i, msg in enumerate(mbox):
             gmail_id = f"gmail_{mbox_path.stem}_{i}"
             base_message_id = msg.get("Message-ID")
-            if base_message_id and base_message_id.startswith("<") and base_message_id.endswith(">"):
+            if (
+                base_message_id
+                and base_message_id.startswith("<")
+                and base_message_id.endswith(">")
+            ):
                 # Make RFC Message-ID unique across different archives by
                 # suffixing the mailbox stem inside the angle brackets.
                 rfc_message_id = f"{base_message_id[:-1]}-{mbox_path.stem}>"
@@ -735,3 +739,32 @@ def test_compress_preserves_message_count(temp_dir, state_db):
         assert len(messages) == message_count
     finally:
         db.close()
+
+
+def test_compressor_cleanup_on_verification_failure(temp_dir, state_db):
+    """Test that failed verification cleans up corrupt compressed file (line 260).
+
+    Critical path: When _verify_compressed_file returns False, the compressed file
+    must be deleted to prevent keeping corrupt archives.
+    """
+    from unittest.mock import patch
+
+    # Create test mbox
+    mbox_path = temp_dir / "test.mbox"
+    create_test_mbox(mbox_path, message_count=5)
+    populate_db_from_mbox(state_db, mbox_path)
+
+    compressor = ArchiveCompressor(str(state_db))
+
+    # Mock verification to fail
+    with patch.object(compressor, '_verify_compressed_file', return_value=False):
+        dest_path = temp_dir / "test.mbox.zst"
+
+        # Compression should raise ValueError due to verification failure
+        with pytest.raises(ValueError, match="Verification failed"):
+            compressor.compress(
+                files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
+            )
+
+        # Critical assertion: corrupt file must NOT exist (was cleaned up)
+        assert not dest_path.exists(), "Corrupt compressed file should have been deleted"

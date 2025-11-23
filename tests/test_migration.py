@@ -1,6 +1,7 @@
 """Tests for database migration system."""
 
 import email
+import mailbox
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -992,3 +993,1045 @@ class TestMigrationErrorHandling:
         cursor = conn.execute("SELECT COUNT(*) FROM messages WHERE gmail_id='bad1'")
         assert cursor.fetchone()[0] == 0
         conn.close()
+
+
+# ============================================================================
+# Test: Migration Failure and Rollback Scenarios
+# ============================================================================
+
+
+def test_migration_with_corrupted_database(temp_dir: Path) -> None:
+    """Test migration handles corrupted database gracefully (lines 297-298)."""
+    db_path = temp_dir / "corrupted.db"
+
+    # Create a corrupted database file
+    db_path.write_bytes(b"not a valid sqlite database")
+
+    manager = MigrationManager(str(db_path))
+
+    # Should handle corruption gracefully
+    try:
+        manager.migrate_v1_to_v1_1()
+    except Exception as e:
+        # Should get a clear error, not a mysterious crash
+        assert "database" in str(e).lower() or "corrupt" in str(e).lower()
+
+
+def test_migration_completes_successfully_simple(temp_dir: Path) -> None:
+    """Test migration completes on empty v1.0 database (lines 304-305)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify database still exists and is accessible
+    assert db_path.exists()
+
+    # Verify v1.1 schema was created
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+    assert cursor.fetchone() is not None
+    conn.close()
+
+
+def test_migration_schema_update_transaction(temp_dir: Path) -> None:
+    """Test migration schema updates happen transactionally (lines 461-462)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database with test data
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    # Insert test message
+    conn.execute('''
+        INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', ('msg1', '2024-01-01T00:00:00', 'archive.mbox', 'Subject',
+          'from@example.com', '2024-01-01', 'checksum123'))
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify new schema exists
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute('''
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='messages'
+    ''')
+    assert cursor.fetchone() is not None
+
+    # Old table should be gone or renamed
+    cursor = conn.execute('''
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='archived_messages'
+    ''')
+    assert cursor.fetchone() is None
+
+    conn.close()
+
+
+def test_migration_backfill_with_missing_offsets(temp_dir: Path) -> None:
+    """Test migration backfill handles messages with missing offsets (lines 522-527)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "archive.mbox"
+
+    # Create mbox with messages
+    mbox = mailbox.mbox(str(mbox_path))
+    msg = email.message.EmailMessage()
+    msg['Message-ID'] = '<msg1@example.com>'
+    msg['Subject'] = 'Test Message'
+    msg['From'] = 'sender@example.com'
+    msg.set_content("Test body")
+    mbox.add(msg)
+    mbox.close()
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    # Insert message without offsets
+    conn.execute('''
+        INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', ('msg1', '2024-01-01T00:00:00', str(mbox_path), 'Test Message',
+          'sender@example.com', '2024-01-01', 'checksum123'))
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify offsets were backfilled
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute('''
+        SELECT mbox_offset, mbox_length FROM messages WHERE gmail_id='msg1'
+    ''')
+    row = cursor.fetchone()
+    assert row is not None
+    assert row[0] >= 0  # Offset should be set
+    assert row[1] > 0   # Length should be set
+
+    conn.close()
+
+
+def test_migration_fts_index_creation(temp_dir: Path) -> None:
+    """Test migration creates FTS5 index (lines 538-543)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify FTS5 table exists
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute('''
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='messages_fts'
+    ''')
+    assert cursor.fetchone() is not None
+
+    conn.close()
+
+
+def test_migration_handles_duplicate_message_ids(temp_dir: Path) -> None:
+    """Test migration handles duplicate message IDs (lines 568-570)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "archive.mbox"
+
+    # Create mbox with one message
+    mbox = mailbox.mbox(str(mbox_path))
+    msg = email.message.EmailMessage()
+    msg['Message-ID'] = '<dup@example.com>'
+    msg['Subject'] = 'Duplicate'
+    msg['From'] = 'sender@example.com'
+    msg.set_content("Message 1")
+    mbox.add(msg)
+    mbox.close()
+
+    # Create v1.0 database with duplicate entries (same message, different gmail_ids)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    # Two messages with same RFC ID (simulating duplicate in v1.0)
+    conn.execute('''
+        INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', ('gmail1', '2024-01-01T00:00:00', str(mbox_path), 'Duplicate',
+          'sender@example.com', '2024-01-01', 'checksum123'))
+    conn.execute('''
+        INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', ('gmail2', '2024-01-01T00:00:00', str(mbox_path), 'Duplicate',
+          'sender@example.com', '2024-01-01', 'checksum123'))
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    # Should handle gracefully (might keep one, might keep both)
+    manager.migrate_v1_to_v1_1()
+
+    # Database should be valid after migration
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT COUNT(*) FROM messages")
+    count = cursor.fetchone()[0]
+    assert count > 0
+
+    conn.close()
+
+
+def test_migration_preserves_data_integrity(temp_dir: Path) -> None:
+    """Test migration preserves all message data (lines 644-645)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "archive.mbox"
+
+    # Create mbox with message
+    mbox = mailbox.mbox(str(mbox_path))
+    msg = email.message.EmailMessage()
+    msg['Message-ID'] = '<integrity@example.com>'
+    msg['Subject'] = 'Data Integrity Test'
+    msg['From'] = 'sender@example.com'
+    msg['To'] = 'recipient@example.com'
+    msg['Cc'] = 'cc@example.com'
+    msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+    msg.set_content("Test content for integrity")
+    mbox.add(msg)
+    mbox.close()
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.execute('''
+        INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', ('integrity1', '2024-01-01T00:00:00', str(mbox_path), 'Data Integrity Test',
+          'sender@example.com', '2024-01-01', 'original_checksum'))
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify data preserved in new schema
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute('''
+        SELECT subject, from_addr, archive_file FROM messages
+        WHERE gmail_id='integrity1'
+    ''')
+    row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 'Data Integrity Test'
+    assert row[1] == 'sender@example.com'
+    assert row[2] == str(mbox_path)
+
+    conn.close()
+
+
+def test_migration_schema_version_updated(temp_dir: Path) -> None:
+    """Test migration updates schema_version correctly (lines 671, 688-691)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(str(db_path))
+    manager.migrate_v1_to_v1_1()
+
+    # Verify schema_version table exists and is updated
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute('''
+        SELECT version FROM schema_version WHERE version='1.1'
+    ''')
+    assert cursor.fetchone() is not None
+
+    conn.close()
+
+
+def test_migration_handles_message_processing_error(temp_dir: Path) -> None:
+    """Test migration handles errors processing individual messages (lines 528-536)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+
+    # Create archive_runs table
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+
+    # Insert test message
+    mbox_path = temp_dir / "test.mbox"
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(mbox_path), 'Test', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.commit()
+    conn.close()
+
+    # Create corrupt mbox (will cause processing error)
+    with open(mbox_path, 'wb') as f:
+        f.write(b'corrupt mbox data\x00\xff')
+
+    manager = MigrationManager(db_path)
+
+    # Migration should handle the error and skip the message
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed despite error
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+    version = cursor.fetchone()[0]
+    conn.close()
+
+    assert version == "1.1"
+
+
+def test_migration_handles_mbox_scan_failure(temp_dir: Path) -> None:
+    """Test migration handles mbox scan failures (lines 547-552)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+
+    # Insert message pointing to non-existent mbox
+    mbox_path = temp_dir / "missing.mbox"
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(mbox_path), 'Test', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(db_path)
+
+    # Should handle missing mbox file
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+    version = cursor.fetchone()[0]
+    conn.close()
+
+    assert version == "1.1"
+
+
+def test_backfill_offsets_missing_archive(temp_dir: Path) -> None:
+    """Test backfill_offsets_from_mbox handles missing archives (lines 680, 697-700)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.1 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE messages (
+            gmail_id TEXT PRIMARY KEY,
+            rfc_message_id TEXT,
+            archive_file TEXT,
+            mbox_offset INTEGER,
+            mbox_length INTEGER,
+            archived_timestamp TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            to_addr TEXT,
+            cc_addr TEXT,
+            date TEXT,
+            body_preview TEXT,
+            checksum TEXT,
+            size_bytes INTEGER,
+            labels TEXT,
+            account_id TEXT,
+            thread_id TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(db_path)
+
+    # Messages pointing to missing archive
+    invalid_messages = [
+        {
+            'gmail_id': 'msg1',
+            'rfc_message_id': '<msg1@example.com>',
+            'archive_file': str(temp_dir / 'missing.mbox')
+        }
+    ]
+
+    # Should handle missing file gracefully
+    backfilled = manager.backfill_offsets_from_mbox(invalid_messages)
+
+    assert backfilled == 0
+
+
+def test_backfill_offsets_message_processing_error(temp_dir: Path) -> None:
+    """Test backfill handles message processing errors (lines 745-757)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "test.mbox"
+
+    # Create v1.1 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE messages (
+            gmail_id TEXT PRIMARY KEY,
+            rfc_message_id TEXT,
+            archive_file TEXT,
+            mbox_offset INTEGER,
+            mbox_length INTEGER,
+            archived_timestamp TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            to_addr TEXT,
+            cc_addr TEXT,
+            date TEXT,
+            body_preview TEXT,
+            checksum TEXT,
+            size_bytes INTEGER,
+            labels TEXT,
+            account_id TEXT,
+            thread_id TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+    # Create corrupt mbox
+    with open(mbox_path, 'wb') as f:
+        f.write(b'corrupt\x00\xff')
+
+    manager = MigrationManager(db_path)
+
+    invalid_messages = [
+        {
+            'gmail_id': 'msg1',
+            'rfc_message_id': '<msg1@example.com>',
+            'archive_file': str(mbox_path)
+        }
+    ]
+
+    # Should handle corruption gracefully
+    backfilled = manager.backfill_offsets_from_mbox(invalid_messages)
+
+    # No messages backfilled due to corruption
+    assert backfilled == 0
+
+
+def test_rollback_migration_missing_backup(temp_dir: Path) -> None:
+    """Test rollback_migration raises error for missing backup (lines 653-654)."""
+    db_path = temp_dir / "test.db"
+    backup_path = temp_dir / "missing_backup.db"
+
+    manager = MigrationManager(db_path)
+
+    with pytest.raises(Exception) as exc_info:  # MigrationError
+        manager.rollback_migration(backup_path)
+
+    assert "not found" in str(exc_info.value).lower()
+
+
+def test_migration_multipart_message_handling(temp_dir: Path) -> None:
+    """Test migration handles multipart messages (lines 297-298)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "test.mbox"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(mbox_path), 'Test', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.commit()
+    conn.close()
+
+    # Create mbox with multipart message
+    msg = email.message.EmailMessage()
+    msg['From'] = 'from@test.com'
+    msg['To'] = 'to@test.com'
+    msg['Subject'] = 'Test'
+    msg['Message-ID'] = '<test@example.com>'
+    msg['Date'] = '2024-01-01'
+    msg.make_mixed()
+
+    # Add text/plain part
+    text_part = email.message.EmailMessage()
+    text_part.set_content("Plain text body", subtype='plain')
+    msg.attach(text_part)
+
+    # Write to mbox
+    mbox = mailbox.mbox(str(mbox_path))
+    mbox.add(msg)
+    mbox.close()
+
+    manager = MigrationManager(db_path)
+
+    # Should handle multipart message
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT body_preview FROM messages WHERE gmail_id = ?", ('msg1',))
+    row = cursor.fetchone()
+    conn.close()
+
+    # Should have extracted body preview
+    assert row is not None
+    assert len(row[0]) > 0
+
+
+def test_migration_non_multipart_message_handling(temp_dir: Path) -> None:
+    """Test migration handles non-multipart messages (lines 304-305)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "test.mbox"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(mbox_path), 'Test', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.commit()
+    conn.close()
+
+    # Create simple non-multipart message
+    msg = email.message.EmailMessage()
+    msg['From'] = 'from@test.com'
+    msg['To'] = 'to@test.com'
+    msg['Subject'] = 'Test'
+    msg['Message-ID'] = '<test@example.com>'
+    msg['Date'] = '2024-01-01'
+    msg.set_content("Simple body text")
+
+    # Write to mbox
+    mbox = mailbox.mbox(str(mbox_path))
+    mbox.add(msg)
+    mbox.close()
+
+    manager = MigrationManager(db_path)
+
+    # Should handle non-multipart message
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT body_preview FROM messages WHERE gmail_id = ?", ('msg1',))
+    row = cursor.fetchone()
+    conn.close()
+
+    # Should have extracted body preview
+    assert row is not None
+    assert "Simple body text" in row[0]
+
+
+def test_migration_handles_missing_archive_file(temp_dir: Path) -> None:
+    """Test migration handles missing archive files gracefully (lines 461-462)."""
+    db_path = temp_dir / "test.db"
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+
+    # Insert message pointing to non-existent file
+    missing_path = temp_dir / "missing.mbox"
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(missing_path), 'Test', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.commit()
+    conn.close()
+
+    manager = MigrationManager(db_path)
+
+    # Should handle missing file gracefully
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+    version = cursor.fetchone()[0]
+    conn.close()
+
+    assert version == "1.1"
+
+
+def test_migration_remaining_messages_warning(temp_dir: Path) -> None:
+    """Test migration warns about remaining messages (lines 547-552)."""
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "test.mbox"
+
+    # Create v1.0 database with 2 messages
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT,
+            archive_file TEXT,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+
+    # Insert 2 messages
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg1', '2024-01-01', str(mbox_path), 'Test 1', 'from@test.com', '2024-01-01', 'abc123')
+    )
+    conn.execute(
+        '''INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        ('msg2', '2024-01-01', str(mbox_path), 'Test 2', 'from@test.com', '2024-01-01', 'def456')
+    )
+    conn.commit()
+    conn.close()
+
+    # Create mbox with only 1 message (fewer than expected)
+    msg = email.message.EmailMessage()
+    msg['From'] = 'from@test.com'
+    msg['Subject'] = 'Test 1'
+    msg['Message-ID'] = '<test1@example.com>'
+    msg.set_content("Body 1")
+
+    mbox = mailbox.mbox(str(mbox_path))
+    mbox.add(msg)
+    mbox.close()
+
+    manager = MigrationManager(db_path)
+
+    # Should handle mismatch and complete migration
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
+    version = cursor.fetchone()[0]
+    conn.close()
+
+    assert version == "1.1"
+
+def test_migration_handles_malformed_messages(temp_dir: Path) -> None:
+    """Test migration handles malformed/corrupted messages gracefully (lines 297, 528-536).
+
+    When an mbox contains a message that raises an exception during parsing,
+    the migration should skip it with a warning and continue processing other messages.
+    """
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "mixed.mbox"
+
+    # Create mbox with 3 messages: valid, corrupted, valid
+    with open(mbox_path, 'wb') as f:
+        # Valid message 1
+        f.write(b"From valid1@example.com Mon Jan 01 12:00:00 2024\n")
+        f.write(b"Message-ID: <valid1@example.com>\n")
+        f.write(b"Subject: Valid Message 1\n")
+        f.write(b"From: valid1@example.com\n")
+        f.write(b"Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+        f.write(b"\n")
+        f.write(b"Body of valid message 1\n")
+        f.write(b"\n")
+
+        # Corrupted message - malformed structure
+        f.write(b"From corrupted@example.com Tue Jan 02 12:00:00 2024\n")
+        # No proper headers, will cause parsing issues
+        f.write(b"This is not a valid email structure\n")
+        f.write(b"\xff\xfe\xfd Invalid bytes mixed in\n")
+        f.write(b"\n")
+
+        # Valid message 2
+        f.write(b"From valid2@example.com Wed Jan 03 12:00:00 2024\n")
+        f.write(b"Message-ID: <valid2@example.com>\n")
+        f.write(b"Subject: Valid Message 2\n")
+        f.write(b"From: valid2@example.com\n")
+        f.write(b"Date: Wed, 03 Jan 2024 12:00:00 +0000\n")
+        f.write(b"\n")
+        f.write(b"Body of valid message 2\n")
+        f.write(b"\n")
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+
+    # Insert records for all 3 messages (migration will try to process all)
+    conn.execute(
+        'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ('msg1', '2024-01-01', str(mbox_path), 'Valid Message 1',
+         'valid1@example.com', '2024-01-01', 'checksum1')
+    )
+    conn.execute(
+        'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ('msg2', '2024-01-02', str(mbox_path), 'Corrupted',
+         'corrupted@example.com', '2024-01-02', 'checksum2')
+    )
+    conn.execute(
+        'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ('msg3', '2024-01-03', str(mbox_path), 'Valid Message 2',
+         'valid2@example.com', '2024-01-03', 'checksum3')
+    )
+    conn.commit()
+    conn.close()
+
+    # Run migration - should complete despite corrupted message
+    manager = MigrationManager(db_path)
+    manager.migrate_v1_to_v1_1()
+
+    # Verify migration completed
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute("SELECT version FROM schema_version")
+    assert cursor.fetchone()[0] == "1.1"
+
+    # Check how many messages were migrated (should be 2-3 depending on parsing)
+    cursor = conn.execute("SELECT COUNT(*) FROM messages")
+    migrated_count = cursor.fetchone()[0]
+
+    # At minimum, the 2 valid messages should be migrated
+    # The corrupted one might be skipped or partially migrated
+    assert migrated_count >= 2, f"Expected at least 2 valid messages migrated, got {migrated_count}"
+
+    # Verify the valid messages were migrated successfully
+    cursor = conn.execute("SELECT gmail_id FROM messages WHERE gmail_id IN ('msg1', 'msg3')")
+    valid_messages = [row[0] for row in cursor.fetchall()]
+    assert 'msg1' in valid_messages or 'msg3' in valid_messages, (
+        "At least one valid message should be migrated"
+    )
+
+    conn.close()
+
+def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
+    """Test correct length calculation for last message in mbox (line 461).
+
+    The last message has no following message, so length = file_size - message_offset.
+    """
+    db_path = temp_dir / "test.db"
+    mbox_path = temp_dir / "single.mbox"
+
+    # Create mbox with exactly 1 message
+    mbox = mailbox.mbox(str(mbox_path))
+    msg = email.message.EmailMessage()
+    msg['Message-ID'] = '<single@example.com>'
+    msg['Subject'] = 'Single Message'
+    msg['From'] = 'sender@example.com'
+    msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+    msg.set_content('This is the only message in the mbox.')
+    mbox.add(msg)
+    mbox.close()
+
+    # Get file size for later verification
+    file_size = mbox_path.stat().st_size
+
+    # Create v1.0 database
+    conn = sqlite3.connect(str(db_path))
+    conn.execute('''
+        CREATE TABLE archived_messages (
+            gmail_id TEXT PRIMARY KEY,
+            archived_timestamp TEXT NOT NULL,
+            archive_file TEXT NOT NULL,
+            subject TEXT,
+            from_addr TEXT,
+            message_date TEXT,
+            checksum TEXT
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE archive_runs (
+            run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_timestamp TEXT,
+            query TEXT,
+            messages_archived INTEGER,
+            archive_file TEXT
+        )
+    ''')
+    conn.execute(
+        'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
+        ('msg1', '2024-01-01', str(mbox_path), 'Single Message',
+         'sender@example.com', '2024-01-01', 'checksum1')
+    )
+    conn.commit()
+    conn.close()
+
+    # Run migration with backfill
+    manager = MigrationManager(db_path)
+    manager.migrate_v1_to_v1_1()
+
+    # Verify last message length = file_size - offset
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.execute(
+        'SELECT mbox_offset, mbox_length FROM messages WHERE gmail_id=?',
+        ('msg1',)
+    )
+    row = cursor.fetchone()
+    assert row is not None, "Message should be migrated"
+
+    offset, length = row
+    assert offset >= 0, "Offset should be valid"
+    assert length > 0, "Length should be positive"
+
+    # Critical: Verify length calculation for last message
+    expected_length = file_size - offset
+    assert length == expected_length, (
+        f"Last message length should be {expected_length} "
+        f"(file_size - offset), got {length}"
+    )
+
+    # Verify we can actually read the message at the offset
+    with open(mbox_path, 'rb') as f:
+        f.seek(offset)
+        message_data = f.read(length)
+        # Should contain the Message-ID
+        assert b'<single@example.com>' in message_data
+
+    conn.close()

@@ -10,20 +10,16 @@ This module tests:
 Following TDD: These tests are written FIRST, before implementation.
 """
 
-import platform
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gmailarchiver.platform_scheduler import (
-    PlatformScheduler,
-    SystemdScheduler,
     LaunchdScheduler,
+    SystemdScheduler,
     TaskSchedulerWindows,
-    get_platform_scheduler,
     UnsupportedPlatformError,
+    get_platform_scheduler,
 )
 from gmailarchiver.scheduler import ScheduleEntry
 

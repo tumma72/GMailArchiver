@@ -10,6 +10,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmailarchiver.path_validator import validate_file_path
 
+__all__ = ['GmailAuthenticator', 'Credentials', 'SCOPES']
+
 # Gmail API scopes
 # NOTE: Using full Gmail access scope to support all operations including permanent deletion.
 # The gmail.modify scope is insufficient for permanent deletion (messages.delete API).

@@ -25,7 +25,6 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-from dataclasses import dataclass
 
 
 @dataclass
@@ -336,7 +335,7 @@ class OutputManager:
     @contextmanager
     def progress_context(
         self, description: str, total: int | None = None
-    ) -> Generator[Progress | None, None, None]:
+    ) -> Generator[Progress | None]:
         """Context manager for progress tracking with live updates.
 
         Shows:
@@ -492,12 +491,12 @@ class OutputManager:
             if isinstance(first_row, dict):
                 headers = list(first_row.keys())
                 rows: list[list[Any]] = [
-                    [row.get(col, "") for col in headers] for row in data  # type: ignore[union-attr]
+                    [row.get(col, "") for col in headers] for row in data
                 ]
             else:
                 # Fallback: infer column count from first row and use generic headers
-                headers = [f"col{i+1}" for i in range(len(first_row))]  # type: ignore[arg-type]
-                rows = [list(row) for row in data]  # type: ignore[arg-type]
+                headers = [f"col{i+1}" for i in range(len(first_row))]
+                rows = [list(row) for row in data]
 
             self.show_table(title=title, headers=headers, rows=rows)
 

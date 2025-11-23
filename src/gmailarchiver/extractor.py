@@ -7,11 +7,19 @@ Supports all compression formats (gzip, lzma, zstd) with transparent decompressi
 import gzip
 import lzma
 import sys
+from io import IOBase
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, TypedDict
 
 from gmailarchiver.db_manager import DBManager
+
+
+class ExtractStats(TypedDict):
+    """Statistics from batch extraction."""
+
+    extracted: int
+    failed: int
+    errors: list[str]
 
 
 class ExtractorError(Exception):
@@ -92,7 +100,7 @@ class MessageExtractor:
 
     def batch_extract(
         self, gmail_ids: list[str], output_dir: Path
-    ) -> dict[str, Any]:
+    ) -> ExtractStats:
         """
         Extract multiple messages to directory.
 
@@ -111,7 +119,7 @@ class MessageExtractor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        stats = {'extracted': 0, 'failed': 0, 'errors': []}
+        stats: ExtractStats = {'extracted': 0, 'failed': 0, 'errors': []}
 
         for gmail_id in gmail_ids:
             try:
@@ -207,6 +215,7 @@ class MessageExtractor:
         """
         try:
             # Open compressed file
+            f: IOBase
             if compression == 'gzip':
                 f = gzip.open(archive_path, 'rb')
             elif compression == 'lzma':
@@ -258,7 +267,7 @@ class MessageExtractor:
         """Close database connection."""
         self.db.close()
 
-    def __enter__(self) -> "MessageExtractor":
+    def __enter__(self) -> MessageExtractor:
         """Context manager entry."""
         return self
 

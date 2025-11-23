@@ -2,10 +2,7 @@
 
 import json
 import sqlite3
-import tempfile
-from collections.abc import Generator
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -594,61 +591,6 @@ class TestDatabaseIntegrity:
             issues = db.verify_database_integrity()
             assert len(issues) == 0
 
-    @pytest.mark.skip(
-        "SQLite FTS5 content=messages prevents simulating orphaned FTS rows "
-        "without corrupting the database file; this scenario cannot be "
-        "reliably unit-tested."
-    )
-    def test_verify_integrity_orphaned_fts_records(self, v11_db: str) -> None:
-        """Test detection of orphaned FTS records (simulated corruption)."""
-
-        # Create a synthetic orphaned FTS row with a rowid that does not
-        # correspond to any messages.rowid. This simulates an FTS corruption
-        # scenario without requiring actual file-level database damage.
-        conn = sqlite3.connect(v11_db)
-        try:
-            conn.execute(
-                """
-                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-                VALUES (999, 'Orphaned', 'test@example.com', 'user@example.com', 'Orphaned record')
-                """,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        with DBManager(v11_db, validate_schema=False) as db:
-            issues = db.verify_database_integrity(skip_missing_archives=True)
-
-        assert any("orphaned FTS" in issue for issue in issues)
-
-    @pytest.mark.skip(
-        "SQLite FTS5 content=messages prevents simulating missing FTS rows "
-        "without corrupting the database file; this scenario cannot be "
-        "reliably unit-tested."
-    )
-    def test_verify_integrity_missing_fts_records(
-        self, v11_db: str, sample_message_data: dict[str, Any]
-    ) -> None:
-        """Test detection of missing FTS records (simulated corruption)."""
-
-        # Insert one normal message so that an FTS row is created via triggers
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
-
-        # Remove all FTS rows, leaving messages without corresponding entries
-        conn = sqlite3.connect(v11_db)
-        try:
-            conn.execute("DELETE FROM messages_fts")
-            conn.commit()
-        finally:
-            conn.close()
-
-        with DBManager(v11_db, validate_schema=False) as db:
-            issues = db.verify_database_integrity(skip_missing_archives=True)
-
-        assert any("missing from FTS index" in issue for issue in issues)
-
     def test_verify_integrity_invalid_offsets(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
@@ -740,96 +682,6 @@ class TestDatabaseIntegrity:
             issues = db.verify_database_integrity()
             # Should detect missing archive file
             assert any("missing" in issue.lower() and "file" in issue.lower() for issue in issues)
-
-    @pytest.mark.skip(
-        "SQLite FTS5 content=messages prevents creating controlled FTS "
-        "corruption; repair_database corruption paths are defensive and "
-        "cannot be exercised without damaging the database file."
-    )
-    def test_repair_database_dry_run(
-        self, v11_db: str, sample_message_data: dict[str, Any]
-    ) -> None:
-        """Test repair_database in dry-run mode on synthetic FTS corruption."""
-
-        # Create two messages so we can simulate both orphaned and missing FTS
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
-            second = sample_message_data.copy()
-            second["gmail_id"] = "msg2"
-            second["rfc_message_id"] = "<msg2@example.com>"
-            db.record_archived_message(**second)
-
-        # Corrupt the FTS index: add an orphaned row and remove FTS for msg2
-        conn = sqlite3.connect(v11_db)
-        try:
-            conn.execute(
-                """
-                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-                VALUES (999, 'Orphaned', 'test@example.com', 'user@example.com', 'Orphaned record')
-                """,
-            )
-            conn.execute(
-                """
-                DELETE FROM messages_fts
-                WHERE rowid IN (SELECT rowid FROM messages WHERE gmail_id = 'msg2')
-                """,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        with DBManager(v11_db, validate_schema=False) as db:
-            repairs = db.repair_database(dry_run=True)
-
-        assert repairs["orphaned_fts_removed"] >= 1
-        assert repairs["missing_fts_added"] >= 1
-
-    @pytest.mark.skip(
-        "SQLite FTS5 content=messages prevents creating controlled FTS "
-        "corruption; repair_database corruption paths are defensive and "
-        "cannot be exercised without damaging the database file."
-    )
-    def test_repair_database_actual_repairs(
-        self, v11_db: str, sample_message_data: dict[str, Any]
-    ) -> None:
-        """Test actual database repairs on synthetic FTS corruption."""
-
-        # Create two messages so we can simulate both orphaned and missing FTS
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
-            second = sample_message_data.copy()
-            second["gmail_id"] = "msg2"
-            second["rfc_message_id"] = "<msg2@example.com>"
-            db.record_archived_message(**second)
-
-        # Corrupt the FTS index: add an orphaned row and remove FTS for msg2
-        conn = sqlite3.connect(v11_db)
-        try:
-            conn.execute(
-                """
-                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-                VALUES (999, 'Orphaned', 'test@example.com', 'user@example.com', 'Orphaned record')
-                """,
-            )
-            conn.execute(
-                """
-                DELETE FROM messages_fts
-                WHERE rowid IN (SELECT rowid FROM messages WHERE gmail_id = 'msg2')
-                """,
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        with DBManager(v11_db, validate_schema=False) as db:
-            repairs = db.repair_database(dry_run=False)
-            assert repairs["orphaned_fts_removed"] >= 1
-            assert repairs["missing_fts_added"] >= 1
-
-            # After repair, integrity check should not report FTS issues
-            issues = db.verify_database_integrity(skip_missing_archives=True)
-            assert not any("orphaned FTS" in issue for issue in issues)
-            assert not any("missing from FTS index" in issue for issue in issues)
 
     def test_get_messages_with_invalid_offsets(
         self, v11_db: str, sample_message_data: dict[str, Any]

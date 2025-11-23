@@ -12,12 +12,9 @@ platform's native scheduling system.
 import platform
 import shutil
 import subprocess
-import sys
 import tempfile
 from abc import ABC, abstractmethod
-from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from gmailarchiver.scheduler import ScheduleEntry
 
@@ -96,7 +93,7 @@ class SystemdScheduler(PlatformScheduler):
         Returns:
             Timer unit file content
         """
-        service_name = self.get_service_filename(entry)
+        self.get_service_filename(entry)
 
         # Generate OnCalendar expression
         if entry.frequency == "daily":
@@ -104,6 +101,7 @@ class SystemdScheduler(PlatformScheduler):
         elif entry.frequency == "weekly":
             # Map day_of_week (0=Sunday) to systemd day names
             days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+            assert entry.day_of_week is not None, "Weekly frequency requires day_of_week"
             day_name = days[entry.day_of_week]
             hour, minute = entry.time.split(":")
             on_calendar = f"{day_name} *-*-* {hour}:{minute}:00"
@@ -390,6 +388,7 @@ class TaskSchedulerWindows(PlatformScheduler):
         elif entry.frequency == "weekly":
             # Map day_of_week to Windows day names
             days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+            assert entry.day_of_week is not None, "Weekly frequency requires day_of_week"
             day_name = days[entry.day_of_week]
             trigger = f"""        <CalendarTrigger>
           <StartBoundary>2025-01-01T{hour}:{minute}:00</StartBoundary>

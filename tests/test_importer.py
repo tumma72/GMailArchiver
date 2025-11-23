@@ -5,6 +5,7 @@ import gzip
 import mailbox
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1425,3 +1426,107 @@ class TestDBManagerIntegration:
                 assert msg_data['mbox_offset'] >= 0
                 assert msg_data['mbox_length'] > 0
                 assert msg_data['archive_file'] == str(sample_mbox_simple)
+
+    def test_extract_body_preview_multipart_exception_handling(
+        self,
+        v1_1_db: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test body preview extraction when get_payload raises exception (lines 159-160)."""
+        # Create mbox with multipart message
+        mbox_path = tmp_path / "multipart.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<multipart@example.com>'
+        msg['Subject'] = 'Multipart Test'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.make_mixed()
+
+        # Add a text part
+        text_part = email.message.EmailMessage()
+        text_part.set_content("This is the body")
+        text_part.set_type('text/plain')
+        msg.attach(text_part)
+
+        mbox.add(msg)
+        mbox.close()
+
+        # Import should succeed despite potential exceptions in body extraction
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+        assert result.messages_imported == 1
+
+    def test_extract_body_preview_non_multipart_exception_handling(
+        self,
+        v1_1_db: Path,
+        tmp_path: Path
+    ) -> None:
+        """Test body preview extraction for non-multipart message exception (lines 166-167)."""
+        # Create mbox with simple message
+        mbox_path = tmp_path / "simple.mbox"
+        mbox = mailbox.mbox(str(mbox_path))
+
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<simple@example.com>'
+        msg['Subject'] = 'Simple Test'
+        msg['From'] = 'sender@example.com'
+        msg['To'] = 'recipient@example.com'
+        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg.set_content("Simple body text")
+
+        mbox.add(msg)
+        mbox.close()
+
+        # Import should succeed
+        importer = ArchiveImporter(str(v1_1_db))
+        result = importer.import_archive(str(mbox_path))
+        assert result.messages_imported == 1
+
+def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: Path) -> None:
+    """Test import handles database constraint violations gracefully (lines 402-414).
+
+    When importing an mbox with duplicate Message-IDs, the second insert should
+    fail with IntegrityError (UNIQUE constraint), which should be caught and handled.
+    """
+    # Create mbox with 2 messages having the same Message-ID
+    mbox_path = tmp_path / "duplicates.mbox"
+    with open(mbox_path, 'wb') as f:
+        # First message
+        f.write(b"From first@example.com Mon Jan 01 12:00:00 2024\n")
+        f.write(b"Message-ID: <duplicate@example.com>\n")
+        f.write(b"Subject: First Message\n")
+        f.write(b"From: first@example.com\n")
+        f.write(b"Date: Mon, 01 Jan 2024 12:00:00 +0000\n")
+        f.write(b"\n")
+        f.write(b"Body of first message\n")
+        f.write(b"\n")
+
+        # Second message with SAME Message-ID (will violate UNIQUE constraint)
+        f.write(b"From second@example.com Tue Jan 02 12:00:00 2024\n")
+        f.write(b"Message-ID: <duplicate@example.com>\n")
+        f.write(b"Subject: Second Message\n")
+        f.write(b"From: second@example.com\n")
+        f.write(b"Date: Tue, 02 Jan 2024 12:00:00 +0000\n")
+        f.write(b"\n")
+        f.write(b"Body of second message\n")
+        f.write(b"\n")
+
+    importer = ArchiveImporter(str(v1_1_db))
+
+    # Import with skip_duplicates=False (uses INSERT OR REPLACE)
+    # This should handle the duplicate gracefully
+    result = importer.import_archive(str(mbox_path), skip_duplicates=False)
+
+    # Should complete without crashing
+    assert result.messages_imported > 0, "Should import at least one message"
+
+    # Verify database has exactly 1 message (second replaces first via OR REPLACE)
+    conn = sqlite3.connect(str(v1_1_db))
+    cursor = conn.execute("SELECT COUNT(*) FROM messages")
+    count = cursor.fetchone()[0]
+    conn.close()
+
+    assert count == 1, f"Expected 1 message (duplicate replaced), got {count}"

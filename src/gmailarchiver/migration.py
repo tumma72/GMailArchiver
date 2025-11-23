@@ -489,38 +489,47 @@ class MigrationManager:
                                         checksum = hashlib.sha256(message_bytes).hexdigest()
 
                                         # Insert with real metadata
-                                        conn.execute('''
+                                        conn.execute(
+                                            '''
                                             INSERT INTO messages
-                                            (gmail_id, rfc_message_id, thread_id, subject, from_addr,
-                                             to_addr, cc_addr, date, archived_timestamp, archive_file,
-                                             mbox_offset, mbox_length, body_preview, checksum,
-                                             size_bytes, labels, account_id)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        ''', (
-                                            gmail_id,
-                                            rfc_message_id,
-                                            thread_id,
-                                            msg.get('Subject'),
-                                            msg.get('From'),
-                                            msg.get('To'),
-                                            msg.get('Cc'),
-                                            msg.get('Date'),
-                                            old_meta['archived_timestamp'],
-                                            archive_file,
-                                            offset,
-                                            length,
-                                            body_preview,
-                                            checksum,
-                                            len(message_bytes),
-                                            None,  # labels
-                                            'default'  # account_id
-                                        ))
+                                            (gmail_id, rfc_message_id, thread_id,
+                                             subject, from_addr, to_addr, cc_addr,
+                                             date, archived_timestamp, archive_file,
+                                             mbox_offset, mbox_length,
+                                             body_preview, checksum, size_bytes,
+                                             labels, account_id)
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                                    ?, ?, ?, ?, ?, ?, ?)
+                                            ''',
+                                            (
+                                                gmail_id,
+                                                rfc_message_id,
+                                                thread_id,
+                                                msg.get('Subject'),
+                                                msg.get('From'),
+                                                msg.get('To'),
+                                                msg.get('Cc'),
+                                                msg.get('Date'),
+                                                old_meta['archived_timestamp'],
+                                                archive_file,
+                                                offset,
+                                                length,
+                                                body_preview,
+                                                checksum,
+                                                len(message_bytes),
+                                                None,  # labels
+                                                'default'  # account_id
+                                            ),
+                                        )
 
                                         migrated_count += 1
                                         progress.update(task, advance=1)
 
                                 except Exception as e:
-                                    warn_msg = f"[yellow]Warning: Failed to process message {key}: {e}"
+                                    warn_msg = (
+                                        f"[yellow]Warning: Failed to process "
+                                        f"message {key}: {e}"
+                                    )
                                     console.print(f"{warn_msg}[/yellow]")
                                     skipped_count += 1
                                     progress.update(task, advance=1)
@@ -736,7 +745,8 @@ class MigrationManager:
                             except Exception as e:
                                 # Skip this message but continue
                                 console.print(
-                                    f"[yellow]Warning: Failed to process message {key}: {e}[/yellow]"
+                                    f"[yellow]Warning: Failed to process "
+                                    f"message {key}: {e}[/yellow]"
                                 )
                                 continue
 

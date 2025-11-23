@@ -253,7 +253,7 @@ class ArchiveValidator:
     def validate_all(self) -> bool:
         """
         Quick validation to check if archive is readable and non-empty.
-        
+
         Used for simple pre-deletion validation checks.
         Handles both compressed and uncompressed archives.
 
@@ -263,7 +263,7 @@ class ArchiveValidator:
         try:
             # Get path to mbox file (decompress if necessary)
             mbox_path, is_temp = self._get_mbox_path()
-            
+
             try:
                 mbox = mailbox.mbox(str(mbox_path))
                 try:

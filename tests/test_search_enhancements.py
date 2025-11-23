@@ -2,9 +2,8 @@
 
 import json
 import sqlite3
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -224,7 +223,10 @@ class TestSearchInteractive:
         )
 
         assert result.exit_code == 0
-        assert "cancelled" in result.stdout.lower() or "no messages selected" in result.stdout.lower()
+        assert (
+            "cancelled" in result.stdout.lower()
+            or "no messages selected" in result.stdout.lower()
+        )
 
     @patch('questionary.checkbox')
     @patch('questionary.path')
@@ -292,7 +294,10 @@ class TestSearchInteractive:
         )
 
         assert result.exit_code == 0
-        assert "no messages selected" in result.stdout.lower() or "cancelled" in result.stdout.lower()
+        assert (
+            "no messages selected" in result.stdout.lower()
+            or "cancelled" in result.stdout.lower()
+        )
 
 
 class TestSearchCombinedFlags:
@@ -416,7 +421,14 @@ class TestSearchPreviewTruncation:
         # Test JSON output for precise truncation behavior
         result_json = runner.invoke(
             app,
-            ["search", "Exactly 200", "--with-preview", "--json", "--state-db", v11_db_with_messages]
+            [
+                "search",
+                "Exactly 200",
+                "--with-preview",
+                "--json",
+                "--state-db",
+                v11_db_with_messages,
+            ]
         )
         assert result_json.exit_code == 0
         data = json.loads(result_json.stdout)

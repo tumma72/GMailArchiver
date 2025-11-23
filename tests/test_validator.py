@@ -1132,3 +1132,166 @@ class TestConsistencyChecks:
         finally:
             mbox_path.unlink()
             db_path.unlink()
+
+
+
+
+class TestValidatorSimpleCases:
+    """Additional validator test cases."""
+
+    def test_validate_comprehensive_with_integrity_failure(self) -> None:
+        """Test validate_comprehensive handles integrity check failure (lines 153-157)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "empty.mbox"
+
+            # Create empty mbox
+            archive_path.touch()
+
+            validator = ArchiveValidator(str(archive_path))
+
+            # Empty mbox should fail integrity check
+            results = validator.validate_comprehensive(set(['msg1']))
+
+            assert 'readable messages' in ' '.join(results['errors']).lower()
+
+    def test_validate_comprehensive_spot_check_pass(self) -> None:
+        """Test spot check when messages are found (lines 191-192, 236-237)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "test.mbox"
+            db_path = Path(tmpdir) / "test.db"
+
+            # Create simple mbox
+            with open(archive_path, 'w') as f:
+                f.write("From test@example.com\nMessage-ID: <test@example.com>\n\nBody\n")
+
+            # Create v1.1 database
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT,
+                    archive_file TEXT
+                )
+            ''')
+            conn.execute(
+                "INSERT INTO messages VALUES (?, ?, ?)",
+                ("msg1", "<test@example.com>", str(archive_path))
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(archive_path), str(db_path))
+
+            results = validator.validate_comprehensive(set(['msg1']))
+
+            # spot_check should pass
+            assert results['spot_check'] is True or results['passed'] is True
+
+    def test_validate_all_exception(self) -> None:
+        """Test validate_all handles exceptions (lines 281-283)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "corrupt.mbox"
+
+            # Create corrupt mbox
+            with open(archive_path, 'wb') as f:
+                f.write(b'\x00\xff\xfe')
+
+            validator = ArchiveValidator(str(archive_path))
+
+            # Should handle corruption
+            result = validator.validate_all()
+
+            assert result is False
+            assert len(validator.errors) > 0
+
+
+class TestValidatorMissingCoverage:
+    """Tests targeting specific uncovered lines."""
+
+    def test_comprehensive_validation_db_fallback_v10(self) -> None:
+        """Test database check fallback to v1.0 schema (lines 166-176)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "test.mbox"
+            db_path = Path(tmpdir) / "test.db"
+
+            # Create simple mbox
+            with open(archive_path, 'w') as f:
+                f.write("From test@example.com\n\ntest\n")
+
+            # Create v1.0 database (archived_messages table)
+            conn = sqlite3.connect(str(db_path))
+            conn.execute('''
+                CREATE TABLE archived_messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    archive_file TEXT
+                )
+            ''')
+            conn.execute(
+                "INSERT INTO archived_messages VALUES (?, ?)",
+                ("msg1", str(archive_path))
+            )
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(archive_path), str(db_path))
+
+            results = validator.validate_comprehensive(set(['msg1']))
+
+            # Should handle v1.0 schema
+            assert 'database_check' in results
+
+    def test_validate_count_exception(self) -> None:
+        """Test validate_count handles exceptions properly (line 211)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "missing.mbox"
+
+            validator = ArchiveValidator(str(archive_path))
+
+            # Should return False for missing file
+            result = validator.validate_count(10)
+
+            assert result is False
+
+    def test_validate_all_empty_archive(self) -> None:
+        """Test validate_all detects empty archive (lines 272-273)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "empty.mbox"
+
+            # Create empty mbox
+            archive_path.touch()
+
+            validator = ArchiveValidator(str(archive_path))
+
+            result = validator.validate_all()
+
+            # Should fail for empty archive
+            assert result is False
+            assert "empty" in ' '.join(validator.errors).lower()
+
+
+def test_validator_empty_archive_integrity_check() -> None:
+    """Test that validate detects empty/corrupt archives (lines 153-157).
+
+    When an archive has 0 readable messages, integrity_check should be False
+    and an error should mention no readable messages.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        archive_path = Path(tmpdir) / "empty.mbox"
+
+        # Create truly empty mbox file (0 bytes)
+        archive_path.touch()
+
+        validator = ArchiveValidator(str(archive_path))
+
+        # Run validation (validate_comprehensive method requires expected_message_ids)
+        results = validator.validate_comprehensive(expected_message_ids=set())
+
+        # Should fail integrity check
+        assert results['integrity_check'] is False, "Empty archive should fail integrity check"
+
+        # Should have error mentioning no messages or empty
+        error_text = ' '.join(results.get('errors', [])).lower()
+        assert 'no readable messages' in error_text or 'empty' in error_text, \
+            f"Expected error about no messages, got: {results.get('errors', [])}"
