@@ -44,17 +44,45 @@ class ConsistencyReport:
 class ArchiveValidator:
     """Validate archive integrity before deletion."""
 
-    def __init__(self, archive_path: str, state_db_path: str = 'archive_state.db') -> None:
+    def __init__(
+        self,
+        archive_path: str,
+        state_db_path: str = 'archive_state.db',
+        output: Any | None = None
+    ) -> None:
         """
         Initialize validator.
 
         Args:
             archive_path: Path to mbox archive file (compressed or uncompressed)
             state_db_path: Path to state database
+            output: Optional OutputManager for structured logging
         """
         self.archive_path = Path(archive_path)
         self.state_db_path = Path(state_db_path)
         self.errors: list[str] = []
+        self.output = output
+
+    def _log(self, message: str, level: str = "INFO") -> None:
+        """Log message through OutputManager if available, otherwise print.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if self.output:
+            # Use OutputManager's methods
+            if level == "WARNING":
+                self.output.warning(message)
+            elif level == "ERROR":
+                self.output.error(message, exit_code=0)
+            elif level == "SUCCESS":
+                self.output.success(message)
+            else:  # INFO
+                self.output.info(message)
+        else:
+            # Fallback to print for backward compatibility
+            print(message)
 
     def _get_mbox_path(self) -> tuple[Path, bool]:
         """
@@ -319,9 +347,9 @@ class ArchiveValidator:
         Args:
             results: Validation results from validate_comprehensive()
         """
-        print("\n" + "="*60)
-        print("ARCHIVE VALIDATION REPORT")
-        print("="*60)
+        self._log("\n" + "="*60, "INFO")
+        self._log("ARCHIVE VALIDATION REPORT", "INFO")
+        self._log("="*60, "INFO")
 
         checks = [
             ('Count Check', results['count_check']),
@@ -332,19 +360,19 @@ class ArchiveValidator:
 
         for name, passed in checks:
             status = "✓ PASSED" if passed else "✗ FAILED"
-            print(f"{name:20s} {status}")
+            self._log(f"{name:20s} {status}", "INFO")
 
         if results['errors']:
-            print("\nErrors:")
+            self._log("\nErrors:", "INFO")
             for error in results['errors']:
-                print(f"  - {error}")
+                self._log(f"  - {error}", "WARNING")
 
-        print("\n" + "="*60)
+        self._log("\n" + "="*60, "INFO")
         if results['passed']:
-            print("VALIDATION: ✓ PASSED")
+            self._log("VALIDATION: ✓ PASSED", "SUCCESS")
         else:
-            print("VALIDATION: ✗ FAILED")
-        print("="*60 + "\n")
+            self._log("VALIDATION: ✗ FAILED", "ERROR")
+        self._log("="*60 + "\n", "INFO")
 
     def _detect_schema_version(self) -> str:
         """

@@ -9,29 +9,42 @@ from dateutil.relativedelta import relativedelta
 
 def parse_age(age_str: str) -> datetime:
     """
-    Parse age expressions like '3y', '6m', '2w', '30d' into datetime.
+    Parse age expressions or ISO dates into datetime.
+
+    Accepts two formats:
+    1. Relative age: number + unit (e.g., '3y', '6m', '2w', '30d')
+    2. ISO date: YYYY-MM-DD (e.g., '2024-01-01')
 
     Args:
-        age_str: Age expression (e.g., '3y' for 3 years, '6m' for 6 months)
+        age_str: Age expression or ISO date
 
     Returns:
         datetime object representing the cutoff date
 
     Raises:
-        ValueError: If the age format is invalid
+        ValueError: If the format is invalid
 
     Examples:
-        >>> parse_age('3y')  # 3 years ago
-        >>> parse_age('6m')  # 6 months ago
-        >>> parse_age('2w')  # 2 weeks ago
-        >>> parse_age('30d')  # 30 days ago
+        >>> parse_age('3y')           # 3 years ago (relative)
+        >>> parse_age('6m')           # 6 months ago (relative)
+        >>> parse_age('2024-01-01')   # January 1, 2024 (exact date)
+        >>> parse_age('2023-06-15')   # June 15, 2023 (exact date)
     """
+    # Phase 1: Try parsing as ISO date (YYYY-MM-DD)
+    try:
+        return datetime.strptime(age_str, '%Y-%m-%d')
+    except ValueError:
+        # Not a valid ISO date, continue to relative age parsing
+        pass
+
+    # Phase 2: Try parsing as relative age
     match = re.match(r'^(\d+)([ymwd])$', age_str.lower())
     if not match:
         raise ValueError(
-            f"Invalid age format: '{age_str}'. "
-            "Expected format: number + unit (y/m/w/d). "
-            "Examples: '3y', '6m', '2w', '30d'"
+            f"Invalid age/date format: '{age_str}'. "
+            "Expected formats:\n"
+            "  - Relative age: number + unit (y/m/w/d). Examples: '3y', '6m', '2w', '30d'\n"
+            "  - Exact date: ISO format (YYYY-MM-DD). Examples: '2024-01-01', '2023-06-15'"
         )
 
     value, unit = int(match.group(1)), match.group(2)

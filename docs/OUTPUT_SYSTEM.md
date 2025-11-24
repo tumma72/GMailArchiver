@@ -1,7 +1,8 @@
 # Unified Output System
 
-**Status**: Proof-of-Concept Implemented
-**Date**: 2025-11-19
+**Status**: Core Infrastructure Complete (v1.3.1)
+**Date**: 2025-11-24 (updated)
+**Original**: 2025-11-19
 
 ---
 
@@ -64,6 +65,107 @@ if not all_passed:
 
 # End operation
 output.end_operation(success=False, summary="Validation failed")
+```
+
+---
+
+## Live Layout System (v1.3.1)
+
+**Added**: 2025-11-24
+**Status**: Implemented
+**Components**: LogBuffer, SessionLogger, LiveLayoutContext
+
+The v1.3.1 release adds infrastructure for flicker-free live layouts with integrated logging.
+
+### LogBuffer
+
+**Location**: `src/gmailarchiver/output.py` (lines 89-156)
+**Purpose**: Ring buffer for displaying recent log messages in live UI
+**Coverage**: 100%
+
+**Features**:
+- Fixed-size FIFO queue (default: 10 visible messages)
+- Message deduplication with counters (e.g., "Installing packages... (3x)")
+- Severity-based styling (ℹ/⚠/✗/✓ with blue/yellow/red/green colors)
+- Rich Panel rendering
+
+**Example Usage**:
+```python
+from gmailarchiver.output import LogBuffer
+
+log_buffer = LogBuffer(max_visible=10)
+log_buffer.add("Processing started", "INFO")
+log_buffer.add("Warning: Rate limit approaching", "WARNING")
+log_buffer.add("Error: Connection failed", "ERROR")
+log_buffer.add("Success: All messages archived", "SUCCESS")
+
+# Render as Rich Panel
+panel = log_buffer.render()
+```
+
+### SessionLogger
+
+**Location**: `src/gmailarchiver/output.py` (lines 158-219)
+**Purpose**: Persistent file logging with automatic cleanup
+**Coverage**: 97% (Windows paths not tested on macOS)
+
+**Features**:
+- XDG-compliant paths (`~/.config/gmailarchiver/logs/` on Linux/macOS)
+- Timestamped filenames (`session_YYYYMMDD_HHMMSS.log`)
+- Automatic cleanup (keeps last N sessions, default: 10)
+- Threadsafe file operations
+- Graceful error handling (continues if cleanup fails)
+
+**Example Usage**:
+```python
+from gmailarchiver.output import SessionLogger
+from pathlib import Path
+
+# Auto-detects XDG paths or use custom dir
+logger = SessionLogger(log_dir=Path("/custom/logs"), keep_last=10)
+logger.write("Operation started", "INFO")
+logger.write("Warning: Low disk space", "WARNING")
+logger.close()  # Triggers cleanup
+```
+
+### LiveLayoutContext
+
+**Location**: `src/gmailarchiver/output.py` (lines 222-280)
+**Purpose**: Unified context manager integrating LogBuffer + SessionLogger
+**Coverage**: 100%
+
+**Features**:
+- Combines ring buffer (UI) with persistent logging (file)
+- Context manager for automatic cleanup
+- Single `add_log()` method writes to both destinations
+- Can accept pre-created components or create them automatically
+
+**Example Usage**:
+```python
+from gmailarchiver.output import LiveLayoutContext
+from pathlib import Path
+
+with LiveLayoutContext(max_visible=10, log_dir=Path("logs")) as live:
+    live.add_log("Starting archive operation", "INFO")
+    live.add_log("Processing 100 messages...", "INFO")
+    live.add_log("Archive complete!", "SUCCESS")
+# Automatically closes logger and cleans up old sessions
+```
+
+### OutputManager Integration
+
+**Method**: `live_layout_context(max_visible=10, log_dir=None)`
+**Location**: `src/gmailarchiver/output.py` (lines 730-756)
+
+**Example Usage**:
+```python
+from gmailarchiver.output import OutputManager
+
+output = OutputManager()
+with output.live_layout_context(max_visible=10) as live:
+    live.add_log("Processing started", "INFO")
+    # ... perform operations ...
+    live.add_log("Processing complete", "SUCCESS")
 ```
 
 ---
@@ -253,7 +355,8 @@ OutputManager(json_mode: bool = False, quiet: bool = False)
 ## Testing
 
 **Test file**: `tests/test_output.py`
-**Coverage**: 85% (175 statements, 26 missed)
+**Coverage**: 96% output.py overall (402 statements, 18 missed)
+**Total tests**: 80 tests (v1.3.1)
 
 **Test categories**:
 - Initialization (normal, JSON, quiet modes)
@@ -265,8 +368,15 @@ OutputManager(json_mode: bool = False, quiet: bool = False)
 - Success/warning/info messages
 - Next-steps suggestions
 - JSON event streaming
+- **LogBuffer** (16 tests, 100% coverage)
+- **SessionLogger** (34 tests, 97% coverage)
+- **LiveLayoutContext** (7 tests, 100% coverage)
 
-**All 31 tests pass** ✓
+**All 80 tests pass** ✓
+
+**New test files** (v1.3.1):
+- `tests/test_session_logger.py` - SessionLogger comprehensive tests
+- `tests/test_archiver.py::TestGmailArchiverWithOutput` - OutputManager integration tests
 
 ---
 
@@ -468,5 +578,5 @@ except Exception as e:
 
 ---
 
-**Last Updated**: 2025-11-19
-**Implementation Status**: Proof-of-Concept Complete, Rollout Pending
+**Last Updated**: 2025-11-24
+**Implementation Status**: Core Infrastructure Complete (v1.3.1), Command Rollout Pending

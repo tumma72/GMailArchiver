@@ -1418,3 +1418,50 @@ class TestBodyPreviewExceptions:
             # Should handle exception and return empty string
             result = archiver._extract_body_preview(msg)
             assert result == ""
+
+
+class TestGmailArchiverWithOutput:
+    """Tests for GmailArchiver with OutputManager integration."""
+
+    def test_init_with_output_manager(self) -> None:
+        """Test initialization with OutputManager."""
+        from gmailarchiver.output import OutputManager
+
+        mock_client = Mock()
+        output = OutputManager()
+
+        archiver = GmailArchiver(mock_client, output=output)
+
+        assert archiver.output is output
+
+    def test_init_without_output_manager(self) -> None:
+        """Test initialization without OutputManager (backward compat)."""
+        mock_client = Mock()
+
+        archiver = GmailArchiver(mock_client)
+
+        assert archiver.output is None
+
+    def test_log_helper_with_output(self) -> None:
+        """Test _log() helper uses OutputManager when available."""
+
+        from gmailarchiver.output import OutputManager
+
+        mock_client = Mock()
+        output = OutputManager()
+
+        archiver = GmailArchiver(mock_client, output=output)
+
+        # Capture console output
+        with patch.object(output, 'info') as mock_info:
+            archiver._log("Test message")
+            mock_info.assert_called_once_with("Test message")
+
+    def test_log_helper_without_output(self) -> None:
+        """Test _log() helper falls back to print() when no OutputManager."""
+        mock_client = Mock()
+        archiver = GmailArchiver(mock_client)
+
+        with patch('builtins.print') as mock_print:
+            archiver._log("Test message")
+            mock_print.assert_called_once_with("Test message")

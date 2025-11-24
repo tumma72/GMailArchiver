@@ -5,14 +5,18 @@ Supports progress tracking, task status, and actionable next-steps suggestions.
 """
 
 import json
+import os
 import sys
 import time
+from collections import deque
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, TextIO
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
@@ -25,6 +29,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
+from rich.text import Text
 
 
 @dataclass
@@ -40,6 +45,311 @@ class SearchResultEntry:
     archive_file: str
     mbox_offset: int
     relevance_score: float | None
+
+
+@dataclass
+class LogEntry:
+    """A single log entry with metadata for deduplication and display."""
+    timestamp: float
+    level: str  # INFO, WARNING, ERROR, SUCCESS
+    message: str
+    count: int = 1  # Number of times this message appeared (for deduplication)
+
+
+class LogBuffer:
+    """Ring buffer for log messages with deduplication and Rich rendering.
+
+    Used by LiveLayoutContext to display scrolling log messages in a fixed-size
+    window. Supports:
+    - FIFO ring buffer (fixed max_visible size)
+    - Message deduplication (by message text)
+    - Severity symbols (ℹ, ⚠, ✗, ✓)
+    - Duplicate count display (x2, x3, etc.)
+    - Separate storage for all logs (for session logging)
+
+    This is part of v1.3.1's live layout system for flicker-free progress display.
+    """
+
+    SEVERITY_MAP = {
+        "INFO": ("ℹ", "blue"),
+        "WARNING": ("⚠", "yellow"),
+        "ERROR": ("✗", "red"),
+        "SUCCESS": ("✓", "green"),
+    }
+
+    def __init__(self, max_visible: int = 10) -> None:
+        """Initialize LogBuffer.
+
+        Args:
+            max_visible: Maximum number of log entries to show in UI.
+                         Set to 0 to disable visible buffer (store all in all_logs only).
+
+        Raises:
+            ValueError: If max_visible is negative.
+        """
+        if max_visible < 0:
+            raise ValueError("max_visible must be non-negative")
+
+        self._max_visible = max_visible
+        self._visible: deque[LogEntry] = deque(maxlen=max_visible if max_visible > 0 else None)
+        self._all_logs: list[LogEntry] = []
+        self._entry_map: dict[str, LogEntry] = {}  # Message text -> LogEntry
+
+    def add(self, message: str, level: str = "INFO") -> None:
+        """Add a log entry with deduplication.
+
+        If the message already exists:
+        - Increment its count
+        - Update its timestamp
+        - Re-add to visible buffer if it was evicted
+
+        Args:
+            message: Log message text.
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS).
+        """
+        if message in self._entry_map:
+            # Duplicate: update existing entry
+            entry = self._entry_map[message]
+            entry.count += 1
+            entry.timestamp = time.time()
+
+            # If evicted from visible buffer, re-add it
+            if self._max_visible > 0 and entry not in self._visible:
+                self._visible.append(entry)
+        else:
+            # New entry
+            entry = LogEntry(timestamp=time.time(), level=level, message=message)
+            self._entry_map[message] = entry
+            self._all_logs.append(entry)
+
+            # Add to visible buffer if enabled
+            if self._max_visible > 0:
+                self._visible.append(entry)
+
+    def render(self) -> Group:
+        """Render visible logs as Rich Group with severity symbols.
+
+        Returns:
+            Rich Group containing formatted log entries.
+        """
+        renderables = []
+        for entry in self._visible:
+            symbol, color = self.SEVERITY_MAP.get(entry.level, ("?", "white"))
+            count_str = f" [dim](x{entry.count})[/dim]" if entry.count > 1 else ""
+            text = Text.from_markup(f"[{color}]{symbol}[/{color}] {entry.message}{count_str}")
+            renderables.append(text)
+        return Group(*renderables)
+
+    def get_all_logs(self) -> list[LogEntry]:
+        """Get a copy of all log entries (for session logging).
+
+        Returns:
+            Copy of all log entries (not just visible ones).
+        """
+        return self._all_logs.copy()
+
+    def clear(self) -> None:
+        """Clear all log entries."""
+        self._visible.clear()
+        self._all_logs.clear()
+        self._entry_map.clear()
+
+
+class LiveLayoutContext:
+    """Flicker-free live layout for progress tracking with integrated logging.
+
+    Combines Rich Live display with LogBuffer and SessionLogger for a clean,
+    professional output experience. Used as a context manager to ensure proper
+    cleanup.
+
+    Features:
+    - Flicker-free updates via Rich Live
+    - Integrated log display (LogBuffer) + session logging (SessionLogger)
+    - Automatic component initialization
+    - Context manager support
+
+    This is part of v1.3.1's live layout system to fix flickering progress bars.
+    """
+
+    def __init__(
+        self,
+        log_buffer: LogBuffer | None = None,
+        session_logger: SessionLogger | None = None,
+        max_visible: int = 10,
+        log_dir: Path | None = None,
+    ) -> None:
+        """Initialize LiveLayoutContext.
+
+        Args:
+            log_buffer: LogBuffer instance (creates default if None)
+            session_logger: SessionLogger instance (creates default if None)
+            max_visible: Max visible log lines (if creating default LogBuffer)
+            log_dir: Log directory for SessionLogger (if creating default)
+        """
+        # Create or use provided components
+        if log_buffer is not None:
+            self.log_buffer = log_buffer
+        else:
+            self.log_buffer = LogBuffer(max_visible=max_visible)
+
+        if session_logger is not None:
+            self.session_logger = session_logger
+        else:
+            self.session_logger = SessionLogger(log_dir=log_dir)
+
+    def add_log(self, message: str, level: str = "INFO") -> None:
+        """Add log entry to both LogBuffer (UI) and SessionLogger (file).
+
+        Args:
+            message: Log message text
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS, DEBUG)
+        """
+        # Add to visible log buffer (for UI)
+        self.log_buffer.add(message, level)
+
+        # Write to session log file (for debugging)
+        self.session_logger.write(message, level)
+
+    def __enter__(self) -> LiveLayoutContext:
+        """Context manager entry - starts live layout."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit - ensures SessionLogger is closed."""
+        self.session_logger.close()
+
+
+class SessionLogger:
+    """Persistent file logger for debugging and audit trail.
+
+    Writes ALL log entries (including DEBUG) to a timestamped file for
+    post-session analysis. Complements LogBuffer which only shows last N
+    visible logs in the UI.
+
+    Features:
+    - XDG-compliant log directory (~/.config/gmailarchiver/logs)
+    - Timestamped session files (session_YYYY-MM-DD_HHMMSS.log)
+    - Automatic cleanup of old log files
+    - Immediate flush for real-time debugging
+    - Context manager support
+
+    This is part of v1.3.1's live layout system for comprehensive debugging.
+    """
+
+    @staticmethod
+    def _get_default_log_dir() -> Path:
+        """Get default log directory following XDG Base Directory standard.
+
+        Returns:
+            Path to log directory:
+            - Linux/macOS: ~/.config/gmailarchiver/logs
+            - Windows: %APPDATA%/gmailarchiver/logs
+        """
+        # Respect XDG_CONFIG_HOME if set (Linux/macOS)
+        config_home = os.environ.get("XDG_CONFIG_HOME")
+        if config_home:
+            config_dir = Path(config_home)
+        elif os.name == "nt":  # Windows
+            config_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        else:  # macOS/Linux
+            config_dir = Path.home() / ".config"
+
+        # Create gmailarchiver/logs subdirectory
+        log_dir = config_dir / "gmailarchiver" / "logs"
+        return log_dir
+
+    def __init__(self, log_dir: Path | None = None, keep_last: int = 10) -> None:
+        """Initialize SessionLogger.
+
+        Args:
+            log_dir: Directory for log files (None = use XDG default)
+            keep_last: Number of old log files to keep (0 = keep all)
+
+        Raises:
+            PermissionError: If directory cannot be created
+            OSError: If directory path is invalid
+        """
+        # Determine log directory
+        if log_dir is None:
+            self.log_dir = self._get_default_log_dir()
+        else:
+            self.log_dir = log_dir
+
+        # Create directory if needed
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate timestamped filename
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        self.log_file = self.log_dir / f"session_{timestamp}.log"
+
+        # Open file handle
+        self._file_handle: TextIO = self.log_file.open("w", encoding="utf-8")
+        self._closed = False
+
+        # Cleanup old logs if requested
+        if keep_last > 0:
+            self._cleanup_old_logs(keep_last)
+
+    def write(self, message: str, level: str = "INFO") -> None:
+        """Write a log entry with timestamp and severity.
+
+        Args:
+            message: Log message text
+            level: Severity level (DEBUG, INFO, WARNING, ERROR, SUCCESS)
+
+        Raises:
+            ValueError: If logger is closed
+            OSError: If write fails (disk full, etc.)
+        """
+        if self._closed:
+            raise ValueError("Cannot write to closed SessionLogger")
+
+        # Format: YYYY-MM-DD HH:MM:SS.mmm [LEVEL] message
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        log_line = f"{timestamp} [{level}] {message}\n"
+
+        # Write and flush immediately for real-time debugging
+        self._file_handle.write(log_line)
+        self._file_handle.flush()
+
+    def close(self) -> None:
+        """Close the log file handle.
+
+        Safe to call multiple times.
+        """
+        if not self._closed:
+            self._file_handle.close()
+            self._closed = True
+
+    def __enter__(self) -> SessionLogger:
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit - ensures file is closed."""
+        self.close()
+
+    def _cleanup_old_logs(self, keep_last: int) -> None:
+        """Remove old log files beyond retention limit.
+
+        Args:
+            keep_last: Number of old log files to keep (most recent)
+        """
+        # Find all session log files (exclude current session)
+        all_logs = sorted(
+            [f for f in self.log_dir.glob("session_*.log") if f != self.log_file],
+            key=lambda p: p.stat().st_mtime,
+        )
+
+        # Remove oldest files beyond retention limit
+        files_to_remove = all_logs[: -keep_last] if len(all_logs) > keep_last else []
+
+        for old_log in files_to_remove:
+            try:
+                old_log.unlink()
+            except OSError:
+                # Ignore errors during cleanup (file might be in use, etc.)
+                pass
 
 
 class ProgressTracker:
@@ -416,6 +726,34 @@ class OutputManager:
             # Clear live context
             self._live = None
             self._progress = None
+
+    @contextmanager
+    def live_layout_context(
+        self, max_visible: int = 10, log_dir: Path | None = None
+    ) -> Generator[LiveLayoutContext]:
+        """Context manager for flicker-free live layout with integrated logging.
+
+        Provides:
+        - LogBuffer (last N visible log lines)
+        - SessionLogger (persistent file logging)
+        - Clean automatic cleanup
+
+        Args:
+            max_visible: Max visible log lines (default: 10)
+            log_dir: Log directory for SessionLogger (default: XDG-compliant)
+
+        Yields:
+            LiveLayoutContext instance for logging
+
+        Example:
+            with output.live_layout_context() as live:
+                live.add_log("Processing started", "INFO")
+                # Do work...
+                live.add_log("Processing complete", "SUCCESS")
+        """
+        live_context = LiveLayoutContext(max_visible=max_visible, log_dir=log_dir)
+        with live_context:
+            yield live_context
 
     def task_complete(
         self, name: str, success: bool, details: str | None = None, elapsed: float | None = None

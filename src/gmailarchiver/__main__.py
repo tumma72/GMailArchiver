@@ -57,7 +57,10 @@ def main(
 @app.command()
 def archive(
     age_threshold: str = typer.Argument(
-        ..., help="Age threshold (e.g., '3y' for 3 years, '6m' for 6 months, '2w' for 2 weeks)"
+        ...,
+        help="Age threshold or exact date. "
+        "Relative: '3y' (3 years), '6m' (6 months), '2w' (2 weeks), '30d' (30 days). "
+        "Exact: '2024-01-01' (ISO format YYYY-MM-DD)",
     ),
     output: str = typer.Option(
         None, "--output", "-o", help="Output file path (default: archive_YYYYMMDD.mbox[.gz])"
@@ -89,12 +92,14 @@ def archive(
     Archive Gmail messages older than the specified threshold.
 
     Examples:
-        $ gmailarchiver archive 3y
-        $ gmailarchiver archive 3y --compress zstd
-        $ gmailarchiver archive 3y --compress gzip
-        $ gmailarchiver archive 3y --trash
-        $ gmailarchiver archive 6m --dry-run
-        $ gmailarchiver archive 3y --json
+
+    \b
+    $ gmailarchiver archive 3y
+    $ gmailarchiver archive 3y --compress zstd
+    $ gmailarchiver archive 3y --compress gzip
+    $ gmailarchiver archive 3y --trash
+    $ gmailarchiver archive 6m --dry-run
+    $ gmailarchiver archive 3y --json
     """
     from gmailarchiver.output import OutputManager
 
@@ -131,7 +136,7 @@ def archive(
 
     # Initialize clients
     gmail_client = GmailClient(creds)
-    archiver = GmailArchiver(gmail_client)
+    archiver = GmailArchiver(gmail_client, output=out)
 
     # Perform archiving
     try:
@@ -460,7 +465,7 @@ def retry_delete_cmd(
         client = GmailClient(creds)
 
         # 5. Create archiver (for deletion functionality)
-        archiver = GmailArchiver(client, state_db)
+        archiver = GmailArchiver(client, state_db, output=output)
 
         # 6. Delete messages with appropriate confirmation
         if permanent:

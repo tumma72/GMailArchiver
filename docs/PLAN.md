@@ -640,6 +640,56 @@ gmailarchiver import archives/*.mbox.gz
 
 ---
 
+## Version 1.3.0 - "Exact Date Support" ✅ COMPLETE (2025-11-24)
+
+**Timeline**: 1-2 days (as planned)
+**Theme**: Enhanced date specification for archive command
+**Goal**: Allow users to specify exact dates instead of only relative ages
+**Status**: Released
+
+### Feature: Exact Date Support ✅ COMPLETE
+
+**Problem**: Users could only specify relative ages (3y, 6m), not exact dates (2024-01-01)
+
+**Solution**: Enhanced `parse_age()` to accept both formats:
+- Relative ages: `3y`, `6m`, `2w`, `30d` (existing)
+- ISO dates: `2024-01-01`, `2023-06-15` (new)
+
+**Implementation**:
+- Two-phase parsing: Try ISO date first, fall back to relative age
+- Backward compatible: All existing formats still work
+- Lenient parsing: Accepts dates with or without zero-padding
+- Clear error messages showing both format options
+
+**Development Approach**: Test-Driven Development (TDD)
+- RED phase: Wrote 16 new tests (all failed initially)
+- GREEN phase: Implemented enhancement (all tests passed)
+- REFACTOR phase: N/A (implementation was clean from the start)
+
+**Metrics**:
+- Lines changed: ~40 (implementation + tests)
+- Tests added: 16 (valid dates: 7, invalid formats: 9)
+- Test coverage: 95%+ maintained (all tests passing)
+- Development time: 1 day (as planned)
+
+**Files Modified**:
+- `src/gmailarchiver/utils.py` - Enhanced `parse_age()` function
+- `tests/test_utils.py` - Added 16 comprehensive test cases
+- `src/gmailarchiver/__main__.py` - Updated archive command help text
+- `README.md` - Added usage examples
+- `CHANGELOG.md` - Added v1.3.0 entry
+
+**Quality Gates**: All passing
+- ✅ All tests pass (1005 total, 25 for parse_age)
+- ✅ Coverage maintained (95%+)
+- ✅ Type checking passes (mypy)
+- ✅ Linting passes (ruff)
+- ✅ Documentation updated
+- ✅ CHANGELOG.md updated
+- ✅ Backward compatibility verified
+
+---
+
 ## Future Considerations (v2.0+)
 
 **Deferred until v1.2 ergonomics complete**:

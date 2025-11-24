@@ -33,7 +33,8 @@ class GmailArchiver:
     def __init__(
         self,
         gmail_client: GmailClient,
-        state_db_path: str = 'archive_state.db'
+        state_db_path: str = 'archive_state.db',
+        output: Any | None = None
     ) -> None:
         """
         Initialize archiver.
@@ -41,11 +42,34 @@ class GmailArchiver:
         Args:
             gmail_client: Gmail API client
             state_db_path: Path to state database
+            output: Optional OutputManager for structured logging (v1.3.1+)
         """
         self.client = gmail_client
         self.state_db_path = state_db_path
+        self.output = output
         self.db_manager: DBManager | None = None
         self.hybrid_storage: HybridStorage | None = None
+
+    def _log(self, message: str, level: str = "INFO") -> None:
+        """Log message through OutputManager if available, otherwise print.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if self.output:
+            # Use OutputManager's methods
+            if level == "WARNING":
+                self.output.warning(message)
+            elif level == "ERROR":
+                self.output.error(message, exit_code=0)
+            elif level == "SUCCESS":
+                self.output.success(message)
+            else:  # INFO
+                self.output.info(message)
+        else:
+            # Fallback to print for backward compatibility
+            print(message)
 
     def archive(
         self,
@@ -78,8 +102,8 @@ class GmailArchiver:
         cutoff_date = parse_age(age_threshold)
         query = f"before:{datetime_to_gmail_query(cutoff_date)}"
 
-        print(f"Searching for emails older than {age_threshold} ({cutoff_date.date()})")
-        print(f"Query: {query}")
+        self._log(f"Searching for emails older than {age_threshold} ({cutoff_date.date()})")
+        self._log(f"Query: {query}")
 
         # List messages
         with Progress(
@@ -91,7 +115,7 @@ class GmailArchiver:
             progress.update(task, completed=True)
 
         if not message_list:
-            print("No messages found matching criteria")
+            self._log("No messages found matching criteria")
             return {
                 'messages_found': 0,
                 'messages_archived': 0,
@@ -99,7 +123,7 @@ class GmailArchiver:
                 'archive_file': None
             }
 
-        print(f"Found {len(message_list)} messages")
+        self._log(f"Found {len(message_list)} messages")
 
         # Filter out already-archived messages if incremental
         message_ids = [msg['id'] for msg in message_list]
@@ -126,10 +150,10 @@ class GmailArchiver:
             skipped_count = original_count - len(message_ids)
 
             if skipped_count > 0:
-                print(f"Skipping {skipped_count} already-archived messages")
+                self._log(f"Skipping {skipped_count} already-archived messages")
 
         if not message_ids:
-            print("All messages already archived")
+            self._log("All messages already archived")
             return {
                 'messages_found': len(message_list),
                 'messages_archived': 0,
@@ -138,9 +162,9 @@ class GmailArchiver:
             }
 
         if dry_run:
-            print(f"\nDRY RUN: Would archive {len(message_ids)} messages to {output_file}")
+            self._log(f"\nDRY RUN: Would archive {len(message_ids)} messages to {output_file}")
             if compress:
-                print(f"          With {compress} compression")
+                self._log(f"          With {compress} compression")
             return {
                 'messages_found': len(message_list),
                 'messages_to_archive': len(message_ids),
@@ -265,7 +289,8 @@ class GmailArchiver:
 
                     except Exception as e:
                         # Log error but continue with next message
-                        print(f"Warning: Failed to archive message {message['id']}: {e}")
+                        msg_id = message['id']
+                        self._log(f"Warning: Failed to archive message {msg_id}: {e}", "WARNING")
                         failed_count += 1
 
                     progress.advance(task)
@@ -277,11 +302,11 @@ class GmailArchiver:
         # Print summary
         final_path = output_path
         file_size = final_path.stat().st_size if final_path.exists() else 0
-        print(f"\n✓ Archived {archived_count} messages")
+        self._log(f"\n✓ Archived {archived_count} messages", "SUCCESS")
         if failed_count > 0:
-            print(f"  ⚠ Failed: {failed_count} messages (errors during archiving)")
-        print(f"  File: {final_path}")
-        print(f"  Size: {format_bytes(file_size)}")
+            self._log(f"  ⚠ Failed: {failed_count} messages (errors during archiving)", "WARNING")
+        self._log(f"  File: {final_path}")
+        self._log(f"  Size: {format_bytes(file_size)}")
 
         return {
             'archived': archived_count,
@@ -312,7 +337,7 @@ class GmailArchiver:
         # Clean up any orphaned lock files from previous runs
         lock_file = Path(str(temp_mbox_path) + '.lock')
         if lock_file.exists():
-            print(f"Warning: Removing orphaned lock file: {lock_file}")
+            self._log(f"Warning: Removing orphaned lock file: {lock_file}", "WARNING")
             lock_file.unlink()
 
         # Create mbox file
@@ -409,11 +434,11 @@ class GmailArchiver:
             try:
                 mbox.unlock()
             except Exception as e:
-                print(f"Warning: Failed to unlock mbox: {e}")
+                self._log(f"Warning: Failed to unlock mbox: {e}", "WARNING")
             try:
                 mbox.close()
             except Exception as e:
-                print(f"Warning: Failed to close mbox: {e}")
+                self._log(f"Warning: Failed to close mbox: {e}", "WARNING")
 
         # Compress if requested
         if compress:
@@ -431,11 +456,11 @@ class GmailArchiver:
         # Print summary
         final_path = output_path
         file_size = final_path.stat().st_size if final_path.exists() else 0
-        print(f"\n✓ Archived {archived_count} messages")
+        self._log(f"\n✓ Archived {archived_count} messages", "SUCCESS")
         if failed > 0:
-            print(f"  ⚠ Failed: {failed} messages (deleted/moved during archiving)")
-        print(f"  File: {final_path}")
-        print(f"  Size: {format_bytes(file_size)}")
+            self._log(f"  ⚠ Failed: {failed} messages (deleted/moved during archiving)", "WARNING")
+        self._log(f"  File: {final_path}")
+        self._log(f"  Size: {format_bytes(file_size)}")
 
         return {
             'archived': archived_count,
@@ -457,7 +482,7 @@ class GmailArchiver:
             dest_path: Destination compressed file
             compress_format: Compression format ('gzip', 'lzma', or 'zstd')
         """
-        print(f"\nCompressing with {compress_format}...")
+        self._log(f"\nCompressing with {compress_format}...", "INFO")
 
         if compress_format == 'gzip':
             with open(source_path, 'rb') as f_in:
@@ -570,12 +595,12 @@ class GmailArchiver:
             Number of messages deleted
         """
         if permanent:
-            print(f"Permanently deleting {len(message_ids)} messages...")
+            self._log(f"Permanently deleting {len(message_ids)} messages...", "INFO")
             count = self.client.delete_messages_permanent(message_ids)
-            print(f"✓ Permanently deleted {count} messages")
+            self._log(f"✓ Permanently deleted {count} messages", "SUCCESS")
         else:
-            print(f"Moving {len(message_ids)} messages to trash...")
+            self._log(f"Moving {len(message_ids)} messages to trash...", "INFO")
             count = self.client.trash_messages(message_ids)
-            print(f"✓ Moved {count} messages to trash (30-day recovery)")
+            self._log(f"✓ Moved {count} messages to trash (30-day recovery)", "SUCCESS")
 
         return count

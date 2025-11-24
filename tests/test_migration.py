@@ -497,7 +497,40 @@ class TestMigrationWorkflow:
         cursor = conn.execute("SELECT COUNT(*) FROM messages")
         assert cursor.fetchone()[0] == 0, "Should skip messages from missing mbox files"
 
-        conn.close()
+    def test_extract_body_preview_multipart_decode_error(self):
+        """Test body preview extraction handles decode errors in multipart messages."""
+        import email.mime.multipart
+        import email.mime.text
+        from unittest.mock import MagicMock, patch
+
+        manager = MigrationManager(":memory:")
+
+        # Create multipart message with a part that will fail to decode
+        msg = email.mime.multipart.MIMEMultipart()
+        text_part = email.mime.text.MIMEText("Test body", "plain")
+
+        # Mock get_payload to raise an exception (lines 297-298)
+        with patch.object(text_part, 'get_payload', side_effect=Exception("Decode error")):
+            msg.attach(text_part)
+            result = manager._extract_body_preview(msg)
+            # Should return empty string when all parts fail
+            assert result == ""
+
+    def test_extract_body_preview_non_multipart_decode_error(self):
+        """Test body preview extraction handles decode errors in non-multipart messages."""
+        from unittest.mock import patch
+
+        manager = MigrationManager(":memory:")
+
+        # Create simple message
+        msg = email.message.EmailMessage()
+        msg.set_content("Test content")
+
+        # Mock get_payload to raise exception (lines 304-305)
+        with patch.object(msg, 'get_payload', side_effect=Exception("Decode error")):
+            result = manager._extract_body_preview(msg)
+            # Should return empty string on error
+            assert result == ""
 
     def test_migrate_extracts_full_metadata(self, tmp_path):
         """Test migration extracts all v1.1 metadata fields."""
@@ -2035,3 +2068,444 @@ def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
         assert b'<single@example.com>' in message_data
 
     conn.close()
+
+
+class TestMigrationErrorPaths:
+    """Test error handling during migration."""
+
+    def test_migrate_message_processing_error(self, tmp_path):
+        """Test migration handles individual message processing errors (lines 528-536)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox with one valid message
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<valid@example.com>'
+        msg1['Subject'] = 'Valid Message'
+        msg1['From'] = 'test@example.com'
+        msg1.set_content('Valid message body')
+        mbox.add(msg1)
+        mbox.close()
+
+        # Create v1.0 database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE archived_messages (
+                gmail_id TEXT PRIMARY KEY,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                subject TEXT,
+                from_addr TEXT,
+                message_date TEXT,
+                checksum TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT,
+                query TEXT,
+                messages_archived INTEGER,
+                archive_file TEXT
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', ('msg1', '2024-01-01T00:00:00', str(mbox_path), 'Valid Message',
+              'test@example.com', '2024-01-01', 'checksum123'))
+        conn.commit()
+        conn.close()
+
+        # Now patch the mbox to cause errors during message processing
+        from unittest.mock import patch, MagicMock
+
+        manager = MigrationManager(db_path)
+
+        # Patch mailbox.mbox to return a mock that raises errors
+        original_mbox = mailbox.mbox
+
+        class ErrorMbox:
+            """Mock mbox that raises errors for specific messages."""
+            def __init__(self, path):
+                self.real_mbox = original_mbox(path)
+                self._toc = self.real_mbox._toc
+
+            def keys(self):
+                return self.real_mbox.keys()
+
+            def __getitem__(self, key):
+                # Raise error when accessing message to trigger lines 528-536
+                raise Exception("Simulated message processing error")
+
+            def close(self):
+                self.real_mbox.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        with patch('mailbox.mbox', side_effect=lambda p: ErrorMbox(p)):
+            # Migration should complete despite message errors
+            manager.migrate_v1_to_v1_1()
+
+        # Verify migration completed (message skipped due to error)
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == "1.1"
+
+        # Message should be skipped (processing error)
+        cursor = conn.execute("SELECT COUNT(*) FROM messages")
+        assert cursor.fetchone()[0] == 0
+        conn.close()
+
+    def test_migrate_mbox_scan_failure(self, tmp_path):
+        """Test migration handles mbox scan failures (lines 547-552)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<test@example.com>'
+        msg.set_content('Test')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create v1.0 database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE archived_messages (
+                gmail_id TEXT PRIMARY KEY,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                subject TEXT,
+                from_addr TEXT,
+                message_date TEXT,
+                checksum TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT,
+                query TEXT,
+                messages_archived INTEGER,
+                archive_file TEXT
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', ('msg1', '2024-01-01T00:00:00', str(mbox_path), 'Test',
+              'test@example.com', '2024-01-01', 'checksum123'))
+        conn.commit()
+        conn.close()
+
+        # Patch mailbox.mbox to raise error on opening
+        from unittest.mock import patch
+
+        manager = MigrationManager(db_path)
+
+        with patch('mailbox.mbox', side_effect=Exception("Failed to open mbox")):
+            # Migration should complete but skip failed archive
+            manager.migrate_v1_to_v1_1()
+
+        # Verify migration completed
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == "1.1"
+        conn.close()
+
+    def test_rollback_migration_error(self, tmp_path):
+        """Test rollback handles errors (lines 653-654)."""
+        db_path = tmp_path / "test.db"
+        backup_path = tmp_path / "backup.db"
+
+        # Create a database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE test (id INTEGER)")
+        conn.close()
+
+        # Create a backup
+        import shutil
+        shutil.copy2(db_path, backup_path)
+
+        manager = MigrationManager(db_path)
+
+        # Make backup_path unreadable to trigger error
+        from unittest.mock import patch
+
+        with patch('shutil.copy2', side_effect=PermissionError("Cannot copy")):
+            with pytest.raises(MigrationError, match="Rollback failed"):
+                manager.rollback_migration(backup_path)
+
+    def test_backfill_empty_invalid_messages(self, tmp_path):
+        """Test backfill returns 0 for empty list (line 680)."""
+        db_path = tmp_path / "test.db"
+
+        # Create v1.1 database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT,
+                archive_file TEXT,
+                mbox_offset INTEGER,
+                mbox_length INTEGER
+            )
+        ''')
+        conn.commit()
+        conn.close()
+
+        manager = MigrationManager(db_path)
+        result = manager.backfill_offsets_from_mbox([])
+        assert result == 0
+
+    def test_backfill_message_processing_error(self, tmp_path):
+        """Test backfill handles message processing errors (lines 745-751)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<test@example.com>'
+        msg.set_content('Test')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create v1.1 database with invalid offset
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT,
+                archive_file TEXT,
+                mbox_offset INTEGER,
+                mbox_length INTEGER
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO messages VALUES (?, ?, ?, ?, ?)
+        ''', ('msg1', '<test@example.com>', str(mbox_path), -1, -1))
+        conn.commit()
+        conn.close()
+
+        manager = MigrationManager(db_path)
+
+        # Patch to cause error during message processing
+        from unittest.mock import patch, MagicMock
+
+        original_mbox = mailbox.mbox
+
+        class ErrorMbox:
+            """Mock mbox that raises errors."""
+            def __init__(self, path):
+                self.real_mbox = original_mbox(path)
+                self._toc = self.real_mbox._toc
+
+            def keys(self):
+                return self.real_mbox.keys()
+
+            def __getitem__(self, key):
+                raise Exception("Processing error")
+
+            def close(self):
+                self.real_mbox.close()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        invalid_msgs = [
+            {'gmail_id': 'msg1', 'rfc_message_id': '<test@example.com>',
+             'archive_file': str(mbox_path)}
+        ]
+
+        with patch('mailbox.mbox', side_effect=lambda p: ErrorMbox(p)):
+            # Should continue despite error
+            result = manager.backfill_offsets_from_mbox(invalid_msgs)
+            # No messages backfilled due to error
+            assert result == 0
+
+    def test_backfill_mbox_scan_error(self, tmp_path):
+        """Test backfill handles mbox scan failures (lines 753-757)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<test@example.com>'
+        msg.set_content('Test')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create v1.1 database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT,
+                archive_file TEXT,
+                mbox_offset INTEGER,
+                mbox_length INTEGER
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO messages VALUES (?, ?, ?, ?, ?)
+        ''', ('msg1', '<test@example.com>', str(mbox_path), -1, -1))
+        conn.commit()
+        conn.close()
+
+        manager = MigrationManager(db_path)
+
+        # Patch mailbox.mbox to fail during scanning
+        from unittest.mock import patch
+
+        invalid_msgs = [
+            {'gmail_id': 'msg1', 'rfc_message_id': '<test@example.com>',
+             'archive_file': str(mbox_path)}
+        ]
+
+        with patch('mailbox.mbox', side_effect=Exception("Scan error")):
+            result = manager.backfill_offsets_from_mbox(invalid_msgs)
+            assert result == 0
+
+    def test_backfill_rollback_on_error(self, tmp_path):
+        """Test backfill rolls back on database errors (lines 765-767)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg = email.message.EmailMessage()
+        msg['Message-ID'] = '<test@example.com>'
+        msg.set_content('Test')
+        mbox.add(msg)
+        mbox.close()
+
+        # Create v1.1 database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT,
+                archive_file TEXT,
+                mbox_offset INTEGER,
+                mbox_length INTEGER
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO messages VALUES (?, ?, ?, ?, ?)
+        ''', ('msg1', '<test@example.com>', str(mbox_path), -1, -1))
+        conn.commit()
+        conn.close()
+
+        manager = MigrationManager(db_path)
+
+        invalid_msgs = [
+            {'gmail_id': 'msg1', 'rfc_message_id': '<test@example.com>',
+             'archive_file': str(mbox_path)}
+        ]
+
+        # Patch commit to raise an error to trigger lines 765-767
+        from unittest.mock import patch, MagicMock
+
+        def failing_commit():
+            raise sqlite3.OperationalError("Database commit failed")
+
+        # Get the connection and patch its commit method
+        conn = manager._connect()
+        original_commit = conn.commit
+
+        try:
+            with patch.object(conn, 'commit', side_effect=failing_commit):
+                with pytest.raises(MigrationError, match="Backfill failed"):
+                    manager.backfill_offsets_from_mbox(invalid_msgs)
+        finally:
+            conn.commit = original_commit
+
+    def test_backfill_multiple_messages_offset_calculation(self, tmp_path):
+        """Test backfill calculates offsets correctly for multiple messages (lines 726-727)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create test mbox with TWO messages
+        import mailbox
+        mbox = mailbox.mbox(str(mbox_path))
+        msg1 = email.message.EmailMessage()
+        msg1['Message-ID'] = '<first@example.com>'
+        msg1.set_content('First message')
+        mbox.add(msg1)
+
+        msg2 = email.message.EmailMessage()
+        msg2['Message-ID'] = '<second@example.com>'
+        msg2.set_content('Second message')
+        mbox.add(msg2)
+        mbox.close()
+
+        # Create v1.1 database with invalid offsets for both messages
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT,
+                archive_file TEXT,
+                mbox_offset INTEGER,
+                mbox_length INTEGER
+            )
+        ''')
+        conn.execute('''
+            INSERT INTO messages VALUES (?, ?, ?, ?, ?)
+        ''', ('msg1', '<first@example.com>', str(mbox_path), -1, -1))
+        conn.execute('''
+            INSERT INTO messages VALUES (?, ?, ?, ?, ?)
+        ''', ('msg2', '<second@example.com>', str(mbox_path), -1, -1))
+        conn.commit()
+        conn.close()
+
+        manager = MigrationManager(db_path)
+
+        invalid_msgs = [
+            {'gmail_id': 'msg1', 'rfc_message_id': '<first@example.com>',
+             'archive_file': str(mbox_path)},
+            {'gmail_id': 'msg2', 'rfc_message_id': '<second@example.com>',
+             'archive_file': str(mbox_path)}
+        ]
+
+        # Backfill should work for both messages
+        result = manager.backfill_offsets_from_mbox(invalid_msgs)
+        assert result == 2
+
+        # Verify both messages have valid offsets
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute('SELECT gmail_id, mbox_offset, mbox_length FROM messages ORDER BY gmail_id')
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # First message should have valid offset and length
+        msg1_id, msg1_offset, msg1_length = rows[0]
+        assert msg1_id == 'msg1'
+        assert msg1_offset >= 0
+        assert msg1_length > 0
+
+        # Second message should have valid offset and length
+        msg2_id, msg2_offset, msg2_length = rows[1]
+        assert msg2_id == 'msg2'
+        assert msg2_offset >= 0
+        assert msg2_length > 0
+
+        # First message's offset should be less than second message's
+        assert msg1_offset < msg2_offset
+
+        conn.close()

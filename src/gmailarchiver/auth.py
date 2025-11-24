@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -66,7 +67,8 @@ class GmailAuthenticator:
         self,
         credentials_file: str | None = None,
         token_file: str | None = None,
-        validate_paths: bool = True
+        validate_paths: bool = True,
+        output: Any | None = None
     ) -> None:
         """
         Initialize the authenticator.
@@ -78,6 +80,7 @@ class GmailAuthenticator:
             token_file: Path to save/load user's access token (JSON format).
                        If None (default), uses ~/.config/gmailarchiver/token.json
             validate_paths: Whether to validate paths (set False for testing)
+            output: Optional OutputManager for structured logging
 
         Raises:
             PathTraversalError: If validate_paths=True and paths attempt to escape working directory
@@ -101,6 +104,28 @@ class GmailAuthenticator:
                 self.token_file = Path(token_file).resolve()
 
         self._creds: Credentials | None = None
+        self.output = output
+
+    def _log(self, message: str, level: str = "INFO") -> None:
+        """Log message through OutputManager if available, otherwise print.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if self.output:
+            # Use OutputManager's methods
+            if level == "WARNING":
+                self.output.warning(message)
+            elif level == "ERROR":
+                self.output.error(message, exit_code=0)
+            elif level == "SUCCESS":
+                self.output.success(message)
+            else:  # INFO
+                self.output.info(message)
+        else:
+            # Fallback to print for backward compatibility
+            print(message)
 
     def authenticate(self) -> Credentials:
         """
@@ -128,20 +153,20 @@ class GmailAuthenticator:
                     creds_data = json.load(token)
                 self._creds = Credentials.from_authorized_user_info(creds_data, SCOPES)  # type: ignore[no-untyped-call]
             except (json.JSONDecodeError, KeyError, ValueError) as e:
-                print(f"Warning: Failed to load saved token: {e}")
-                print("Will re-authenticate...")
+                self._log(f"Warning: Failed to load saved token: {e}", "WARNING")
+                self._log("Will re-authenticate...", "INFO")
                 self._creds = None
 
         # If no valid credentials, refresh or run auth flow
         if not self._creds or not self._creds.valid:
             if self._creds and self._creds.expired and self._creds.refresh_token:
                 # Refresh expired token
-                print("Refreshing expired token...")
+                self._log("Refreshing expired token...", "INFO")
                 try:
                     self._creds.refresh(Request())  # type: ignore[no-untyped-call]
                 except Exception as e:
-                    print(f"Warning: Token refresh failed: {e}")
-                    print("Will re-authenticate...")
+                    self._log(f"Warning: Token refresh failed: {e}", "WARNING")
+                    self._log("Will re-authenticate...", "INFO")
                     self._creds = None
 
             # Run OAuth2 flow if we still don't have valid credentials
@@ -153,17 +178,17 @@ class GmailAuthenticator:
                         "Please reinstall the application or report this issue."
                     )
 
-                print("\n" + "="*60)
-                print("GMAIL AUTHORIZATION REQUIRED")
-                print("="*60)
-                print("\nThis application needs permission to access your Gmail.")
-                print("A browser window will open where you can:")
-                print("  1. Log in to your Google account")
-                print("  2. Review the permissions requested")
-                print("  3. Click 'Allow' to authorize Gmail Archiver")
-                print("\nYour authorization will be saved locally, so you only")
-                print("need to do this once (unless you revoke access).")
-                print("="*60 + "\n")
+                self._log("\n" + "="*60, "INFO")
+                self._log("GMAIL AUTHORIZATION REQUIRED", "INFO")
+                self._log("="*60, "INFO")
+                self._log("\nThis application needs permission to access your Gmail.", "INFO")
+                self._log("A browser window will open where you can:", "INFO")
+                self._log("  1. Log in to your Google account", "INFO")
+                self._log("  2. Review the permissions requested", "INFO")
+                self._log("  3. Click 'Allow' to authorize Gmail Archiver", "INFO")
+                self._log("\nYour authorization will be saved locally, so you only", "INFO")
+                self._log("need to do this once (unless you revoke access).", "INFO")
+                self._log("="*60 + "\n", "INFO")
 
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(
@@ -177,19 +202,19 @@ class GmailAuthenticator:
                         success_message='Authorization successful! You can close this window.',
                         open_browser=True
                     )
-                    print("\n✓ Authorization successful!")
+                    self._log("\n✓ Authorization successful!", "SUCCESS")
                 except Exception as e:
-                    print(f"\n✗ Authorization failed: {e}")
+                    self._log(f"\n✗ Authorization failed: {e}", "ERROR")
                     raise
 
             # Save the credentials for next run as JSON
             try:
                 with open(self.token_file, 'w') as token:
                     token.write(self._creds.to_json())
-                print(f"✓ Authorization saved to: {self.token_file}")
+                self._log(f"✓ Authorization saved to: {self.token_file}", "SUCCESS")
             except Exception as e:
-                print(f"Warning: Failed to save token: {e}")
-                print("You may need to re-authorize next time.")
+                self._log(f"Warning: Failed to save token: {e}", "WARNING")
+                self._log("You may need to re-authorize next time.", "WARNING")
 
         return self._creds
 

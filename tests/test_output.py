@@ -1,6 +1,9 @@
 """Tests for the unified output system."""
 
 import json
+import tempfile
+import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -562,3 +565,376 @@ class TestStatusPanel:
         # Verify task success states are preserved
         assert output._completed_tasks[0].success is True  # Task 0: even
         assert output._completed_tasks[1].success is False  # Task 1: odd
+
+
+class TestLogBuffer:
+    """Test LogBuffer class for v1.3.1 live layout system."""
+
+    def test_init_default(self) -> None:
+        """Test LogBuffer initialization with default size (10)."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        assert buffer._max_visible == 10
+        assert len(buffer._visible) == 0
+        assert len(buffer._all_logs) == 0
+        assert len(buffer._entry_map) == 0
+
+    def test_init_custom_size(self) -> None:
+        """Test LogBuffer initialization with custom size."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer(max_visible=5)
+        assert buffer._max_visible == 5
+
+    def test_init_zero_size(self) -> None:
+        """Test LogBuffer with zero size (no visible logs, all stored)."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer(max_visible=0)
+        assert buffer._max_visible == 0
+        buffer.add("Test message", "INFO")
+        assert len(buffer._visible) == 0
+        assert len(buffer._all_logs) == 1  # Still stored in all_logs
+
+    def test_init_negative_size_raises_error(self) -> None:
+        """Test LogBuffer rejects negative size."""
+        from gmailarchiver.output import LogBuffer
+
+        with pytest.raises(ValueError, match="max_visible must be non-negative"):
+            LogBuffer(max_visible=-1)
+
+    def test_add_single_entry(self) -> None:
+        """Test adding a single log entry."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Test message", "INFO")
+
+        assert len(buffer._visible) == 1
+        assert len(buffer._all_logs) == 1
+        assert "Test message" in buffer._entry_map
+
+        entry = buffer._entry_map["Test message"]
+        assert entry.message == "Test message"
+        assert entry.level == "INFO"
+        assert entry.count == 1
+
+    def test_add_multiple_entries(self) -> None:
+        """Test adding multiple distinct log entries."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Message 1", "INFO")
+        buffer.add("Message 2", "WARNING")
+        buffer.add("Message 3", "ERROR")
+
+        assert len(buffer._visible) == 3
+        assert len(buffer._all_logs) == 3
+        assert len(buffer._entry_map) == 3
+
+    def test_ring_buffer_overflow(self) -> None:
+        """Test FIFO behavior when exceeding max_visible."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer(max_visible=3)
+
+        # Add 5 messages
+        for i in range(5):
+            buffer.add(f"Message {i}", "INFO")
+
+        # Only last 3 should be visible
+        assert len(buffer._visible) == 3
+        # But all 5 should be in all_logs
+        assert len(buffer._all_logs) == 5
+
+        # Verify FIFO order (messages 2, 3, 4 should be visible)
+        visible_messages = [entry.message for entry in buffer._visible]
+        assert visible_messages == ["Message 2", "Message 3", "Message 4"]
+
+    def test_deduplication_exact_match(self) -> None:
+        """Test deduplication increments count for exact duplicate."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Duplicate message", "INFO")
+        buffer.add("Duplicate message", "INFO")
+        buffer.add("Duplicate message", "INFO")
+
+        assert len(buffer._visible) == 1
+        assert len(buffer._all_logs) == 1
+        assert buffer._entry_map["Duplicate message"].count == 3
+
+    def test_deduplication_updates_timestamp(self) -> None:
+        """Test deduplication updates timestamp to latest occurrence."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Message", "INFO")
+        time.sleep(0.01)  # Small delay
+        first_timestamp = buffer._entry_map["Message"].timestamp
+
+        time.sleep(0.01)
+        buffer.add("Message", "INFO")  # Duplicate
+        second_timestamp = buffer._entry_map["Message"].timestamp
+
+        assert second_timestamp > first_timestamp
+
+    def test_deduplication_evicted_entry_readded(self) -> None:
+        """Test that evicted duplicate entries are re-added to visible buffer."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer(max_visible=2)
+
+        # Add 3 messages (message 0 will be evicted)
+        buffer.add("Message 0", "INFO")
+        buffer.add("Message 1", "INFO")
+        buffer.add("Message 2", "INFO")
+
+        # Visible should be [Message 1, Message 2]
+        assert len(buffer._visible) == 2
+        visible_messages = [entry.message for entry in buffer._visible]
+        assert visible_messages == ["Message 1", "Message 2"]
+
+        # Re-add Message 0 (duplicate)
+        buffer.add("Message 0", "INFO")
+
+        # Should now be visible again (re-added to ring buffer)
+        visible_messages = [entry.message for entry in buffer._visible]
+        assert "Message 0" in visible_messages
+        assert buffer._entry_map["Message 0"].count == 2
+
+    def test_render_empty_buffer(self) -> None:
+        """Test rendering empty buffer returns empty Group."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        rendered = buffer.render()
+
+        # Should be a Rich Group
+        from rich.console import Group
+        assert isinstance(rendered, Group)
+        assert len(rendered.renderables) == 0
+
+    def test_render_with_entries(self) -> None:
+        """Test rendering buffer with log entries."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Info message", "INFO")
+        buffer.add("Warning message", "WARNING")
+        buffer.add("Error message", "ERROR")
+
+        rendered = buffer.render()
+
+        from rich.console import Group
+        assert isinstance(rendered, Group)
+        assert len(rendered.renderables) == 3
+
+    def test_render_severity_symbols(self) -> None:
+        """Test that render includes correct severity symbols."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Test", "INFO")
+        buffer.add("Test", "WARNING")
+        buffer.add("Test", "ERROR")
+        buffer.add("Test", "SUCCESS")
+
+        # Check SEVERITY_MAP is defined correctly
+        assert LogBuffer.SEVERITY_MAP["INFO"] == ("ℹ", "blue")
+        assert LogBuffer.SEVERITY_MAP["WARNING"] == ("⚠", "yellow")
+        assert LogBuffer.SEVERITY_MAP["ERROR"] == ("✗", "red")
+        assert LogBuffer.SEVERITY_MAP["SUCCESS"] == ("✓", "green")
+
+    def test_render_with_duplicate_count(self) -> None:
+        """Test render shows duplicate count (x2, x3, etc.)."""
+        from io import StringIO
+
+        from rich.console import Console
+
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Repeated message", "INFO")
+        buffer.add("Repeated message", "INFO")
+        buffer.add("Repeated message", "INFO")
+
+        rendered = buffer.render()
+
+        # Render to string to check output
+        console = Console(file=StringIO(), force_terminal=True)
+        console.print(rendered)
+        output = console.file.getvalue()
+
+        # Should contain (x3) for the duplicate count
+        assert "(x3)" in output
+
+    def test_get_all_logs_returns_copy(self) -> None:
+        """Test get_all_logs returns a copy, not reference."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Message 1", "INFO")
+        buffer.add("Message 2", "INFO")
+
+        logs_copy = buffer.get_all_logs()
+        assert len(logs_copy) == 2
+
+        # Modify the copy
+        logs_copy.pop()
+
+        # Original should be unchanged
+        assert len(buffer._all_logs) == 2
+
+    def test_clear(self) -> None:
+        """Test clear() removes all logs."""
+        from gmailarchiver.output import LogBuffer
+
+        buffer = LogBuffer()
+        buffer.add("Message 1", "INFO")
+        buffer.add("Message 2", "WARNING")
+
+        assert len(buffer._visible) == 2
+        assert len(buffer._all_logs) == 2
+
+        buffer.clear()
+
+        assert len(buffer._visible) == 0
+        assert len(buffer._all_logs) == 0
+        assert len(buffer._entry_map) == 0
+
+
+class TestLiveLayoutContextInitialization:
+    """Test LiveLayoutContext initialization and setup."""
+
+    def test_init_with_all_components(self) -> None:
+        """Test initialization with LogBuffer, SessionLogger, and Progress."""
+        from gmailarchiver.output import LiveLayoutContext, LogBuffer, SessionLogger
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_buffer = LogBuffer(max_visible=10)
+            session_logger = SessionLogger(log_dir=Path(tmpdir))
+
+            context = LiveLayoutContext(
+                log_buffer=log_buffer,
+                session_logger=session_logger,
+            )
+
+            assert context.log_buffer is log_buffer
+            assert context.session_logger is session_logger
+
+    def test_init_with_default_components(self) -> None:
+        """Test initialization creates default components if not provided."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+
+            # Should create default LogBuffer with 10 lines
+            assert context.log_buffer is not None
+            assert context.log_buffer._max_visible == 10
+
+            # Should have SessionLogger
+            assert context.session_logger is not None
+
+    def test_init_custom_max_visible(self) -> None:
+        """Test initialization with custom max_visible for LogBuffer."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(max_visible=5, log_dir=Path(tmpdir))
+            assert context.log_buffer._max_visible == 5
+
+
+class TestLiveLayoutContextManager:
+    """Test LiveLayoutContext as context manager."""
+
+    def test_context_manager_enter_exit(self) -> None:
+        """Test __enter__ and __exit__ start/stop the Live display."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+
+            with context as live_context:
+                # Should return self
+                assert live_context is context
+
+    def test_context_manager_closes_session_logger(self) -> None:
+        """Test __exit__ closes SessionLogger file handle."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+
+            with context:
+                pass
+
+            # SessionLogger should be closed
+            assert context.session_logger._closed is True
+
+
+class TestLiveLayoutContextAddLog:
+    """Test add_log() integration with LogBuffer and SessionLogger."""
+
+    def test_add_log_to_both_buffers(self) -> None:
+        """Test add_log writes to both LogBuffer and SessionLogger."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+
+            with context:
+                context.add_log("Test message", "INFO")
+
+            # Should be in LogBuffer
+            assert len(context.log_buffer._all_logs) == 1
+            assert context.log_buffer._all_logs[0].message == "Test message"
+
+            # Should be in SessionLogger file
+            log_content = context.session_logger.log_file.read_text()
+            assert "Test message" in log_content
+            assert "[INFO]" in log_content
+
+    def test_add_log_different_levels(self) -> None:
+        """Test add_log with different severity levels."""
+        from gmailarchiver.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+
+            with context:
+                context.add_log("Info message", "INFO")
+                context.add_log("Warning message", "WARNING")
+                context.add_log("Error message", "ERROR")
+
+            logs = context.log_buffer.get_all_logs()
+            assert len(logs) == 3
+            assert logs[0].level == "INFO"
+            assert logs[1].level == "WARNING"
+            assert logs[2].level == "ERROR"
+
+
+class TestOutputManagerLiveLayoutContext:
+    """Test OutputManager.live_layout_context() integration method."""
+
+    def test_live_layout_context_returns_live_context(self) -> None:
+        """Test live_layout_context() returns LiveLayoutContext instance."""
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with output.live_layout_context(log_dir=Path(tmpdir)) as live:
+                from gmailarchiver.output import LiveLayoutContext
+                assert isinstance(live, LiveLayoutContext)
+
+    def test_live_layout_context_auto_cleanup(self) -> None:
+        """Test live_layout_context() closes SessionLogger on exit."""
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with output.live_layout_context(log_dir=Path(tmpdir)) as live:
+                session_logger = live.session_logger
+
+            # SessionLogger should be closed after exiting context
+            assert session_logger._closed is True
