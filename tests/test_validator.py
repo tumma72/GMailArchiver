@@ -1304,6 +1304,7 @@ def test_validator_log_with_output_manager() -> None:
     instead of print statements.
     """
     import tempfile
+
     from gmailarchiver.output import OutputManager
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1329,9 +1330,9 @@ def test_validator_log_fallback_without_output_manager() -> None:
     When validator has no OutputManager (output=None), it should use print
     for backward compatibility.
     """
-    import tempfile
     import io
     import sys
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         archive_path = Path(tmpdir) / "test.mbox"
@@ -1411,9 +1412,9 @@ def test_validator_comprehensive_database_missing() -> None:
     When state database doesn't exist, database_check should be skipped
     and not cause errors.
     """
-    import tempfile
-    import mailbox
     import email.message
+    import mailbox
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         archive_path = Path(tmpdir) / "test.mbox"
@@ -1447,7 +1448,7 @@ class TestValidatorErrorHandling:
     def test_integrity_check_inner_exception(self) -> None:
         """Test integrity check handles inner exceptions (lines 181-182)."""
         import tempfile
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1495,10 +1496,10 @@ class TestValidatorErrorHandling:
 
     def test_database_check_exception(self) -> None:
         """Test database check handles exceptions (lines 219-220)."""
-        import tempfile
-        import mailbox
         import email.message
+        import mailbox
         import sqlite3
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1531,10 +1532,10 @@ class TestValidatorErrorHandling:
 
     def test_spot_check_exception(self) -> None:
         """Test spot check handles exceptions (lines 309-311)."""
-        import tempfile
-        import mailbox
         import email.message
+        import mailbox
         import sqlite3
+        import tempfile
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1606,8 +1607,8 @@ class TestValidatorErrorHandling:
 
     def test_verify_consistency_read_error(self) -> None:
         """Test verify_consistency handles read errors (lines 529-531)."""
-        import tempfile
         import sqlite3
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1651,10 +1652,10 @@ class TestValidatorErrorHandling:
 
     def test_validate_mismatch_error(self) -> None:
         """Test database count mismatch detection (lines 264-265)."""
-        import tempfile
-        import mailbox
         import email.message
+        import mailbox
         import sqlite3
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1699,8 +1700,8 @@ class TestValidatorErrorHandling:
 
     def test_checksum_content_error(self) -> None:
         """Test content checksum verification with error (line 279)."""
-        import tempfile
         import sqlite3
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"

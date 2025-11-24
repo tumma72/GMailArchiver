@@ -4,12 +4,9 @@ This test suite ensures all user-facing output goes through OutputManager
 for consistency and JSON output support.
 """
 
-import builtins
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
-
-import pytest
 
 from gmailarchiver.archiver import GmailArchiver
 from gmailarchiver.auth import GmailAuthenticator
@@ -100,7 +97,7 @@ class TestNoPrintStatements:
 
                 # print() should NOT be called
                 assert not mock_print.called, \
-                    f"print() was called during compression in archiver.py"
+                    "print() was called during compression in archiver.py"
 
     def test_validator_uses_output_manager_not_print(self) -> None:
         """Test that ArchiveValidator uses OutputManager instead of print()."""

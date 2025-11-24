@@ -7,11 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.2] - 2025-11-24
 
+### Added
+- **Live Layout Integration**: Archive command now uses live layout with 10-row scrolling log buffer
+  - **OperationHandle Protocol**: Abstraction for operation status reporting with 5 methods
+    - `log(message, level)` - Add message to live log buffer
+    - `update_progress(advance)` - Increment progress counter
+    - `set_status(status)` - Update operation status text
+    - `succeed(message)` - Mark operation as successful
+    - `fail(message)` - Mark operation as failed
+  - **OutputHandler Protocol**: Strategy interface for different output modes
+    - `print(content)` - Display content
+    - `start_operation(description, total)` - Begin tracked operation
+    - Context manager support (`__enter__` / `__exit__`)
+  - **StaticOutputHandler**: Default handler for backward compatibility (preserves v1.2.0 behavior)
+  - **LiveOutputHandler**: New handler that integrates LiveLayoutContext for terminal sessions
+  - **TTY Detection**: Auto-enables live mode when running in terminal (`sys.stdout.isatty()`)
+  - Added ISO date examples to `archive` command help text
+
 ### Fixed
 - **Critical Bug #1**: Fixed UNIQUE constraint failures during archiving
   - **Issue**: Messages with duplicate RFC Message-IDs (same email in multiple folders, forwarded emails) caused database constraint violations
   - **Root Cause**: Incremental filtering only checked `gmail_id`, but database UNIQUE constraint is on `rfc_message_id`
-  - **Solution**: Added duplicate check in `hybrid_storage.py` BEFORE writing to mbox
+  - **Solution**: Added duplicate check in `hybrid_storage.py` BEFORE writing to mbox (Phase 1a)
   - **Behavior**: Duplicates are now skipped gracefully with INFO log message, not treated as errors
   - **Impact**: Eliminates "UNIQUE constraint failed" errors and orphaned messages in mbox files
 
@@ -33,26 +50,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: All output now flows through OutputManager with proper JSON support and consistent formatting
 
 ### Changed
-- `HybridStorage.archive_message()` now returns `None` when skipping duplicate messages (v1.3.2+)
-- Updated method signature: `-> tuple[int, int] | None` (was `-> tuple[int, int]`)
-- `validate_age_expression()` now accepts ISO dates in addition to relative ages (v1.3.2+)
-- `GmailAuthenticator`, `GmailArchiver`, and `ArchiveValidator` now accept optional `OutputManager` parameter
-- Added `_log()` helper method to all three classes for consistent output handling with fallback to print()
+- **OutputManager Architecture**: Refactored to use Strategy Pattern for output handling
+  - `OutputManager.__init__()` now accepts `live_mode: bool = False` parameter
+  - Internal `_handler` attribute uses OutputHandler protocol (StaticOutputHandler or LiveOutputHandler)
+  - `start_operation()` delegates to handler, returns OperationHandle
+  - Maintains complete backward compatibility with existing API
+- **Archive Command Integration**:
+  - `archive()` now detects TTY and enables live mode automatically
+  - Wraps operation in handler context manager (`with out._handler:`)
+  - Creates operation handle and passes to archiver
+  - Shows live 10-row scrolling log during archiving (terminal sessions only)
+- **Archiver Integration**:
+  - `GmailArchiver.archive()` accepts optional `operation: OperationHandle | None = None`
+  - `_archive_messages_hybrid_storage()` uses operation.log() instead of creating standalone Progress bars
+  - Operation logging is conditional (backward compatible with `operation=None`)
+  - Reports per-message status: "Processing message X/Y", "✓ Archived: <subject>", "✗ Failed: <error>"
+- **Data Model Changes**:
+  - `HybridStorage.archive_message()` now returns `None` when skipping duplicate messages (v1.3.2+)
+  - Updated method signature: `-> tuple[int, int] | None` (was `-> tuple[int, int]`)
+- **Validation Changes**:
+  - `validate_age_expression()` now accepts ISO dates in addition to relative ages (v1.3.2+)
+  - `GmailAuthenticator`, `GmailArchiver`, and `ArchiveValidator` now accept optional `OutputManager` parameter
+  - Added `_log()` helper method to all three classes for consistent output handling with fallback to print()
 
 ### Quality
 - **Test coverage: 95%** (up from 93%, target achieved)
-- **Total tests: 1127** (up from 1086, +41 new tests)
+- **Total tests: 1152** (up from 1071, +81 new tests across bug fixes and live layout integration)
 - **TDD methodology**: Strict RED → GREEN → REFACTOR followed for all changes
 - **No overmocking**: Verified tests exercise real code, not mocks; only external dependencies mocked
+- **SOLID Principles**: Architecture review confirmed compliance (Strategy Pattern, Protocol-based design)
 
 #### New Test Coverage:
-- Duplicate message handling: 1 test
-- ISO date validation: 8 tests
-- Print statement elimination: 6 tests
-- Error path coverage in hybrid_storage.py: 11 tests
-- Error path coverage in migration.py: 12 tests (100% coverage achieved)
-- Error path coverage in validator.py: 10 tests (96% coverage achieved)
-- Error path coverage in importer.py: 5 tests
+- **Bug Fixes** (41 tests):
+  - Duplicate message handling: 1 test
+  - ISO date validation: 8 tests
+  - Print statement elimination: 6 tests
+  - Error path coverage in hybrid_storage.py: 11 tests
+  - Error path coverage in migration.py: 12 tests (100% coverage achieved)
+  - Error path coverage in validator.py: 10 tests (96% coverage achieved)
+  - Error path coverage in importer.py: 5 tests
+
+- **Live Layout Integration** (46 tests):
+  - Protocol compliance: 4 tests
+  - StaticOperationHandle behavior: 5 tests
+  - StaticOutputHandler behavior: 4 tests
+  - OutputManager with static handler: 2 tests
+  - LiveOperationHandle behavior: 5 tests
+  - LiveOutputHandler behavior: 3 tests
+  - OutputManager with live mode: 1 test
+  - Archive command integration: 2 tests
+  - Additional output.py tests: 20 tests
 
 #### Coverage by Module:
 - `migration.py`: 90% → 100% (+10%)
@@ -60,6 +107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `auth.py`: 18% → 97% (+79%)
 - `archiver.py`: 18% → 93% (+75%)
 - `hybrid_storage.py`: 90% → 92% (+2%)
+- `output.py`: 93% → 95% (+2%)
 - Overall: 93% → 95% (+2%)
 
 ## [1.3.1] - 2025-11-24

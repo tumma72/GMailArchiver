@@ -2712,7 +2712,9 @@ def test_bulk_write_length_fallback_path_when_file_missing(
     # Length should approximately match the message size
     expected_length = len(msg.as_bytes())
     # Allow some variance due to mbox formatting
-    assert length >= expected_length * 0.9, f"Length {length} seems too small compared to {expected_length}"
+    assert length >= expected_length * 0.9, (
+        f"Length {length} seems too small compared to {expected_length}"
+    )
 
 
 def test_bulk_write_cleanup_on_error_path(
@@ -2961,7 +2963,7 @@ def test_consolidate_rollback_failure_logging(
     # Mock both the operation and rollback to fail
     with patch('mailbox.mbox') as mock_mbox:
         mock_mbox.return_value.__enter__.return_value.add.side_effect = OSError("Disk full")
-        
+
         with patch.object(db_manager, 'rollback', side_effect=Exception("Rollback error")):
             with pytest.raises(HybridStorageError, match="Failed to consolidate"):
                 storage.consolidate_archives(
@@ -2981,7 +2983,7 @@ def test_consolidate_staging_cleanup_exception(
     When unlinking staging file fails during cleanup, exception should be
     logged but original error should still be raised.
     """
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     storage = HybridStorage(db_manager)
 
     # Create source archive
@@ -2999,7 +3001,7 @@ def test_consolidate_staging_cleanup_exception(
     # Mock to fail during operation and make cleanup fail too
     with patch('mailbox.mbox') as mock_mbox:
         mock_mbox.return_value.__enter__.return_value.add.side_effect = OSError("Disk full")
-        
+
         # Make staging file exist but unable to unlink
         with patch.object(Path, 'exists', return_value=True):
             with patch.object(Path, 'unlink', side_effect=OSError("Permission denied")):

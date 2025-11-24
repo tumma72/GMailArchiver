@@ -101,6 +101,8 @@ def archive(
     $ gmailarchiver archive 3y --trash
     $ gmailarchiver archive 3y --json
     """
+    import sys
+
     from gmailarchiver.output import OutputManager
 
     # Generate default output filename if not provided
@@ -115,161 +117,181 @@ def archive(
             extension = ".mbox.zst"
         output = f"archive_{timestamp}{extension}"
 
-    out = OutputManager(json_mode=json_output)
+    # Detect TTY for auto-enabling live mode
+    use_live_mode = not json_output and sys.stdout.isatty()
+
+    out = OutputManager(json_mode=json_output, live_mode=use_live_mode)
     operation_mode = "archive (dry-run)" if dry_run else "archive"
     out.start_operation(operation_mode, f"Archiving messages older than {age_threshold}")
 
-    # Authenticate
-    try:
-        # credentials=None uses bundled OAuth credentials
-        # token_file=None uses ~/.config/gmailarchiver/token.json
-        out.info("Authenticating with Gmail...")
-        authenticator = GmailAuthenticator(credentials_file=credentials)
-        creds = authenticator.authenticate()
-        out.success("Authentication successful")
-    except FileNotFoundError as e:
-        out.error(
-            str(e),
-            suggestion="Check credentials file path or use bundled credentials",
-            exit_code=1,
+    # Use handler context manager for live mode
+    with out._handler:
+        # Authenticate
+        try:
+            # credentials=None uses bundled OAuth credentials
+            # token_file=None uses ~/.config/gmailarchiver/token.json
+            out.info("Authenticating with Gmail...")
+            authenticator = GmailAuthenticator(credentials_file=credentials)
+            creds = authenticator.authenticate()
+            out.success("Authentication successful")
+        except FileNotFoundError as e:
+            out.error(
+                str(e),
+                suggestion="Check credentials file path or use bundled credentials",
+                exit_code=1,
+            )
+
+        # Initialize clients
+        gmail_client = GmailClient(creds)
+        archiver = GmailArchiver(gmail_client, output=out)
+
+        # Start operation and get handle
+        operation = out._handler.start_operation(
+            f"Archiving messages older than {age_threshold}",
+            total=None
         )
 
-    # Initialize clients
-    gmail_client = GmailClient(creds)
-    archiver = GmailArchiver(gmail_client, output=out)
-
-    # Perform archiving
-    try:
-        with out.progress_context("Archiving messages", total=None):
+        # Perform archiving
+        try:
             result = archiver.archive(
                 age_threshold=age_threshold,
                 output_file=output,
                 compress=compress,
                 incremental=incremental,
                 dry_run=dry_run,
+                operation=operation,
             )
 
-        if dry_run:
-            out.warning("DRY RUN completed - no changes made")
-            report_data = {
-                "Messages Found": result["messages_archived"],
-                "Output File": output,
-                "Mode": "Dry Run (no changes made)",
-            }
-            out.show_report("Archive Preview", report_data)
-            out.end_operation(success=True)
-            return
+            # Handle results based on mode
+            if dry_run:
+                operation.succeed(f"Would archive {result['messages_to_archive']} messages")
+                out.warning("DRY RUN completed - no changes made")
+                report_data = {
+                    "Messages Found": result["messages_to_archive"],
+                    "Output File": output,
+                    "Mode": "Dry Run (no changes made)",
+                }
+                out.show_report("Archive Preview", report_data)
+                out.end_operation(success=True)
+                return
 
-        if result["messages_archived"] == 0:
-            out.warning("No messages to archive")
-            out.suggest_next_steps(
-                [
-                    "Check your age threshold",
-                    "Verify messages exist in Gmail matching the criteria",
-                ]
-            )
-            out.end_operation(success=True)
-            return
+            # Handle actual archive results
+            if result["messages_archived"] > 0:
+                operation.succeed(f"Archived {result['messages_archived']} messages")
+            else:
+                operation.log("No messages to archive", "WARNING")
 
-        # Validate archive
-        out.info("Validating archive...")
+            if result["messages_archived"] == 0:
+                out.warning("No messages to archive")
+                out.suggest_next_steps(
+                    [
+                        "Check your age threshold",
+                        "Verify messages exist in Gmail matching the criteria",
+                    ]
+                )
+                out.end_operation(success=True)
+                return
 
-        # Get the actual message IDs that were archived
-        with ArchiveState() as state:
-            # Get recently archived messages for this file
-            archived_ids = state.get_archived_message_ids_for_file(output)
+            # Validate archive
+            out.info("Validating archive...")
 
-        validation_passed = archiver.validate_archive(output, archived_ids)
+            # Get the actual message IDs that were archived
+            with ArchiveState() as state:
+                # Get recently archived messages for this file
+                archived_ids = state.get_archived_message_ids_for_file(output)
 
-        if not validation_passed:
-            out.error(
-                "Archive validation failed!",
-                suggestion=(
-                    "Check disk space and file permissions. DO NOT delete Gmail messages yet."
-                ),
-                exit_code=1,
-            )
+            validation_passed = archiver.validate_archive(output, archived_ids)
 
-        out.success("Archive validation passed")
-
-        # Handle deletion if requested
-        if trash or delete:
             if not validation_passed:
                 out.error(
-                    "Cannot delete: Archive validation failed",
-                    suggestion="Resolve validation issues before attempting deletion",
+                    "Archive validation failed!",
+                    suggestion=(
+                        "Check disk space and file permissions. DO NOT delete Gmail messages yet."
+                    ),
                     exit_code=1,
                 )
 
-            if delete:
-                # Permanent deletion requires explicit confirmation
-                out.warning("⚠ WARNING: PERMANENT DELETION")
-                msg_count = result["messages_archived"]
-                out.warning(f"This will permanently delete {msg_count} messages.")
-                out.warning("This action CANNOT be undone!")
+            out.success("Archive validation passed")
 
-                confirmation = typer.prompt(
-                    f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
+            # Handle deletion if requested
+            if trash or delete:
+                if not validation_passed:
+                    out.error(
+                        "Cannot delete: Archive validation failed",
+                        suggestion="Resolve validation issues before attempting deletion",
+                        exit_code=1,
+                    )
+
+                if delete:
+                    # Permanent deletion requires explicit confirmation
+                    out.warning("⚠ WARNING: PERMANENT DELETION")
+                    msg_count = result["messages_archived"]
+                    out.warning(f"This will permanently delete {msg_count} messages.")
+                    out.warning("This action CANNOT be undone!")
+
+                    confirmation = typer.prompt(
+                        f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
+                    )
+
+                    if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
+                        out.info("Deletion cancelled")
+                        out.end_operation(success=True)
+                        return
+
+                    # Perform permanent deletion
+                    with out.progress_context("Permanently deleting messages", total=None):
+                        archiver.delete_archived_messages(list(archived_ids), permanent=True)
+                    out.success("Messages permanently deleted")
+
+                elif trash:
+                    # Move to trash with confirmation
+                    if not typer.confirm(
+                        f"\nMove {result['messages_archived']} messages to trash? "
+                        "(30-day recovery period)"
+                    ):
+                        out.info("Cancelled")
+                        out.end_operation(success=True)
+                        return
+
+                    with out.progress_context("Moving messages to trash", total=None):
+                        archiver.delete_archived_messages(list(archived_ids), permanent=False)
+                    out.success("Messages moved to trash")
+
+            # Build final report
+            report_data = {
+                "Messages Archived": result["messages_archived"],
+                "Archive File": output,
+                "Incremental Mode": "Yes" if incremental else "No",
+            }
+
+            if compress:
+                report_data["Compression"] = compress
+
+            if trash:
+                report_data["Gmail Status"] = "Moved to trash (30-day recovery)"
+            elif delete:
+                report_data["Gmail Status"] = "Permanently deleted"
+
+            out.show_report("Archive Summary", report_data)
+            out.success("Archive completed successfully!")
+
+            # Suggest next steps
+            next_steps = [
+                f"Validate archive: gmailarchiver validate {output}",
+            ]
+
+            if not trash and not delete:
+                next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
+                next_steps.append(
+                    f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
                 )
 
-                if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
-                    out.info("Deletion cancelled")
-                    out.end_operation(success=True)
-                    return
+            out.suggest_next_steps(next_steps)
+            out.end_operation(success=True)
 
-                # Perform permanent deletion
-                with out.progress_context("Permanently deleting messages", total=None):
-                    archiver.delete_archived_messages(list(archived_ids), permanent=True)
-                out.success("Messages permanently deleted")
-
-            elif trash:
-                # Move to trash with confirmation
-                if not typer.confirm(
-                    f"\nMove {result['messages_archived']} messages to trash? "
-                    "(30-day recovery period)"
-                ):
-                    out.info("Cancelled")
-                    out.end_operation(success=True)
-                    return
-
-                with out.progress_context("Moving messages to trash", total=None):
-                    archiver.delete_archived_messages(list(archived_ids), permanent=False)
-                out.success("Messages moved to trash")
-
-        # Build final report
-        report_data = {
-            "Messages Archived": result["messages_archived"],
-            "Archive File": output,
-            "Incremental Mode": "Yes" if incremental else "No",
-        }
-
-        if compress:
-            report_data["Compression"] = compress
-
-        if trash:
-            report_data["Gmail Status"] = "Moved to trash (30-day recovery)"
-        elif delete:
-            report_data["Gmail Status"] = "Permanently deleted"
-
-        out.show_report("Archive Summary", report_data)
-        out.success("Archive completed successfully!")
-
-        # Suggest next steps
-        next_steps = [
-            f"Validate archive: gmailarchiver validate {output}",
-        ]
-
-        if not trash and not delete:
-            next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
-            next_steps.append(
-                f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
-            )
-
-        out.suggest_next_steps(next_steps)
-        out.end_operation(success=True)
-
-    except Exception as e:
-        out.error(f"Archive operation failed: {e}", exit_code=1)
+        except Exception as e:
+            operation.fail(f"Archive operation failed: {e}")
+            out.error(f"Archive operation failed: {e}", exit_code=1)
 
 
 @app.command()

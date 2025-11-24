@@ -1465,3 +1465,132 @@ class TestGmailArchiverWithOutput:
         with patch('builtins.print') as mock_print:
             archiver._log("Test message")
             mock_print.assert_called_once_with("Test message")
+
+
+class TestArchiveWithOperationHandle:
+    """Tests for archive() with OperationHandle integration."""
+
+    @patch('gmailarchiver.archiver.DBManager')
+    @patch('gmailarchiver.archiver.HybridStorage')
+    def test_archive_with_operation_handle(
+        self, mock_storage_class: Mock, mock_db_class: Mock
+    ) -> None:
+        """Test that archiver uses operation handle for logging and progress."""
+        # Setup mock client
+        mock_client = Mock()
+        mock_client.list_messages.return_value = [
+            {'id': 'msg1', 'threadId': 'thread1'},
+            {'id': 'msg2', 'threadId': 'thread2'}
+        ]
+
+        # Setup mock message data
+        # Base64: "Subject: Test Subject\n\nTest body"
+        mock_message_data = {
+            'id': 'msg1',
+            'threadId': 'thread1',
+            'raw': 'U3ViamVjdDogVGVzdCBTdWJqZWN0CgpUZXN0IGJvZHk='
+        }
+        mock_client.get_messages_batch.return_value = [mock_message_data, mock_message_data]
+        mock_client.decode_message_raw.return_value = b"Subject: Test Subject\n\nTest body"
+
+        # Setup mock DBManager
+        mock_db = Mock()
+        mock_cursor = Mock()
+        mock_cursor.fetchall.return_value = []  # No previously archived messages
+        mock_db.conn.execute.return_value = mock_cursor
+        mock_db.close.return_value = None
+        mock_db_class.return_value = mock_db
+
+        # Setup mock HybridStorage
+        mock_storage = Mock()
+        mock_storage.archive_message.return_value = None
+        mock_storage_class.return_value = mock_storage
+
+        # Setup mock operation handle
+        mock_operation = Mock()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / 'archive.mbox'
+            output_file.touch()
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(Path(tmpdir) / 'state.db'))
+
+            # Archive with operation handle
+            result = archiver.archive(
+                age_threshold="3y",
+                output_file=str(output_file),
+                incremental=False,
+                operation=mock_operation
+            )
+
+            # Verify operation handle was used for logging
+            assert mock_operation.log.called, "Operation handle log() should be called"
+            assert mock_operation.update_progress.called, (
+                "Operation handle update_progress() should be called"
+            )
+
+            # Verify we logged processing messages
+            log_calls = [call[0][0] for call in mock_operation.log.call_args_list]
+            assert any("Processing" in call for call in log_calls), (
+                "Should log 'Processing X messages'"
+            )
+
+            # Verify we logged success for each message
+            success_logs = [call for call in log_calls if "✓ Archived:" in call]
+            assert len(success_logs) == 2, "Should log success for each archived message"
+
+            # Verify progress was updated for each message
+            assert mock_operation.update_progress.call_count == 2, (
+                "Should update progress for each message"
+            )
+
+    @patch('gmailarchiver.archiver.DBManager')
+    @patch('gmailarchiver.archiver.HybridStorage')
+    def test_archive_without_operation_handle(
+        self, mock_storage_class: Mock, mock_db_class: Mock
+    ) -> None:
+        """Test that archiver works without operation handle (backward compatibility)."""
+        # Setup mock client
+        mock_client = Mock()
+        mock_client.list_messages.return_value = [
+            {'id': 'msg1', 'threadId': 'thread1'}
+        ]
+
+        # Setup mock message data
+        mock_message_data = {
+            'id': 'msg1',
+            'threadId': 'thread1',
+            'raw': 'U3ViamVjdDogVGVzdCBTdWJqZWN0CgpUZXN0IGJvZHk='
+        }
+        mock_client.get_messages_batch.return_value = [mock_message_data]
+        mock_client.decode_message_raw.return_value = b"Subject: Test Subject\n\nTest body"
+
+        # Setup mock DBManager
+        mock_db = Mock()
+        mock_cursor = Mock()
+        mock_cursor.fetchall.return_value = []
+        mock_db.conn.execute.return_value = mock_cursor
+        mock_db.close.return_value = None
+        mock_db_class.return_value = mock_db
+
+        # Setup mock HybridStorage
+        mock_storage = Mock()
+        mock_storage.archive_message.return_value = None
+        mock_storage_class.return_value = mock_storage
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / 'archive.mbox'
+            output_file.touch()
+
+            archiver = GmailArchiver(mock_client, state_db_path=str(Path(tmpdir) / 'state.db'))
+
+            # Archive without operation handle (should not crash)
+            result = archiver.archive(
+                age_threshold="3y",
+                output_file=str(output_file),
+                incremental=False,
+                operation=None  # No operation handle
+            )
+
+            # Should complete successfully
+            assert result['messages_archived'] == 1

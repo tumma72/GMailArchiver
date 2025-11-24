@@ -501,7 +501,7 @@ class TestMigrationWorkflow:
         """Test body preview extraction handles decode errors in multipart messages."""
         import email.mime.multipart
         import email.mime.text
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         manager = MigrationManager(":memory:")
 
@@ -2119,7 +2119,7 @@ class TestMigrationErrorPaths:
         conn.close()
 
         # Now patch the mbox to cause errors during message processing
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         manager = MigrationManager(db_path)
 
@@ -2299,7 +2299,7 @@ class TestMigrationErrorPaths:
         manager = MigrationManager(db_path)
 
         # Patch to cause error during message processing
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         original_mbox = mailbox.mbox
 
@@ -2419,7 +2419,7 @@ class TestMigrationErrorPaths:
         ]
 
         # Patch commit to raise an error to trigger lines 765-767
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         def failing_commit():
             raise sqlite3.OperationalError("Database commit failed")
@@ -2489,7 +2489,9 @@ class TestMigrationErrorPaths:
 
         # Verify both messages have valid offsets
         conn = sqlite3.connect(str(db_path))
-        cursor = conn.execute('SELECT gmail_id, mbox_offset, mbox_length FROM messages ORDER BY gmail_id')
+        cursor = conn.execute(
+            'SELECT gmail_id, mbox_offset, mbox_length FROM messages ORDER BY gmail_id'
+        )
         rows = cursor.fetchall()
         assert len(rows) == 2
 

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Protocol, TextIO
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -30,6 +30,388 @@ from rich.progress import (
 )
 from rich.table import Table
 from rich.text import Text
+
+# ============================================================================
+# Phase 1: Protocol Definitions
+# ============================================================================
+
+
+class OperationHandle(Protocol):
+    """Protocol for operation tracking handles.
+
+    Defines the interface for tracking individual operations within a command.
+    Implementations can use static output (traditional) or live output (v1.3.2+).
+
+    Methods:
+        log: Log a message with severity level
+        update_progress: Advance progress counter
+        set_status: Update operation status text
+        succeed: Mark operation as successful
+        fail: Mark operation as failed
+    """
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log a message with severity level.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        ...
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance progress counter.
+
+        Args:
+            advance: Number of units to advance (default: 1)
+        """
+        ...
+
+    def set_status(self, status: str) -> None:
+        """Update operation status text.
+
+        Args:
+            status: New status text (e.g., "Processing X/Y")
+        """
+        ...
+
+    def succeed(self, message: str) -> None:
+        """Mark operation as successful.
+
+        Args:
+            message: Success message
+        """
+        ...
+
+    def fail(self, message: str) -> None:
+        """Mark operation as failed.
+
+        Args:
+            message: Failure message
+        """
+        ...
+
+
+class OutputHandler(Protocol):
+    """Protocol for output handlers.
+
+    Defines the interface for output systems. Implementations provide
+    static output (OutputManager's current behavior) or live output
+    (new v1.3.2 live layout system).
+
+    Methods:
+        print: Print content
+        start_operation: Begin an operation and return handle for tracking
+        __enter__: Context manager entry
+        __exit__: Context manager exit
+    """
+
+    def print(self, content: Any) -> None:
+        """Print content to output.
+
+        Args:
+            content: Content to print (string, Rich renderable, etc.)
+        """
+        ...
+
+    def start_operation(
+        self, description: str, total: int | None = None
+    ) -> OperationHandle:
+        """Start a new operation and return handle for tracking.
+
+        Args:
+            description: Operation description
+            total: Total number of items to process (if known)
+
+        Returns:
+            OperationHandle for tracking this operation
+        """
+        ...
+
+    def __enter__(self) -> OutputHandler:
+        """Context manager entry."""
+        ...
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit."""
+        ...
+
+
+# ============================================================================
+# Phase 2: StaticOutputHandler Implementation
+# ============================================================================
+
+
+class StaticOperationHandle:
+    """Static operation handle that delegates to OutputManager.
+
+    Provides backward-compatible implementation using OutputManager's
+    existing methods (info, warning, error, success). Progress tracking
+    is a no-op in static mode.
+
+    This maintains v1.2.0 behavior while satisfying the OperationHandle protocol.
+    """
+
+    def __init__(self, output_manager: OutputManager) -> None:
+        """Initialize static operation handle.
+
+        Args:
+            output_manager: OutputManager instance to delegate to
+        """
+        self._output = output_manager
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log a message using OutputManager methods.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if level == "WARNING":
+            self._output.warning(message)
+        elif level == "ERROR":
+            self._output.error(message, exit_code=0)
+        elif level == "SUCCESS":
+            self._output.success(message)
+        else:  # INFO
+            self._output.info(message)
+
+    def update_progress(self, advance: int = 1) -> None:
+        """No-op in static mode (progress not tracked).
+
+        Args:
+            advance: Number of units to advance (ignored)
+        """
+        pass
+
+    def set_status(self, status: str) -> None:
+        """No-op in static mode (status not displayed).
+
+        Args:
+            status: Status text (ignored)
+        """
+        pass
+
+    def succeed(self, message: str) -> None:
+        """Mark operation as successful.
+
+        Args:
+            message: Success message
+        """
+        self._output.success(message)
+
+    def fail(self, message: str) -> None:
+        """Mark operation as failed.
+
+        Args:
+            message: Failure message
+        """
+        self._output.error(message, exit_code=0)
+
+
+class StaticOutputHandler:
+    """Static output handler using OutputManager.
+
+    Provides backward-compatible output behavior using OutputManager's
+    existing methods. This is the default handler for v1.3.2.
+
+    Context manager support is provided for consistency with LiveOutputHandler,
+    but does not perform any special setup/teardown.
+    """
+
+    def __init__(self, output_manager: OutputManager) -> None:
+        """Initialize static output handler.
+
+        Args:
+            output_manager: OutputManager instance to delegate to
+        """
+        self._output = output_manager
+
+    def print(self, content: Any) -> None:
+        """Print content using OutputManager's console.
+
+        Args:
+            content: Content to print
+        """
+        if self._output.console:
+            self._output.console.print(content)
+
+    def start_operation(
+        self, description: str, total: int | None = None
+    ) -> OperationHandle:
+        """Start operation and return static handle.
+
+        Args:
+            description: Operation description
+            total: Total items (ignored in static mode)
+
+        Returns:
+            StaticOperationHandle for this operation
+        """
+        return StaticOperationHandle(self._output)
+
+    def __enter__(self) -> StaticOutputHandler:
+        """Context manager entry (no-op)."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit (no-op)."""
+        pass
+
+
+# ============================================================================
+# Phase 3: LiveOutputHandler Implementation
+# ============================================================================
+
+
+class LiveOperationHandle:
+    """Live operation handle that integrates with LiveLayoutContext.
+
+    Provides real-time progress tracking and logging via LiveLayoutContext.
+    Tracks completion count and updates operation description dynamically.
+
+    This is the new v1.3.2 live layout implementation for flicker-free output.
+    """
+
+    def __init__(
+        self,
+        output_manager: OutputManager,
+        live_context: LiveLayoutContext,
+        description: str,
+        total: int | None = None,
+    ) -> None:
+        """Initialize live operation handle.
+
+        Args:
+            output_manager: OutputManager instance
+            live_context: LiveLayoutContext for logging
+            description: Operation description
+            total: Total items to process (if known)
+        """
+        self._output = output_manager
+        self._live_context = live_context
+        self.description = description
+        self.total = total
+        self.completed = 0
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log message to LiveLayoutContext.
+
+        Args:
+            message: Message to log
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        self._live_context.add_log(message, level)
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance progress counter.
+
+        Args:
+            advance: Number of units to advance
+        """
+        self.completed += advance
+
+    def set_status(self, status: str) -> None:
+        """Update operation status/description.
+
+        Args:
+            status: New status text
+        """
+        self.description = status
+
+    def succeed(self, message: str) -> None:
+        """Mark operation as successful.
+
+        Args:
+            message: Success message
+        """
+        self._live_context.add_log(message, "SUCCESS")
+
+    def fail(self, message: str) -> None:
+        """Mark operation as failed.
+
+        Args:
+            message: Failure message
+        """
+        self._live_context.add_log(message, "ERROR")
+
+
+class LiveOutputHandler:
+    """Live output handler using LiveLayoutContext.
+
+    Provides flicker-free live layout with integrated logging and progress
+    tracking. This is the new v1.3.2 implementation for improved UX.
+
+    Manages LiveLayoutContext lifecycle via context manager protocol.
+    """
+
+    def __init__(
+        self,
+        output_manager: OutputManager,
+        log_dir: Path | None = None,
+        max_visible: int = 10,
+    ) -> None:
+        """Initialize live output handler.
+
+        Args:
+            output_manager: OutputManager instance
+            log_dir: Log directory for SessionLogger (default: XDG-compliant)
+            max_visible: Max visible log lines
+        """
+        self._output = output_manager
+        self._log_dir = log_dir
+        self._max_visible = max_visible
+        self._live_context: LiveLayoutContext | None = None
+        self._live: Live | None = None
+
+    def print(self, content: Any) -> None:
+        """Print content to live layout.
+
+        Args:
+            content: Content to print (logged as INFO)
+        """
+        if self._live_context:
+            self._live_context.add_log(str(content), "INFO")
+
+    def start_operation(
+        self, description: str, total: int | None = None
+    ) -> OperationHandle:
+        """Start operation and return live handle.
+
+        Args:
+            description: Operation description
+            total: Total items to process
+
+        Returns:
+            LiveOperationHandle for tracking
+        """
+        if not self._live_context:
+            raise RuntimeError("LiveOutputHandler not entered (use 'with handler:')")
+
+        return LiveOperationHandle(
+            self._output, self._live_context, description, total
+        )
+
+    def __enter__(self) -> LiveOutputHandler:
+        """Context manager entry - creates LiveLayoutContext."""
+        self._live_context = LiveLayoutContext(
+            log_dir=self._log_dir, max_visible=self._max_visible
+        )
+        self._live_context.__enter__()
+
+        # Create Rich Live display (for future live rendering)
+        # For now, just set up the context
+        self._live = None
+
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit - cleans up LiveLayoutContext."""
+        if self._live:
+            self._live.__exit__(exc_type, exc_val, exc_tb)
+
+        if self._live_context:
+            self._live_context.__exit__(exc_type, exc_val, exc_tb)
 
 
 @dataclass
@@ -603,14 +985,26 @@ class OutputManager:
     - Structured logging
     - Next-steps suggestions
     - Consistent error formatting
+
+    v1.3.2: Uses Strategy Pattern with OutputHandler protocol.
+    Default: StaticOutputHandler (backward compatible)
+    Optional: LiveOutputHandler (v1.3.2+ live layout)
     """
 
-    def __init__(self, json_mode: bool = False, quiet: bool = False) -> None:
+    def __init__(
+        self,
+        json_mode: bool = False,
+        quiet: bool = False,
+        live_mode: bool = False,
+        log_dir: Path | None = None,
+    ) -> None:
         """Initialize output manager.
 
         Args:
             json_mode: Output structured JSON instead of Rich terminal output
             quiet: Suppress all output except errors
+            live_mode: Use live layout with flicker-free progress (v1.3.2+)
+            log_dir: Log directory for live mode (default: XDG-compliant)
         """
         self.json_mode = json_mode
         self.quiet = quiet
@@ -621,6 +1015,12 @@ class OutputManager:
         # the exact JSON output shape (e.g., search results as a list).
         self._json_payload: Any | None = None
         self._operation_start_time: float | None = None
+
+        # Phase 2/3: Choose handler based on mode
+        if live_mode:
+            self._handler: OutputHandler = LiveOutputHandler(self, log_dir=log_dir)
+        else:
+            self._handler = StaticOutputHandler(self)
 
     def start_operation(self, name: str, description: str | None = None) -> None:
         """Start a new operation.

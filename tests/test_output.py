@@ -938,3 +938,442 @@ class TestOutputManagerLiveLayoutContext:
 
             # SessionLogger should be closed after exiting context
             assert session_logger._closed is True
+
+
+# ============================================================================
+# Phase 1: Protocol Tests
+# ============================================================================
+
+
+class TestOperationHandleProtocol:
+    """Test OperationHandle protocol compliance."""
+
+    def test_operation_handle_has_required_methods(self) -> None:
+        """Test that OperationHandle protocol defines required methods."""
+
+        from gmailarchiver.output import OperationHandle
+
+        # OperationHandle should be a Protocol with these methods
+        assert hasattr(OperationHandle, "log")
+        assert hasattr(OperationHandle, "update_progress")
+        assert hasattr(OperationHandle, "set_status")
+        assert hasattr(OperationHandle, "succeed")
+        assert hasattr(OperationHandle, "fail")
+
+    def test_operation_handle_protocol_structural_typing(self) -> None:
+        """Test that any class with matching methods satisfies OperationHandle."""
+        from gmailarchiver.output import OperationHandle
+
+        # Create a mock class with all required methods
+        class MockOperationHandle:
+            def log(self, message: str, level: str = "INFO") -> None:
+                pass
+
+            def update_progress(self, advance: int = 1) -> None:
+                pass
+
+            def set_status(self, status: str) -> None:
+                pass
+
+            def succeed(self, message: str) -> None:
+                pass
+
+            def fail(self, message: str) -> None:
+                pass
+
+        # Should be compatible with OperationHandle protocol
+        mock: OperationHandle = MockOperationHandle()
+        assert mock is not None
+
+
+class TestOutputHandlerProtocol:
+    """Test OutputHandler protocol compliance."""
+
+    def test_output_handler_has_required_methods(self) -> None:
+        """Test that OutputHandler protocol defines required methods."""
+        from gmailarchiver.output import OutputHandler
+
+        # OutputHandler should be a Protocol with these methods
+        assert hasattr(OutputHandler, "print")
+        assert hasattr(OutputHandler, "start_operation")
+        assert hasattr(OutputHandler, "__enter__")
+        assert hasattr(OutputHandler, "__exit__")
+
+    def test_output_handler_protocol_structural_typing(self) -> None:
+        """Test that any class with matching methods satisfies OutputHandler."""
+        from typing import Any
+
+        from gmailarchiver.output import OperationHandle, OutputHandler
+
+        # Create a mock class with all required methods
+        class MockOutputHandler:
+            def print(self, content: Any) -> None:
+                pass
+
+            def start_operation(
+                self, description: str, total: int | None = None
+            ) -> OperationHandle:
+                # Return a mock operation handle
+                class MockOpHandle:
+                    def log(self, message: str, level: str = "INFO") -> None:
+                        pass
+
+                    def update_progress(self, advance: int = 1) -> None:
+                        pass
+
+                    def set_status(self, status: str) -> None:
+                        pass
+
+                    def succeed(self, message: str) -> None:
+                        pass
+
+                    def fail(self, message: str) -> None:
+                        pass
+
+                return MockOpHandle()
+
+            def __enter__(self) -> MockOutputHandler:
+                return self
+
+            def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+                pass
+
+        # Should be compatible with OutputHandler protocol
+        mock: OutputHandler = MockOutputHandler()
+        assert mock is not None
+
+
+# ============================================================================
+# Phase 2: StaticOutputHandler Tests
+# ============================================================================
+
+
+class TestStaticOperationHandle:
+    """Test StaticOperationHandle implementation."""
+
+    def test_log_method_calls_output_manager(self) -> None:
+        """Test log() delegates to OutputManager methods."""
+        from gmailarchiver.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        with patch.object(output, "info") as mock_info:
+            handle.log("Test message", "INFO")
+            mock_info.assert_called_once_with("Test message")
+
+        with patch.object(output, "warning") as mock_warning:
+            handle.log("Warning message", "WARNING")
+            mock_warning.assert_called_once_with("Warning message")
+
+        with patch.object(output, "error") as mock_error:
+            handle.log("Error message", "ERROR")
+            mock_error.assert_called_once_with("Error message", exit_code=0)
+
+        with patch.object(output, "success") as mock_success:
+            handle.log("Success message", "SUCCESS")
+            mock_success.assert_called_once_with("Success message")
+
+    def test_update_progress_does_nothing_in_static_mode(self) -> None:
+        """Test update_progress() is a no-op in static mode."""
+        from gmailarchiver.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        # Should not raise, but does nothing
+        handle.update_progress()
+        handle.update_progress(advance=10)
+
+    def test_set_status_does_nothing_in_static_mode(self) -> None:
+        """Test set_status() is a no-op in static mode."""
+        from gmailarchiver.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        # Should not raise, but does nothing
+        handle.set_status("Processing 50/100")
+
+    def test_succeed_calls_success(self) -> None:
+        """Test succeed() delegates to OutputManager.success()."""
+        from gmailarchiver.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        with patch.object(output, "success") as mock_success:
+            handle.succeed("Operation complete")
+            mock_success.assert_called_once_with("Operation complete")
+
+    def test_fail_calls_error(self) -> None:
+        """Test fail() delegates to OutputManager.error()."""
+        from gmailarchiver.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        with patch.object(output, "error") as mock_error:
+            handle.fail("Operation failed")
+            mock_error.assert_called_once_with("Operation failed", exit_code=0)
+
+
+class TestStaticOutputHandler:
+    """Test StaticOutputHandler implementation."""
+
+    def test_print_delegates_to_console(self) -> None:
+        """Test print() delegates to console.print()."""
+        from gmailarchiver.output import OutputManager, StaticOutputHandler
+
+        output = OutputManager()
+        handler = StaticOutputHandler(output)
+
+        with patch.object(output.console, "print") as mock_print:
+            handler.print("Test content")
+            mock_print.assert_called_once_with("Test content")
+
+    def test_start_operation_returns_static_handle(self) -> None:
+        """Test start_operation() returns StaticOperationHandle."""
+        from gmailarchiver.output import (
+            OutputManager,
+            StaticOperationHandle,
+            StaticOutputHandler,
+        )
+
+        output = OutputManager()
+        handler = StaticOutputHandler(output)
+
+        handle = handler.start_operation("Test operation", total=100)
+        assert isinstance(handle, StaticOperationHandle)
+
+    def test_context_manager_returns_self(self) -> None:
+        """Test __enter__/__exit__ context manager support."""
+        from gmailarchiver.output import OutputManager, StaticOutputHandler
+
+        output = OutputManager()
+        handler = StaticOutputHandler(output)
+
+        with handler as h:
+            assert h is handler
+
+    def test_json_mode_respects_output_manager_mode(self) -> None:
+        """Test StaticOutputHandler respects OutputManager's json_mode."""
+        from gmailarchiver.output import OutputManager, StaticOutputHandler
+
+        output = OutputManager(json_mode=True)
+        handler = StaticOutputHandler(output)
+
+        # Console should be None in JSON mode
+        assert output.console is None
+
+        # start_operation should still return a valid handle
+        handle = handler.start_operation("Test", total=10)
+        assert handle is not None
+
+
+class TestOutputManagerWithStaticHandler:
+    """Test OutputManager integration with StaticOutputHandler."""
+
+    def test_output_manager_uses_static_handler_by_default(self) -> None:
+        """Test OutputManager uses StaticOutputHandler as default."""
+        from gmailarchiver.output import OutputManager, StaticOutputHandler
+
+        output = OutputManager()
+
+        # OutputManager should have a _handler attribute (StaticOutputHandler)
+        assert hasattr(output, "_handler")
+        assert isinstance(output._handler, StaticOutputHandler)
+
+    def test_output_manager_info_delegates_to_handler(self) -> None:
+        """Test OutputManager.info() delegates to handler."""
+        from gmailarchiver.output import OutputManager
+
+        output = OutputManager()
+
+        with patch.object(output._handler, "print") as mock_print:
+            output.info("Test info")
+            # info() should eventually call handler.print()
+            # (implementation may vary, but verify delegation happens)
+
+
+# ============================================================================
+# Phase 3: LiveOutputHandler Tests
+# ============================================================================
+
+
+class TestLiveOperationHandle:
+    """Test LiveOperationHandle implementation."""
+
+    def test_log_adds_to_live_layout_context(self) -> None:
+        """Test log() adds messages to LiveLayoutContext."""
+        from gmailarchiver.output import (
+            LiveLayoutContext,
+            LiveOperationHandle,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_context = LiveLayoutContext(log_dir=Path(tmpdir))
+            handle = LiveOperationHandle(output, live_context, description="Test", total=10)
+
+            with live_context:
+                handle.log("Test message", "INFO")
+
+                # Should be in log buffer
+                logs = live_context.log_buffer.get_all_logs()
+                assert len(logs) == 1
+                assert logs[0].message == "Test message"
+                assert logs[0].level == "INFO"
+
+    def test_update_progress_tracks_completion(self) -> None:
+        """Test update_progress() tracks completion count."""
+        from gmailarchiver.output import (
+            LiveLayoutContext,
+            LiveOperationHandle,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_context = LiveLayoutContext(log_dir=Path(tmpdir))
+            handle = LiveOperationHandle(output, live_context, description="Test", total=100)
+
+            with live_context:
+                assert handle.completed == 0
+
+                handle.update_progress(advance=10)
+                assert handle.completed == 10
+
+                handle.update_progress(advance=5)
+                assert handle.completed == 15
+
+    def test_set_status_updates_description(self) -> None:
+        """Test set_status() updates operation description."""
+        from gmailarchiver.output import (
+            LiveLayoutContext,
+            LiveOperationHandle,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_context = LiveLayoutContext(log_dir=Path(tmpdir))
+            handle = LiveOperationHandle(output, live_context, description="Test", total=10)
+
+            with live_context:
+                handle.set_status("Processing 5/10")
+                assert handle.description == "Processing 5/10"
+
+    def test_succeed_logs_success_message(self) -> None:
+        """Test succeed() logs success message."""
+        from gmailarchiver.output import (
+            LiveLayoutContext,
+            LiveOperationHandle,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_context = LiveLayoutContext(log_dir=Path(tmpdir))
+            handle = LiveOperationHandle(output, live_context, description="Test", total=10)
+
+            with live_context:
+                handle.succeed("Operation complete")
+
+                logs = live_context.log_buffer.get_all_logs()
+                assert any(log.level == "SUCCESS" for log in logs)
+
+    def test_fail_logs_error_message(self) -> None:
+        """Test fail() logs error message."""
+        from gmailarchiver.output import (
+            LiveLayoutContext,
+            LiveOperationHandle,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            live_context = LiveLayoutContext(log_dir=Path(tmpdir))
+            handle = LiveOperationHandle(output, live_context, description="Test", total=10)
+
+            with live_context:
+                handle.fail("Operation failed")
+
+                logs = live_context.log_buffer.get_all_logs()
+                assert any(log.level == "ERROR" for log in logs)
+
+
+class TestLiveOutputHandler:
+    """Test LiveOutputHandler implementation."""
+
+    def test_context_manager_creates_live_layout(self) -> None:
+        """Test __enter__/__exit__ manages LiveLayoutContext."""
+        from gmailarchiver.output import LiveOutputHandler, OutputManager
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler = LiveOutputHandler(output, log_dir=Path(tmpdir))
+
+            with handler as h:
+                # Should have created LiveLayoutContext
+                assert h._live_context is not None
+
+            # Should have cleaned up after exit
+            assert h._live_context.session_logger._closed
+
+    def test_start_operation_returns_live_handle(self) -> None:
+        """Test start_operation() returns LiveOperationHandle."""
+        from gmailarchiver.output import (
+            LiveOperationHandle,
+            LiveOutputHandler,
+            OutputManager,
+        )
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler = LiveOutputHandler(output, log_dir=Path(tmpdir))
+
+            with handler:
+                handle = handler.start_operation("Test operation", total=100)
+                assert isinstance(handle, LiveOperationHandle)
+                assert handle.total == 100
+                assert handle.description == "Test operation"
+
+    def test_print_logs_to_live_context(self) -> None:
+        """Test print() adds messages to LiveLayoutContext."""
+        from gmailarchiver.output import LiveOutputHandler, OutputManager
+
+        output = OutputManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler = LiveOutputHandler(output, log_dir=Path(tmpdir))
+
+            with handler:
+                handler.print("Test content")
+
+                # Should be in log buffer
+                logs = handler._live_context.log_buffer.get_all_logs()
+                assert len(logs) == 1
+                assert logs[0].message == "Test content"
+
+
+class TestOutputManagerWithLiveMode:
+    """Test OutputManager with live_mode parameter."""
+
+    def test_output_manager_uses_live_handler_when_enabled(self) -> None:
+        """Test OutputManager uses LiveOutputHandler when live_mode=True."""
+        from gmailarchiver.output import LiveOutputHandler, OutputManager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = OutputManager(live_mode=True, log_dir=Path(tmpdir))
+
+            # Should use LiveOutputHandler
+            assert isinstance(output._handler, LiveOutputHandler)

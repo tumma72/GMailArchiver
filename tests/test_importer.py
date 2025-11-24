@@ -1539,8 +1539,8 @@ def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) ->
     message, the function should gracefully handle it and return empty string.
     """
     import email.message
-    import tempfile
     import mailbox
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mbox_path = Path(tmpdir) / "test.mbox"
@@ -1553,7 +1553,11 @@ def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) ->
         msg['From'] = 'sender@example.com'
 
         # Set binary content that might cause decode issues
-        msg.set_content(b'Binary content with invalid UTF-8: \xff\xfe', maintype='application', subtype='octet-stream')
+        msg.set_content(
+            b'Binary content with invalid UTF-8: \xff\xfe',
+            maintype='application',
+            subtype='octet-stream'
+        )
 
         mbox_obj.add(msg)
         mbox_obj.close()
@@ -1574,8 +1578,8 @@ def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
     and continue processing other messages.
     """
     import email.message
-    import tempfile
     import mailbox
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mbox_path = Path(tmpdir) / "test.mbox"
@@ -1620,7 +1624,6 @@ def test_importer_message_processing_exception(v1_1_db: Path) -> None:
     the importer should catch it, log error, and continue with next message.
     """
     import tempfile
-    import mailbox
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mbox_path = Path(tmpdir) / "corrupt.mbox"
@@ -1651,8 +1654,8 @@ def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
     should continue to next part or return partial body.
     """
     import email.message
-    import tempfile
     import mailbox
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mbox_path = Path(tmpdir) / "multipart.mbox"
@@ -1689,8 +1692,8 @@ def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
     catch it and return empty/partial body (graceful degradation).
     """
     import email.message
-    import tempfile
     import mailbox
+    import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mbox_path = Path(tmpdir) / "test.mbox"

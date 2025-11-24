@@ -22,6 +22,7 @@ from .db_manager import DBManager
 from .gmail_client import GmailClient
 from .hybrid_storage import HybridStorage
 from .input_validator import validate_age_expression, validate_compression_format
+from .output import OperationHandle
 from .state import ArchiveState
 from .utils import datetime_to_gmail_query, format_bytes, parse_age
 from .validator import ArchiveValidator
@@ -77,7 +78,8 @@ class GmailArchiver:
         output_file: str,
         compress: str | None = None,
         incremental: bool = True,
-        dry_run: bool = False
+        dry_run: bool = False,
+        operation: OperationHandle | None = None,
     ) -> dict[str, Any]:
         """
         Archive emails older than threshold to mbox file.
@@ -88,6 +90,7 @@ class GmailArchiver:
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
             incremental: Skip already-archived messages
             dry_run: Preview without actually archiving
+            operation: Optional operation handle for live progress tracking (v1.3.2+)
 
         Returns:
             Dictionary with archive statistics
@@ -175,7 +178,8 @@ class GmailArchiver:
         archive_result = self._archive_messages(
             message_ids,
             output_file,
-            compress
+            compress,
+            operation
         )
 
         # Record run in state
@@ -194,7 +198,8 @@ class GmailArchiver:
         self,
         message_ids: list[str],
         output_file: str,
-        compress: str | None = None
+        compress: str | None = None,
+        operation: OperationHandle | None = None,
     ) -> dict[str, Any]:
         """
         Fetch messages and write to mbox archive using HybridStorage.
@@ -203,6 +208,7 @@ class GmailArchiver:
             message_ids: List of Gmail message IDs
             output_file: Output file path
             compress: Compression format
+            operation: Optional operation handle for live progress tracking (v1.3.2+)
 
         Returns:
             Dict with archived count and failed count
@@ -218,7 +224,7 @@ class GmailArchiver:
             )
             self.hybrid_storage = HybridStorage(self.db_manager)
             return self._archive_messages_hybrid_storage(
-                message_ids, output_file, compress
+                message_ids, output_file, compress, operation
             )
         except Exception as e:
             # If DBManager fails completely, we have a serious issue
@@ -228,7 +234,8 @@ class GmailArchiver:
         self,
         message_ids: list[str],
         output_file: str,
-        compress: str | None = None
+        compress: str | None = None,
+        operation: OperationHandle | None = None,
     ) -> dict[str, Any]:
         """
         Archive messages using HybridStorage for atomic operations.
@@ -237,6 +244,7 @@ class GmailArchiver:
             message_ids: List of Gmail message IDs
             output_file: Output file path
             compress: Compression format
+            operation: Optional operation handle for live progress tracking (v1.3.2+)
 
         Returns:
             Dict with archived count and failed count
@@ -247,57 +255,64 @@ class GmailArchiver:
 
         assert self.hybrid_storage is not None, "HybridStorage not initialized"
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TimeRemainingColumn(),
-        ) as progress:
-            task = progress.add_task(
-                "Archiving messages...",
-                total=len(message_ids)
-            )
+        # Log initial status if operation handle provided
+        if operation:
+            operation.log(f"Processing {len(message_ids)} messages", "INFO")
 
-            # Fetch messages in batches
-            try:
-                for message in self.client.get_messages_batch(message_ids):
-                    try:
-                        # Decode raw message
-                        raw_email = self.client.decode_message_raw(message)
+        # Fetch messages in batches
+        try:
+            for i, message in enumerate(self.client.get_messages_batch(message_ids), 1):
+                try:
+                    # Decode raw message
+                    raw_email = self.client.decode_message_raw(message)
 
-                        # Parse email
-                        msg = email.message_from_bytes(raw_email, policy=policy.default)
+                    # Parse email
+                    msg = email.message_from_bytes(raw_email, policy=policy.default)
 
-                        # Extract Gmail labels as JSON
-                        labels = None
-                        if 'labelIds' in message:
-                            import json
-                            labels = json.dumps(message['labelIds'])
+                    # Extract subject for logging
+                    subject = msg.get('Subject', 'No Subject')
 
-                        # Archive using HybridStorage (atomic operation)
-                        self.hybrid_storage.archive_message(
-                            email_message=msg,
-                            gmail_id=message['id'],
-                            archive_file=output_path,
-                            thread_id=message.get('threadId'),
-                            labels=labels,
-                            compression=compress
-                        )
+                    # Extract Gmail labels as JSON
+                    labels = None
+                    if 'labelIds' in message:
+                        import json
+                        labels = json.dumps(message['labelIds'])
 
-                        archived_count += 1
+                    # Archive using HybridStorage (atomic operation)
+                    self.hybrid_storage.archive_message(
+                        email_message=msg,
+                        gmail_id=message['id'],
+                        archive_file=output_path,
+                        thread_id=message.get('threadId'),
+                        labels=labels,
+                        compression=compress
+                    )
 
-                    except Exception as e:
-                        # Log error but continue with next message
-                        msg_id = message['id']
-                        self._log(f"Warning: Failed to archive message {msg_id}: {e}", "WARNING")
-                        failed_count += 1
+                    archived_count += 1
 
-                    progress.advance(task)
-            finally:
-                # Close DBManager to prevent resource warnings
-                if self.db_manager:
-                    self.db_manager.close()
+                    # Log success to operation handle
+                    if operation:
+                        # Truncate subject to 60 chars for readability
+                        truncated_subject = subject[:60] if len(subject) > 60 else subject
+                        operation.log(f"✓ Archived: {truncated_subject}", "SUCCESS")
+                        operation.update_progress(1)
+
+                except Exception as e:
+                    # Log error but continue with next message
+                    msg_id = message['id']
+                    error_msg = f"Failed to archive message {msg_id}: {e}"
+
+                    # Log to operation handle if available
+                    if operation:
+                        operation.log(f"✗ {error_msg}", "ERROR")
+                    else:
+                        self._log(f"Warning: {error_msg}", "WARNING")
+
+                    failed_count += 1
+        finally:
+            # Close DBManager to prevent resource warnings
+            if self.db_manager:
+                self.db_manager.close()
 
         # Print summary
         final_path = output_path
