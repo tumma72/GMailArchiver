@@ -95,10 +95,10 @@ def archive(
 
     \b
     $ gmailarchiver archive 3y
-    $ gmailarchiver archive 3y --compress zstd
-    $ gmailarchiver archive 3y --compress gzip
-    $ gmailarchiver archive 3y --trash
     $ gmailarchiver archive 6m --dry-run
+    $ gmailarchiver archive 2024-01-01
+    $ gmailarchiver archive 2023-06-15 --compress zstd
+    $ gmailarchiver archive 3y --trash
     $ gmailarchiver archive 3y --json
     """
     from gmailarchiver.output import OutputManager
