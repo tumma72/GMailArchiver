@@ -304,7 +304,7 @@ class GmailArchiver:
                     if operation:
                         # Truncate subject to 60 chars for readability
                         truncated_subject = subject[:60] if len(subject) > 60 else subject
-                        operation.log(f"✓ Archived: {truncated_subject}", "SUCCESS")
+                        operation.log(f"Archived: {truncated_subject}", "SUCCESS")
                         operation.update_progress(1)
 
                 except Exception as e:
@@ -314,7 +314,7 @@ class GmailArchiver:
 
                     # Log to operation handle if available
                     if operation:
-                        operation.log(f"✗ {error_msg}", "ERROR")
+                        operation.log(error_msg, "ERROR")
                     else:
                         self._log(f"Warning: {error_msg}", "WARNING")
 
