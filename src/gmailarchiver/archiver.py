@@ -51,14 +51,19 @@ class GmailArchiver:
         self.db_manager: DBManager | None = None
         self.hybrid_storage: HybridStorage | None = None
 
-    def _log(self, message: str, level: str = "INFO") -> None:
-        """Log message through OutputManager if available, otherwise print.
+    def _log(self, message: str, level: str = "INFO", operation: OperationHandle | None = None) -> None:
+        """Log message through operation handle or OutputManager.
 
         Args:
             message: Message to log
             level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+            operation: Optional operation handle for live layout (v1.3.3+)
         """
-        if self.output:
+        # Priority: operation handle (live layout) > OutputManager > print fallback
+        if operation:
+            # Use operation handle for live layout display
+            operation.log(message, level)
+        elif self.output:
             # Use OutputManager's methods
             if level == "WARNING":
                 self.output.warning(message)
@@ -105,20 +110,25 @@ class GmailArchiver:
         cutoff_date = parse_age(age_threshold)
         query = f"before:{datetime_to_gmail_query(cutoff_date)}"
 
-        self._log(f"Searching for emails older than {age_threshold} ({cutoff_date.date()})")
-        self._log(f"Query: {query}")
+        self._log(f"Searching for emails older than {age_threshold} ({cutoff_date.date()})", operation=operation)
+        self._log(f"Query: {query}", operation=operation)
 
-        # List messages
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-        ) as progress:
-            task = progress.add_task("Listing messages...", total=None)
+        # List messages (use operation for logging if available)
+        if operation:
+            operation.log("Listing messages...", "INFO")
             message_list = self.client.list_messages(query)
-            progress.update(task, completed=True)
+        else:
+            # Only show spinner if not using live layout
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+            ) as progress:
+                task = progress.add_task("Listing messages...", total=None)
+                message_list = self.client.list_messages(query)
+                progress.update(task, completed=True)
 
         if not message_list:
-            self._log("No messages found matching criteria")
+            self._log("No messages found matching criteria", operation=operation)
             return {
                 'messages_found': 0,
                 'messages_archived': 0,
@@ -126,7 +136,7 @@ class GmailArchiver:
                 'archive_file': None
             }
 
-        self._log(f"Found {len(message_list)} messages")
+        self._log(f"Found {len(message_list)} messages", operation=operation)
 
         # Filter out already-archived messages if incremental
         message_ids = [msg['id'] for msg in message_list]
@@ -153,10 +163,10 @@ class GmailArchiver:
             skipped_count = original_count - len(message_ids)
 
             if skipped_count > 0:
-                self._log(f"Skipping {skipped_count} already-archived messages")
+                self._log(f"Skipping {skipped_count} already-archived messages", operation=operation)
 
         if not message_ids:
-            self._log("All messages already archived")
+            self._log("All messages already archived", operation=operation)
             return {
                 'messages_found': len(message_list),
                 'messages_archived': 0,
