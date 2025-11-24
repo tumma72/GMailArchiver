@@ -518,6 +518,56 @@ class TestArchiveMessage:
         assert msg_data['rfc_message_id'].startswith('<')
         assert msg_data['rfc_message_id'].endswith('@generated>')
 
+    def test_archive_message_duplicate_rfc_message_id_skipped(
+        self,
+        db_manager: DBManager,
+        sample_email_message: email.message.Message,
+        mbox_path: Path
+    ) -> None:
+        """Test that duplicate rfc_message_id is skipped gracefully (v1.3.2 bug fix)."""
+        storage = HybridStorage(db_manager)
+
+        # Archive first message with rfc_message_id = '<test123@example.com>'
+        storage.archive_message(
+            email_message=sample_email_message,
+            gmail_id='msg_original',
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Verify first message was archived
+        msg1 = db_manager.get_message_by_gmail_id('msg_original')
+        assert msg1 is not None
+        assert msg1['rfc_message_id'] == '<test123@example.com>'
+
+        # Try to archive ANOTHER message with SAME rfc_message_id but different gmail_id
+        # This simulates: same email in multiple folders, forwarded emails, etc.
+        duplicate_msg = email.message.EmailMessage()
+        duplicate_msg['Subject'] = 'Duplicate Message'
+        duplicate_msg['From'] = 'another@example.com'
+        duplicate_msg['Message-ID'] = '<test123@example.com>'  # SAME as first
+        duplicate_msg.set_content("This is a duplicate")
+
+        # Should skip gracefully without raising exception
+        result = storage.archive_message(
+            email_message=duplicate_msg,
+            gmail_id='msg_duplicate',  # Different gmail_id
+            archive_file=mbox_path,
+            compression=None
+        )
+
+        # Should return None to indicate skipped
+        assert result is None
+
+        # Verify duplicate was NOT added to database
+        msg2 = db_manager.get_message_by_gmail_id('msg_duplicate')
+        assert msg2 is None
+
+        # Verify only ONE message in mbox (original, not duplicate)
+        mbox = mailbox.mbox(str(mbox_path))
+        assert len(mbox) == 1
+        mbox.close()
+
 
 # ============================================================================
 # Consolidation Tests

@@ -9,9 +9,15 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.2.0 - Ergonomics & Automation
+## 🎉 What's New in v1.3.2 - Critical Bug Fix
 
-Version 1.2.0 brings **massive UX improvements** and **complete workflow automation**:
+Version 1.3.2 fixes a **critical bug** that caused archiving failures:
+
+- 🐛 **Fixed UNIQUE Constraint Errors** - Messages with duplicate RFC Message-IDs (same email in multiple folders) no longer cause database errors
+- 🛡️ **Improved Duplicate Handling** - Duplicates are now skipped gracefully with proper logging
+- ✅ **Enhanced Stability** - Eliminates orphaned messages in mbox files
+
+### Recent Major Features (v1.2.0)
 
 - 🎨 **Unified Rich Output** - Beautiful terminal output with progress bars, ETA, and rate tracking
 - 📤 **Message Extraction** - Retrieve messages from search results
@@ -141,6 +147,10 @@ gmailarchiver archive 3y --dry-run
 # 2. Archive emails older than 3 years with compression
 gmailarchiver archive 3y --compress zstd
 # → Creates: archive_20250123.mbox.zst
+
+# Or use exact dates (v1.3.0+)
+gmailarchiver archive 2024-01-01 --compress zstd
+# → Archives all emails before January 1, 2024
 
 # 3. Validate the archive
 gmailarchiver validate archive_20250123.mbox.zst
@@ -610,6 +620,23 @@ gmailarchiver doctor
 - [Changelog](CHANGELOG.md) - Version history and release notes
 
 ## 📜 Version History
+
+### v1.3.2 (2025-11-24) - Critical Bug Fix
+
+**Bug Fixes**:
+- Fixed UNIQUE constraint failures during archiving (messages with duplicate RFC Message-IDs)
+- Improved duplicate detection to check `rfc_message_id` before writing to mbox
+- Eliminated orphaned messages in mbox files
+
+**Quality**: 1072 tests, 93% coverage maintained
+
+### v1.3.1 (2025-11-24) - Live Layout Infrastructure
+
+**Internal Features**:
+- Added LogBuffer, SessionLogger, and LiveLayoutContext for flicker-free progress tracking
+- Enhanced OutputManager with live layout support
+
+**Quality**: 1071 tests, 93% coverage
 
 ### v1.2.0 (2025-11-23) - Ergonomics & Automation
 

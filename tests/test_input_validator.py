@@ -143,22 +143,22 @@ class TestValidateAgeExpression:
 
     def test_invalid_format_raises_error(self) -> None:
         """Test that invalid format raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*invalid"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*invalid"):
             validate_age_expression('invalid')
 
     def test_missing_unit_raises_error(self) -> None:
         """Test that missing unit raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*3.*Expected format"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*3.*Expected format"):
             validate_age_expression('3')
 
     def test_missing_number_raises_error(self) -> None:
         """Test that missing number raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*y"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*y"):
             validate_age_expression('y')
 
     def test_invalid_unit_raises_error(self) -> None:
         """Test that invalid unit raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*3x"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*3x"):
             validate_age_expression('3x')
 
     def test_zero_age_raises_error(self) -> None:
@@ -168,7 +168,7 @@ class TestValidateAgeExpression:
 
     def test_negative_age_raises_error(self) -> None:
         """Test that negative age raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*-3y"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*-3y"):
             validate_age_expression('-3y')
 
     def test_very_large_age_raises_error(self) -> None:
@@ -183,8 +183,49 @@ class TestValidateAgeExpression:
 
     def test_age_with_decimal_raises_error(self) -> None:
         """Test that age with decimal raises error."""
-        with pytest.raises(InvalidInputError, match="Invalid age format.*3.5y"):
+        with pytest.raises(InvalidInputError, match="Invalid age/date format.*3.5y"):
             validate_age_expression('3.5y')
+
+    # ISO date format tests (v1.3.2+)
+    def test_valid_iso_date(self) -> None:
+        """Test valid ISO date format (v1.3.2+)."""
+        result = validate_age_expression('2024-01-01')
+        assert result == '2024-01-01'
+
+    def test_valid_iso_date_recent(self) -> None:
+        """Test valid recent ISO date (v1.3.2+)."""
+        result = validate_age_expression('2023-06-15')
+        assert result == '2023-06-15'
+
+    def test_valid_iso_date_old(self) -> None:
+        """Test valid old ISO date (v1.3.2+)."""
+        result = validate_age_expression('2000-12-31')
+        assert result == '2000-12-31'
+
+    def test_invalid_iso_date_format_raises_error(self) -> None:
+        """Test that invalid ISO date format raises error (v1.3.2+)."""
+        with pytest.raises(InvalidInputError, match="Invalid age/date format"):
+            validate_age_expression('2024/01/01')  # Wrong separator
+
+    def test_invalid_iso_date_short_year_raises_error(self) -> None:
+        """Test that short year raises error (v1.3.2+)."""
+        with pytest.raises(InvalidInputError, match="Invalid age/date format"):
+            validate_age_expression('24-01-01')  # Only 2 digit year
+
+    def test_invalid_iso_date_month_raises_error(self) -> None:
+        """Test that invalid month raises error (v1.3.2+)."""
+        with pytest.raises(InvalidInputError, match="Invalid ISO date"):
+            validate_age_expression('2024-13-01')  # Month 13
+
+    def test_invalid_iso_date_day_raises_error(self) -> None:
+        """Test that invalid day raises error (v1.3.2+)."""
+        with pytest.raises(InvalidInputError, match="Invalid ISO date"):
+            validate_age_expression('2024-02-30')  # Feb 30th
+
+    def test_iso_date_preserves_case(self) -> None:
+        """Test that ISO dates are not lowercased (v1.3.2+)."""
+        result = validate_age_expression('2024-01-01')
+        assert result == '2024-01-01'  # Not lowercased
 
 
 class TestValidateCompressionFormat:

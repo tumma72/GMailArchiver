@@ -99,7 +99,7 @@ class HybridStorage:
         thread_id: str | None = None,
         labels: str | None = None,
         compression: str | None = None,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int] | None:
         """
         Atomically archive a message to mbox AND database.
 
@@ -119,7 +119,8 @@ class HybridStorage:
             compression: Compression format ('gzip', 'lzma', 'zstd', or None)
 
         Returns:
-            Tuple of (mbox_offset, mbox_length)
+            Tuple of (mbox_offset, mbox_length), or None if message was skipped
+            due to duplicate rfc_message_id (v1.3.2+)
 
         Raises:
             HybridStorageError: If operation fails
@@ -144,6 +145,23 @@ class HybridStorage:
             logger.debug(f"Phase 1: Writing message {gmail_id} to staging")
             with open(staging_file, "wb") as f:
                 f.write(email_message.as_bytes())
+
+            # Phase 1a: Check for duplicate rfc_message_id BEFORE writing to mbox
+            # (v1.3.2: prevents UNIQUE constraint errors)
+            rfc_message_id = self._extract_rfc_message_id(email_message)
+            existing = self.db.get_message_by_rfc_message_id(rfc_message_id)
+            if existing:
+                logger.info(
+                    f"Skipping duplicate message {gmail_id}: "
+                    f"rfc_message_id '{rfc_message_id}' already archived as {existing['gmail_id']}"
+                )
+                # Clean up staging file
+                if staging_file.exists():
+                    try:
+                        staging_file.unlink()
+                    except Exception:
+                        pass
+                return None
 
             # Phase 2: Commit to mbox
             logger.debug(f"Phase 2: Appending to mbox {mbox_path}")
@@ -181,8 +199,7 @@ class HybridStorage:
             # Phase 3: Commit to database
             logger.debug("Phase 3: Recording in database")
 
-            # Extract metadata
-            rfc_message_id = self._extract_rfc_message_id(email_message)
+            # Extract metadata (rfc_message_id already extracted in Phase 1a)
             body_preview = self._extract_body_preview(email_message)
             checksum = self._compute_checksum(email_message.as_bytes())
 

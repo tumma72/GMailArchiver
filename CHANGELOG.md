@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2025-11-24
+
+### Fixed
+- **Critical Bug**: Fixed UNIQUE constraint failures during archiving
+  - **Issue**: Messages with duplicate RFC Message-IDs (same email in multiple folders, forwarded emails) caused database constraint violations
+  - **Root Cause**: Incremental filtering only checked `gmail_id`, but database UNIQUE constraint is on `rfc_message_id`
+  - **Solution**: Added duplicate check in `hybrid_storage.py` BEFORE writing to mbox
+  - **Behavior**: Duplicates are now skipped gracefully with INFO log message, not treated as errors
+  - **Impact**: Eliminates "UNIQUE constraint failed" errors and orphaned messages in mbox files
+
+### Changed
+- `HybridStorage.archive_message()` now returns `None` when skipping duplicate messages (v1.3.2+)
+- Updated method signature: `-> tuple[int, int] | None` (was `-> tuple[int, int]`)
+
+### Quality
+- Test coverage: 93% maintained (1072 tests passing, added 1 new test)
+- New test: `test_archive_message_duplicate_rfc_message_id_skipped` validates duplicate handling
+- TDD methodology: RED → GREEN → REFACTOR followed strictly
+
+## [1.3.1] - 2025-11-24
+
+### Added
+- **Live Layout System**: Flicker-free progress tracking with integrated logging
+  - **LogBuffer**: Ring buffer with message deduplication and severity-based styling (89 LOC, 100% coverage)
+  - **SessionLogger**: XDG-compliant persistent logging with automatic cleanup (67 LOC, 97% coverage)
+  - **LiveLayoutContext**: Unified context manager for live UI + file logging (58 LOC, 100% coverage)
+  - `live_layout_context()` method on OutputManager for easy integration
+
+### Changed
+- **archiver.py**: Replaced raw `print()` calls with structured logging via OutputManager
+  - Added optional `output` parameter to `GmailArchiver.__init__()`
+  - Implemented `_log()` helper method with severity routing (INFO, WARNING, ERROR, SUCCESS)
+  - Maintains backward compatibility with print() fallback
+- **CLI commands**: Updated `archive` and `retry-delete` commands to pass OutputManager to GmailArchiver
+- **hybrid_storage.py**: Verified logging uses Python's logging module (appropriate for low-level diagnostics)
+
+### Quality
+- Test coverage: 93% overall (1071 tests passing)
+- New code coverage: 97-100% (platform-specific code excluded)
+- TDD methodology: All new code written test-first (RED → GREEN → REFACTOR)
+- New test classes: TestLogBuffer (16 tests), TestSessionLogger (34 tests), TestLiveLayoutContext (7 tests), TestGmailArchiverWithOutput (4 tests)
+- Lines changed: ~250 (implementation + tests)
+
+## [1.3.0] - 2025-11-24
+
+### Added
+- **Exact date support**: Archive command now accepts ISO date format (YYYY-MM-DD) in addition to relative ages
+  - New format: `gmailarchiver archive 2024-01-01`
+  - Existing format still works: `gmailarchiver archive 3y`
+  - Lenient parsing: Accepts dates with or without zero-padding (e.g., both `2024-01-01` and `2024-1-1`)
+  - Backward compatible: All existing relative age formats unchanged
+
+### Changed
+- Enhanced `parse_age()` function to support both relative ages and ISO dates
+- Updated archive command help text to document both formats
+- Improved error messages to show both format options (relative age + ISO date)
+
+### Quality
+- Test coverage: 95%+ maintained
+- All existing tests pass (backward compatibility verified)
+- Added 16 new test cases for ISO date parsing (valid dates, invalid formats, edge cases)
+- Lines changed: ~40 (implementation + tests)
+
 ## [1.2.0] - 2025-11-23
 
 ### 🎉 Major Release: Ergonomics & Automation

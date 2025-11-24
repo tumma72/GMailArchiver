@@ -58,39 +58,55 @@ def validate_gmail_query(query: str) -> str:
 
 def validate_age_expression(age: str) -> str:
     """
-    Validate age expression format (e.g., '3y', '6m', '2w', '30d').
+    Validate age expression or ISO date format.
+
+    Accepts two formats:
+    1. Relative age: number + unit (e.g., '3y', '6m', '2w', '30d')
+    2. ISO date: YYYY-MM-DD (e.g., '2024-01-01')
 
     Args:
-        age: Age expression string
+        age: Age expression or ISO date string
 
     Returns:
-        The validated age expression
+        The validated age expression or ISO date
 
     Raises:
-        InvalidInputError: If the age expression is invalid
+        InvalidInputError: If the format is invalid
 
     Examples:
-        >>> validate_age_expression('3y')  # Valid
+        >>> validate_age_expression('3y')           # Valid relative
         '3y'
-        >>> validate_age_expression('6m')  # Valid
-        '6m'
-        >>> validate_age_expression('invalid')  # Invalid - raises error
+        >>> validate_age_expression('2024-01-01')   # Valid ISO date
+        '2024-01-01'
+        >>> validate_age_expression('invalid')      # Invalid - raises error
     """
     if not age or not age.strip():
         raise InvalidInputError("Age expression cannot be empty")
 
-    age = age.strip().lower()
+    age = age.strip()
 
-    # Must match pattern: number + unit (y/m/w/d)
-    if not re.match(r'^\d+[ymwd]$', age):
+    # Try ISO date format first (YYYY-MM-DD)
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', age):
+        # Validate it's a real date
+        try:
+            from datetime import datetime
+            datetime.strptime(age, '%Y-%m-%d')
+            return age  # Valid ISO date
+        except ValueError as e:
+            raise InvalidInputError(f"Invalid ISO date: '{age}'. {str(e)}")
+
+    # Try relative age format (number + unit)
+    age_lower = age.lower()
+    if not re.match(r'^\d+[ymwd]$', age_lower):
         raise InvalidInputError(
-            f"Invalid age format: '{age}'. "
-            "Expected format: number + unit (y/m/w/d). "
-            "Examples: '3y', '6m', '2w', '30d'"
+            f"Invalid age/date format: '{age}'. "
+            "Expected formats:\n"
+            "  - Relative age: number + unit (y/m/w/d). Examples: '3y', '6m', '2w', '30d'\n"
+            "  - Exact date: ISO format (YYYY-MM-DD). Examples: '2024-01-01', '2023-06-15'"
         )
 
     # Extract number and check it's reasonable
-    num_str = age[:-1]
+    num_str = age_lower[:-1]
     try:
         num = int(num_str)
         if num <= 0:
@@ -100,7 +116,7 @@ def validate_age_expression(age: str) -> str:
     except ValueError:
         raise InvalidInputError(f"Invalid age number: {num_str}")
 
-    return age
+    return age_lower
 
 
 def validate_compression_format(format: str | None) -> str | None:
