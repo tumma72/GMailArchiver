@@ -279,6 +279,7 @@ class LiveOperationHandle:
         live_context: LiveLayoutContext,
         description: str,
         total: int | None = None,
+        live_handler: LiveOutputHandler | None = None,
     ) -> None:
         """Initialize live operation handle.
 
@@ -287,21 +288,26 @@ class LiveOperationHandle:
             live_context: LiveLayoutContext for logging
             description: Operation description
             total: Total items to process (if known)
+            live_handler: LiveOutputHandler for display updates (v1.3.2+)
         """
         self._output = output_manager
         self._live_context = live_context
+        self._live_handler = live_handler
         self.description = description
         self.total = total
         self.completed = 0
 
     def log(self, message: str, level: str = "INFO") -> None:
-        """Log message to LiveLayoutContext.
+        """Log message to LiveLayoutContext and update display.
 
         Args:
             message: Message to log
             level: Severity level (INFO, WARNING, ERROR, SUCCESS)
         """
         self._live_context.add_log(message, level)
+        # Trigger display update if handler available
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
 
     def update_progress(self, advance: int = 1) -> None:
         """Advance progress counter.
@@ -326,6 +332,9 @@ class LiveOperationHandle:
             message: Success message
         """
         self._live_context.add_log(message, "SUCCESS")
+        # Trigger display update if handler available
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
 
     def fail(self, message: str) -> None:
         """Mark operation as failed.
@@ -334,6 +343,9 @@ class LiveOperationHandle:
             message: Failure message
         """
         self._live_context.add_log(message, "ERROR")
+        # Trigger display update if handler available
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
 
 
 class LiveOutputHandler:
@@ -364,6 +376,27 @@ class LiveOutputHandler:
         self._live_context: LiveLayoutContext | None = None
         self._live: Live | None = None
 
+    def _render_layout(self) -> Any:
+        """Render current layout with log buffer.
+
+        Returns:
+            Rich renderable (Panel with log buffer)
+        """
+        from rich.panel import Panel
+
+        if not self._live_context:
+            return Panel("Loading...", title="Processing", border_style="blue")
+
+        # Render log buffer
+        log_display = self._live_context.log_buffer.render()
+
+        return Panel(
+            log_display,
+            title="[bold blue]Live Processing Log[/bold blue]",
+            border_style="blue",
+            padding=(0, 1),
+        )
+
     def print(self, content: Any) -> None:
         """Print content to live layout.
 
@@ -372,6 +405,9 @@ class LiveOutputHandler:
         """
         if self._live_context:
             self._live_context.add_log(str(content), "INFO")
+            # Update live display
+            if self._live:
+                self._live.update(self._render_layout())
 
     def start_operation(
         self, description: str, total: int | None = None
@@ -389,19 +425,28 @@ class LiveOutputHandler:
             raise RuntimeError("LiveOutputHandler not entered (use 'with handler:')")
 
         return LiveOperationHandle(
-            self._output, self._live_context, description, total
+            self._output, self._live_context, description, total, live_handler=self
         )
 
     def __enter__(self) -> LiveOutputHandler:
-        """Context manager entry - creates LiveLayoutContext."""
+        """Context manager entry - creates LiveLayoutContext and Rich Live display."""
+        from rich.live import Live
+        from rich.panel import Panel
+        from rich.console import Group as RichGroup
+
         self._live_context = LiveLayoutContext(
             log_dir=self._log_dir, max_visible=self._max_visible
         )
         self._live_context.__enter__()
 
-        # Create Rich Live display (for future live rendering)
-        # For now, just set up the context
-        self._live = None
+        # Create Rich Live display with auto-refresh
+        self._live = Live(
+            self._render_layout(),
+            console=self._output.console,
+            refresh_per_second=4,  # Update 4 times per second
+            transient=False,
+        )
+        self._live.__enter__()
 
         return self
 
