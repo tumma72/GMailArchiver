@@ -120,8 +120,13 @@ class GmailArchiver:
 
         # List messages (use operation for logging if available)
         if operation:
-            operation.log("Listing messages...", "INFO")
+            operation.log("Listing messages...", "PENDING")
             message_list = self.client.list_messages(query)
+            # Complete the pending entry with the result
+            if message_list:
+                operation.complete_pending(f"Found {len(message_list):,} messages", "SUCCESS")
+            else:
+                operation.complete_pending("No messages found matching criteria", "WARNING")
         else:
             # Only show spinner if not using live layout
             with Progress(
@@ -133,15 +138,14 @@ class GmailArchiver:
                 progress.update(task, completed=True)
 
         if not message_list:
-            self._log("No messages found matching criteria", operation=operation)
+            if not operation:
+                self._log("No messages found matching criteria", operation=operation)
             return {
                 'messages_found': 0,
                 'messages_archived': 0,
                 'skipped': 0,
                 'archive_file': None
             }
-
-        self._log(f"Found {len(message_list)} messages", operation=operation)
 
         # Filter out already-archived messages if incremental
         message_ids = [msg['id'] for msg in message_list]

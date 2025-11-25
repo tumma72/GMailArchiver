@@ -372,6 +372,21 @@ class LiveOperationHandle:
         if self._live_handler and self._live_handler._live:
             self._live_handler._live.update(self._live_handler._render_layout())
 
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry with a final message.
+
+        Replaces the animated pending entry (e.g., "Listing messages...")
+        with the final result (e.g., "Found 16,133 messages").
+
+        Args:
+            final_message: The final message to display.
+            level: The final severity level (default: SUCCESS).
+        """
+        self._live_context.complete_pending(final_message, level)
+        # Trigger display update if handler available
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
+
 
 class LiveOutputHandler:
     """Live output handler using LiveLayoutContext.
@@ -554,6 +569,7 @@ class LogBuffer:
     - Severity symbols (ℹ, ⚠, ✗, ✓)
     - Duplicate count display (x2, x3, etc.)
     - Separate storage for all logs (for session logging)
+    - Animated PENDING entries with cycling dots (v1.3.6+)
 
     This is part of v1.3.1's live layout system for flicker-free progress display.
     """
@@ -563,7 +579,11 @@ class LogBuffer:
         "WARNING": ("⚠", "yellow"),
         "ERROR": ("✗", "red"),
         "SUCCESS": ("✓", "green"),
+        "PENDING": ("◐", "cyan"),  # Base symbol, will be animated
     }
+
+    # Animation frames for PENDING entries (cycles every 250ms)
+    PENDING_FRAMES = ["◐", "◓", "◑", "◒"]  # Rotating circle animation
 
     def __init__(self, max_visible: int = 10) -> None:
         """Initialize LogBuffer.
@@ -582,6 +602,7 @@ class LogBuffer:
         self._visible: deque[LogEntry] = deque(maxlen=max_visible if max_visible > 0 else None)
         self._all_logs: list[LogEntry] = []
         self._entry_map: dict[str, LogEntry] = {}  # Message text -> LogEntry
+        self._pending_key: str | None = None  # Key of current pending entry (for updates)
 
     def add(self, message: str, level: str = "INFO") -> None:
         """Add a log entry with deduplication.
@@ -593,7 +614,7 @@ class LogBuffer:
 
         Args:
             message: Log message text.
-            level: Severity level (INFO, WARNING, ERROR, SUCCESS).
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS, PENDING).
         """
         if message in self._entry_map:
             # Duplicate: update existing entry
@@ -614,8 +635,14 @@ class LogBuffer:
             if self._max_visible > 0:
                 self._visible.append(entry)
 
+            # Track pending entry for later completion
+            if level == "PENDING":
+                self._pending_key = message
+
     def render(self) -> Group:
         """Render visible logs as Rich Group with severity symbols.
+
+        PENDING entries are animated with a rotating circle symbol.
 
         Returns:
             Rich Group containing formatted log entries.
@@ -623,6 +650,13 @@ class LogBuffer:
         renderables = []
         for entry in self._visible:
             symbol, color = self.SEVERITY_MAP.get(entry.level, ("?", "white"))
+
+            # Animate PENDING entries with rotating circle
+            if entry.level == "PENDING":
+                # Calculate animation frame based on time (cycles every 250ms per frame)
+                frame_index = int(time.time() * 4) % len(self.PENDING_FRAMES)
+                symbol = self.PENDING_FRAMES[frame_index]
+
             count_str = f" [dim](x{entry.count})[/dim]" if entry.count > 1 else ""
             text = Text.from_markup(f"[{color}]{symbol}[/{color}] {entry.message}{count_str}")
             renderables.append(text)
@@ -636,11 +670,38 @@ class LogBuffer:
         """
         return self._all_logs.copy()
 
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending entry by replacing it with a final message.
+
+        Updates the pending entry in-place with the new message and level.
+        If no pending entry exists, adds the message as a new entry.
+
+        Args:
+            final_message: The final message to display.
+            level: The final severity level (default: SUCCESS).
+        """
+        if self._pending_key and self._pending_key in self._entry_map:
+            # Update the existing pending entry in-place
+            entry = self._entry_map[self._pending_key]
+            entry.message = final_message
+            entry.level = level
+            entry.timestamp = time.time()
+
+            # Update the entry map with new key
+            del self._entry_map[self._pending_key]
+            self._entry_map[final_message] = entry
+
+            self._pending_key = None
+        else:
+            # No pending entry, just add as new
+            self.add(final_message, level)
+
     def clear(self) -> None:
         """Clear all log entries."""
         self._visible.clear()
         self._all_logs.clear()
         self._entry_map.clear()
+        self._pending_key = None
 
 
 class LiveLayoutContext:
@@ -748,13 +809,26 @@ class LiveLayoutContext:
 
         Args:
             message: Log message text
-            level: Severity level (INFO, WARNING, ERROR, SUCCESS, DEBUG)
+            level: Severity level (INFO, WARNING, ERROR, SUCCESS, PENDING, DEBUG)
         """
         # Add to visible log buffer (for UI)
         self.log_buffer.add(message, level)
 
         # Write to session log file (for debugging)
         self.session_logger.write(message, level)
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry with a final message.
+
+        Replaces the animated pending entry with the final result.
+        Also writes to session log.
+
+        Args:
+            final_message: The final message to display.
+            level: The final severity level (default: SUCCESS).
+        """
+        self.log_buffer.complete_pending(final_message, level)
+        self.session_logger.write(final_message, level)
 
     def __enter__(self) -> LiveLayoutContext:
         """Context manager entry - starts live layout."""
