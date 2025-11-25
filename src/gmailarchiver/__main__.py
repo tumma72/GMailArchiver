@@ -149,8 +149,7 @@ def archive(
     with out._handler:
         # Start operation and get handle for live progress
         operation = out._handler.start_operation(
-            f"Archiving messages older than {age_threshold}",
-            total=None
+            f"Archiving messages older than {age_threshold}", total=None
         )
 
         try:
@@ -170,6 +169,12 @@ def archive(
                 operation.succeed(f"Archived {result['messages_archived']} messages")
             else:
                 operation.log("No messages to archive", "WARNING")
+
+        except KeyboardInterrupt:
+            # Ctrl+C - the archiver should have handled saving progress
+            operation.log("Archive interrupted by user", "WARNING")
+            # Result should already be set by archiver with interrupted=True
+            # If not, we'll handle it below
 
         except Exception as e:
             operation.fail(f"Archive operation failed: {e}")
@@ -209,21 +214,41 @@ def archive(
     # Handle zero messages case
     if result["messages_archived"] == 0:
         out.warning("No messages to archive")
-        out.suggest_next_steps([
-            "Check your age threshold",
-            "Verify messages exist in Gmail matching the criteria",
-        ])
+        out.suggest_next_steps(
+            [
+                "Check your age threshold",
+                "Verify messages exist in Gmail matching the criteria",
+            ]
+        )
+        out.end_operation(success=True)
+        return
+
+    # Handle interrupted archive (Ctrl+C)
+    if result.get("interrupted", False):
+        actual_file = result.get("actual_file", output)
+        out.warning("Archive was interrupted (Ctrl+C)")
+        out.info(f"Partial archive saved: {actual_file}")
+        out.info(f"Progress: {result['messages_archived']} messages archived")
+        out.suggest_next_steps(
+            [
+                f"Resume: gmailarchiver archive {age_threshold}",
+                "Cleanup: gmailarchiver cleanup --list",
+            ]
+        )
         out.end_operation(success=True)
         return
 
     # Phase 5: Validation (outside live context for clean output)
     out.info("Validating archive...")
 
+    # Get the actual file that was written (may differ from output if interrupted)
+    actual_file = result.get("actual_file", output)
+
     # Get the actual message IDs that were archived
     with ArchiveState() as state:
-        archived_ids = state.get_archived_message_ids_for_file(output)
+        archived_ids = state.get_archived_message_ids_for_file(actual_file)
 
-    validation_results = archiver.validate_archive(output, archived_ids)
+    validation_results = archiver.validate_archive(actual_file, archived_ids)
 
     # Show validation report using new panel method
     out.show_validation_report(validation_results, title="Archive Validation")
@@ -265,8 +290,7 @@ def archive(
         elif trash:
             # Move to trash with confirmation
             if not typer.confirm(
-                f"\nMove {result['messages_archived']} messages to trash? "
-                "(30-day recovery period)"
+                f"\nMove {result['messages_archived']} messages to trash? (30-day recovery period)"
             ):
                 out.info("Cancelled")
                 out.end_operation(success=True)
@@ -301,9 +325,7 @@ def archive(
 
     if not trash and not delete:
         next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
-        next_steps.append(
-            f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
-        )
+        next_steps.append(f"Permanently delete: gmailarchiver retry-delete {output} --permanent")
 
     out.suggest_next_steps(next_steps)
     out.end_operation(success=True)
@@ -609,6 +631,181 @@ def status(
             output.warning("No archive runs found")
 
     output.end_operation(success=True)
+
+
+@app.command()
+def cleanup(
+    session_id: str | None = typer.Argument(
+        None,
+        help="Specific session ID to clean up (use --list to see sessions)",
+    ),
+    list_sessions: bool = typer.Option(
+        False, "--list", "-l", help="List all partial archive sessions"
+    ),
+    all_sessions: bool = typer.Option(False, "--all", "-a", help="Clean up ALL partial sessions"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+    state_db: str = typer.Option(
+        "archive_state.db", "--state-db", help="Path to state database file"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Manage partial archive sessions from interrupted operations.
+
+    Use this command to list or clean up partial archives left from
+    interrupted archiving operations (Ctrl+C, crashes, etc.).
+
+    Examples:
+        # List all partial sessions
+        $ gmailarchiver cleanup --list
+
+        # Clean up a specific session
+        $ gmailarchiver cleanup abc123-session-id
+
+        # Clean up all partial sessions
+        $ gmailarchiver cleanup --all
+
+        # Force cleanup without confirmation
+        $ gmailarchiver cleanup --all --force
+    """
+    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("cleanup", "Managing partial archive sessions")
+
+    # Check if database exists
+    db_path = Path(state_db)
+    if not db_path.exists():
+        output.warning("No archive database found")
+        output.suggest_next_steps(
+            [
+                "Archive emails: gmailarchiver archive 3y",
+            ]
+        )
+        output.end_operation(success=True)
+        raise typer.Exit(0)
+
+    # Validate arguments
+    if not list_sessions and not all_sessions and not session_id:
+        output.error("Please specify --list, --all, or provide a session ID", exit_code=0)
+        output.suggest_next_steps(
+            [
+                "List sessions: gmailarchiver cleanup --list",
+                "Clean all: gmailarchiver cleanup --all",
+            ]
+        )
+        output.end_operation(success=False)
+        raise typer.Exit(1)
+
+    try:
+        db = DBManager(state_db, validate_schema=False, auto_create=False)
+        db.ensure_sessions_table()
+
+        # Get all partial sessions
+        sessions = db.get_all_partial_sessions()
+
+        if list_sessions:
+            if not sessions:
+                output.info("No partial archive sessions found")
+                output.end_operation(success=True)
+                raise typer.Exit(0)
+
+            # Display sessions table
+            headers = ["Session ID", "Target File", "Progress", "Started", "Updated"]
+            rows: list[list[str]] = []
+            for session in sessions:
+                progress = f"{session['processed_count']}/{session['total_count']}"
+                started = session["started_at"][:19] if session["started_at"] else "N/A"
+                updated = session["updated_at"][:19] if session["updated_at"] else "N/A"
+                rows.append(
+                    [
+                        session["session_id"][:12] + "...",  # Truncate UUID
+                        Path(session["target_file"]).name,
+                        progress,
+                        started,
+                        updated,
+                    ]
+                )
+
+            output.show_table("Partial Archive Sessions", headers, rows)
+            output.info(f"Found {len(sessions)} partial session(s)")
+            output.suggest_next_steps(
+                [
+                    "Clean specific: gmailarchiver cleanup <session-id>",
+                    "Clean all: gmailarchiver cleanup --all",
+                ]
+            )
+            output.end_operation(success=True)
+            raise typer.Exit(0)
+
+        # Determine which sessions to clean
+        sessions_to_clean: list[dict[str, Any]] = []
+
+        if all_sessions:
+            sessions_to_clean = sessions
+            if not sessions_to_clean:
+                output.info("No partial archive sessions to clean up")
+                output.end_operation(success=True)
+                raise typer.Exit(0)
+        elif session_id:
+            # Find specific session (support partial UUID match)
+            matching = [s for s in sessions if s["session_id"].startswith(session_id)]
+            if not matching:
+                output.error(f"Session not found: {session_id}", exit_code=0)
+                output.suggest_next_steps(["List sessions: gmailarchiver cleanup --list"])
+                output.end_operation(success=False)
+                raise typer.Exit(1)
+            if len(matching) > 1:
+                output.error(
+                    f"Multiple sessions match '{session_id}'. Be more specific.", exit_code=0
+                )
+                output.end_operation(success=False)
+                raise typer.Exit(1)
+            sessions_to_clean = matching
+
+        # Confirmation prompt
+        if not force:
+            output.warning(
+                f"This will delete {len(sessions_to_clean)} partial session(s) "
+                "and their associated data"
+            )
+            confirm = typer.confirm("Continue?")
+            if not confirm:
+                output.info("Cleanup cancelled")
+                output.end_operation(success=True)
+                raise typer.Exit(0)
+
+        # Perform cleanup
+        cleaned_count = 0
+        for session in sessions_to_clean:
+            target_file = session["target_file"]
+            partial_file = Path(target_file + ".partial")
+
+            # Delete partial file if it exists
+            if partial_file.exists():
+                partial_file.unlink()
+                output.info(f"Deleted partial file: {partial_file.name}")
+
+            # Delete messages associated with the partial file
+            deleted_msgs = db.delete_messages_for_file(str(partial_file))
+            if deleted_msgs > 0:
+                output.info(f"Removed {deleted_msgs} message records")
+
+            # Delete session record
+            db.delete_session(session["session_id"])
+            output.success(f"Cleaned session: {session['session_id'][:12]}...")
+            cleaned_count += 1
+
+        db.close()
+
+        output.success(f"Cleaned up {cleaned_count} partial session(s)")
+        output.end_operation(success=True)
+
+    except Exception as e:
+        output.error(f"Cleanup failed: {e}", exit_code=0)
+        output.end_operation(success=False)
+        raise typer.Exit(1)
 
 
 @utilities_app.command()

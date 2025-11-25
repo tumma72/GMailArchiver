@@ -109,7 +109,7 @@ class DBManager:
 
         try:
             # Create messages table (enhanced schema)
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -129,7 +129,7 @@ class DBManager:
                     labels TEXT,
                     account_id TEXT DEFAULT 'default'
                 )
-            ''')
+            """)
 
             # Create performance indexes
             indexes = [
@@ -144,7 +144,7 @@ class DBManager:
                 conn.execute(index_sql)
 
             # Create FTS5 virtual table for full-text search
-            conn.execute('''
+            conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     subject,
                     from_addr,
@@ -154,17 +154,17 @@ class DBManager:
                     content_rowid=rowid,
                     tokenize='porter unicode61 remove_diacritics 1'
                 )
-            ''')
+            """)
 
             # Create auto-sync triggers for FTS5
-            conn.execute('''
+            conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
                     INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
                     VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
                 END
-            ''')
+            """)
 
-            conn.execute('''
+            conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
                     UPDATE messages_fts
                     SET subject = new.subject,
@@ -173,16 +173,16 @@ class DBManager:
                         body_preview = new.body_preview
                     WHERE rowid = new.rowid;
                 END
-            ''')
+            """)
 
-            conn.execute('''
+            conn.execute("""
                 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
                     DELETE FROM messages_fts WHERE rowid = old.rowid;
                 END
-            ''')
+            """)
 
             # Create accounts table (for future multi-account support)
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
                     account_id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
@@ -191,16 +191,19 @@ class DBManager:
                     added_timestamp TEXT,
                     last_sync_timestamp TEXT
                 )
-            ''')
+            """)
 
             # Insert default account
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp)
                 VALUES ('default', 'default', ?)
-            ''', (datetime.now().isoformat(),))
+            """,
+                (datetime.now().isoformat(),),
+            )
 
             # Create archive_runs table
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS archive_runs (
                     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_timestamp TEXT NOT NULL,
@@ -210,21 +213,52 @@ class DBManager:
                     account_id TEXT DEFAULT 'default',
                     operation_type TEXT DEFAULT 'archive'
                 )
-            ''')
+            """)
+
+            # Create archive_sessions table (for resumable operations, v1.3.6+)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS archive_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    target_file TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    message_ids TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    status TEXT DEFAULT 'in_progress',
+                    compression TEXT,
+                    total_count INTEGER NOT NULL,
+                    processed_count INTEGER DEFAULT 0,
+                    account_id TEXT DEFAULT 'default'
+                )
+            """)
+
+            # Create index for session lookups
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_target_file
+                ON archive_sessions(target_file)
+            """)
+
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_session_status
+                ON archive_sessions(status)
+            """)
 
             # Create schema_version table
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version TEXT PRIMARY KEY,
                     migrated_timestamp TEXT NOT NULL
                 )
-            ''')
+            """)
 
             # Set schema version to 1.1
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO schema_version (version, migrated_timestamp)
                 VALUES ('1.1', ?)
-            ''', (datetime.now().isoformat(),))
+            """,
+                (datetime.now().isoformat(),),
+            )
 
             conn.commit()
             logger.info("Successfully created new v1.1 database")
@@ -428,6 +462,19 @@ class DBManager:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_all_rfc_message_ids(self) -> set[str]:
+        """
+        Get all RFC Message-IDs as a set for efficient duplicate detection.
+
+        This enables O(1) duplicate lookup instead of per-message database queries.
+        Useful when archiving large batches of messages.
+
+        Returns:
+            Set of all rfc_message_id values in the database
+        """
+        cursor = self.conn.execute("SELECT rfc_message_id FROM messages")
+        return {row[0] for row in cursor.fetchall() if row[0]}
+
     def get_message_location(self, gmail_id: str) -> tuple[str, int, int] | None:
         """
         Get mbox file location for O(1) message access.
@@ -611,7 +658,7 @@ class DBManager:
             # Convert dicts to tuple format for executemany
             # SQL expects: (archive_file, offset, length, gmail_id)
             tuples = [
-                (u['archive_file'], u['mbox_offset'], u['mbox_length'], u['gmail_id'])
+                (u["archive_file"], u["mbox_offset"], u["mbox_length"], u["gmail_id"])
                 for u in updates
             ]
 
@@ -628,7 +675,7 @@ class DBManager:
             self._record_archive_run(
                 operation="consolidate",
                 messages_count=len(updates),
-                archive_file=updates[0]['archive_file'] if updates else None,
+                archive_file=updates[0]["archive_file"] if updates else None,
             )
         except Exception as e:
             raise DBManagerError(f"Failed to bulk update locations: {e}") from e
@@ -946,6 +993,232 @@ class DBManager:
                 operation,
             ),
         )
+
+    # ==================== SESSION OPERATIONS (v1.3.6+) ====================
+
+    def ensure_sessions_table(self) -> None:
+        """Ensure archive_sessions table exists (for existing databases).
+
+        Call this before using session operations on databases created before v1.3.6.
+        """
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS archive_sessions (
+                session_id TEXT PRIMARY KEY,
+                target_file TEXT NOT NULL,
+                query TEXT NOT NULL,
+                message_ids TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT,
+                status TEXT DEFAULT 'in_progress',
+                compression TEXT,
+                total_count INTEGER NOT NULL,
+                processed_count INTEGER DEFAULT 0,
+                account_id TEXT DEFAULT 'default'
+            )
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_session_target_file
+            ON archive_sessions(target_file)
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_session_status
+            ON archive_sessions(status)
+        """)
+        self.conn.commit()
+
+    def create_session(
+        self,
+        session_id: str,
+        target_file: str,
+        query: str,
+        message_ids: list[str],
+        compression: str | None = None,
+        account_id: str = "default",
+    ) -> None:
+        """Create a new archive session for resumable operations.
+
+        Args:
+            session_id: Unique session identifier (UUID)
+            target_file: Target archive file path (without .partial suffix)
+            query: Gmail query used for this archive
+            message_ids: List of Gmail message IDs to archive
+            compression: Compression format (gzip, lzma, zstd, or None)
+            account_id: Account ID for multi-account support
+        """
+        import json
+
+        self.ensure_sessions_table()
+        self.conn.execute(
+            """
+            INSERT INTO archive_sessions
+            (session_id, target_file, query, message_ids, started_at, status,
+             compression, total_count, processed_count, account_id)
+            VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, 0, ?)
+            """,
+            (
+                session_id,
+                target_file,
+                query,
+                json.dumps(message_ids),
+                datetime.now().isoformat(),
+                compression,
+                len(message_ids),
+                account_id,
+            ),
+        )
+        self.conn.commit()
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        """Get session by ID.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Session dict or None if not found
+        """
+        import json
+
+        self.ensure_sessions_table()
+        cursor = self.conn.execute(
+            "SELECT * FROM archive_sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["message_ids"] = json.loads(result["message_ids"])
+            return result
+        return None
+
+    def get_session_by_file(self, target_file: str) -> dict[str, Any] | None:
+        """Get in-progress session for a target file.
+
+        Args:
+            target_file: Target archive file path
+
+        Returns:
+            Session dict or None if not found
+        """
+        import json
+
+        self.ensure_sessions_table()
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM archive_sessions
+            WHERE target_file = ? AND status = 'in_progress'
+            ORDER BY started_at DESC LIMIT 1
+            """,
+            (target_file,),
+        )
+        row = cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["message_ids"] = json.loads(result["message_ids"])
+            return result
+        return None
+
+    def get_all_partial_sessions(self) -> list[dict[str, Any]]:
+        """Get all in-progress sessions.
+
+        Returns:
+            List of session dicts
+        """
+        import json
+
+        self.ensure_sessions_table()
+        cursor = self.conn.execute(
+            """
+            SELECT * FROM archive_sessions
+            WHERE status = 'in_progress'
+            ORDER BY started_at DESC
+            """
+        )
+        results = []
+        for row in cursor.fetchall():
+            result = dict(row)
+            result["message_ids"] = json.loads(result["message_ids"])
+            results.append(result)
+        return results
+
+    def update_session_progress(self, session_id: str, processed_count: int) -> None:
+        """Update session progress.
+
+        Args:
+            session_id: Session identifier
+            processed_count: Number of messages processed so far
+        """
+        self.conn.execute(
+            """
+            UPDATE archive_sessions
+            SET processed_count = ?, updated_at = ?
+            WHERE session_id = ?
+            """,
+            (processed_count, datetime.now().isoformat(), session_id),
+        )
+        self.conn.commit()
+
+    def complete_session(self, session_id: str) -> None:
+        """Mark session as completed.
+
+        Args:
+            session_id: Session identifier
+        """
+        self.conn.execute(
+            """
+            UPDATE archive_sessions
+            SET status = 'completed', updated_at = ?
+            WHERE session_id = ?
+            """,
+            (datetime.now().isoformat(), session_id),
+        )
+        self.conn.commit()
+
+    def abort_session(self, session_id: str) -> None:
+        """Mark session as aborted.
+
+        Args:
+            session_id: Session identifier
+        """
+        self.conn.execute(
+            """
+            UPDATE archive_sessions
+            SET status = 'aborted', updated_at = ?
+            WHERE session_id = ?
+            """,
+            (datetime.now().isoformat(), session_id),
+        )
+        self.conn.commit()
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete a session record.
+
+        Args:
+            session_id: Session identifier
+        """
+        self.conn.execute(
+            "DELETE FROM archive_sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        self.conn.commit()
+
+    def delete_messages_for_file(self, archive_file: str) -> int:
+        """Delete all messages associated with an archive file.
+
+        Used for cleanup of partial archives.
+
+        Args:
+            archive_file: Archive file path
+
+        Returns:
+            Number of messages deleted
+        """
+        cursor = self.conn.execute(
+            "DELETE FROM messages WHERE archive_file = ?",
+            (archive_file,),
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     # ==================== CONTEXT MANAGER ====================
 

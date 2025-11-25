@@ -91,6 +91,24 @@ class OperationHandle(Protocol):
         """
         ...
 
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking (call after total is known).
+
+        Args:
+            total: Total number of items to process
+            description: Optional new description for the progress bar
+        """
+        ...
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry with a final message.
+
+        Args:
+            final_message: The final message to display
+            level: The final severity level (default: SUCCESS)
+        """
+        ...
+
 
 class OutputHandler(Protocol):
     """Protocol for output handlers.
@@ -114,9 +132,7 @@ class OutputHandler(Protocol):
         """
         ...
 
-    def start_operation(
-        self, description: str, total: int | None = None
-    ) -> OperationHandle:
+    def start_operation(self, description: str, total: int | None = None) -> OperationHandle:
         """Start a new operation and return handle for tracking.
 
         Args:
@@ -208,6 +224,24 @@ class StaticOperationHandle:
         """
         self._output.error(message, exit_code=0)
 
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """No-op in static mode (progress not tracked).
+
+        Args:
+            total: Total number of items to process (ignored)
+            description: Optional new description (ignored)
+        """
+        pass
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Log final message in static mode.
+
+        Args:
+            final_message: The final message to display
+            level: The final severity level (default: SUCCESS)
+        """
+        self.log(final_message, level)
+
 
 class StaticOutputHandler:
     """Static output handler using OutputManager.
@@ -236,9 +270,7 @@ class StaticOutputHandler:
         if self._output.console:
             self._output.console.print(content)
 
-    def start_operation(
-        self, description: str, total: int | None = None
-    ) -> OperationHandle:
+    def start_operation(self, description: str, total: int | None = None) -> OperationHandle:
         """Start operation and return static handle.
 
         Args:
@@ -302,16 +334,16 @@ class LiveOperationHandle:
             self._live_context.set_progress_total(total, description)
 
     def log(self, message: str, level: str = "INFO") -> None:
-        """Log message to LiveLayoutContext and update display.
+        """Log message to LiveLayoutContext.
 
         Args:
             message: Message to log
             level: Severity level (INFO, WARNING, ERROR, SUCCESS)
         """
         self._live_context.add_log(message, level)
-        # Trigger display update if handler available
+        # Manual refresh (auto_refresh is disabled to prevent duplicate rendering)
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
     def update_progress(self, advance: int = 1) -> None:
         """Advance progress counter.
@@ -322,9 +354,9 @@ class LiveOperationHandle:
         self.completed += advance
         # Sync progress with context for display
         self._live_context.update_progress(advance)
-        # Trigger display update if handler available
+        # Manual refresh
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
     def set_total(self, total: int, description: str | None = None) -> None:
         """Set total for progress tracking (call after total is known).
@@ -338,9 +370,9 @@ class LiveOperationHandle:
             self.description = description
         # Initialize progress on context
         self._live_context.set_progress_total(total, self.description)
-        # Trigger display update
+        # Manual refresh
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
     def set_status(self, status: str) -> None:
         """Update operation status/description.
@@ -357,9 +389,9 @@ class LiveOperationHandle:
             message: Success message
         """
         self._live_context.add_log(message, "SUCCESS")
-        # Trigger display update if handler available
+        # Manual refresh
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
     def fail(self, message: str) -> None:
         """Mark operation as failed.
@@ -368,9 +400,9 @@ class LiveOperationHandle:
             message: Failure message
         """
         self._live_context.add_log(message, "ERROR")
-        # Trigger display update if handler available
+        # Manual refresh
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
     def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
         """Complete a pending log entry with a final message.
@@ -383,9 +415,9 @@ class LiveOperationHandle:
             level: The final severity level (default: SUCCESS).
         """
         self._live_context.complete_pending(final_message, level)
-        # Trigger display update if handler available
+        # Manual refresh
         if self._live_handler and self._live_handler._live:
-            self._live_handler._live.update(self._live_handler._render_layout())
+            self._live_handler._live.refresh()
 
 
 class LiveOutputHandler:
@@ -424,7 +456,6 @@ class LiveOutputHandler:
         """
         from rich.console import Group
         from rich.panel import Panel
-        from rich.progress import BarColumn, Progress, TextColumn
         from rich.text import Text
 
         if not self._live_context:
@@ -480,16 +511,13 @@ class LiveOutputHandler:
 
         Args:
             content: Content to print (logged as INFO)
+
+        Note: Display updates via auto-refresh (4 fps) to avoid double rendering.
         """
         if self._live_context:
             self._live_context.add_log(str(content), "INFO")
-            # Update live display
-            if self._live:
-                self._live.update(self._render_layout())
 
-    def start_operation(
-        self, description: str, total: int | None = None
-    ) -> OperationHandle:
+    def start_operation(self, description: str, total: int | None = None) -> OperationHandle:
         """Start operation and return live handle.
 
         Args:
@@ -510,19 +538,34 @@ class LiveOutputHandler:
         """Context manager entry - creates LiveLayoutContext and Rich Live display."""
         from rich.live import Live
 
-        self._live_context = LiveLayoutContext(
-            log_dir=self._log_dir, max_visible=self._max_visible
-        )
+        self._live_context = LiveLayoutContext(log_dir=self._log_dir, max_visible=self._max_visible)
         self._live_context.__enter__()
 
-        # Create Rich Live display with auto-refresh
+        # Create a live renderable wrapper that re-renders on each refresh cycle
+        # This enables animation of PENDING entries
+        class LiveRenderable:
+            """Wrapper that calls _render_layout() on each Rich refresh cycle."""
+
+            def __init__(self, handler: LiveOutputHandler) -> None:
+                self._handler = handler
+
+            def __rich__(self) -> Any:
+                """Called by Rich on each refresh - enables animation."""
+                return self._handler._render_layout()
+
+        # Create Rich Live display with controlled refresh
+        # Use auto_refresh=False to prevent rendering issues during blocking I/O
+        # We'll manually call refresh() when needed
         self._live = Live(
-            self._render_layout(),
+            LiveRenderable(self),
             console=self._output.console,
-            refresh_per_second=4,  # Update 4 times per second
+            auto_refresh=False,  # Manual refresh to prevent duplicate rendering
             transient=False,
+            vertical_overflow="visible",  # Allow full content to show
         )
         self._live.__enter__()
+        # Initial render
+        self._live.refresh()
 
         return self
 
@@ -538,6 +581,7 @@ class LiveOutputHandler:
 @dataclass
 class SearchResultEntry:
     """A single search result entry."""
+
     gmail_id: str
     rfc_message_id: str
     subject: str
@@ -553,6 +597,7 @@ class SearchResultEntry:
 @dataclass
 class LogEntry:
     """A single log entry with metadata for deduplication and display."""
+
     timestamp: float
     level: str  # INFO, WARNING, ERROR, SUCCESS
     message: str
@@ -962,7 +1007,7 @@ class SessionLogger:
         )
 
         # Remove oldest files beyond retention limit
-        files_to_remove = all_logs[: -keep_last] if len(all_logs) > keep_last else []
+        files_to_remove = all_logs[:-keep_last] if len(all_logs) > keep_last else []
 
         for old_log in files_to_remove:
             try:
@@ -1351,9 +1396,7 @@ class OutputManager:
             return Panel(table, title="Completed Tasks", border_style="dim")
 
         # Use Live context to update both progress and status panel
-        with Live(
-            progress, console=self.console, refresh_per_second=10, transient=False
-        ) as live:
+        with Live(progress, console=self.console, refresh_per_second=10, transient=False) as live:
             # Store live context for task_complete to update panel
             self._live: Live | None = live
             self._progress: Progress | None = progress
@@ -1466,12 +1509,10 @@ class OutputManager:
             # If we have a list of dicts, use keys from first row as headers
             if isinstance(first_row, dict):
                 headers = list(first_row.keys())
-                rows: list[list[Any]] = [
-                    [row.get(col, "") for col in headers] for row in data
-                ]
+                rows: list[list[Any]] = [[row.get(col, "") for col in headers] for row in data]
             else:
                 # Fallback: infer column count from first row and use generic headers
-                headers = [f"col{i+1}" for i in range(len(first_row))]
+                headers = [f"col{i + 1}" for i in range(len(first_row))]
                 rows = [list(row) for row in data]
 
             self.show_table(title=title, headers=headers, rows=rows)
@@ -1596,13 +1637,15 @@ class OutputManager:
             exit_code: Exit code (0 = don't exit, >0 = exit with code)
         """
         if self.json_mode:
-            self._json_events.append({
-                "event": "error_panel",
-                "title": title,
-                "message": message,
-                "suggestion": suggestion,
-                "details": list(details) if details else None,
-            })
+            self._json_events.append(
+                {
+                    "event": "error_panel",
+                    "title": title,
+                    "message": message,
+                    "suggestion": suggestion,
+                    "details": list(details) if details else None,
+                }
+            )
             if exit_code > 0:
                 self._flush_json()
                 sys.exit(exit_code)
@@ -1653,11 +1696,13 @@ class OutputManager:
             title: Report title
         """
         if self.json_mode:
-            self._json_events.append({
-                "event": "validation_report",
-                "title": title,
-                "results": results,
-            })
+            self._json_events.append(
+                {
+                    "event": "validation_report",
+                    "title": title,
+                    "results": results,
+                }
+            )
             return
 
         if self.quiet or not self.console:

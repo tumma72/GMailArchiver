@@ -20,6 +20,7 @@ import hashlib
 import logging
 import lzma
 import mailbox
+import os
 import shutil
 import tempfile
 import uuid
@@ -78,16 +79,26 @@ class HybridStorage:
         result = storage.consolidate_archives(sources, output)
     """
 
-    def __init__(self, db_manager: DBManager) -> None:
+    def __init__(self, db_manager: DBManager, preload_rfc_ids: bool = True) -> None:
         """
         Initialize hybrid storage with database manager.
 
         Args:
             db_manager: Database manager instance for all DB operations
+            preload_rfc_ids: If True, pre-load all rfc_message_ids for O(1) duplicate
+                detection. Recommended for batch operations. Default: True.
         """
         self.db = db_manager
         self._staging_area = Path(tempfile.gettempdir()) / "gmailarchiver_staging"
         self._staging_area.mkdir(exist_ok=True)
+
+        # Pre-load RFC Message-IDs for O(1) duplicate detection
+        # This avoids per-message database queries during batch archiving
+        if preload_rfc_ids:
+            self._known_rfc_ids: set[str] = self.db.get_all_rfc_message_ids()
+            logger.debug(f"Pre-loaded {len(self._known_rfc_ids):,} RFC Message-IDs")
+        else:
+            self._known_rfc_ids = set()
 
     # ==================== ARCHIVE OPERATION ====================
 
@@ -134,34 +145,27 @@ class HybridStorage:
         if compression:
             # Remove compression extension (e.g., .gz, .xz, .zst) to get base .mbox
             # archive_file might be "foo.mbox.gz", we want "foo.mbox"
-            if archive_file.suffix in ('.gz', '.xz', '.zst'):
-                mbox_path = archive_file.with_suffix('')
+            if archive_file.suffix in (".gz", ".xz", ".zst"):
+                mbox_path = archive_file.with_suffix("")
             else:
                 # Fallback: shouldn't happen if compression format detected correctly
-                mbox_path = archive_file.parent / (archive_file.stem + '.mbox')
+                mbox_path = archive_file.parent / (archive_file.stem + ".mbox")
 
         try:
+            # Phase 1a: Check for duplicate rfc_message_id BEFORE any I/O
+            # (v1.3.6: O(1) check using pre-loaded set instead of database query)
+            rfc_message_id = self._extract_rfc_message_id(email_message)
+            if rfc_message_id in self._known_rfc_ids:
+                logger.debug(
+                    f"Skipping duplicate message {gmail_id}: "
+                    f"rfc_message_id '{rfc_message_id}' already archived"
+                )
+                return None
+
             # Phase 1: Prepare (write to staging)
             logger.debug(f"Phase 1: Writing message {gmail_id} to staging")
             with open(staging_file, "wb") as f:
                 f.write(email_message.as_bytes())
-
-            # Phase 1a: Check for duplicate rfc_message_id BEFORE writing to mbox
-            # (v1.3.2: prevents UNIQUE constraint errors)
-            rfc_message_id = self._extract_rfc_message_id(email_message)
-            existing = self.db.get_message_by_rfc_message_id(rfc_message_id)
-            if existing:
-                logger.info(
-                    f"Skipping duplicate message {gmail_id}: "
-                    f"rfc_message_id '{rfc_message_id}' already archived as {existing['gmail_id']}"
-                )
-                # Clean up staging file
-                if staging_file.exists():
-                    try:
-                        staging_file.unlink()
-                    except Exception:
-                        pass
-                return None
 
             # Phase 2: Commit to mbox
             logger.debug(f"Phase 2: Appending to mbox {mbox_path}")
@@ -187,14 +191,31 @@ class HybridStorage:
             mbox_obj.add(email_message)
             mbox_obj.flush()
 
-            # Calculate length AFTER writing
+            # CRITICAL: Verify file was actually created
+            if not mbox_path.exists():
+                raise HybridStorageError(
+                    f"File not created after mbox.flush(): {mbox_path} "
+                    f"(cwd: {Path.cwd()}, resolved: {mbox_path.resolve()})"
+                )
+
+            # Force data to disk (critical for data integrity on interrupt)
+            # mbox.flush() only flushes to OS buffers, not to physical disk
+            # Use a separate file handle to force sync to disk
+            with open(mbox_path, "r+b") as sync_file:
+                os.fsync(sync_file.fileno())
+
+            # Calculate length AFTER writing (verified on disk)
             with open(mbox_path, "rb") as f:
                 f.seek(0, 2)  # Seek to end
                 length = f.tell() - offset
 
-            logger.debug(
-                f"Message written at offset={offset}, length={length}"
-            )
+            # Verify data was actually written (critical safety check)
+            if length == 0:
+                raise HybridStorageError(
+                    f"Data integrity error: message {gmail_id} appears to have 0 bytes written"
+                )
+
+            logger.debug(f"Message written at offset={offset}, length={length}")
 
             # Phase 3: Commit to database
             logger.debug("Phase 3: Recording in database")
@@ -238,9 +259,19 @@ class HybridStorage:
             logger.debug("Phase 6: Committing to database")
             self.db.commit()
 
+            # Verify commit persisted (debug paranoia check)
+            verify = self.db.get_message_by_gmail_id(gmail_id)
+            if not verify:
+                raise HybridStorageError(
+                    f"Database commit verification failed: "
+                    f"message {gmail_id} not found after commit"
+                )
+
+            # Add to known set to prevent duplicates within the same batch
+            self._known_rfc_ids.add(rfc_message_id)
+
             logger.info(
-                f"Successfully archived message {gmail_id} "
-                f"to {archive_file} at offset {offset}"
+                f"Successfully archived message {gmail_id} to {archive_file} at offset {offset}"
             )
 
             return (offset, length)
@@ -270,9 +301,7 @@ class HybridStorage:
                 f"Message may be orphaned at offset {offset if 'offset' in locals() else 'unknown'}"
             )
 
-            raise HybridStorageError(
-                f"Failed to archive message {gmail_id}: {e}"
-            ) from e
+            raise HybridStorageError(f"Failed to archive message {gmail_id}: {e}") from e
 
         finally:
             # Cleanup
@@ -294,9 +323,7 @@ class HybridStorage:
 
     # ==================== CONSOLIDATION PRIMITIVES ====================
 
-    def read_messages_from_archives(
-        self, source_archives: list[Path]
-    ) -> list[dict[str, Any]]:
+    def read_messages_from_archives(self, source_archives: list[Path]) -> list[dict[str, Any]]:
         """
         Read all messages from source archives with metadata.
 
@@ -343,9 +370,7 @@ class HybridStorage:
         Raises:
             HybridStorageError: If writing fails
         """
-        staging_mbox = (
-            self._staging_area / f"bulk_write_{uuid.uuid4()}.mbox"
-        )
+        staging_mbox = self._staging_area / f"bulk_write_{uuid.uuid4()}.mbox"
         mbox_obj = None
 
         try:
@@ -414,9 +439,7 @@ class HybridStorage:
                 except Exception as cleanup_err:
                     logger.error(f"Failed to remove staging file: {cleanup_err}")
 
-            raise HybridStorageError(
-                f"Failed to bulk write messages: {e}"
-            ) from e
+            raise HybridStorageError(f"Failed to bulk write messages: {e}") from e
 
         finally:
             # Cleanup
@@ -464,9 +487,7 @@ class HybridStorage:
             )
 
         except Exception as e:
-            raise HybridStorageError(
-                f"Failed to update archive locations: {e}"
-            ) from e
+            raise HybridStorageError(f"Failed to update archive locations: {e}") from e
 
     # ==================== CONSOLIDATION OPERATION ====================
 
@@ -500,16 +521,12 @@ class HybridStorage:
         Raises:
             HybridStorageError: If operation fails
         """
-        staging_mbox = (
-            self._staging_area / f"consolidate_{uuid.uuid4()}.mbox"
-        )
+        staging_mbox = self._staging_area / f"consolidate_{uuid.uuid4()}.mbox"
         mbox_obj = None
 
         try:
             # Phase 1: Read and collect messages
-            logger.info(
-                f"Phase 1: Reading {len(source_archives)} source archives"
-            )
+            logger.info(f"Phase 1: Reading {len(source_archives)} source archives")
             messages = self._collect_messages(source_archives)
             total_messages = len(messages)
             logger.info(f"Collected {total_messages} messages")
@@ -518,16 +535,14 @@ class HybridStorage:
             duplicates_removed = 0
             if deduplicate:
                 logger.info("Phase 2: Deduplicating by Message-ID")
-                messages, duplicates_removed = self._deduplicate_messages(
-                    messages
-                )
+                messages, duplicates_removed = self._deduplicate_messages(messages)
                 logger.info(f"Removed {duplicates_removed} duplicates")
 
             # Phase 3: Write to staging mbox
             logger.info("Phase 3: Writing to staging mbox")
-            offset_map: dict[str, tuple[str, int, int]] = (
-                {}
-            )  # rfc_message_id -> (gmail_id, offset, length)
+            offset_map: dict[
+                str, tuple[str, int, int]
+            ] = {}  # rfc_message_id -> (gmail_id, offset, length)
 
             mbox_obj = mailbox.mbox(str(staging_mbox))
             mbox_obj.lock()
@@ -657,9 +672,7 @@ class HybridStorage:
                 except Exception as cleanup_err:
                     logger.error(f"Failed to remove staging file: {cleanup_err}")
 
-            raise HybridStorageError(
-                f"Failed to consolidate archives: {e}"
-            ) from e
+            raise HybridStorageError(f"Failed to consolidate archives: {e}") from e
 
         finally:
             # Cleanup
@@ -698,9 +711,7 @@ class HybridStorage:
 
         if compression:
             # Decompress to temp file for validation
-            with tempfile.NamedTemporaryFile(
-                mode="wb", suffix=".mbox", delete=False
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
 
             try:
@@ -709,9 +720,7 @@ class HybridStorage:
             except Exception as e:
                 if tmp_path.exists():
                     tmp_path.unlink()
-                raise IntegrityError(
-                    f"Failed to decompress {archive_file}: {e}"
-                )
+                raise IntegrityError(f"Failed to decompress {archive_file}: {e}")
         else:
             validate_path = archive_path
 
@@ -725,17 +734,13 @@ class HybridStorage:
                 f.seek(offset)
                 message_bytes = f.read(length)
                 if not message_bytes:
-                    raise IntegrityError(
-                        f"No data at offset {offset} in {archive_file}"
-                    )
+                    raise IntegrityError(f"No data at offset {offset} in {archive_file}")
 
                 # Verify it parses as email
                 try:
                     email.message_from_bytes(message_bytes, policy=policy.default)
                 except Exception as e:
-                    raise IntegrityError(
-                        f"Invalid email data at offset {offset}: {e}"
-                    )
+                    raise IntegrityError(f"Invalid email data at offset {offset}: {e}")
 
         finally:
             # Clean up temp file if created
@@ -766,9 +771,7 @@ class HybridStorage:
         # Handle compressed archives
         compression = self._detect_compression(archive_file)
         if compression:
-            with tempfile.NamedTemporaryFile(
-                mode="wb", suffix=".mbox", delete=False
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
 
             try:
@@ -777,9 +780,7 @@ class HybridStorage:
             except Exception as e:
                 if tmp_path.exists():
                     tmp_path.unlink()
-                raise IntegrityError(
-                    f"Failed to decompress {archive_file}: {e}"
-                )
+                raise IntegrityError(f"Failed to decompress {archive_file}: {e}")
         else:
             validate_path = archive_file
             tmp_path = None
@@ -796,17 +797,14 @@ class HybridStorage:
 
                     # Verify in database
                     if msg_id not in db_message_ids:
-                        raise IntegrityError(
-                            f"Message {msg_id} in mbox but not in database"
-                        )
+                        raise IntegrityError(f"Message {msg_id} in mbox but not in database")
 
             logger.debug(f"Mbox has {len(mbox_message_ids)} messages")
 
             # Verify counts match
             if len(db_records) != len(mbox_message_ids):
                 raise IntegrityError(
-                    f"Count mismatch: {len(db_records)} in DB, "
-                    f"{len(mbox_message_ids)} in mbox"
+                    f"Count mismatch: {len(db_records)} in DB, {len(mbox_message_ids)} in mbox"
                 )
 
             logger.debug("Archive validation passed")
@@ -838,9 +836,7 @@ class HybridStorage:
         # Handle compressed archives
         compression = self._detect_compression(archive_file)
         if compression:
-            with tempfile.NamedTemporaryFile(
-                mode="wb", suffix=".mbox", delete=False
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
 
             try:
@@ -849,9 +845,7 @@ class HybridStorage:
             except Exception as e:
                 if tmp_path.exists():
                     tmp_path.unlink()
-                raise IntegrityError(
-                    f"Failed to decompress {archive_file}: {e}"
-                )
+                raise IntegrityError(f"Failed to decompress {archive_file}: {e}")
         else:
             validate_path = archive_file
             tmp_path = None
@@ -891,9 +885,7 @@ class HybridStorage:
 
     # ==================== HELPER METHODS ====================
 
-    def _collect_messages(
-        self, source_archives: list[Path]
-    ) -> list[dict[str, Any]]:
+    def _collect_messages(self, source_archives: list[Path]) -> list[dict[str, Any]]:
         """
         Collect all messages from source archives.
 
@@ -909,9 +901,7 @@ class HybridStorage:
             logger.debug(f"Reading archive: {archive_path}")
 
             # Get all database records for this archive
-            db_records = self.db.get_all_messages_for_archive(
-                str(archive_path)
-            )
+            db_records = self.db.get_all_messages_for_archive(str(archive_path))
 
             # Create lookup by rfc_message_id
             db_lookup = {rec["rfc_message_id"]: rec for rec in db_records}
@@ -919,22 +909,16 @@ class HybridStorage:
             # Handle compressed archives
             compression = self._detect_compression(archive_path)
             if compression:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", suffix=".mbox", delete=False
-                ) as tmp:
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
 
                 try:
-                    self._decompress_file(
-                        archive_path, tmp_path, compression
-                    )
+                    self._decompress_file(archive_path, tmp_path, compression)
                     read_path = tmp_path
                 except Exception as e:
                     if tmp_path.exists():
                         tmp_path.unlink()
-                    raise HybridStorageError(
-                        f"Failed to decompress {archive_path}: {e}"
-                    )
+                    raise HybridStorageError(f"Failed to decompress {archive_path}: {e}")
             else:
                 read_path = archive_path
                 tmp_path = None
@@ -947,9 +931,7 @@ class HybridStorage:
 
                         # Get gmail_id from database
                         db_record = db_lookup.get(rfc_message_id)
-                        gmail_id = (
-                            db_record["gmail_id"] if db_record else "unknown"
-                        )
+                        gmail_id = db_record["gmail_id"] if db_record else "unknown"
 
                         # Extract date for sorting
                         date_str = msg.get("Date", "")
@@ -1022,9 +1004,7 @@ class HybridStorage:
             return fallback_id
         return message_id
 
-    def _extract_body_preview(
-        self, msg: email.message.Message, max_chars: int = 1000
-    ) -> str:
+    def _extract_body_preview(self, msg: email.message.Message, max_chars: int = 1000) -> str:
         """
         Extract body preview from email message.
 
@@ -1089,9 +1069,7 @@ class HybridStorage:
             return "zstd"
         return None
 
-    def _compress_file(
-        self, source: Path, dest: Path, compression: str
-    ) -> None:
+    def _compress_file(self, source: Path, dest: Path, compression: str) -> None:
         """
         Compress file with specified format.
 
@@ -1116,13 +1094,9 @@ class HybridStorage:
                 with zstd.open(dest, "wb", level=3) as f_out:
                     shutil.copyfileobj(f_in, f_out)
         else:
-            raise ValueError(
-                f"Unsupported compression format: {compression}"
-            )
+            raise ValueError(f"Unsupported compression format: {compression}")
 
-    def _decompress_file(
-        self, source: Path, dest: Path, compression: str
-    ) -> None:
+    def _decompress_file(self, source: Path, dest: Path, compression: str) -> None:
         """
         Decompress file with specified format.
 
@@ -1147,9 +1121,7 @@ class HybridStorage:
                 with open(dest, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
         else:
-            raise ValueError(
-                f"Unsupported compression format: {compression}"
-            )
+            raise ValueError(f"Unsupported compression format: {compression}")
 
     # ==================== CONTEXT MANAGER ====================
 
@@ -1167,7 +1139,7 @@ class HybridStorage:
 
     def _cleanup_staging_area(self) -> None:
         """Clean up staging area files."""
-        if hasattr(self, '_staging_area') and self._staging_area.exists():
+        if hasattr(self, "_staging_area") and self._staging_area.exists():
             try:
                 for file in self._staging_area.iterdir():
                     try:
