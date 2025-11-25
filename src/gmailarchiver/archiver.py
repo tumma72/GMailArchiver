@@ -229,12 +229,53 @@ class GmailArchiver:
 
             if skipped_count > 0:
                 self._log(
-                    f"Skipping {skipped_count} already-archived messages",
+                    f"Skipping {skipped_count} already-archived messages (by gmail_id)",
                     operation=operation,
                 )
 
-        # Note: RFC Message-ID deduplication happens in HybridStorage during archive
-        # This catches edge cases where same email has different gmail_ids
+        # Phase 2: Pre-filter by RFC Message-ID
+        # This catches imported messages (which have fake gmail_ids)
+        # Uses batch size of 100 and minimal delays for fast metadata-only requests
+        if message_ids and incremental:
+            try:
+                db = DBManager(str(db_path), validate_schema=False, auto_create=True)
+                known_rfc_ids = db.get_all_rfc_message_ids()
+                db.close()
+            except Exception:
+                known_rfc_ids = set()
+
+            if known_rfc_ids:
+                self._log(
+                    f"Checking {len(message_ids):,} messages against "
+                    f"{len(known_rfc_ids):,} known Message-IDs...",
+                    operation=operation,
+                )
+
+                def filter_progress(processed: int, total: int) -> None:
+                    if operation:
+                        pct = (processed / total * 100) if total > 0 else 0
+                        operation.log(
+                            f"Checking duplicates... {processed:,}/{total:,} ({pct:.0f}%)",
+                            "INFO",
+                        )
+
+                gmail_to_rfc = self.client.get_message_ids_batch(
+                    message_ids,
+                    progress_callback=filter_progress if operation else None,
+                    batch_size=100,  # 10x faster than default
+                )
+
+                original_count = len(message_ids)
+                message_ids = [
+                    mid for mid in message_ids if gmail_to_rfc.get(mid, "") not in known_rfc_ids
+                ]
+                rfc_duplicates = original_count - len(message_ids)
+
+                if rfc_duplicates > 0:
+                    self._log(
+                        f"Skipping {rfc_duplicates:,} duplicates (by Message-ID)",
+                        operation=operation,
+                    )
 
         if not message_ids:
             self._log("All messages already archived", operation=operation)

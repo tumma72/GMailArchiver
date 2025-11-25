@@ -113,6 +113,7 @@ class GmailClient:
         self,
         gmail_ids: list[str],
         progress_callback: Callable[[int, int], None] | None = None,
+        batch_size: int = 100,
     ) -> dict[str, str]:
         """
         Fetch RFC Message-ID headers for multiple messages efficiently.
@@ -123,6 +124,7 @@ class GmailClient:
         Args:
             gmail_ids: List of Gmail message IDs
             progress_callback: Optional callback(processed, total) for progress
+            batch_size: Messages per batch (default 100, max allowed by Gmail API)
 
         Returns:
             Dict mapping gmail_id -> rfc_message_id (or empty string if not found)
@@ -130,7 +132,7 @@ class GmailClient:
         result: dict[str, str] = {}
         total = len(gmail_ids)
 
-        for i, chunk in enumerate(chunk_list(gmail_ids, self.batch_size)):
+        for i, chunk in enumerate(chunk_list(gmail_ids, batch_size)):
             batch = self.service.new_batch_http_request()
             chunk_results: dict[str, str] = {}
 
@@ -173,8 +175,8 @@ class GmailClient:
             if progress_callback:
                 progress_callback(len(result), total)
 
-            # Add delay between batches to respect rate limits
-            time.sleep(self.batch_delay)
+            # Short delay for metadata requests (lightweight, less rate limiting risk)
+            time.sleep(0.1)
 
         return result
 
