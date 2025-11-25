@@ -284,9 +284,7 @@ class TestTaskResult:
 
     def test_task_result_creation(self) -> None:
         """Test creating TaskResult."""
-        result = TaskResult(
-            name="test", success=True, details="Completed", elapsed=1.5
-        )
+        result = TaskResult(name="test", success=True, details="Completed", elapsed=1.5)
         assert result.name == "test"
         assert result.success is True
         assert result.details == "Completed"
@@ -364,11 +362,7 @@ class TestOutputManagerEdgeCases:
         output = OutputManager()
 
         with patch.object(output.console, "print"):
-            output.show_report(
-                "Test Report",
-                {"key": "value"},
-                summary={"total": 10, "passed": 8}
-            )
+            output.show_report("Test Report", {"key": "value"}, summary={"total": 10, "passed": 8})
 
     def test_show_report_list_of_non_dicts(self) -> None:
         """Test show_report handles list of tuples/lists (lines 498-499)."""
@@ -713,6 +707,7 @@ class TestLogBuffer:
 
         # Should be a Rich Group
         from rich.console import Group
+
         assert isinstance(rendered, Group)
         assert len(rendered.renderables) == 0
 
@@ -728,6 +723,7 @@ class TestLogBuffer:
         rendered = buffer.render()
 
         from rich.console import Group
+
         assert isinstance(rendered, Group)
         assert len(rendered.renderables) == 3
 
@@ -926,6 +922,7 @@ class TestOutputManagerLiveLayoutContext:
         with tempfile.TemporaryDirectory() as tmpdir:
             with output.live_layout_context(log_dir=Path(tmpdir)) as live:
                 from gmailarchiver.output import LiveLayoutContext
+
                 assert isinstance(live, LiveLayoutContext)
 
     def test_live_layout_context_auto_cleanup(self) -> None:

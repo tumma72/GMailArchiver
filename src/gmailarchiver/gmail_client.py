@@ -4,7 +4,7 @@ import base64
 import logging
 import random
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from google.oauth2.credentials import Credentials
@@ -25,7 +25,7 @@ class GmailClient:
         credentials: Credentials,
         batch_size: int = 10,
         max_retries: int = 5,
-        batch_delay: float = 1.0
+        batch_delay: float = 1.0,
     ) -> None:
         """
         Initialize Gmail API client.
@@ -36,18 +36,23 @@ class GmailClient:
             max_retries: Maximum number of retries for rate limit errors (default: 5)
             batch_delay: Delay between batch requests in seconds (default: 1.0)
         """
-        self.service = build('gmail', 'v1', credentials=credentials)
-        self.user_id = 'me'
+        self.service = build("gmail", "v1", credentials=credentials)
+        self.user_id = "me"
         self.batch_size = batch_size
         self.max_retries = max_retries
         self.batch_delay = batch_delay
 
-    def list_messages(self, query: str) -> list[dict[str, str]]:
+    def list_messages(
+        self,
+        query: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[dict[str, str]]:
         """
         List all message IDs matching the query.
 
         Args:
             query: Gmail search query (e.g., 'before:2022/01/01')
+            progress_callback: Optional callback(messages_found, page_number) for progress
 
         Returns:
             List of message dictionaries with 'id' and 'threadId'
@@ -60,22 +65,24 @@ class GmailClient:
 
         messages: list[dict[str, str]] = []
         page_token: str | None = None
+        page_number = 0
 
         while True:
             try:
                 response = self._execute_with_retry(
-                    self.service.users().messages().list(
-                        userId=self.user_id,
-                        q=query,
-                        maxResults=100,
-                        pageToken=page_token
-                    )
+                    self.service.users()
+                    .messages()
+                    .list(userId=self.user_id, q=query, maxResults=100, pageToken=page_token)
                 )
 
-                if 'messages' in response:
-                    messages.extend(response['messages'])
+                if "messages" in response:
+                    messages.extend(response["messages"])
 
-                page_token = response.get('nextPageToken')
+                page_number += 1
+                if progress_callback:
+                    progress_callback(len(messages), page_number)
+
+                page_token = response.get("nextPageToken")
                 if not page_token:
                     break
 
@@ -87,7 +94,7 @@ class GmailClient:
 
         return messages
 
-    def get_message(self, message_id: str, format: str = 'raw') -> dict[str, Any]:
+    def get_message(self, message_id: str, format: str = "raw") -> dict[str, Any]:
         """
         Get a single message.
 
@@ -99,17 +106,80 @@ class GmailClient:
             Message dictionary
         """
         return self._execute_with_retry(  # type: ignore[no-any-return]
-            self.service.users().messages().get(
-                userId=self.user_id,
-                id=message_id,
-                format=format
-            )
+            self.service.users().messages().get(userId=self.user_id, id=message_id, format=format)
         )
 
-    def get_messages_batch(
+    def get_message_ids_batch(
         self,
-        message_ids: list[str],
-        format: str = 'raw'
+        gmail_ids: list[str],
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> dict[str, str]:
+        """
+        Fetch RFC Message-ID headers for multiple messages efficiently.
+
+        Uses metadata format to get only headers (much faster than full/raw).
+        This enables pre-filtering duplicates before downloading full content.
+
+        Args:
+            gmail_ids: List of Gmail message IDs
+            progress_callback: Optional callback(processed, total) for progress
+
+        Returns:
+            Dict mapping gmail_id -> rfc_message_id (or empty string if not found)
+        """
+        result: dict[str, str] = {}
+        total = len(gmail_ids)
+
+        for i, chunk in enumerate(chunk_list(gmail_ids, self.batch_size)):
+            batch = self.service.new_batch_http_request()
+            chunk_results: dict[str, str] = {}
+
+            def make_callback(gid: str) -> Callable[[str, dict[str, Any], Exception | None], None]:
+                def callback(
+                    request_id: str, response: dict[str, Any], exception: Exception | None
+                ) -> None:
+                    if exception is not None:
+                        chunk_results[gid] = ""  # Message unavailable
+                    else:
+                        # Extract Message-ID from headers
+                        msg_id = ""
+                        payload = response.get("payload", {})
+                        headers = payload.get("headers", [])
+                        for header in headers:
+                            if header.get("name", "").lower() == "message-id":
+                                msg_id = header.get("value", "")
+                                break
+                        chunk_results[gid] = msg_id
+
+                return callback
+
+            for gid in chunk:
+                batch.add(
+                    self.service.users()
+                    .messages()
+                    .get(
+                        userId=self.user_id,
+                        id=gid,
+                        format="metadata",
+                        metadataHeaders=["Message-ID"],
+                    ),
+                    callback=make_callback(gid),
+                    request_id=gid,
+                )
+
+            self._execute_with_retry(batch)
+            result.update(chunk_results)
+
+            if progress_callback:
+                progress_callback(len(result), total)
+
+            # Add delay between batches to respect rate limits
+            time.sleep(self.batch_delay)
+
+        return result
+
+    def get_messages_batch(
+        self, message_ids: list[str], format: str = "raw"
     ) -> Iterator[dict[str, Any]]:
         """
         Get multiple messages in batches with graceful error handling.
@@ -131,28 +201,24 @@ class GmailClient:
             failed_ids: list[tuple[str, str]] = []  # (msg_id, error_reason)
 
             def callback(
-                request_id: str,
-                response: dict[str, Any],
-                exception: Exception | None
+                request_id: str, response: dict[str, Any], exception: Exception | None
             ) -> None:
                 if exception is not None:
                     # Log error but don't raise - continue with other messages
                     error_msg = str(exception)
                     # Extract message ID from request_id if possible
-                    msg_id = request_id.split('/')[-1] if '/' in request_id else request_id
+                    msg_id = request_id.split("/")[-1] if "/" in request_id else request_id
                     failed_ids.append((msg_id, error_msg))
                 else:
                     results.append(response)
 
             for msg_id in chunk:
                 batch.add(
-                    self.service.users().messages().get(
-                        userId=self.user_id,
-                        id=msg_id,
-                        format=format
-                    ),
+                    self.service.users()
+                    .messages()
+                    .get(userId=self.user_id, id=msg_id, format=format),
                     callback=callback,
-                    request_id=msg_id  # Pass message ID for error tracking
+                    request_id=msg_id,  # Pass message ID for error tracking
                 )
 
             self._execute_with_retry(batch)
@@ -177,11 +243,11 @@ class GmailClient:
         Returns:
             Decoded message bytes (RFC822 format)
         """
-        if 'raw' not in message:
+        if "raw" not in message:
             raise ValueError("Message does not contain 'raw' field")
 
         # Gmail uses URL-safe base64 encoding
-        return base64.urlsafe_b64decode(message['raw'])
+        return base64.urlsafe_b64decode(message["raw"])
 
     def trash_messages(self, message_ids: list[str]) -> int:
         """
@@ -199,21 +265,16 @@ class GmailClient:
             batch = self.service.new_batch_http_request()
 
             def callback(
-                request_id: str,
-                response: dict[str, Any],
-                exception: Exception | None
+                request_id: str, response: dict[str, Any], exception: Exception | None
             ) -> None:
                 if exception is not None:
                     logger.warning(f"Failed to trash message {request_id}: {exception}")
 
             for msg_id in chunk:
                 batch.add(
-                    self.service.users().messages().trash(
-                        userId=self.user_id,
-                        id=msg_id
-                    ),
+                    self.service.users().messages().trash(userId=self.user_id, id=msg_id),
                     callback=callback,
-                    request_id=msg_id
+                    request_id=msg_id,
                 )
 
             self._execute_with_retry(batch)
@@ -241,10 +302,9 @@ class GmailClient:
         # Gmail API allows up to 1000 messages per batch delete
         for chunk in chunk_list(message_ids, 1000):
             self._execute_with_retry(
-                self.service.users().messages().batchDelete(
-                    userId=self.user_id,
-                    body={'ids': chunk}
-                )
+                self.service.users()
+                .messages()
+                .batchDelete(userId=self.user_id, body={"ids": chunk})
             )
             count += len(chunk)
         return count
@@ -275,7 +335,7 @@ class GmailClient:
                             wait_time = (2 ** (attempt + 1)) + random.uniform(0, 1)
                         else:
                             # Server errors: shorter backoff
-                            wait_time = (2 ** attempt) + random.uniform(0, 1)
+                            wait_time = (2**attempt) + random.uniform(0, 1)
                         time.sleep(wait_time)
                         continue
                 raise

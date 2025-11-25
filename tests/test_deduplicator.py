@@ -35,7 +35,7 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
 
     # Create v1.1 schema
     # NOTE: Remove UNIQUE constraint on rfc_message_id to allow duplicate testing
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT NOT NULL,
@@ -55,35 +55,38 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Create schema_version table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE schema_version (
             version TEXT PRIMARY KEY,
             migrated_timestamp TEXT
         )
-    ''')
+    """)
     conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
 
     # Insert messages
     for msg in messages:
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
              size_bytes, archived_timestamp, subject, from_addr)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            msg['gmail_id'],
-            msg['rfc_message_id'],
-            msg['archive_file'],
-            msg['mbox_offset'],
-            msg['mbox_length'],
-            msg.get('size_bytes', 1000),
-            msg.get('archived_timestamp', '2025-01-01T00:00:00'),
-            msg.get('subject', 'Test Subject'),
-            msg.get('from_addr', 'test@example.com')
-        ))
+        """,
+            (
+                msg["gmail_id"],
+                msg["rfc_message_id"],
+                msg["archive_file"],
+                msg["mbox_offset"],
+                msg["mbox_length"],
+                msg.get("size_bytes", 1000),
+                msg.get("archived_timestamp", "2025-01-01T00:00:00"),
+                msg.get("subject", "Test Subject"),
+                msg.get("from_addr", "test@example.com"),
+            ),
+        )
 
     conn.commit()
     conn.close()
@@ -93,7 +96,7 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
 def temp_db() -> Path:
     """Create temporary database path."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir) / 'test_dedup.db'
+        yield Path(tmpdir) / "test_dedup.db"
 
 
 class TestMessageDeduplicatorInit:
@@ -112,13 +115,13 @@ class TestMessageDeduplicatorInit:
         """Test that v1.0 databases are rejected."""
         # Create v1.0 schema
         conn = sqlite3.connect(str(temp_db))
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE archived_messages (
                 gmail_id TEXT PRIMARY KEY,
                 archived_timestamp TEXT,
                 archive_file TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
@@ -138,18 +141,18 @@ class TestFindDuplicates:
         """Test finding duplicates when none exist."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<unique1@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<unique1@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<unique2@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 1000,
-                'mbox_length': 2000,
+                "gmail_id": "msg2",
+                "rfc_message_id": "<unique2@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 1000,
+                "mbox_length": 2000,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -164,22 +167,22 @@ class TestFindDuplicates:
         """Test finding exact duplicates (same Message-ID, different archives)."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<duplicate@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<duplicate@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<duplicate@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
-                'archived_timestamp': '2025-01-02T00:00:00',
+                "gmail_id": "msg2",
+                "rfc_message_id": "<duplicate@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
+                "archived_timestamp": "2025-01-02T00:00:00",
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -188,14 +191,14 @@ class TestFindDuplicates:
         duplicates = dedup.find_duplicates()
 
         assert len(duplicates) == 1
-        assert '<duplicate@example.com>' in duplicates
+        assert "<duplicate@example.com>" in duplicates
 
-        dup_list = duplicates['<duplicate@example.com>']
+        dup_list = duplicates["<duplicate@example.com>"]
         assert len(dup_list) == 2
 
         # Verify MessageInfo contains expected fields
-        assert dup_list[0].gmail_id in ['msg1', 'msg2']
-        assert dup_list[0].archive_file in ['archive1.mbox', 'archive2.mbox']
+        assert dup_list[0].gmail_id in ["msg1", "msg2"]
+        assert dup_list[0].archive_file in ["archive1.mbox", "archive2.mbox"]
         assert dup_list[0].mbox_offset >= 0
         assert dup_list[0].size_bytes > 0
 
@@ -206,48 +209,48 @@ class TestFindDuplicates:
         messages = [
             # Unique message
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<unique@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<unique@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
             },
             # Duplicate pair
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 1000,
-                'mbox_length': 2000,
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 1000,
+                "mbox_length": 2000,
             },
             {
-                'gmail_id': 'msg3',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 2100,
+                "gmail_id": "msg3",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 2100,
             },
             # Triple duplicate
             {
-                'gmail_id': 'msg4',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 3000,
-                'mbox_length': 500,
+                "gmail_id": "msg4",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 3000,
+                "mbox_length": 500,
             },
             {
-                'gmail_id': 'msg5',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 2100,
-                'mbox_length': 510,
+                "gmail_id": "msg5",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 2100,
+                "mbox_length": 510,
             },
             {
-                'gmail_id': 'msg6',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive3.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 520,
+                "gmail_id": "msg6",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive3.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 520,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -257,13 +260,13 @@ class TestFindDuplicates:
 
         # Should find 2 duplicate groups (dup1 and dup2), unique is ignored
         assert len(duplicates) == 2
-        assert '<dup1@example.com>' in duplicates
-        assert '<dup2@example.com>' in duplicates
-        assert '<unique@example.com>' not in duplicates
+        assert "<dup1@example.com>" in duplicates
+        assert "<dup2@example.com>" in duplicates
+        assert "<unique@example.com>" not in duplicates
 
         # Verify counts
-        assert len(duplicates['<dup1@example.com>']) == 2
-        assert len(duplicates['<dup2@example.com>']) == 3
+        assert len(duplicates["<dup1@example.com>"]) == 2
+        assert len(duplicates["<dup2@example.com>"]) == 3
 
         dedup.close()
 
@@ -274,13 +277,15 @@ class TestFindDuplicates:
             # Each group has 2-3 duplicates
             num_copies = 2 if i % 2 == 0 else 3
             for j in range(num_copies):
-                messages.append({
-                    'gmail_id': f'msg_{i}_{j}',
-                    'rfc_message_id': f'<dup_{i}@example.com>',
-                    'archive_file': f'archive{j}.mbox',
-                    'mbox_offset': i * 1000 + j * 100,
-                    'mbox_length': 1000,
-                })
+                messages.append(
+                    {
+                        "gmail_id": f"msg_{i}_{j}",
+                        "rfc_message_id": f"<dup_{i}@example.com>",
+                        "archive_file": f"archive{j}.mbox",
+                        "mbox_offset": i * 1000 + j * 100,
+                        "mbox_length": 1000,
+                    }
+                )
 
         create_v1_1_db_with_messages(temp_db, messages)
 
@@ -297,7 +302,7 @@ class TestFindDuplicates:
         conn = sqlite3.connect(str(temp_db))
 
         # Create schema
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT,
@@ -306,27 +311,33 @@ class TestFindDuplicates:
                 mbox_length INTEGER NOT NULL,
                 size_bytes INTEGER
             )
-        ''')
-        conn.execute('''
+        """)
+        conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT
             )
-        ''')
+        """)
         conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
 
         # Insert messages (one with NULL rfc_message_id)
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length)
             VALUES (?, ?, ?, ?, ?)
-        ''', ('msg1', None, 'archive1.mbox', 0, 1000))
+        """,
+            ("msg1", None, "archive1.mbox", 0, 1000),
+        )
 
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length)
             VALUES (?, ?, ?, ?, ?)
-        ''', ('msg2', '<valid@example.com>', 'archive1.mbox', 1000, 2000))
+        """,
+            ("msg2", "<valid@example.com>", "archive1.mbox", 1000, 2000),
+        )
 
         conn.commit()
         conn.close()
@@ -346,36 +357,36 @@ class TestGenerateReport:
         """Test report generation with duplicate messages."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
             },
             {
-                'gmail_id': 'msg3',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 1000,
-                'mbox_length': 500,
-                'size_bytes': 800,
+                "gmail_id": "msg3",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 1000,
+                "mbox_length": 500,
+                "size_bytes": 800,
             },
             {
-                'gmail_id': 'msg4',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 1100,
-                'mbox_length': 510,
-                'size_bytes': 850,
+                "gmail_id": "msg4",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 1100,
+                "mbox_length": 510,
+                "size_bytes": 850,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -398,9 +409,9 @@ class TestGenerateReport:
 
         # Check breakdown by archive file
         # Only archive1.mbox has removals (msg1 and msg3)
-        assert 'archive1.mbox' in report.breakdown_by_archive
-        assert report.breakdown_by_archive['archive1.mbox']['messages_to_remove'] == 2
-        assert report.breakdown_by_archive['archive1.mbox']['space_recoverable'] == 2300
+        assert "archive1.mbox" in report.breakdown_by_archive
+        assert report.breakdown_by_archive["archive1.mbox"]["messages_to_remove"] == 2
+        assert report.breakdown_by_archive["archive1.mbox"]["space_recoverable"] == 2300
 
         dedup.close()
 
@@ -408,12 +419,12 @@ class TestGenerateReport:
         """Test report generation with no duplicates."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<unique1@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<unique1@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -435,7 +446,7 @@ class TestGenerateReport:
         conn = sqlite3.connect(str(temp_db))
 
         # NOTE: Remove UNIQUE constraint to allow duplicate testing
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT NOT NULL,
@@ -445,29 +456,35 @@ class TestGenerateReport:
                 size_bytes INTEGER,
                 archived_timestamp TIMESTAMP
             )
-        ''')
-        conn.execute('''
+        """)
+        conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT
             )
-        ''')
+        """)
         conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
 
         # Insert duplicates with NULL size_bytes
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
              size_bytes, archived_timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', ('msg1', '<dup@example.com>', 'archive1.mbox', 0, 1000, None, '2025-01-01T00:00:00'))
+        """,
+            ("msg1", "<dup@example.com>", "archive1.mbox", 0, 1000, None, "2025-01-01T00:00:00"),
+        )
 
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length,
              size_bytes, archived_timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', ('msg2', '<dup@example.com>', 'archive2.mbox', 0, 1100, None, '2025-01-02T00:00:00'))
+        """,
+            ("msg2", "<dup@example.com>", "archive2.mbox", 0, 1100, None, "2025-01-02T00:00:00"),
+        )
 
         conn.commit()
         conn.close()
@@ -488,29 +505,29 @@ class TestDeduplicateStrategies:
         """Test 'newest' strategy keeps message with latest archived_timestamp."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
-                'archived_timestamp': '2025-01-02T00:00:00',  # Newest
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
+                "archived_timestamp": "2025-01-02T00:00:00",  # Newest
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy='newest', dry_run=False)
+        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         assert isinstance(result, DeduplicationResult)
         assert result.messages_removed == 1
@@ -523,8 +540,8 @@ class TestDeduplicateStrategies:
         remaining = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert 'msg2' in remaining
-        assert 'msg1' not in remaining
+        assert "msg2" in remaining
+        assert "msg1" not in remaining
 
         dedup.close()
 
@@ -532,29 +549,29 @@ class TestDeduplicateStrategies:
         """Test 'largest' strategy keeps message with highest size_bytes."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-                'archived_timestamp': '2025-01-02T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
+                "archived_timestamp": "2025-01-02T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 2000,  # Largest
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 2000,  # Largest
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy='largest', dry_run=False)
+        result = dedup.deduplicate(duplicates, strategy="largest", dry_run=False)
 
         assert result.messages_removed == 1
         assert result.messages_kept == 1
@@ -565,8 +582,8 @@ class TestDeduplicateStrategies:
         remaining = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert 'msg2' in remaining
-        assert 'msg1' not in remaining
+        assert "msg2" in remaining
+        assert "msg1" not in remaining
 
         dedup.close()
 
@@ -574,27 +591,27 @@ class TestDeduplicateStrategies:
         """Test 'first' strategy keeps message from first archive file (alphabetically)."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive_b.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive_b.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive_a.mbox',  # First alphabetically
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive_a.mbox",  # First alphabetically
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy='first', dry_run=False)
+        result = dedup.deduplicate(duplicates, strategy="first", dry_run=False)
 
         assert result.messages_removed == 1
         assert result.messages_kept == 1
@@ -605,8 +622,8 @@ class TestDeduplicateStrategies:
         remaining = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert 'msg2' in remaining
-        assert 'msg1' not in remaining
+        assert "msg2" in remaining
+        assert "msg1" not in remaining
 
         dedup.close()
 
@@ -615,48 +632,48 @@ class TestDeduplicateStrategies:
         messages = [
             # Group 1
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup1@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
-                'archived_timestamp': '2025-01-02T00:00:00',  # Newest
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup1@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
+                "archived_timestamp": "2025-01-02T00:00:00",  # Newest
             },
             # Group 2
             {
-                'gmail_id': 'msg3',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 1000,
-                'mbox_length': 500,
-                'size_bytes': 800,
-                'archived_timestamp': '2025-01-03T00:00:00',  # Newest
+                "gmail_id": "msg3",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 1000,
+                "mbox_length": 500,
+                "size_bytes": 800,
+                "archived_timestamp": "2025-01-03T00:00:00",  # Newest
             },
             {
-                'gmail_id': 'msg4',
-                'rfc_message_id': '<dup2@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 1100,
-                'mbox_length': 510,
-                'size_bytes': 850,
-                'archived_timestamp': '2025-01-02T00:00:00',
+                "gmail_id": "msg4",
+                "rfc_message_id": "<dup2@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 1100,
+                "mbox_length": 510,
+                "size_bytes": 850,
+                "archived_timestamp": "2025-01-02T00:00:00",
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy='newest', dry_run=False)
+        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         # Should keep 2 messages (one per group), remove 2
         assert result.messages_removed == 2
@@ -668,7 +685,7 @@ class TestDeduplicateStrategies:
         remaining = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert remaining == ['msg2', 'msg3']
+        assert remaining == ["msg2", "msg3"]
 
         dedup.close()
 
@@ -680,22 +697,22 @@ class TestDryRunMode:
         """Test that dry-run mode doesn't modify the database."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1100,
-                'size_bytes': 1600,
-                'archived_timestamp': '2025-01-02T00:00:00',
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1100,
+                "size_bytes": 1600,
+                "archived_timestamp": "2025-01-02T00:00:00",
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
@@ -710,7 +727,7 @@ class TestDryRunMode:
         conn.close()
 
         # Run in dry-run mode
-        result = dedup.deduplicate(duplicates, strategy='newest', dry_run=True)
+        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
 
         # Verify result contains expected data
         assert result.messages_removed == 1
@@ -731,32 +748,32 @@ class TestDryRunMode:
         """Test that dry-run accurately reports what would be removed."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1000,
-                'archived_timestamp': '2025-01-01T00:00:00',
+                "gmail_id": "msg1",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1000,
+                "archived_timestamp": "2025-01-01T00:00:00",
             },
             {
-                'gmail_id': 'msg2',
-                'rfc_message_id': '<dup@example.com>',
-                'archive_file': 'archive2.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 2000,
-                'size_bytes': 2000,
-                'archived_timestamp': '2025-01-02T00:00:00',  # Newest
+                "gmail_id": "msg2",
+                "rfc_message_id": "<dup@example.com>",
+                "archive_file": "archive2.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 2000,
+                "size_bytes": 2000,
+                "archived_timestamp": "2025-01-02T00:00:00",  # Newest
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        dry_result = dedup.deduplicate(duplicates, strategy='newest', dry_run=True)
+        dry_result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
 
         # Now run for real
-        wet_result = dedup.deduplicate(duplicates, strategy='newest', dry_run=False)
+        wet_result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         # Dry run and actual run should report same numbers
         assert dry_result.messages_removed == wet_result.messages_removed
@@ -787,19 +804,19 @@ class TestEdgeCases:
         """Test deduplication when no duplicates exist."""
         messages = [
             {
-                'gmail_id': 'msg1',
-                'rfc_message_id': '<unique@example.com>',
-                'archive_file': 'archive1.mbox',
-                'mbox_offset': 0,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
+                "gmail_id": "msg1",
+                "rfc_message_id": "<unique@example.com>",
+                "archive_file": "archive1.mbox",
+                "mbox_offset": 0,
+                "mbox_length": 1000,
+                "size_bytes": 1500,
             },
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
         dedup = MessageDeduplicator(str(temp_db))
         duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy='newest', dry_run=False)
+        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         assert result.messages_removed == 0
         assert result.messages_kept == 0
@@ -815,7 +832,7 @@ class TestEdgeCases:
         duplicates = dedup.find_duplicates()
 
         with pytest.raises(ValueError, match="Invalid strategy"):
-            dedup.deduplicate(duplicates, strategy='invalid', dry_run=True)
+            dedup.deduplicate(duplicates, strategy="invalid", dry_run=True)
 
         dedup.close()
 
@@ -841,14 +858,16 @@ class TestPerformance:
         messages = []
         for i in range(1000):
             # Create 10 groups of 100 duplicates each
-            messages.append({
-                'gmail_id': f'msg_{i}',
-                'rfc_message_id': f'<dup_{i // 100}@example.com>',
-                'archive_file': f'archive{i % 10}.mbox',
-                'mbox_offset': i * 1000,
-                'mbox_length': 1000,
-                'size_bytes': 1500,
-            })
+            messages.append(
+                {
+                    "gmail_id": f"msg_{i}",
+                    "rfc_message_id": f"<dup_{i // 100}@example.com>",
+                    "archive_file": f"archive{i % 10}.mbox",
+                    "mbox_offset": i * 1000,
+                    "mbox_length": 1000,
+                    "size_bytes": 1500,
+                }
+            )
 
         create_v1_1_db_with_messages(temp_db, messages)
 

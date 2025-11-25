@@ -24,7 +24,7 @@ def v1_0_database(tmp_path):
     conn = sqlite3.connect(str(db_path))
 
     # Create v1.0 schema (archived_messages table)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE archived_messages (
             gmail_id TEXT PRIMARY KEY,
             archived_timestamp TEXT NOT NULL,
@@ -34,22 +34,22 @@ def v1_0_database(tmp_path):
             message_date TEXT,
             checksum TEXT
         )
-    ''')
+    """)
 
     # Insert sample data
-    conn.execute('''
+    conn.execute("""
         INSERT INTO archived_messages VALUES
         ('msg1', '2025-01-01T12:00:00', 'archive1.mbox', 'Test 1', 'test@example.com',
          '2024-01-01T10:00:00', 'abc123')
-    ''')
-    conn.execute('''
+    """)
+    conn.execute("""
         INSERT INTO archived_messages VALUES
         ('msg2', '2025-01-02T12:00:00', 'archive1.mbox', 'Test 2', 'test2@example.com',
          '2024-01-02T10:00:00', 'def456')
-    ''')
+    """)
 
     # Create archive_runs table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -57,12 +57,12 @@ def v1_0_database(tmp_path):
             messages_archived INTEGER NOT NULL,
             archive_file TEXT NOT NULL
         )
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         INSERT INTO archive_runs VALUES
         (1, '2025-01-01T12:00:00', 'before:2024/01/01', 2, 'archive1.mbox')
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -81,17 +81,16 @@ def v1_1_database(tmp_path):
     manager._create_enhanced_schema(manager.conn)
 
     # Insert sample data
-    manager.conn.execute('''
+    manager.conn.execute("""
         INSERT INTO messages VALUES
         ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
          'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
          'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
-    ''')
+    """)
 
     # Set schema version
     manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)",
-        ('1.1', datetime.now().isoformat())
+        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
     )
 
     manager.conn.commit()
@@ -109,52 +108,52 @@ class TestMigrateCommand:
         monkeypatch.chdir(tmp_path)
 
         # Mock user confirmation
-        with patch('typer.confirm', return_value=True):
-            result = runner.invoke(app, ['migrate', '--state-db', str(v1_0_database)])
+        with patch("typer.confirm", return_value=True):
+            result = runner.invoke(app, ["migrate", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
-        assert 'Migration completed successfully' in result.stdout
-        assert 'Backup created' in result.stdout
+        assert "Migration completed successfully" in result.stdout
+        assert "Backup created" in result.stdout
 
         # Verify database was migrated
         manager = MigrationManager(v1_0_database)
         version = manager.detect_schema_version()
-        assert version == '1.1'
+        assert version == "1.1"
 
     def test_migrate_already_migrated_database(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test migrating an already-migrated database."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['migrate', '--state-db', str(v1_1_database)])
+        result = runner.invoke(app, ["migrate", "--state-db", str(v1_1_database)])
 
         assert result.exit_code == 0
-        assert 'already at version 1.1' in result.stdout or 'up to date' in result.stdout
+        assert "already at version 1.1" in result.stdout or "up to date" in result.stdout
 
     def test_migrate_nonexistent_database(self, runner, tmp_path, monkeypatch):
         """Test migrating a nonexistent database."""
         monkeypatch.chdir(tmp_path)
         nonexistent_db = tmp_path / "nonexistent.db"
 
-        result = runner.invoke(app, ['migrate', '--state-db', str(nonexistent_db)])
+        result = runner.invoke(app, ["migrate", "--state-db", str(nonexistent_db)])
 
         assert result.exit_code == 1
-        assert 'not found' in result.stdout.lower() or 'does not exist' in result.stdout.lower()
+        assert "not found" in result.stdout.lower() or "does not exist" in result.stdout.lower()
 
     def test_migrate_user_cancels_confirmation(self, runner, v1_0_database, tmp_path, monkeypatch):
         """Test migration cancelled by user."""
         monkeypatch.chdir(tmp_path)
 
         # Mock user declining confirmation
-        with patch('typer.confirm', return_value=False):
-            result = runner.invoke(app, ['migrate', '--state-db', str(v1_0_database)])
+        with patch("typer.confirm", return_value=False):
+            result = runner.invoke(app, ["migrate", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
-        assert 'cancelled' in result.stdout.lower() or 'aborted' in result.stdout.lower()
+        assert "cancelled" in result.stdout.lower() or "aborted" in result.stdout.lower()
 
         # Verify database was NOT migrated
         manager = MigrationManager(v1_0_database)
         version = manager.detect_schema_version()
-        assert version == '1.0'
+        assert version == "1.0"
 
     def test_migrate_default_database_path(self, runner, tmp_path, monkeypatch):
         """Test migrate command uses default database path."""
@@ -163,7 +162,7 @@ class TestMigrateCommand:
         # Create v1.0 database at default location
         default_db = tmp_path / "archive_state.db"
         conn = sqlite3.connect(str(default_db))
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE archived_messages (
                 gmail_id TEXT PRIMARY KEY,
                 archived_timestamp TEXT NOT NULL,
@@ -173,15 +172,15 @@ class TestMigrateCommand:
                 message_date TEXT,
                 checksum TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
-        with patch('typer.confirm', return_value=True):
-            result = runner.invoke(app, ['migrate'])
+        with patch("typer.confirm", return_value=True):
+            result = runner.invoke(app, ["migrate"])
 
         assert result.exit_code == 0
-        assert 'Migration completed successfully' in result.stdout
+        assert "Migration completed successfully" in result.stdout
 
 
 class TestDbInfoCommand:
@@ -191,51 +190,51 @@ class TestDbInfoCommand:
         """Test db-info with v1.0 database."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['db-info', '--state-db', str(v1_0_database)])
+        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
-        assert '1.0' in result.stdout
-        assert '2' in result.stdout  # Message count
-        assert 'archive1.mbox' in result.stdout
+        assert "1.0" in result.stdout
+        assert "2" in result.stdout  # Message count
+        assert "archive1.mbox" in result.stdout
 
     def test_db_info_v1_1_database(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test db-info with v1.1 database."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['db-info', '--state-db', str(v1_1_database)])
+        result = runner.invoke(app, ["db-info", "--state-db", str(v1_1_database)])
 
         assert result.exit_code == 0
-        assert '1.1' in result.stdout
-        assert '1' in result.stdout  # Message count
+        assert "1.1" in result.stdout
+        assert "1" in result.stdout  # Message count
 
     def test_db_info_empty_database(self, runner, tmp_path, monkeypatch):
         """Test db-info with empty database."""
         monkeypatch.chdir(tmp_path)
         empty_db = tmp_path / "empty.db"
 
-        result = runner.invoke(app, ['db-info', '--state-db', str(empty_db)])
+        result = runner.invoke(app, ["db-info", "--state-db", str(empty_db)])
 
         assert result.exit_code == 0
-        assert 'none' in result.stdout.lower() or 'not found' in result.stdout.lower()
+        assert "none" in result.stdout.lower() or "not found" in result.stdout.lower()
 
     def test_db_info_shows_recent_runs(self, runner, v1_0_database, tmp_path, monkeypatch):
         """Test db-info displays recent archive runs."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['db-info', '--state-db', str(v1_0_database)])
+        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
-        assert 'Recent Archive Runs' in result.stdout or 'Archive Runs' in result.stdout
+        assert "Recent Archive Runs" in result.stdout or "Archive Runs" in result.stdout
 
     def test_db_info_shows_database_size(self, runner, v1_0_database, tmp_path, monkeypatch):
         """Test db-info displays database file size."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['db-info', '--state-db', str(v1_0_database)])
+        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
         # Should show size in bytes/KB/MB
-        assert 'bytes' in result.stdout.lower() or 'KB' in result.stdout or 'MB' in result.stdout
+        assert "bytes" in result.stdout.lower() or "KB" in result.stdout or "MB" in result.stdout
 
 
 class TestRollbackCommand:
@@ -248,7 +247,7 @@ class TestRollbackCommand:
         # Create a backup file (simulating v1.0 database)
         backup_path = tmp_path / "archive_state.db.backup.20250114_120000"
         conn = sqlite3.connect(str(backup_path))
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE archived_messages (
                 gmail_id TEXT PRIMARY KEY,
                 archived_timestamp TEXT NOT NULL,
@@ -258,37 +257,34 @@ class TestRollbackCommand:
                 message_date TEXT,
                 checksum TEXT
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
         # Mock user confirmation
-        with patch('typer.confirm', return_value=True):
+        with patch("typer.confirm", return_value=True):
             result = runner.invoke(
                 app,
-                ['rollback', '--state-db', str(v1_1_database), '--backup-file', str(backup_path)]
+                ["rollback", "--state-db", str(v1_1_database), "--backup-file", str(backup_path)],
             )
 
         assert result.exit_code == 0
-        assert 'Rollback completed successfully' in result.stdout
+        assert "Rollback completed successfully" in result.stdout
 
         # Verify database was restored
         manager = MigrationManager(v1_1_database)
         version = manager.detect_schema_version()
-        assert version == '1.0'
+        assert version == "1.0"
 
     def test_rollback_missing_backup(self, runner, tmp_path, monkeypatch):
         """Test rollback with missing backup file."""
         monkeypatch.chdir(tmp_path)
         nonexistent_backup = tmp_path / "nonexistent_backup.db"
 
-        result = runner.invoke(
-            app,
-            ['rollback', '--backup-file', str(nonexistent_backup)]
-        )
+        result = runner.invoke(app, ["rollback", "--backup-file", str(nonexistent_backup)])
 
         assert result.exit_code == 1
-        assert 'not found' in result.stdout.lower()
+        assert "not found" in result.stdout.lower()
 
     def test_rollback_user_cancels(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test rollback cancelled by user."""
@@ -298,14 +294,14 @@ class TestRollbackCommand:
         backup_path.touch()
 
         # Mock user declining confirmation
-        with patch('typer.confirm', return_value=False):
+        with patch("typer.confirm", return_value=False):
             result = runner.invoke(
                 app,
-                ['rollback', '--state-db', str(v1_1_database), '--backup-file', str(backup_path)]
+                ["rollback", "--state-db", str(v1_1_database), "--backup-file", str(backup_path)],
             )
 
         assert result.exit_code == 0
-        assert 'cancelled' in result.stdout.lower() or 'aborted' in result.stdout.lower()
+        assert "cancelled" in result.stdout.lower() or "aborted" in result.stdout.lower()
 
     def test_rollback_lists_available_backups(self, runner, tmp_path, monkeypatch):
         """Test rollback lists available backup files when none specified."""
@@ -317,18 +313,18 @@ class TestRollbackCommand:
         backup1.touch()
         backup2.touch()
 
-        result = runner.invoke(app, ['rollback'])
+        result = runner.invoke(app, ["rollback"])
 
         assert result.exit_code == 0
         # Should list available backups
-        assert 'backup.20250114_120000' in result.stdout
-        assert 'backup.20250114_130000' in result.stdout
+        assert "backup.20250114_120000" in result.stdout
+        assert "backup.20250114_130000" in result.stdout
 
     def test_rollback_no_backups_available(self, runner, tmp_path, monkeypatch):
         """Test rollback when no backups are available."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ['rollback'])
+        result = runner.invoke(app, ["rollback"])
 
         assert result.exit_code == 1
-        assert 'No backup files found' in result.stdout
+        assert "No backup files found" in result.stdout

@@ -10,6 +10,7 @@ from typing import Any
 
 class DeduplicationError(Exception):
     """Raised when deduplication fails."""
+
     pass
 
 
@@ -107,8 +108,7 @@ class MessageDeduplicator:
             return "1.1"
 
         cursor = self.conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='archived_messages'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
         )
         if cursor.fetchone():
             return "1.0"
@@ -130,13 +130,13 @@ class MessageDeduplicator:
 
         # Find all rfc_message_ids that appear more than once
         # Use SQL for efficiency
-        cursor = self.conn.execute('''
+        cursor = self.conn.execute("""
             SELECT rfc_message_id, COUNT(*) as count
             FROM messages
             WHERE rfc_message_id IS NOT NULL
             GROUP BY rfc_message_id
             HAVING COUNT(*) > 1
-        ''')
+        """)
 
         duplicate_ids = [row[0] for row in cursor.fetchall()]
 
@@ -147,27 +147,32 @@ class MessageDeduplicator:
         duplicates: dict[str, list[MessageInfo]] = {}
 
         for rfc_id in duplicate_ids:
-            cursor = self.conn.execute('''
+            cursor = self.conn.execute(
+                """
                 SELECT gmail_id, archive_file, mbox_offset, mbox_length,
                        size_bytes, archived_timestamp
                 FROM messages
                 WHERE rfc_message_id = ?
                 ORDER BY archived_timestamp DESC
-            ''', (rfc_id,))
+            """,
+                (rfc_id,),
+            )
 
             messages = []
             for row in cursor.fetchall():
                 # Handle NULL size_bytes by using mbox_length as fallback
                 size = row[4] if row[4] is not None else row[3]
 
-                messages.append(MessageInfo(
-                    gmail_id=row[0],
-                    archive_file=row[1],
-                    mbox_offset=row[2],
-                    mbox_length=row[3],
-                    size_bytes=size,
-                    archived_timestamp=row[5]
-                ))
+                messages.append(
+                    MessageInfo(
+                        gmail_id=row[0],
+                        archive_file=row[1],
+                        mbox_offset=row[2],
+                        mbox_length=row[3],
+                        size_bytes=size,
+                        archived_timestamp=row[5],
+                    )
+                )
 
             duplicates[rfc_id] = messages
 
@@ -197,7 +202,7 @@ class MessageDeduplicator:
                 total_duplicate_messages=0,
                 messages_to_remove=0,
                 space_recoverable=0,
-                breakdown_by_archive={}
+                breakdown_by_archive={},
             )
 
         # Calculate statistics
@@ -220,13 +225,10 @@ class MessageDeduplicator:
 
                 # Track by archive file
                 if msg.archive_file not in breakdown:
-                    breakdown[msg.archive_file] = {
-                        'messages_to_remove': 0,
-                        'space_recoverable': 0
-                    }
+                    breakdown[msg.archive_file] = {"messages_to_remove": 0, "space_recoverable": 0}
 
-                breakdown[msg.archive_file]['messages_to_remove'] += 1
-                breakdown[msg.archive_file]['space_recoverable'] += msg.size_bytes
+                breakdown[msg.archive_file]["messages_to_remove"] += 1
+                breakdown[msg.archive_file]["space_recoverable"] += msg.size_bytes
 
         return DeduplicationReport(
             total_messages=total_messages,
@@ -234,14 +236,14 @@ class MessageDeduplicator:
             total_duplicate_messages=total_duplicate_messages,
             messages_to_remove=messages_to_remove,
             space_recoverable=space_recoverable,
-            breakdown_by_archive=breakdown
+            breakdown_by_archive=breakdown,
         )
 
     def deduplicate(
         self,
         duplicates: dict[str, list[MessageInfo]],
-        strategy: str = 'newest',
-        dry_run: bool = True
+        strategy: str = "newest",
+        dry_run: bool = True,
     ) -> DeduplicationResult:
         """
         Remove duplicates using specified strategy.
@@ -257,19 +259,15 @@ class MessageDeduplicator:
         Raises:
             ValueError: If strategy is invalid
         """
-        valid_strategies = ['newest', 'largest', 'first']
+        valid_strategies = ["newest", "largest", "first"]
         if strategy not in valid_strategies:
             raise ValueError(
-                f"Invalid strategy: {strategy}. "
-                f"Must be one of: {', '.join(valid_strategies)}"
+                f"Invalid strategy: {strategy}. Must be one of: {', '.join(valid_strategies)}"
             )
 
         if not duplicates:
             return DeduplicationResult(
-                messages_removed=0,
-                messages_kept=0,
-                space_saved=0,
-                dry_run=dry_run
+                messages_removed=0, messages_kept=0, space_saved=0, dry_run=dry_run
             )
 
         # Determine which messages to keep and which to remove
@@ -278,14 +276,14 @@ class MessageDeduplicator:
 
         for rfc_id, messages in duplicates.items():
             # Select message to keep based on strategy
-            if strategy == 'newest':
+            if strategy == "newest":
                 # Already sorted by archived_timestamp DESC in find_duplicates
                 keep_msg = messages[0]
-            elif strategy == 'largest':
+            elif strategy == "largest":
                 # Sort by size_bytes descending
                 sorted_msgs = sorted(messages, key=lambda m: m.size_bytes, reverse=True)
                 keep_msg = sorted_msgs[0]
-            elif strategy == 'first':
+            elif strategy == "first":
                 # Sort by archive_file alphabetically
                 sorted_msgs = sorted(messages, key=lambda m: m.archive_file)
                 keep_msg = sorted_msgs[0]
@@ -308,18 +306,15 @@ class MessageDeduplicator:
                 raise RuntimeError("Database connection is closed")
 
             # Use parameterized query to avoid SQL injection
-            placeholders = ','.join('?' * len(to_remove))
-            self.conn.execute(
-                f'DELETE FROM messages WHERE gmail_id IN ({placeholders})',
-                to_remove
-            )
+            placeholders = ",".join("?" * len(to_remove))
+            self.conn.execute(f"DELETE FROM messages WHERE gmail_id IN ({placeholders})", to_remove)
             self.conn.commit()
 
         return DeduplicationResult(
             messages_removed=messages_removed,
             messages_kept=messages_kept,
             space_saved=space_saved,
-            dry_run=dry_run
+            dry_run=dry_run,
         )
 
     def close(self) -> None:

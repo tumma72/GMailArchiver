@@ -293,9 +293,7 @@ class TestSystemdScheduler:
 
     @patch("subprocess.run")
     @patch("pathlib.Path.unlink")
-    def test_uninstall_removes_files(
-        self, mock_unlink: MagicMock, mock_run: MagicMock
-    ) -> None:
+    def test_uninstall_removes_files(self, mock_unlink: MagicMock, mock_run: MagicMock) -> None:
         """Test that uninstall removes timer and service files."""
         scheduler = SystemdScheduler()
         entry = ScheduleEntry(
@@ -491,9 +489,7 @@ class TestLaunchdScheduler:
 
     @patch("subprocess.run")
     @patch("pathlib.Path.unlink")
-    def test_uninstall_unloads_plist(
-        self, mock_unlink: MagicMock, mock_run: MagicMock
-    ) -> None:
+    def test_uninstall_unloads_plist(self, mock_unlink: MagicMock, mock_run: MagicMock) -> None:
         """Test that uninstall unloads the plist."""
         scheduler = LaunchdScheduler()
         entry = ScheduleEntry(
@@ -636,9 +632,7 @@ class TestTaskSchedulerWindows:
 
     @patch("tempfile.NamedTemporaryFile")
     @patch("subprocess.run")
-    def test_install_creates_task(
-        self, mock_run: MagicMock, mock_tempfile: MagicMock
-    ) -> None:
+    def test_install_creates_task(self, mock_run: MagicMock, mock_tempfile: MagicMock) -> None:
         """Test that install creates Windows scheduled task."""
         # Mock temporary file
         mock_file = MagicMock()

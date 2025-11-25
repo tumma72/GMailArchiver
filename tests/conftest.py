@@ -98,6 +98,7 @@ def temp_dir() -> Generator[Path]:
 # Shared SQLite DB fixtures
 # --------------------------------------------------------------------------
 
+
 @pytest.fixture
 def temp_db_path(temp_dir: Path) -> str:
     """Common temporary database path used across tests.
@@ -398,31 +399,27 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
 
     # Create archive files first
     # Uncompressed mbox with msg001 and msg002
-    mbox_path = temp_dir / 'archive.mbox'
+    mbox_path = temp_dir / "archive.mbox"
     msg1 = sample_message
-    msg2 = sample_message.replace(
-        b'test001', b'test002'
-    ).replace(
-        b'alice@example.com', b'bob@example.com'
-    ).replace(
-        b'bob@example.com', b'alice@example.com'
+    msg2 = (
+        sample_message.replace(b"test001", b"test002")
+        .replace(b"alice@example.com", b"bob@example.com")
+        .replace(b"bob@example.com", b"alice@example.com")
     )
 
-    with open(mbox_path, 'wb') as f:
+    with open(mbox_path, "wb") as f:
         f.write(msg1)
         f.write(msg2)
 
     # Gzip compressed mbox with msg003
-    gzip_path = temp_dir / 'archive.mbox.gz'
-    msg3 = sample_message.replace(
-        b'test001', b'test003'
-    ).replace(
-        b'alice@example.com', b'charlie@example.com'
-    ).replace(
-        b'bob@example.com', b'alice@example.com'
+    gzip_path = temp_dir / "archive.mbox.gz"
+    msg3 = (
+        sample_message.replace(b"test001", b"test003")
+        .replace(b"alice@example.com", b"charlie@example.com")
+        .replace(b"bob@example.com", b"alice@example.com")
     )
 
-    with gzip.open(gzip_path, 'wb') as f:
+    with gzip.open(gzip_path, "wb") as f:
         f.write(msg3)
 
     # Create database with v1.1 schema and insert records within a
@@ -430,48 +427,48 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
     with DBManager(str(db_path)) as db:
         # Add test messages that reference the created archive files
         test_messages = [
-        {
-            'gmail_id': 'msg001',
-            'rfc_message_id': '<test001@example.com>',
-            'archive_file': str(mbox_path),
-            'mbox_offset': 0,
-            'mbox_length': len(msg1),
-            'subject': 'Test Message 1',
-            'from_addr': 'alice@example.com',
-            'to_addr': 'bob@example.com',
-        },
-        {
-            'gmail_id': 'msg002',
-            'rfc_message_id': '<test002@example.com>',
-            'archive_file': str(mbox_path),
-            'mbox_offset': len(msg1),
-            'mbox_length': len(msg2),
-            'subject': 'Test Message 2',
-            'from_addr': 'bob@example.com',
-            'to_addr': 'alice@example.com',
-        },
-        {
-            'gmail_id': 'msg003',
-            'rfc_message_id': '<test003@example.com>',
-            'archive_file': str(gzip_path),
-            'mbox_offset': 0,
-            'mbox_length': len(msg3),
-            'subject': 'Test Message 3',
-            'from_addr': 'charlie@example.com',
-            'to_addr': 'alice@example.com',
-        },
-    ]
+            {
+                "gmail_id": "msg001",
+                "rfc_message_id": "<test001@example.com>",
+                "archive_file": str(mbox_path),
+                "mbox_offset": 0,
+                "mbox_length": len(msg1),
+                "subject": "Test Message 1",
+                "from_addr": "alice@example.com",
+                "to_addr": "bob@example.com",
+            },
+            {
+                "gmail_id": "msg002",
+                "rfc_message_id": "<test002@example.com>",
+                "archive_file": str(mbox_path),
+                "mbox_offset": len(msg1),
+                "mbox_length": len(msg2),
+                "subject": "Test Message 2",
+                "from_addr": "bob@example.com",
+                "to_addr": "alice@example.com",
+            },
+            {
+                "gmail_id": "msg003",
+                "rfc_message_id": "<test003@example.com>",
+                "archive_file": str(gzip_path),
+                "mbox_offset": 0,
+                "mbox_length": len(msg3),
+                "subject": "Test Message 3",
+                "from_addr": "charlie@example.com",
+                "to_addr": "alice@example.com",
+            },
+        ]
 
         for msg in test_messages:
             db.record_archived_message(
-                gmail_id=msg['gmail_id'],
-                rfc_message_id=msg['rfc_message_id'],
-                archive_file=msg['archive_file'],
-                mbox_offset=msg['mbox_offset'],
-                mbox_length=msg['mbox_length'],
-                subject=msg['subject'],
-                from_addr=msg['from_addr'],
-                to_addr=msg['to_addr'],
+                gmail_id=msg["gmail_id"],
+                rfc_message_id=msg["rfc_message_id"],
+                archive_file=msg["archive_file"],
+                mbox_offset=msg["mbox_offset"],
+                mbox_length=msg["mbox_length"],
+                subject=msg["subject"],
+                from_addr=msg["from_addr"],
+                to_addr=msg["to_addr"],
                 record_run=False,
             )
 
@@ -515,17 +512,15 @@ def uncompressed_mbox(temp_dir: Path, sample_message: bytes) -> Path:
     Returns:
         Path to created mbox file
     """
-    mbox_path = temp_dir / 'archive.mbox'
+    mbox_path = temp_dir / "archive.mbox"
 
     # Write sample messages
     msg1 = sample_message
-    msg2 = sample_message.replace(
-        b'test001', b'test002'
-    ).replace(
-        b'Test Message', b'Test Message 2'
+    msg2 = sample_message.replace(b"test001", b"test002").replace(
+        b"Test Message", b"Test Message 2"
     )
 
-    with open(mbox_path, 'wb') as f:
+    with open(mbox_path, "wb") as f:
         f.write(msg1)
         f.write(msg2)
 
@@ -543,15 +538,11 @@ def compressed_mbox_gzip(temp_dir: Path, sample_message: bytes) -> Path:
     Returns:
         Path to created gzip mbox file
     """
-    mbox_path = temp_dir / 'archive.mbox.gz'
+    mbox_path = temp_dir / "archive.mbox.gz"
 
-    msg1 = sample_message.replace(
-        b'test001', b'test003'
-    ).replace(
-        b'alice', b'charlie'
-    )
+    msg1 = sample_message.replace(b"test001", b"test003").replace(b"alice", b"charlie")
 
-    with gzip.open(mbox_path, 'wb') as f:
+    with gzip.open(mbox_path, "wb") as f:
         f.write(msg1)
 
     return mbox_path
@@ -568,15 +559,11 @@ def compressed_mbox_lzma(temp_dir: Path, sample_message: bytes) -> Path:
     Returns:
         Path to created lzma mbox file
     """
-    mbox_path = temp_dir / 'archive.mbox.xz'
+    mbox_path = temp_dir / "archive.mbox.xz"
 
-    msg1 = sample_message.replace(
-        b'test001', b'test004'
-    ).replace(
-        b'alice', b'dave'
-    )
+    msg1 = sample_message.replace(b"test001", b"test004").replace(b"alice", b"dave")
 
-    with lzma.open(mbox_path, 'wb') as f:
+    with lzma.open(mbox_path, "wb") as f:
         f.write(msg1)
 
     return mbox_path

@@ -33,7 +33,7 @@ def create_v1_1_db_with_duplicates(tmp_path: Path) -> Path:
     conn = sqlite3.connect(str(db_path))
 
     # Create v1.1 schema WITHOUT UNIQUE constraint on rfc_message_id (for testing duplicates)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT NOT NULL,
@@ -53,7 +53,7 @@ def create_v1_1_db_with_duplicates(tmp_path: Path) -> Path:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Create indexes
     conn.execute("CREATE INDEX IF NOT EXISTS idx_rfc_message_id ON messages(rfc_message_id)")
@@ -61,63 +61,60 @@ def create_v1_1_db_with_duplicates(tmp_path: Path) -> Path:
 
     # Insert messages with duplicates
     # Group 1: 3 copies of <dup1@test.com>
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail1', '<dup1@test.com>', 'thread1', 'Duplicate 1 Copy 1', 'sender@example.com',
          'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
          'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail2', '<dup1@test.com>', 'thread1', 'Duplicate 1 Copy 2', 'sender@example.com',
          'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-02T12:00:00',
          'archive2.mbox', 200, 600, 'Body 2', 'checksum2', 600, NULL, 'default')
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail3', '<dup1@test.com>', 'thread1', 'Duplicate 1 Copy 3', 'sender@example.com',
          'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-03T12:00:00',
          'archive1.mbox', 300, 800, 'Body 3', 'checksum3', 800, NULL, 'default')
-    ''')
+    """)
 
     # Group 2: 2 copies of <dup2@test.com>
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail4', '<dup2@test.com>', 'thread2', 'Duplicate 2 Copy 1', 'sender2@example.com',
          'recipient@example.com', NULL, '2024-01-02 10:00:00', '2025-01-04T12:00:00',
          'archive2.mbox', 400, 1000, 'Body 4', 'checksum4', 1000, NULL, 'default')
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail5', '<dup2@test.com>', 'thread2', 'Duplicate 2 Copy 2', 'sender2@example.com',
          'recipient@example.com', NULL, '2024-01-02 10:00:00', '2025-01-05T12:00:00',
          'archive2.mbox', 500, 1200, 'Body 5', 'checksum5', 1200, NULL, 'default')
-    ''')
+    """)
 
     # Unique message (no duplicates)
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages VALUES
         ('gmail6', '<unique@test.com>', 'thread3', 'Unique Message', 'unique@example.com',
          'recipient@example.com', NULL, '2024-01-03 10:00:00', '2025-01-06T12:00:00',
          'archive1.mbox', 600, 700, 'Body 6', 'checksum6', 700, NULL, 'default')
-    ''')
+    """)
 
     # Create schema_version table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             version TEXT PRIMARY KEY,
             migrated_at TIMESTAMP NOT NULL
         )
-    ''')
+    """)
 
     # Set schema version
-    conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)",
-        ('1.1', datetime.now().isoformat())
-    )
+    conn.execute("INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat()))
 
     conn.commit()
     conn.close()
@@ -131,7 +128,7 @@ def create_v1_0_database(tmp_path: Path) -> Path:
     conn = sqlite3.connect(str(db_path))
 
     # Create v1.0 schema (archived_messages table)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE archived_messages (
             gmail_id TEXT PRIMARY KEY,
             archived_timestamp TEXT NOT NULL,
@@ -141,7 +138,7 @@ def create_v1_0_database(tmp_path: Path) -> Path:
             message_date TEXT,
             checksum TEXT
         )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -159,24 +156,23 @@ def create_v1_1_db_no_duplicates(tmp_path: Path) -> Path:
     manager._create_enhanced_schema(manager.conn)
 
     # Insert unique messages only
-    manager.conn.execute('''
+    manager.conn.execute("""
         INSERT INTO messages VALUES
         ('gmail1', '<unique1@test.com>', 'thread1', 'Message 1', 'sender@example.com',
          'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
          'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
-    ''')
+    """)
 
-    manager.conn.execute('''
+    manager.conn.execute("""
         INSERT INTO messages VALUES
         ('gmail2', '<unique2@test.com>', 'thread2', 'Message 2', 'sender@example.com',
          'recipient@example.com', NULL, '2024-01-02 10:00:00', '2025-01-02T12:00:00',
          'archive1.mbox', 200, 600, 'Body 2', 'checksum2', 600, NULL, 'default')
-    ''')
+    """)
 
     # Set schema version
     manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)",
-        ('1.1', datetime.now().isoformat())
+        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
     )
 
     manager.conn.commit()
@@ -192,39 +188,39 @@ class TestDedupeReportCommand:
         """Test dedupe-report shows table when duplicates found."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        result = runner.invoke(app, ['dedupe-report', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
 
         assert result.exit_code == 0
         # Should show statistics
-        assert '6' in result.stdout  # Total messages
-        assert '2' in result.stdout  # Duplicate Message-IDs found
-        assert '3' in result.stdout  # Total duplicates (instances beyond first)
+        assert "6" in result.stdout  # Total messages
+        assert "2" in result.stdout  # Duplicate Message-IDs found
+        assert "3" in result.stdout  # Total duplicates (instances beyond first)
 
         # Should show breakdown by archive file
-        assert 'archive1.mbox' in result.stdout
-        assert 'archive2.mbox' in result.stdout
+        assert "archive1.mbox" in result.stdout
+        assert "archive2.mbox" in result.stdout
 
         # Should show space recoverable
-        assert 'KB' in result.stdout or 'MB' in result.stdout or 'bytes' in result.stdout.lower()
+        assert "KB" in result.stdout or "MB" in result.stdout or "bytes" in result.stdout.lower()
 
     def test_dedupe_report_no_duplicates(self, runner, tmp_path):
         """Test dedupe-report shows message when no duplicates."""
         db_path = create_v1_1_db_no_duplicates(tmp_path)
 
-        result = runner.invoke(app, ['dedupe-report', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
 
         assert result.exit_code == 0
-        assert 'No duplicate' in result.stdout or 'no duplicate' in result.stdout
+        assert "No duplicate" in result.stdout or "no duplicate" in result.stdout
 
     def test_dedupe_report_v1_0_database_error(self, runner, tmp_path):
         """Test dedupe-report shows error for v1.0 database."""
         db_path = create_v1_0_database(tmp_path)
 
-        result = runner.invoke(app, ['dedupe-report', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
 
         assert result.exit_code == 1
-        assert 'v1.1' in result.stdout or '1.1' in result.stdout
-        assert 'migrate' in result.stdout.lower() or 'migration' in result.stdout.lower()
+        assert "v1.1" in result.stdout or "1.1" in result.stdout
+        assert "migrate" in result.stdout.lower() or "migration" in result.stdout.lower()
 
 
 class TestDedupeCommand:
@@ -234,11 +230,11 @@ class TestDedupeCommand:
         """Test dedupe defaults to dry-run mode (safe)."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        result = runner.invoke(app, ['dedupe', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe", "--state-db", str(db_path)])
 
         assert result.exit_code == 0
         # Should indicate dry run
-        assert 'dry' in result.stdout.lower() or 'preview' in result.stdout.lower()
+        assert "dry" in result.stdout.lower() or "preview" in result.stdout.lower()
 
         # Verify no messages were actually removed
         conn = sqlite3.connect(str(db_path))
@@ -253,14 +249,11 @@ class TestDedupeCommand:
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
         # Mock user confirmation
-        with patch('typer.confirm', return_value=True):
-            result = runner.invoke(
-                app,
-                ['dedupe', '--state-db', str(db_path), '--no-dry-run']
-            )
+        with patch("typer.confirm", return_value=True):
+            result = runner.invoke(app, ["dedupe", "--state-db", str(db_path), "--no-dry-run"])
 
         assert result.exit_code == 0
-        assert 'removed' in result.stdout.lower() or 'deleted' in result.stdout.lower()
+        assert "removed" in result.stdout.lower() or "deleted" in result.stdout.lower()
 
         # Verify duplicates were removed
         conn = sqlite3.connect(str(db_path))
@@ -275,14 +268,11 @@ class TestDedupeCommand:
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
         # Mock user declining confirmation
-        with patch('typer.confirm', return_value=False):
-            result = runner.invoke(
-                app,
-                ['dedupe', '--state-db', str(db_path), '--no-dry-run']
-            )
+        with patch("typer.confirm", return_value=False):
+            result = runner.invoke(app, ["dedupe", "--state-db", str(db_path), "--no-dry-run"])
 
         assert result.exit_code == 0
-        assert 'cancel' in result.stdout.lower() or 'abort' in result.stdout.lower()
+        assert "cancel" in result.stdout.lower() or "abort" in result.stdout.lower()
 
         # Verify no messages were removed
         conn = sqlite3.connect(str(db_path))
@@ -296,10 +286,9 @@ class TestDedupeCommand:
         """Test dedupe with --strategy newest."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        with patch('typer.confirm', return_value=True):
+        with patch("typer.confirm", return_value=True):
             result = runner.invoke(
-                app,
-                ['dedupe', '--state-db', str(db_path), '--strategy', 'newest', '--no-dry-run']
+                app, ["dedupe", "--state-db", str(db_path), "--strategy", "newest", "--no-dry-run"]
             )
 
         assert result.exit_code == 0
@@ -321,10 +310,9 @@ class TestDedupeCommand:
         """Test dedupe with --strategy largest."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        with patch('typer.confirm', return_value=True):
+        with patch("typer.confirm", return_value=True):
             result = runner.invoke(
-                app,
-                ['dedupe', '--state-db', str(db_path), '--strategy', 'largest', '--no-dry-run']
+                app, ["dedupe", "--state-db", str(db_path), "--strategy", "largest", "--no-dry-run"]
             )
 
         assert result.exit_code == 0
@@ -346,10 +334,9 @@ class TestDedupeCommand:
         """Test dedupe with --strategy first."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        with patch('typer.confirm', return_value=True):
+        with patch("typer.confirm", return_value=True):
             result = runner.invoke(
-                app,
-                ['dedupe', '--state-db', str(db_path), '--strategy', 'first', '--no-dry-run']
+                app, ["dedupe", "--state-db", str(db_path), "--strategy", "first", "--no-dry-run"]
             )
 
         assert result.exit_code == 0
@@ -379,38 +366,35 @@ class TestDedupeCommand:
         """Test dedupe with no duplicates (early exit)."""
         db_path = create_v1_1_db_no_duplicates(tmp_path)
 
-        result = runner.invoke(app, ['dedupe', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe", "--state-db", str(db_path)])
 
         assert result.exit_code == 0
-        assert 'No duplicate' in result.stdout or 'no duplicate' in result.stdout
+        assert "No duplicate" in result.stdout or "no duplicate" in result.stdout
 
     def test_dedupe_v1_0_database_error(self, runner, tmp_path):
         """Test dedupe shows error for v1.0 database."""
         db_path = create_v1_0_database(tmp_path)
 
-        result = runner.invoke(app, ['dedupe', '--state-db', str(db_path)])
+        result = runner.invoke(app, ["dedupe", "--state-db", str(db_path)])
 
         assert result.exit_code == 1
-        assert 'v1.1' in result.stdout or '1.1' in result.stdout
-        assert 'migrate' in result.stdout.lower() or 'migration' in result.stdout.lower()
+        assert "v1.1" in result.stdout or "1.1" in result.stdout
+        assert "migrate" in result.stdout.lower() or "migration" in result.stdout.lower()
 
     def test_dedupe_with_auto_verify_clean(self, runner, tmp_path):
         """Test dedupe with --auto-verify on clean database."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        with patch('typer.confirm', return_value=True):
-            result = runner.invoke(app, [
-                'dedupe',
-                '--state-db', str(db_path),
-                '--no-dry-run',
-                '--auto-verify'
-            ])
+        with patch("typer.confirm", return_value=True):
+            result = runner.invoke(
+                app, ["dedupe", "--state-db", str(db_path), "--no-dry-run", "--auto-verify"]
+            )
 
         assert result.exit_code == 0
         # Should show verification running
-        assert 'verif' in result.stdout.lower()
+        assert "verif" in result.stdout.lower()
         # Should show verification passed
-        assert 'no issues' in result.stdout.lower() or 'clean' in result.stdout.lower()
+        assert "no issues" in result.stdout.lower() or "clean" in result.stdout.lower()
 
     def test_dedupe_with_auto_verify_with_issues(self, runner, tmp_path):
         """Test dedupe with --auto-verify when verification finds issues."""
@@ -419,7 +403,7 @@ class TestDedupeCommand:
         conn = sqlite3.connect(str(db_path))
 
         # Create tables
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT NOT NULL,
@@ -439,81 +423,74 @@ class TestDedupeCommand:
                 labels TEXT,
                 account_id TEXT DEFAULT 'default'
             )
-        ''')
+        """)
 
         # Add duplicates
-        conn.execute('''
+        conn.execute("""
             INSERT INTO messages VALUES
             ('gmail1', '<dup@test.com>', 'thread1', 'Dup 1', 'sender@example.com',
              'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
              'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
-        ''')
+        """)
 
-        conn.execute('''
+        conn.execute("""
             INSERT INTO messages VALUES
             ('gmail2', '<dup@test.com>', 'thread1', 'Dup 2', 'sender@example.com',
              'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-02T12:00:00',
              'archive1.mbox', 200, 600, 'Body 2', 'checksum2', 600, NULL, 'default')
-        ''')
+        """)
 
         # Create FTS table
-        conn.execute('''
+        conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 subject, from_addr, to_addr, body_preview,
                 content=messages,
                 content_rowid=rowid
             )
-        ''')
+        """)
 
         # Add orphaned FTS record
-        conn.execute('''
+        conn.execute("""
             INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
             VALUES (999, 'Orphan', 'orphan@example.com', 'test@example.com', 'Orphaned record')
-        ''')
+        """)
 
         # Create schema_version table
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_at TIMESTAMP NOT NULL
             )
-        ''')
+        """)
 
         conn.execute(
-            "INSERT INTO schema_version VALUES (?, ?)",
-            ('1.1', datetime.now().isoformat())
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
         )
 
         conn.commit()
         conn.close()
 
         # Run dedupe with auto-verify
-        with patch('typer.confirm', return_value=True):
-            result = runner.invoke(app, [
-                'dedupe',
-                '--state-db', str(db_path),
-                '--no-dry-run',
-                '--auto-verify'
-            ])
+        with patch("typer.confirm", return_value=True):
+            result = runner.invoke(
+                app, ["dedupe", "--state-db", str(db_path), "--no-dry-run", "--auto-verify"]
+            )
 
         assert result.exit_code == 0
         # Should show verification running
-        assert 'verif' in result.stdout.lower()
+        assert "verif" in result.stdout.lower()
         # Should show issues found
-        assert 'issue' in result.stdout.lower() or 'orphan' in result.stdout.lower()
+        assert "issue" in result.stdout.lower() or "orphan" in result.stdout.lower()
         # Should suggest repair
-        assert 'repair' in result.stdout.lower() or 'check' in result.stdout.lower()
+        assert "repair" in result.stdout.lower() or "check" in result.stdout.lower()
 
     def test_dedupe_dry_run_no_auto_verify(self, runner, tmp_path):
         """Test dedupe dry-run does not auto-verify even with flag."""
         db_path = create_v1_1_db_with_duplicates(tmp_path)
 
-        result = runner.invoke(app, [
-            'dedupe',
-            '--state-db', str(db_path),
-            '--dry-run',
-            '--auto-verify'
-        ])
+        result = runner.invoke(
+            app, ["dedupe", "--state-db", str(db_path), "--dry-run", "--auto-verify"]
+        )
 
         assert result.exit_code == 0
         # Dry run should not trigger auto-verify

@@ -13,7 +13,7 @@ from gmailarchiver.state import ArchiveState
 def temp_db():
     """Create a temporary database for testing."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / 'test_archive_state.db'
+        db_path = Path(tmpdir) / "test_archive_state.db"
         yield str(db_path)
 
 
@@ -27,12 +27,10 @@ class TestArchiveState:
         assert Path(temp_db).exists()
 
         # Check tables exist
-        cursor = state.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        )
+        cursor = state.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = {row[0] for row in cursor.fetchall()}
-        assert 'archived_messages' in tables
-        assert 'archive_runs' in tables
+        assert "archived_messages" in tables
+        assert "archive_runs" in tables
 
         state.close()
 
@@ -41,28 +39,27 @@ class TestArchiveState:
         state = ArchiveState(temp_db, validate_path=False)
 
         state.mark_archived(
-            gmail_id='msg123',
-            archive_file='test.mbox',
-            subject='Test Email',
-            from_addr='test@example.com',
-            message_date='2025-01-01',
-            checksum='abc123'
+            gmail_id="msg123",
+            archive_file="test.mbox",
+            subject="Test Email",
+            from_addr="test@example.com",
+            message_date="2025-01-01",
+            checksum="abc123",
         )
 
         # Verify message was stored
         cursor = state.conn.execute(
-            'SELECT * FROM archived_messages WHERE gmail_id = ?',
-            ('msg123',)
+            "SELECT * FROM archived_messages WHERE gmail_id = ?", ("msg123",)
         )
         row = cursor.fetchone()
 
         assert row is not None
-        assert row[0] == 'msg123'  # gmail_id
-        assert row[2] == 'test.mbox'  # archive_file
-        assert row[3] == 'Test Email'  # subject
-        assert row[4] == 'test@example.com'  # from_addr
-        assert row[5] == '2025-01-01'  # message_date
-        assert row[6] == 'abc123'  # checksum
+        assert row[0] == "msg123"  # gmail_id
+        assert row[2] == "test.mbox"  # archive_file
+        assert row[3] == "Test Email"  # subject
+        assert row[4] == "test@example.com"  # from_addr
+        assert row[5] == "2025-01-01"  # message_date
+        assert row[6] == "abc123"  # checksum
 
         state.close()
 
@@ -71,13 +68,13 @@ class TestArchiveState:
         state = ArchiveState(temp_db, validate_path=False)
 
         # Initially not archived
-        assert not state.is_archived('msg123')
+        assert not state.is_archived("msg123")
 
         # Mark as archived
-        state.mark_archived('msg123', 'test.mbox')
+        state.mark_archived("msg123", "test.mbox")
 
         # Now should be archived
-        assert state.is_archived('msg123')
+        assert state.is_archived("msg123")
 
         state.close()
 
@@ -87,14 +84,14 @@ class TestArchiveState:
 
         assert state.get_archived_count() == 0
 
-        state.mark_archived('msg1', 'test.mbox')
+        state.mark_archived("msg1", "test.mbox")
         assert state.get_archived_count() == 1
 
-        state.mark_archived('msg2', 'test.mbox')
+        state.mark_archived("msg2", "test.mbox")
         assert state.get_archived_count() == 2
 
         # Updating same message shouldn't increase count
-        state.mark_archived('msg1', 'test.mbox', subject='Updated')
+        state.mark_archived("msg1", "test.mbox", subject="Updated")
         assert state.get_archived_count() == 2
 
         state.close()
@@ -104,24 +101,19 @@ class TestArchiveState:
         state = ArchiveState(temp_db, validate_path=False)
 
         run_id = state.record_archive_run(
-            query='older_than:3y',
-            messages_archived=100,
-            archive_file='test.mbox'
+            query="older_than:3y", messages_archived=100, archive_file="test.mbox"
         )
 
         assert run_id > 0
 
         # Verify run was stored
-        cursor = state.conn.execute(
-            'SELECT * FROM archive_runs WHERE run_id = ?',
-            (run_id,)
-        )
+        cursor = state.conn.execute("SELECT * FROM archive_runs WHERE run_id = ?", (run_id,))
         row = cursor.fetchone()
 
         assert row is not None
-        assert row[2] == 'older_than:3y'  # query
+        assert row[2] == "older_than:3y"  # query
         assert row[3] == 100  # messages_archived
-        assert row[4] == 'test.mbox'  # archive_file
+        assert row[4] == "test.mbox"  # archive_file
 
         state.close()
 
@@ -130,17 +122,17 @@ class TestArchiveState:
         state = ArchiveState(temp_db, validate_path=False)
 
         # Add multiple runs
-        state.record_archive_run('older_than:1y', 50, 'run1.mbox')
-        state.record_archive_run('older_than:2y', 100, 'run2.mbox')
-        state.record_archive_run('older_than:3y', 150, 'run3.mbox')
+        state.record_archive_run("older_than:1y", 50, "run1.mbox")
+        state.record_archive_run("older_than:2y", 100, "run2.mbox")
+        state.record_archive_run("older_than:3y", 150, "run3.mbox")
 
         # Get all runs
         runs = state.get_archive_runs(limit=10)
         assert len(runs) == 3
 
         # Should be in reverse chronological order
-        assert runs[0]['archive_file'] == 'run3.mbox'
-        assert runs[0]['messages_archived'] == 150
+        assert runs[0]["archive_file"] == "run3.mbox"
+        assert runs[0]["messages_archived"] == 150
 
         # Test limit
         runs = state.get_archive_runs(limit=2)
@@ -154,12 +146,12 @@ class TestArchiveState:
 
         assert state.get_archived_message_ids() == set()
 
-        state.mark_archived('msg1', 'test.mbox')
-        state.mark_archived('msg2', 'test.mbox')
-        state.mark_archived('msg3', 'test.mbox')
+        state.mark_archived("msg1", "test.mbox")
+        state.mark_archived("msg2", "test.mbox")
+        state.mark_archived("msg3", "test.mbox")
 
         ids = state.get_archived_message_ids()
-        assert ids == {'msg1', 'msg2', 'msg3'}
+        assert ids == {"msg1", "msg2", "msg3"}
 
         state.close()
 
@@ -168,20 +160,20 @@ class TestArchiveState:
         state = ArchiveState(temp_db, validate_path=False)
 
         # Add messages to different archives
-        state.mark_archived('msg1', 'archive1.mbox')
-        state.mark_archived('msg2', 'archive1.mbox')
-        state.mark_archived('msg3', 'archive2.mbox')
-        state.mark_archived('msg4', 'archive2.mbox')
+        state.mark_archived("msg1", "archive1.mbox")
+        state.mark_archived("msg2", "archive1.mbox")
+        state.mark_archived("msg3", "archive2.mbox")
+        state.mark_archived("msg4", "archive2.mbox")
 
         # Get IDs for specific file
-        ids1 = state.get_archived_message_ids_for_file('archive1.mbox')
-        assert ids1 == {'msg1', 'msg2'}
+        ids1 = state.get_archived_message_ids_for_file("archive1.mbox")
+        assert ids1 == {"msg1", "msg2"}
 
-        ids2 = state.get_archived_message_ids_for_file('archive2.mbox')
-        assert ids2 == {'msg3', 'msg4'}
+        ids2 = state.get_archived_message_ids_for_file("archive2.mbox")
+        assert ids2 == {"msg3", "msg4"}
 
         # Non-existent file
-        ids3 = state.get_archived_message_ids_for_file('nonexistent.mbox')
+        ids3 = state.get_archived_message_ids_for_file("nonexistent.mbox")
         assert ids3 == set()
 
         state.close()
@@ -189,13 +181,13 @@ class TestArchiveState:
     def test_context_manager(self, temp_db):
         """Test using ArchiveState as context manager."""
         with ArchiveState(temp_db, validate_path=False) as state:
-            state.mark_archived('msg1', 'test.mbox')
-            assert state.is_archived('msg1')
+            state.mark_archived("msg1", "test.mbox")
+            assert state.is_archived("msg1")
 
         # Connection should be closed after context
         # Verify by creating new connection
         conn = sqlite3.connect(temp_db)
-        cursor = conn.execute('SELECT COUNT(*) FROM archived_messages')
+        cursor = conn.execute("SELECT COUNT(*) FROM archived_messages")
         count = cursor.fetchone()[0]
         assert count == 1
         conn.close()
@@ -206,18 +198,12 @@ class TestArchiveState:
 
         # Add initial message
         state.mark_archived(
-            'msg1',
-            'old_archive.mbox',
-            subject='Old Subject',
-            checksum='old_checksum'
+            "msg1", "old_archive.mbox", subject="Old Subject", checksum="old_checksum"
         )
 
         # Update same message
         state.mark_archived(
-            'msg1',
-            'new_archive.mbox',
-            subject='New Subject',
-            checksum='new_checksum'
+            "msg1", "new_archive.mbox", subject="New Subject", checksum="new_checksum"
         )
 
         # Should only have one record
@@ -225,13 +211,13 @@ class TestArchiveState:
 
         # Should have updated values
         cursor = state.conn.execute(
-            'SELECT archive_file, subject, checksum FROM archived_messages WHERE gmail_id = ?',
-            ('msg1',)
+            "SELECT archive_file, subject, checksum FROM archived_messages WHERE gmail_id = ?",
+            ("msg1",),
         )
         row = cursor.fetchone()
-        assert row[0] == 'new_archive.mbox'
-        assert row[1] == 'New Subject'
-        assert row[2] == 'new_checksum'
+        assert row[0] == "new_archive.mbox"
+        assert row[1] == "New Subject"
+        assert row[2] == "new_checksum"
 
         state.close()
 
@@ -245,7 +231,7 @@ class TestV11SchemaOperations:
 
         # Create v1.1 database
         conn = sqlite3.connect(temp_db)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT UNIQUE NOT NULL,
@@ -265,13 +251,13 @@ class TestV11SchemaOperations:
                 labels TEXT,
                 account_id TEXT DEFAULT 'default'
             )
-        ''')
-        conn.execute('''
+        """)
+        conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT
             )
-        ''')
+        """)
         conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
         conn.commit()
         conn.close()
@@ -281,9 +267,9 @@ class TestV11SchemaOperations:
         # Should raise ValueError when offsets missing
         with pytest.raises(ValueError, match="mbox_offset and mbox_length required"):
             state.mark_archived(
-                'msg1',
-                'archive.mbox',
-                subject='Test',
+                "msg1",
+                "archive.mbox",
+                subject="Test",
                 # Missing mbox_offset and mbox_length
             )
 
@@ -296,7 +282,7 @@ class TestV11SchemaOperations:
 
         # Create v1.1 database
         conn = sqlite3.connect(temp_db)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT UNIQUE NOT NULL,
@@ -316,13 +302,13 @@ class TestV11SchemaOperations:
                 labels TEXT,
                 account_id TEXT DEFAULT 'default'
             )
-        ''')
-        conn.execute('''
+        """)
+        conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT
             )
-        ''')
+        """)
         conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
         conn.commit()
         conn.close()
@@ -331,22 +317,22 @@ class TestV11SchemaOperations:
 
         # Mark archived with all v1.1 fields
         state.mark_archived(
-            gmail_id='msg123',
-            archive_file='test.mbox',
-            subject='Test Subject',
-            from_addr='from@example.com',
-            message_date='2024-01-01',
-            checksum='abc123',
-            rfc_message_id='<unique@example.com>',
+            gmail_id="msg123",
+            archive_file="test.mbox",
+            subject="Test Subject",
+            from_addr="from@example.com",
+            message_date="2024-01-01",
+            checksum="abc123",
+            rfc_message_id="<unique@example.com>",
             mbox_offset=0,
             mbox_length=1234,
-            body_preview='Test body preview',
-            to_addr='to@example.com',
-            cc_addr='cc@example.com',
-            thread_id='thread123',
+            body_preview="Test body preview",
+            to_addr="to@example.com",
+            cc_addr="cc@example.com",
+            thread_id="thread123",
             size_bytes=5000,
-            labels=json.dumps(['INBOX', 'IMPORTANT']),
-            account_id='test_account'
+            labels=json.dumps(["INBOX", "IMPORTANT"]),
+            account_id="test_account",
         )
 
         # Verify all fields were stored
@@ -357,16 +343,16 @@ class TestV11SchemaOperations:
         )
         row = cursor.fetchone()
 
-        assert row[0] == '<unique@example.com>'
+        assert row[0] == "<unique@example.com>"
         assert row[1] == 0
         assert row[2] == 1234
-        assert row[3] == 'Test body preview'
-        assert row[4] == 'to@example.com'
-        assert row[5] == 'cc@example.com'
-        assert row[6] == 'thread123'
+        assert row[3] == "Test body preview"
+        assert row[4] == "to@example.com"
+        assert row[5] == "cc@example.com"
+        assert row[6] == "thread123"
         assert row[7] == 5000
-        assert row[8] == json.dumps(['INBOX', 'IMPORTANT'])
-        assert row[9] == 'test_account'
+        assert row[8] == json.dumps(["INBOX", "IMPORTANT"])
+        assert row[9] == "test_account"
 
         state.close()
 
@@ -376,23 +362,23 @@ class TestV11SchemaOperations:
 
         # Create v1.1 database
         conn = sqlite3.connect(temp_db)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY
             )
-        ''')
-        conn.execute('''
+        """)
+        conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT
             )
-        ''')
+        """)
         conn.execute("INSERT INTO schema_version VALUES ('1.1', '2024-01-01T00:00:00')")
         conn.commit()
         conn.close()
 
         state = ArchiveState(temp_db, validate_path=False)
-        assert state.schema_version == '1.1'
+        assert state.schema_version == "1.1"
         state.close()
 
     def test_needs_migration(self, temp_db):
@@ -401,11 +387,11 @@ class TestV11SchemaOperations:
 
         # Create v1.0 database
         conn = sqlite3.connect(temp_db)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE archived_messages (
                 gmail_id TEXT PRIMARY KEY
             )
-        ''')
+        """)
         conn.commit()
         conn.close()
 
@@ -421,11 +407,7 @@ class TestV11SchemaOperations:
         # Test rollback on exception
         try:
             with ArchiveState(temp_db, validate_path=False) as state:
-                state.mark_archived(
-                    'msg1',
-                    'test.mbox',
-                    subject='Test'
-                )
+                state.mark_archived("msg1", "test.mbox", subject="Test")
                 # Force an exception
                 raise ValueError("Test exception")
         except ValueError:

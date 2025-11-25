@@ -11,20 +11,20 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from gmailarchiver.path_validator import validate_file_path
 
-__all__ = ['GmailAuthenticator', 'Credentials', 'SCOPES']
+__all__ = ["GmailAuthenticator", "Credentials", "SCOPES"]
 
 # Gmail API scopes
 # NOTE: Using full Gmail access scope to support all operations including permanent deletion.
 # The gmail.modify scope is insufficient for permanent deletion (messages.delete API).
 # This is a breaking change - existing users must re-authenticate (run `gmailarchiver auth-reset`).
-SCOPES = ['https://mail.google.com/']
+SCOPES = ["https://mail.google.com/"]
 
 
 def _get_bundled_credentials_path() -> Path:
     """Get path to bundled OAuth credentials."""
     # Get the directory where this module is located
     module_dir = Path(__file__).parent
-    return module_dir / 'config' / 'oauth_credentials.json'
+    return module_dir / "config" / "oauth_credentials.json"
 
 
 def _get_default_token_path() -> Path:
@@ -39,19 +39,19 @@ def _get_default_token_path() -> Path:
     import os
 
     # Respect XDG_CONFIG_HOME if set (Linux/macOS)
-    config_home = os.environ.get('XDG_CONFIG_HOME')
+    config_home = os.environ.get("XDG_CONFIG_HOME")
     if config_home:
         config_dir = Path(config_home)
-    elif os.name == 'nt':  # Windows
-        config_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    elif os.name == "nt":  # Windows
+        config_dir = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     else:  # macOS/Linux
-        config_dir = Path.home() / '.config'
+        config_dir = Path.home() / ".config"
 
     # Create gmailarchiver subdirectory
-    app_config_dir = config_dir / 'gmailarchiver'
+    app_config_dir = config_dir / "gmailarchiver"
     app_config_dir.mkdir(parents=True, exist_ok=True)
 
-    return app_config_dir / 'token.json'
+    return app_config_dir / "token.json"
 
 
 class GmailAuthenticator:
@@ -68,7 +68,7 @@ class GmailAuthenticator:
         credentials_file: str | None = None,
         token_file: str | None = None,
         validate_paths: bool = True,
-        output: Any | None = None
+        output: Any | None = None,
     ) -> None:
         """
         Initialize the authenticator.
@@ -178,9 +178,9 @@ class GmailAuthenticator:
                         "Please reinstall the application or report this issue."
                     )
 
-                self._log("\n" + "="*60, "INFO")
+                self._log("\n" + "=" * 60, "INFO")
                 self._log("GMAIL AUTHORIZATION REQUIRED", "INFO")
-                self._log("="*60, "INFO")
+                self._log("=" * 60, "INFO")
                 self._log("\nThis application needs permission to access your Gmail.", "INFO")
                 self._log("A browser window will open where you can:", "INFO")
                 self._log("  1. Log in to your Google account", "INFO")
@@ -188,19 +188,18 @@ class GmailAuthenticator:
                 self._log("  3. Click 'Allow' to authorize Gmail Archiver", "INFO")
                 self._log("\nYour authorization will be saved locally, so you only", "INFO")
                 self._log("need to do this once (unless you revoke access).", "INFO")
-                self._log("="*60 + "\n", "INFO")
+                self._log("=" * 60 + "\n", "INFO")
 
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file(
-                        str(self.credentials_file),
-                        SCOPES
+                        str(self.credentials_file), SCOPES
                     )
                     # Use localhost redirect - most user-friendly
                     self._creds = flow.run_local_server(
                         port=0,
-                        authorization_prompt_message='Opening browser for authorization...',
-                        success_message='Authorization successful! You can close this window.',
-                        open_browser=True
+                        authorization_prompt_message="Opening browser for authorization...",
+                        success_message="Authorization successful! You can close this window.",
+                        open_browser=True,
                     )
                     self._log("\n✓ Authorization successful!", "SUCCESS")
                 except Exception as e:
@@ -209,7 +208,7 @@ class GmailAuthenticator:
 
             # Save the credentials for next run as JSON
             try:
-                with open(self.token_file, 'w') as token:
+                with open(self.token_file, "w") as token:
                     token.write(self._creds.to_json())
                 self._log(f"✓ Authorization saved to: {self.token_file}", "SUCCESS")
             except Exception as e:
@@ -250,7 +249,7 @@ class GmailAuthenticator:
         required = set(required_scopes)
 
         # Full Gmail access (https://mail.google.com/) covers all Gmail operations
-        if 'https://mail.google.com/' in creds_scopes:
+        if "https://mail.google.com/" in creds_scopes:
             return True
 
         # Otherwise check if specific required scopes are present

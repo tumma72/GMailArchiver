@@ -13,7 +13,7 @@ class TestOAuthScopes:
         """Test that SCOPES includes full Gmail access for deletion support."""
         # CRITICAL: Must include 'https://mail.google.com/' for deletion permission
         # The gmail.modify scope does NOT include permanent deletion
-        assert 'https://mail.google.com/' in SCOPES, (
+        assert "https://mail.google.com/" in SCOPES, (
             "SCOPES must include 'https://mail.google.com/' for deletion support. "
             "The 'gmail.modify' scope is insufficient for permanent deletion."
         )
@@ -29,11 +29,11 @@ class TestScopeValidation:
 
             # Mock credentials with full Gmail access
             mock_creds = Mock()
-            mock_creds.scopes = ['https://mail.google.com/']
+            mock_creds.scopes = ["https://mail.google.com/"]
             auth._creds = mock_creds
 
             # Should return True - full access covers all operations
-            required_scopes = ['https://mail.google.com/']
+            required_scopes = ["https://mail.google.com/"]
             assert auth.validate_scopes(required_scopes) is True
 
     def test_validate_scopes_missing_required(self):
@@ -43,11 +43,11 @@ class TestScopeValidation:
 
             # Mock credentials with only readonly scope
             mock_creds = Mock()
-            mock_creds.scopes = ['https://www.googleapis.com/auth/gmail.readonly']
+            mock_creds.scopes = ["https://www.googleapis.com/auth/gmail.readonly"]
             auth._creds = mock_creds
 
             # Should return False - missing full Gmail access
-            required_scopes = ['https://mail.google.com/']
+            required_scopes = ["https://mail.google.com/"]
             assert auth.validate_scopes(required_scopes) is False
 
     def test_validate_scopes_no_credentials(self):
@@ -59,7 +59,7 @@ class TestScopeValidation:
             auth._creds = None
 
             # Should return False
-            required_scopes = ['https://mail.google.com/']
+            required_scopes = ["https://mail.google.com/"]
             assert auth.validate_scopes(required_scopes) is False
 
     def test_validate_scopes_credentials_without_scopes(self):
@@ -73,7 +73,7 @@ class TestScopeValidation:
             auth._creds = mock_creds
 
             # Should return False
-            required_scopes = ['https://mail.google.com/']
+            required_scopes = ["https://mail.google.com/"]
             assert auth.validate_scopes(required_scopes) is False
 
     def test_validate_scopes_full_access_covers_subset(self):
@@ -83,13 +83,13 @@ class TestScopeValidation:
 
             # Mock credentials with full Gmail access
             mock_creds = Mock()
-            mock_creds.scopes = ['https://mail.google.com/']
+            mock_creds.scopes = ["https://mail.google.com/"]
             auth._creds = mock_creds
 
             # Any Gmail-related scope should be satisfied by full access
-            assert auth.validate_scopes(['https://www.googleapis.com/auth/gmail.readonly']) is True
-            assert auth.validate_scopes(['https://www.googleapis.com/auth/gmail.modify']) is True
-            assert auth.validate_scopes(['https://mail.google.com/']) is True
+            assert auth.validate_scopes(["https://www.googleapis.com/auth/gmail.readonly"]) is True
+            assert auth.validate_scopes(["https://www.googleapis.com/auth/gmail.modify"]) is True
+            assert auth.validate_scopes(["https://mail.google.com/"]) is True
 
     def test_validate_scopes_specific_scopes_check(self):
         """Test that specific scope checking works when full access not present."""
@@ -99,14 +99,14 @@ class TestScopeValidation:
             # Mock credentials with specific scopes (no full access)
             mock_creds = Mock()
             mock_creds.scopes = [
-                'https://www.googleapis.com/auth/gmail.readonly',
-                'https://www.googleapis.com/auth/gmail.modify'
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.modify",
             ]
             auth._creds = mock_creds
 
             # Should validate that required scopes are present
-            assert auth.validate_scopes(['https://www.googleapis.com/auth/gmail.readonly']) is True
-            assert auth.validate_scopes(['https://www.googleapis.com/auth/gmail.modify']) is True
+            assert auth.validate_scopes(["https://www.googleapis.com/auth/gmail.readonly"]) is True
+            assert auth.validate_scopes(["https://www.googleapis.com/auth/gmail.modify"]) is True
 
             # Should fail for scopes not present
-            assert auth.validate_scopes(['https://mail.google.com/']) is False
+            assert auth.validate_scopes(["https://mail.google.com/"]) is False

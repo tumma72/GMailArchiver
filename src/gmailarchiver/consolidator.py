@@ -37,7 +37,7 @@ class ArchiveConsolidator:
         output_archive: str | Path,
         sort_by_date: bool = True,
         deduplicate: bool = True,
-        dedupe_strategy: str = 'newest',
+        dedupe_strategy: str = "newest",
         compress: str | None = None,
     ) -> ConsolidationResult:
         """
@@ -65,10 +65,11 @@ class ArchiveConsolidator:
         if not source_archives:
             raise ValueError("source_archives cannot be empty")
 
-        valid_strategies = ('newest', 'largest', 'first')
+        valid_strategies = ("newest", "largest", "first")
         if deduplicate and dedupe_strategy not in valid_strategies:
-            raise ValueError(f"Invalid dedupe_strategy: {dedupe_strategy}. "
-                           f"Must be one of {valid_strategies}")
+            raise ValueError(
+                f"Invalid dedupe_strategy: {dedupe_strategy}. Must be one of {valid_strategies}"
+            )
 
         # Convert paths
         source_paths = [Path(p) for p in source_archives]
@@ -96,14 +97,12 @@ class ArchiveConsolidator:
             duplicates_removed = 0
             duplicate_gmail_ids: list[str] = []
             if deduplicate:
-                messages, duplicates_removed, duplicate_gmail_ids = (
-                    self._deduplicate_messages(messages, dedupe_strategy)
+                messages, duplicates_removed, duplicate_gmail_ids = self._deduplicate_messages(
+                    messages, dedupe_strategy
                 )
 
             # Phase 4: Write using HybridStorage primitive
-            offset_map = storage.bulk_write_messages(
-                messages, output_path, compress
-            )
+            offset_map = storage.bulk_write_messages(messages, output_path, compress)
 
             # Phase 5: Update database atomically with deduplication
             updates = [
@@ -116,9 +115,7 @@ class ArchiveConsolidator:
                 for rfc_id, (gmail_id, offset, length) in offset_map.items()
             ]
 
-            storage.bulk_update_archive_locations_with_dedup(
-                updates, duplicate_gmail_ids
-            )
+            storage.bulk_update_archive_locations_with_dedup(updates, duplicate_gmail_ids)
 
             # Phase 6: Commit transaction
             db_manager.commit()
@@ -194,9 +191,7 @@ class ArchiveConsolidator:
                     # Parse dates for comparison
                     for msg_dict in msg_list:
                         if "timestamp" not in msg_dict:
-                            msg_dict["timestamp"] = self._parse_date(
-                                msg_dict.get("date", "")
-                            )
+                            msg_dict["timestamp"] = self._parse_date(msg_dict.get("date", ""))
                     kept = max(msg_list, key=lambda m: m["timestamp"])
                 elif strategy == "largest":
                     kept = max(msg_list, key=lambda m: m["size"])

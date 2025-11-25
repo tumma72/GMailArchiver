@@ -55,7 +55,7 @@ class SearchEngine:
     """Full-text and metadata search for archived messages."""
 
     # Valid FTS5 field names (whitelist for security)
-    VALID_FTS_FIELDS = {'subject', 'from_addr', 'to_addr', 'body_preview'}
+    VALID_FTS_FIELDS = {"subject", "from_addr", "to_addr", "body_preview"}
 
     def __init__(self, state_db_path: str) -> None:
         """
@@ -82,12 +82,7 @@ class SearchEngine:
         if not cursor.fetchone():
             raise ValueError("Database missing 'messages' table (v1.1 schema required)")
 
-    def search(
-        self,
-        query: str,
-        limit: int = 100,
-        offset: int = 0
-    ) -> SearchResults:
+    def search(self, query: str, limit: int = 100, offset: int = 0) -> SearchResults:
         """
         Execute Gmail-style search query and return results.
 
@@ -113,12 +108,12 @@ class SearchEngine:
         params = self._parse_gmail_query(query)
 
         # Extract typed values from params
-        fulltext_terms = params['fulltext_terms']
-        from_addr = params['from_addr']
-        to_addr = params['to_addr']
-        subject_terms = params['subject_terms']
-        after = params['after']
-        before = params['before']
+        fulltext_terms = params["fulltext_terms"]
+        from_addr = params["from_addr"]
+        to_addr = params["to_addr"]
+        subject_terms = params["subject_terms"]
+        after = params["after"]
+        before = params["before"]
 
         # Type assertions for mypy
         assert isinstance(fulltext_terms, list)
@@ -131,7 +126,7 @@ class SearchEngine:
         # Determine search strategy
         if fulltext_terms:
             # Has free-text terms - use FTS5
-            fulltext_query = ' '.join(fulltext_terms)
+            fulltext_query = " ".join(fulltext_terms)
 
             # If we also have metadata filters, combine them
             if any([from_addr, to_addr, subject_terms, after, before]):
@@ -144,7 +139,7 @@ class SearchEngine:
                     after=after,
                     before=before,
                     limit=limit,
-                    offset=offset
+                    offset=offset,
                 )
             else:
                 # Pure FTS5 search
@@ -157,7 +152,7 @@ class SearchEngine:
                 subject=subject_terms[0] if subject_terms else None,
                 after=after,
                 before=before,
-                limit=limit
+                limit=limit,
             )
 
         # Update query in results
@@ -167,10 +162,7 @@ class SearchEngine:
         return results
 
     def search_fulltext(
-        self,
-        text: str,
-        fields: list[str] | None = None,
-        limit: int = 100
+        self, text: str, fields: list[str] | None = None, limit: int = 100
     ) -> SearchResults:
         """
         Direct FTS5 full-text search.
@@ -204,7 +196,7 @@ class SearchEngine:
 
         # Execute FTS5 search
         # Note: FTS5 rank is negative (lower = better match), so sort ascending
-        sql = '''
+        sql = """
             SELECT
                 m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
                 m.to_addr, m.date, m.body_preview, m.archive_file,
@@ -214,7 +206,7 @@ class SearchEngine:
             WHERE messages_fts MATCH ?
             ORDER BY fts.rank
             LIMIT ?
-        '''
+        """
 
         try:
             cursor = self.conn.execute(sql, (fts_query, limit))
@@ -222,16 +214,16 @@ class SearchEngine:
 
             results = [
                 MessageSearchResult(
-                    gmail_id=row['gmail_id'],
-                    rfc_message_id=row['rfc_message_id'],
-                    subject=row['subject'] or '',
-                    from_addr=row['from_addr'] or '',
-                    to_addr=row['to_addr'],
-                    date=row['date'] or '',
-                    body_preview=row['body_preview'],
-                    archive_file=row['archive_file'],
-                    mbox_offset=row['mbox_offset'],
-                    relevance_score=row['relevance_score']
+                    gmail_id=row["gmail_id"],
+                    rfc_message_id=row["rfc_message_id"],
+                    subject=row["subject"] or "",
+                    from_addr=row["from_addr"] or "",
+                    to_addr=row["to_addr"],
+                    date=row["date"] or "",
+                    body_preview=row["body_preview"],
+                    archive_file=row["archive_file"],
+                    mbox_offset=row["mbox_offset"],
+                    relevance_score=row["relevance_score"],
                 )
                 for row in rows
             ]
@@ -242,16 +234,13 @@ class SearchEngine:
                 total_results=len(results),
                 results=results,
                 query=text,
-                execution_time_ms=execution_time
+                execution_time_ms=execution_time,
             )
         except sqlite3.OperationalError:
             # FTS5 query syntax error - return empty results
             execution_time = (time.perf_counter() - start_time) * 1000
             return SearchResults(
-                total_results=0,
-                results=[],
-                query=text,
-                execution_time_ms=execution_time
+                total_results=0, results=[], query=text, execution_time_ms=execution_time
             )
 
     def search_metadata(
@@ -262,7 +251,7 @@ class SearchEngine:
         after: str | None = None,
         before: str | None = None,
         has_label: str | None = None,
-        limit: int = 100
+        limit: int = 100,
     ) -> SearchResults:
         """
         Structured metadata search.
@@ -286,29 +275,29 @@ class SearchEngine:
         params: list[str | int] = []
 
         if from_addr:
-            where_clauses.append('from_addr LIKE ?')
-            params.append(f'%{from_addr}%')
+            where_clauses.append("from_addr LIKE ?")
+            params.append(f"%{from_addr}%")
 
         if to_addr:
-            where_clauses.append('to_addr LIKE ?')
-            params.append(f'%{to_addr}%')
+            where_clauses.append("to_addr LIKE ?")
+            params.append(f"%{to_addr}%")
 
         if subject:
-            where_clauses.append('subject LIKE ?')
-            params.append(f'%{subject}%')
+            where_clauses.append("subject LIKE ?")
+            params.append(f"%{subject}%")
 
         if after:
-            where_clauses.append('date >= ?')
+            where_clauses.append("date >= ?")
             params.append(after)
 
         if before:
-            where_clauses.append('date < ?')
+            where_clauses.append("date < ?")
             params.append(before)
 
         # Build SQL
-        where_sql = ' AND '.join(where_clauses) if where_clauses else '1=1'
+        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-        sql = f'''
+        sql = f"""
             SELECT
                 gmail_id, rfc_message_id, subject, from_addr,
                 to_addr, date, body_preview, archive_file, mbox_offset
@@ -316,7 +305,7 @@ class SearchEngine:
             WHERE {where_sql}
             ORDER BY date DESC
             LIMIT ?
-        '''
+        """
 
         params.append(limit)
 
@@ -325,16 +314,16 @@ class SearchEngine:
 
         results = [
             MessageSearchResult(
-                gmail_id=row['gmail_id'],
-                rfc_message_id=row['rfc_message_id'],
-                subject=row['subject'] or '',
-                from_addr=row['from_addr'] or '',
-                to_addr=row['to_addr'],
-                date=row['date'] or '',
-                body_preview=row['body_preview'],
-                archive_file=row['archive_file'],
-                mbox_offset=row['mbox_offset'],
-                relevance_score=None  # No ranking for metadata search
+                gmail_id=row["gmail_id"],
+                rfc_message_id=row["rfc_message_id"],
+                subject=row["subject"] or "",
+                from_addr=row["from_addr"] or "",
+                to_addr=row["to_addr"],
+                date=row["date"] or "",
+                body_preview=row["body_preview"],
+                archive_file=row["archive_file"],
+                mbox_offset=row["mbox_offset"],
+                relevance_score=None,  # No ranking for metadata search
             )
             for row in rows
         ]
@@ -344,8 +333,8 @@ class SearchEngine:
         return SearchResults(
             total_results=len(results),
             results=results,
-            query='metadata search',
-            execution_time_ms=execution_time
+            query="metadata search",
+            execution_time_ms=execution_time,
         )
 
     def _search_hybrid(
@@ -357,7 +346,7 @@ class SearchEngine:
         after: str | None,
         before: str | None,
         limit: int,
-        offset: int
+        offset: int,
     ) -> SearchResults:
         """
         Hybrid search combining FTS5 and metadata filters.
@@ -382,29 +371,29 @@ class SearchEngine:
         params: list[str | int] = [fulltext_query]
 
         if from_addr:
-            where_clauses.append('m.from_addr LIKE ?')
-            params.append(f'%{from_addr}%')
+            where_clauses.append("m.from_addr LIKE ?")
+            params.append(f"%{from_addr}%")
 
         if to_addr:
-            where_clauses.append('m.to_addr LIKE ?')
-            params.append(f'%{to_addr}%')
+            where_clauses.append("m.to_addr LIKE ?")
+            params.append(f"%{to_addr}%")
 
         if subject_terms:
             # Subject terms are already in FTS query
             pass
 
         if after:
-            where_clauses.append('m.date >= ?')
+            where_clauses.append("m.date >= ?")
             params.append(after)
 
         if before:
-            where_clauses.append('m.date < ?')
+            where_clauses.append("m.date < ?")
             params.append(before)
 
         # Build SQL
-        additional_where = ' AND ' + ' AND '.join(where_clauses) if where_clauses else ''
+        additional_where = " AND " + " AND ".join(where_clauses) if where_clauses else ""
 
-        sql = f'''
+        sql = f"""
             SELECT
                 m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
                 m.to_addr, m.date, m.body_preview, m.archive_file,
@@ -414,7 +403,7 @@ class SearchEngine:
             WHERE messages_fts MATCH ?{additional_where}
             ORDER BY fts.rank
             LIMIT ?
-        '''
+        """
 
         params.append(limit)
 
@@ -423,16 +412,16 @@ class SearchEngine:
 
         results = [
             MessageSearchResult(
-                gmail_id=row['gmail_id'],
-                rfc_message_id=row['rfc_message_id'],
-                subject=row['subject'] or '',
-                from_addr=row['from_addr'] or '',
-                to_addr=row['to_addr'],
-                date=row['date'] or '',
-                body_preview=row['body_preview'],
-                archive_file=row['archive_file'],
-                mbox_offset=row['mbox_offset'],
-                relevance_score=row['relevance_score']
+                gmail_id=row["gmail_id"],
+                rfc_message_id=row["rfc_message_id"],
+                subject=row["subject"] or "",
+                from_addr=row["from_addr"] or "",
+                to_addr=row["to_addr"],
+                date=row["date"] or "",
+                body_preview=row["body_preview"],
+                archive_file=row["archive_file"],
+                mbox_offset=row["mbox_offset"],
+                relevance_score=row["relevance_score"],
             )
             for row in rows
         ]
@@ -443,7 +432,7 @@ class SearchEngine:
             total_results=len(results),
             results=results,
             query=fulltext_query,
-            execution_time_ms=execution_time
+            execution_time_ms=execution_time,
         )
 
     def _parse_gmail_query(self, query: str) -> dict[str, object]:
@@ -457,53 +446,53 @@ class SearchEngine:
             Dictionary with parsed parameters
         """
         params: dict[str, object] = {
-            'fulltext_terms': [],
-            'from_addr': None,
-            'to_addr': None,
-            'subject_terms': [],
-            'after': None,
-            'before': None,
+            "fulltext_terms": [],
+            "from_addr": None,
+            "to_addr": None,
+            "subject_terms": [],
+            "after": None,
+            "before": None,
         }
 
         # Regex patterns for special terms
-        from_pattern = r'from:(\S+)'
-        to_pattern = r'to:(\S+)'
-        subject_pattern = r'subject:(\S+)'
-        after_pattern = r'after:(\S+)'
-        before_pattern = r'before:(\S+)'
+        from_pattern = r"from:(\S+)"
+        to_pattern = r"to:(\S+)"
+        subject_pattern = r"subject:(\S+)"
+        after_pattern = r"after:(\S+)"
+        before_pattern = r"before:(\S+)"
 
         # Extract special terms
         from_match = re.search(from_pattern, query)
         if from_match:
-            params['from_addr'] = from_match.group(1)
-            query = re.sub(from_pattern, '', query)
+            params["from_addr"] = from_match.group(1)
+            query = re.sub(from_pattern, "", query)
 
         to_match = re.search(to_pattern, query)
         if to_match:
-            params['to_addr'] = to_match.group(1)
-            query = re.sub(to_pattern, '', query)
+            params["to_addr"] = to_match.group(1)
+            query = re.sub(to_pattern, "", query)
 
         subject_match = re.search(subject_pattern, query)
         if subject_match:
             subject_term = subject_match.group(1)
-            params['subject_terms'] = [subject_term]
+            params["subject_terms"] = [subject_term]
             # Add subject term to fulltext query with field constraint
-            query = re.sub(subject_pattern, f'{{subject}}: {subject_term}', query)
+            query = re.sub(subject_pattern, f"{{subject}}: {subject_term}", query)
 
         after_match = re.search(after_pattern, query)
         if after_match:
-            params['after'] = after_match.group(1)
-            query = re.sub(after_pattern, '', query)
+            params["after"] = after_match.group(1)
+            query = re.sub(after_pattern, "", query)
 
         before_match = re.search(before_pattern, query)
         if before_match:
-            params['before'] = before_match.group(1)
-            query = re.sub(before_pattern, '', query)
+            params["before"] = before_match.group(1)
+            query = re.sub(before_pattern, "", query)
 
         # Remaining words are fulltext search terms
         remaining_terms = query.strip().split()
         if remaining_terms:
-            params['fulltext_terms'] = remaining_terms
+            params["fulltext_terms"] = remaining_terms
 
         return params
 

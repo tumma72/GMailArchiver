@@ -87,7 +87,7 @@ class TestProgressTrackerUpdate:
         tracker = ProgressTracker(total=100)
 
         # Mock time to control rate calculation
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
 
@@ -121,7 +121,7 @@ class TestProgressTrackerElapsed:
         """Test elapsed time formatting for seconds."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 45.0
@@ -133,7 +133,7 @@ class TestProgressTrackerElapsed:
         """Test elapsed time formatting for minutes."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 125.0  # 2m 5s
@@ -145,7 +145,7 @@ class TestProgressTrackerElapsed:
         """Test elapsed time formatting for hours."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 3725.0  # 1h 2m 5s
@@ -186,7 +186,7 @@ class TestProgressTrackerETA:
         """Test ETA calculation at 50% complete."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
 
@@ -203,7 +203,7 @@ class TestProgressTrackerETA:
         """Test ETA calculation at 90% complete."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
 
@@ -220,7 +220,7 @@ class TestProgressTrackerETA:
         """Test formatted ETA string."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 30.0
@@ -248,7 +248,7 @@ class TestProgressTrackerRate:
         """Test simple rate calculation."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
 
@@ -264,7 +264,7 @@ class TestProgressTrackerRate:
         """Test that rate uses exponential moving average."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
 
@@ -288,7 +288,7 @@ class TestProgressTrackerRate:
         """Test formatted rate for messages."""
         tracker = ProgressTracker(total=100, unit="msg")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 10.0
@@ -302,7 +302,7 @@ class TestProgressTrackerRate:
         """Test formatted rate for megabytes."""
         tracker = ProgressTracker(total=100, unit="MB")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 5.0
@@ -337,7 +337,7 @@ class TestProgressTrackerProgressString:
         """Test complete progress string with ETA."""
         tracker = ProgressTracker(total=100, unit="msg")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 30.0
@@ -354,7 +354,7 @@ class TestProgressTrackerProgressString:
         """Test progress string matches expected format."""
         tracker = ProgressTracker(total=100, unit="items")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 60.0
@@ -376,7 +376,7 @@ class TestProgressTrackerEdgeCases:
         """Test handling of zero elapsed time."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             # No time passed
@@ -391,7 +391,7 @@ class TestProgressTrackerEdgeCases:
         """Test very fast processing (high rate)."""
         tracker = ProgressTracker(total=1000, unit="msg")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             # 1000 items in 0.1 seconds = 10000 items/s
@@ -406,7 +406,7 @@ class TestProgressTrackerEdgeCases:
         """Test very slow processing (low rate)."""
         tracker = ProgressTracker(total=100, unit="msg")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             # 5 items in 100 seconds = 0.05 items/s
@@ -422,7 +422,7 @@ class TestProgressTrackerEdgeCases:
         """Test completion of single item."""
         tracker = ProgressTracker(total=1, unit="file")
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 0.0
             tracker.start()
             mock_time.return_value = 1.0
@@ -449,7 +449,7 @@ class TestProgressTrackerEdgeCases:
         """Test handling of potential negative time calculations."""
         tracker = ProgressTracker(total=100)
 
-        with patch('time.perf_counter') as mock_time:
+        with patch("time.perf_counter") as mock_time:
             mock_time.return_value = 100.0
             tracker.start()
             # Simulate clock going backwards (system time adjustment)

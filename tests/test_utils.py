@@ -17,7 +17,7 @@ class TestParseAge:
 
     def test_parse_years(self) -> None:
         """Test parsing years."""
-        result = parse_age('3y')
+        result = parse_age("3y")
         assert isinstance(result, datetime)
         # Result should be approximately 3 years ago
         years_diff = (datetime.now() - result).days / 365
@@ -25,7 +25,7 @@ class TestParseAge:
 
     def test_parse_months(self) -> None:
         """Test parsing months."""
-        result = parse_age('6m')
+        result = parse_age("6m")
         assert isinstance(result, datetime)
         # Result should be approximately 6 months ago
         months_diff = (datetime.now() - result).days / 30
@@ -33,14 +33,14 @@ class TestParseAge:
 
     def test_parse_weeks(self) -> None:
         """Test parsing weeks."""
-        result = parse_age('2w')
+        result = parse_age("2w")
         assert isinstance(result, datetime)
         weeks_diff = (datetime.now() - result).days / 7
         assert 1.9 < weeks_diff < 2.1
 
     def test_parse_days(self) -> None:
         """Test parsing days."""
-        result = parse_age('30d')
+        result = parse_age("30d")
         assert isinstance(result, datetime)
         days_diff = (datetime.now() - result).days
         assert 29 <= days_diff <= 31
@@ -107,7 +107,7 @@ class TestDatetimeToGmailQuery:
         """Test datetime formatting."""
         dt = datetime(2022, 1, 15)
         result = datetime_to_gmail_query(dt)
-        assert result == '2022/01/15'
+        assert result == "2022/01/15"
 
 
 class TestFormatBytes:
@@ -115,19 +115,19 @@ class TestFormatBytes:
 
     def test_bytes(self) -> None:
         """Test formatting bytes."""
-        assert format_bytes(500) == '500.0 B'
+        assert format_bytes(500) == "500.0 B"
 
     def test_kilobytes(self) -> None:
         """Test formatting kilobytes."""
-        assert format_bytes(1024) == '1.0 KB'
+        assert format_bytes(1024) == "1.0 KB"
 
     def test_megabytes(self) -> None:
         """Test formatting megabytes."""
-        assert format_bytes(1048576) == '1.0 MB'
+        assert format_bytes(1048576) == "1.0 MB"
 
     def test_gigabytes(self) -> None:
         """Test formatting gigabytes."""
-        assert format_bytes(1073741824) == '1.0 GB'
+        assert format_bytes(1073741824) == "1.0 GB"
 
 
 class TestChunkList:

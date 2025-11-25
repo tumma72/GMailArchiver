@@ -21,71 +21,156 @@ def v11_db(v11_db_factory) -> str:
         # Insert sample messages
         sample_messages = [
             # Message 1: Meeting invitation from Alice
-            ('msg001', '<msg001@gmail>', 'thread1', 'Team Meeting Tomorrow',
-             'alice@example.com', 'team@example.com', None,
-             '2024-01-15T10:00:00', '2024-01-20T12:00:00',
-             'archive_2024_01.mbox', 0, 1024,
-             'Hi team, we have a meeting scheduled for tomorrow at 10am. Please review the agenda.',
-             'checksum001', 1024, '["INBOX"]', 'default'),
-
+            (
+                "msg001",
+                "<msg001@gmail>",
+                "thread1",
+                "Team Meeting Tomorrow",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-01-15T10:00:00",
+                "2024-01-20T12:00:00",
+                "archive_2024_01.mbox",
+                0,
+                1024,
+                "Hi team, we have a meeting scheduled for tomorrow at 10am.",
+                "checksum001",
+                1024,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 2: Invoice from Bob
-            ('msg002', '<msg002@gmail>', 'thread2', 'Invoice #12345',
-             'bob@vendor.com', 'billing@example.com', None,
-             '2024-02-01T14:30:00', '2024-02-10T12:00:00',
-             'archive_2024_02.mbox', 1024, 2048,
-             'Please find attached invoice #12345 for payment processing. Amount due: $500.',
-             'checksum002', 2048, '["INBOX"]', 'default'),
-
+            (
+                "msg002",
+                "<msg002@gmail>",
+                "thread2",
+                "Invoice #12345",
+                "bob@vendor.com",
+                "billing@example.com",
+                None,
+                "2024-02-01T14:30:00",
+                "2024-02-10T12:00:00",
+                "archive_2024_02.mbox",
+                1024,
+                2048,
+                "Please find attached invoice #12345 for payment processing. Amount due: $500.",
+                "checksum002",
+                2048,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 3: Project update from Alice
-            ('msg003', '<msg003@gmail>', 'thread1', 'Project Status Update',
-             'alice@example.com', 'team@example.com', 'manager@example.com',
-             '2024-03-10T09:15:00', '2024-03-15T12:00:00',
-             'archive_2024_03.mbox', 3072, 1536,
-             'Project is on track. We completed phase 1 and starting phase 2 next week.',
-             'checksum003', 1536, '["INBOX","IMPORTANT"]', 'default'),
-
+            (
+                "msg003",
+                "<msg003@gmail>",
+                "thread1",
+                "Project Status Update",
+                "alice@example.com",
+                "team@example.com",
+                "manager@example.com",
+                "2024-03-10T09:15:00",
+                "2024-03-15T12:00:00",
+                "archive_2024_03.mbox",
+                3072,
+                1536,
+                "Project is on track. We completed phase 1 and starting phase 2 next week.",
+                "checksum003",
+                1536,
+                '["INBOX","IMPORTANT"]',
+                "default",
+            ),
             # Message 4: Payment confirmation from Charlie
-            ('msg004', '<msg004@gmail>', 'thread3', 'Payment Received',
-             'charlie@payment.com', 'billing@example.com', None,
-             '2024-02-15T16:45:00', '2024-02-20T12:00:00',
-             'archive_2024_02.mbox', 5120, 512,
-             'Your payment of $500 for invoice #12345 has been received and processed.',
-             'checksum004', 512, '["INBOX"]', 'default'),
-
+            (
+                "msg004",
+                "<msg004@gmail>",
+                "thread3",
+                "Payment Received",
+                "charlie@payment.com",
+                "billing@example.com",
+                None,
+                "2024-02-15T16:45:00",
+                "2024-02-20T12:00:00",
+                "archive_2024_02.mbox",
+                5120,
+                512,
+                "Your payment of $500 for invoice #12345 has been received and processed.",
+                "checksum004",
+                512,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 5: Another meeting from Alice
-            ('msg005', '<msg005@gmail>', 'thread4', 'Quarterly Review Meeting',
-             'alice@example.com', 'team@example.com', None,
-             '2024-06-01T11:00:00', '2024-06-05T12:00:00',
-             'archive_2024_06.mbox', 0, 1024,
-             'Time for our quarterly review meeting. Please prepare your reports.',
-             'checksum005', 1024, '["INBOX"]', 'default'),
-
+            (
+                "msg005",
+                "<msg005@gmail>",
+                "thread4",
+                "Quarterly Review Meeting",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-06-01T11:00:00",
+                "2024-06-05T12:00:00",
+                "archive_2024_06.mbox",
+                0,
+                1024,
+                "Time for our quarterly review meeting. Please prepare your reports.",
+                "checksum005",
+                1024,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 6: Newsletter from Dave (no body preview)
-            ('msg006', '<msg006@gmail>', 'thread5', 'Weekly Newsletter',
-             'dave@newsletter.com', 'subscribers@example.com', None,
-             '2024-01-10T08:00:00', '2024-01-12T12:00:00',
-             'archive_2024_01.mbox', 2048, 4096,
-             None,  # No body preview
-             'checksum006', 4096, '["INBOX","NEWSLETTER"]', 'default'),
-
+            (
+                "msg006",
+                "<msg006@gmail>",
+                "thread5",
+                "Weekly Newsletter",
+                "dave@newsletter.com",
+                "subscribers@example.com",
+                None,
+                "2024-01-10T08:00:00",
+                "2024-01-12T12:00:00",
+                "archive_2024_01.mbox",
+                2048,
+                4096,
+                None,  # No body preview
+                "checksum006",
+                4096,
+                '["INBOX","NEWSLETTER"]',
+                "default",
+            ),
             # Message 7: Old message from 2023
-            ('msg007', '<msg007@gmail>', 'thread6', 'Year-end Summary',
-             'finance@example.com', 'all@example.com', None,
-             '2023-12-31T23:59:00', '2024-01-05T12:00:00',
-             'archive_2023_12.mbox', 0, 2048,
-             'Here is the year-end financial summary for 2023.',
-             'checksum007', 2048, '["INBOX"]', 'default'),
+            (
+                "msg007",
+                "<msg007@gmail>",
+                "thread6",
+                "Year-end Summary",
+                "finance@example.com",
+                "all@example.com",
+                None,
+                "2023-12-31T23:59:00",
+                "2024-01-05T12:00:00",
+                "archive_2023_12.mbox",
+                0,
+                2048,
+                "Here is the year-end financial summary for 2023.",
+                "checksum007",
+                2048,
+                '["INBOX"]',
+                "default",
+            ),
         ]
 
         for msg in sample_messages:
             conn.execute(
-                '''
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 msg,
             )
 
@@ -108,7 +193,7 @@ class TestSearchEngineInit:
     def test_init_with_missing_database(self):
         """Test that SearchEngine raises error with missing database."""
         with pytest.raises(Exception):
-            SearchEngine('/nonexistent/path/to/database.db')
+            SearchEngine("/nonexistent/path/to/database.db")
 
 
 class TestFullTextSearch:
@@ -119,12 +204,12 @@ class TestFullTextSearch:
         engine = SearchEngine(v11_db)
 
         # Search for "meeting" - should find msg001 and msg005
-        results = engine.search_fulltext('meeting')
+        results = engine.search_fulltext("meeting")
 
         assert results.total_results >= 2
-        assert any(r.gmail_id == 'msg001' for r in results.results)
-        assert any(r.gmail_id == 'msg005' for r in results.results)
-        assert 'meeting' in results.query.lower()
+        assert any(r.gmail_id == "msg001" for r in results.results)
+        assert any(r.gmail_id == "msg005" for r in results.results)
+        assert "meeting" in results.query.lower()
 
         engine.close()
 
@@ -133,11 +218,11 @@ class TestFullTextSearch:
         engine = SearchEngine(v11_db)
 
         # Search for "invoice payment" - should find msg002 and msg004
-        results = engine.search_fulltext('invoice payment')
+        results = engine.search_fulltext("invoice payment")
 
         assert results.total_results >= 1
         # At least one message should contain both words
-        found_invoice = any(r.gmail_id in ['msg002', 'msg004'] for r in results.results)
+        found_invoice = any(r.gmail_id in ["msg002", "msg004"] for r in results.results)
         assert found_invoice
 
         engine.close()
@@ -147,12 +232,12 @@ class TestFullTextSearch:
         engine = SearchEngine(v11_db)
 
         # Search for "meeting" in subject only
-        results = engine.search_fulltext('meeting', fields=['subject'])
+        results = engine.search_fulltext("meeting", fields=["subject"])
 
         assert results.total_results >= 2
         # All results should have "meeting" in subject
         for result in results.results:
-            assert 'meeting' in result.subject.lower()
+            assert "meeting" in result.subject.lower()
 
         engine.close()
 
@@ -161,7 +246,7 @@ class TestFullTextSearch:
         engine = SearchEngine(v11_db)
 
         # Search for common word
-        results = engine.search_fulltext('meeting')
+        results = engine.search_fulltext("meeting")
 
         assert results.total_results > 0
         # Results should have relevance scores
@@ -180,7 +265,7 @@ class TestFullTextSearch:
         engine = SearchEngine(v11_db)
 
         # Search for non-existent word
-        results = engine.search_fulltext('xyznonexistent')
+        results = engine.search_fulltext("xyznonexistent")
 
         assert results.total_results == 0
         assert len(results.results) == 0
@@ -197,11 +282,11 @@ class TestMetadataSearch:
         engine = SearchEngine(v11_db)
 
         # Search for messages from Alice
-        results = engine.search_metadata(from_addr='alice@example.com')
+        results = engine.search_metadata(from_addr="alice@example.com")
 
         assert results.total_results >= 3  # msg001, msg003, msg005
         for result in results.results:
-            assert 'alice@example.com' in result.from_addr
+            assert "alice@example.com" in result.from_addr
 
         engine.close()
 
@@ -210,18 +295,18 @@ class TestMetadataSearch:
         engine = SearchEngine(v11_db)
 
         # Search for messages after 2024-02-01
-        results = engine.search_metadata(after='2024-02-01')
+        results = engine.search_metadata(after="2024-02-01")
 
         assert results.total_results >= 4  # msg002, msg003, msg004, msg005
         for result in results.results:
-            assert result.date >= '2024-02-01'
+            assert result.date >= "2024-02-01"
 
         # Search for messages before 2024-02-01
-        results = engine.search_metadata(before='2024-02-01')
+        results = engine.search_metadata(before="2024-02-01")
 
         assert results.total_results >= 3  # msg001, msg006, msg007
         for result in results.results:
-            assert result.date < '2024-02-01'
+            assert result.date < "2024-02-01"
 
         engine.close()
 
@@ -230,15 +315,12 @@ class TestMetadataSearch:
         engine = SearchEngine(v11_db)
 
         # Search for messages from Alice with subject containing "meeting"
-        results = engine.search_metadata(
-            from_addr='alice@example.com',
-            subject='meeting'
-        )
+        results = engine.search_metadata(from_addr="alice@example.com", subject="meeting")
 
         assert results.total_results >= 2  # msg001, msg005
         for result in results.results:
-            assert 'alice@example.com' in result.from_addr
-            assert 'meeting' in result.subject.lower()
+            assert "alice@example.com" in result.from_addr
+            assert "meeting" in result.subject.lower()
 
         engine.close()
 
@@ -247,12 +329,12 @@ class TestMetadataSearch:
         engine = SearchEngine(v11_db)
 
         # Search for messages to billing
-        results = engine.search_metadata(to_addr='billing@example.com')
+        results = engine.search_metadata(to_addr="billing@example.com")
 
         assert results.total_results >= 2  # msg002, msg004
         for result in results.results:
             assert result.to_addr is not None
-            assert 'billing@example.com' in result.to_addr
+            assert "billing@example.com" in result.to_addr
 
         engine.close()
 
@@ -277,11 +359,11 @@ class TestGmailStyleQuery:
         engine = SearchEngine(v11_db)
 
         # Gmail-style query
-        results = engine.search('from:alice@example.com')
+        results = engine.search("from:alice@example.com")
 
         assert results.total_results >= 3  # msg001, msg003, msg005
         for result in results.results:
-            assert 'alice@example.com' in result.from_addr
+            assert "alice@example.com" in result.from_addr
 
         engine.close()
 
@@ -290,12 +372,12 @@ class TestGmailStyleQuery:
         engine = SearchEngine(v11_db)
 
         # Combined query
-        results = engine.search('subject:meeting after:2024-01-01')
+        results = engine.search("subject:meeting after:2024-01-01")
 
         assert results.total_results >= 2  # msg001, msg005
         for result in results.results:
-            assert 'meeting' in result.subject.lower()
-            assert result.date >= '2024-01-01'
+            assert "meeting" in result.subject.lower()
+            assert result.date >= "2024-01-01"
 
         engine.close()
 
@@ -304,13 +386,13 @@ class TestGmailStyleQuery:
         engine = SearchEngine(v11_db)
 
         # Bare words - should search all fields
-        results = engine.search('invoice payment')
+        results = engine.search("invoice payment")
 
         assert results.total_results >= 1
         # Should find messages containing these words
         found = any(
-            'invoice' in (r.subject.lower() if r.subject else '') or
-            'invoice' in (r.body_preview.lower() if r.body_preview else '')
+            "invoice" in (r.subject.lower() if r.subject else "")
+            or "invoice" in (r.body_preview.lower() if r.body_preview else "")
             for r in results.results
         )
         assert found
@@ -321,11 +403,11 @@ class TestGmailStyleQuery:
         """Test Gmail query: subject:invoice finds matches."""
         engine = SearchEngine(v11_db)
 
-        results = engine.search('subject:invoice')
+        results = engine.search("subject:invoice")
 
         assert results.total_results >= 1  # msg002
         for result in results.results:
-            assert 'invoice' in result.subject.lower()
+            assert "invoice" in result.subject.lower()
 
         engine.close()
 
@@ -333,12 +415,12 @@ class TestGmailStyleQuery:
         """Test Gmail query: to:billing finds matches."""
         engine = SearchEngine(v11_db)
 
-        results = engine.search('to:billing@example.com')
+        results = engine.search("to:billing@example.com")
 
         assert results.total_results >= 2  # msg002, msg004
         for result in results.results:
             assert result.to_addr is not None
-            assert 'billing@example.com' in result.to_addr
+            assert "billing@example.com" in result.to_addr
 
         engine.close()
 
@@ -346,12 +428,12 @@ class TestGmailStyleQuery:
         """Test Gmail query: before:2024-02-01 after:2024-01-01."""
         engine = SearchEngine(v11_db)
 
-        results = engine.search('after:2024-01-01 before:2024-02-01')
+        results = engine.search("after:2024-01-01 before:2024-02-01")
 
         assert results.total_results >= 2  # msg001, msg006
         for result in results.results:
-            assert result.date >= '2024-01-01'
-            assert result.date < '2024-02-01'
+            assert result.date >= "2024-01-01"
+            assert result.date < "2024-02-01"
 
         engine.close()
 
@@ -365,31 +447,34 @@ class TestSearchPerformance:
         conn = sqlite3.connect(v11_db)
 
         for i in range(1000):
-            conn.execute('''
+            conn.execute(
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f'perf{i:04d}',
-                f'<perf{i:04d}@gmail>',
-                f'thread{i}',
-                f'Performance Test Message {i}',
-                f'user{i % 10}@example.com',
-                'test@example.com',
-                None,
-                f'2024-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}T10:00:00',
-                '2024-01-01T12:00:00',
-                f'archive_perf_{i // 100}.mbox',
-                i * 1024,
-                1024,
-                f'This is test message number {i} for performance testing.',
-                f'checksum{i:04d}',
-                1024,
-                '["INBOX"]',
-                'default'
-            ))
+            """,
+                (
+                    f"perf{i:04d}",
+                    f"<perf{i:04d}@gmail>",
+                    f"thread{i}",
+                    f"Performance Test Message {i}",
+                    f"user{i % 10}@example.com",
+                    "test@example.com",
+                    None,
+                    f"2024-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}T10:00:00",
+                    "2024-01-01T12:00:00",
+                    f"archive_perf_{i // 100}.mbox",
+                    i * 1024,
+                    1024,
+                    f"This is test message number {i} for performance testing.",
+                    f"checksum{i:04d}",
+                    1024,
+                    '["INBOX"]',
+                    "default",
+                ),
+            )
 
         conn.commit()
         conn.close()
@@ -398,7 +483,7 @@ class TestSearchPerformance:
         engine = SearchEngine(v11_db)
 
         start_time = time.perf_counter()
-        results = engine.search('Performance Test')
+        results = engine.search("Performance Test")
         end_time = time.perf_counter()
 
         elapsed_ms = (end_time - start_time) * 1000

@@ -10,7 +10,7 @@ from gmailarchiver.path_validator import validate_file_path
 class ArchiveState:
     """Track archived messages in SQLite database."""
 
-    def __init__(self, db_path: str = 'archive_state.db', validate_path: bool = True) -> None:
+    def __init__(self, db_path: str = "archive_state.db", validate_path: bool = True) -> None:
         """
         Initialize state database.
 
@@ -26,6 +26,7 @@ class ArchiveState:
             self.db_path = validate_file_path(db_path)
         else:
             from pathlib import Path
+
             self.db_path = Path(db_path).resolve()
         self.conn = sqlite3.connect(str(self.db_path))
         self._schema_version = self._detect_schema_version()
@@ -62,7 +63,7 @@ class ArchiveState:
 
     def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
-        self.conn.execute('''
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS archived_messages (
                 gmail_id TEXT PRIMARY KEY,
                 archived_timestamp TEXT NOT NULL,
@@ -72,9 +73,9 @@ class ArchiveState:
                 message_date TEXT,
                 checksum TEXT
             )
-        ''')
+        """)
 
-        self.conn.execute('''
+        self.conn.execute("""
             CREATE TABLE IF NOT EXISTS archive_runs (
                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_timestamp TEXT NOT NULL,
@@ -82,7 +83,7 @@ class ArchiveState:
                 messages_archived INTEGER NOT NULL,
                 archive_file TEXT NOT NULL
             )
-        ''')
+        """)
 
         self.conn.commit()
 
@@ -97,10 +98,7 @@ class ArchiveState:
             True if message is in archive database
         """
         table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
-        cursor = self.conn.execute(
-            f'SELECT 1 FROM {table_name} WHERE gmail_id = ?',
-            (gmail_id,)
-        )
+        cursor = self.conn.execute(f"SELECT 1 FROM {table_name} WHERE gmail_id = ?", (gmail_id,))
         return cursor.fetchone() is not None
 
     def mark_archived(
@@ -121,7 +119,7 @@ class ArchiveState:
         thread_id: str | None = None,
         size_bytes: int | None = None,
         labels: str | None = None,
-        account_id: str = 'default'
+        account_id: str = "default",
     ) -> None:
         """
         Mark a message as archived.
@@ -154,54 +152,55 @@ class ArchiveState:
             if mbox_offset is None or mbox_length is None:
                 raise ValueError("mbox_offset and mbox_length required for v1.1 schema")
 
-            self.conn.execute('''
+            self.conn.execute(
+                """
                 INSERT OR REPLACE INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                gmail_id,
-                rfc_message_id,
-                thread_id,
-                subject,
-                from_addr,
-                to_addr,
-                cc_addr,
-                message_date,
-                datetime.now().isoformat(),
-                archive_file,
-                mbox_offset,
-                mbox_length,
-                body_preview,
-                checksum,
-                size_bytes,
-                labels,
-                account_id
-            ))
+            """,
+                (
+                    gmail_id,
+                    rfc_message_id,
+                    thread_id,
+                    subject,
+                    from_addr,
+                    to_addr,
+                    cc_addr,
+                    message_date,
+                    datetime.now().isoformat(),
+                    archive_file,
+                    mbox_offset,
+                    mbox_length,
+                    body_preview,
+                    checksum,
+                    size_bytes,
+                    labels,
+                    account_id,
+                ),
+            )
         else:
             # Use v1.0 schema (backward compatibility)
-            self.conn.execute('''
+            self.conn.execute(
+                """
                 INSERT OR REPLACE INTO archived_messages
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                gmail_id,
-                datetime.now().isoformat(),
-                archive_file,
-                subject,
-                from_addr,
-                message_date,
-                checksum
-            ))
+            """,
+                (
+                    gmail_id,
+                    datetime.now().isoformat(),
+                    archive_file,
+                    subject,
+                    from_addr,
+                    message_date,
+                    checksum,
+                ),
+            )
         # Note: Commit is deferred to allow batch operations
         # Call commit() explicitly or use context manager to auto-commit
 
-    def record_archive_run(
-        self,
-        query: str,
-        messages_archived: int,
-        archive_file: str
-    ) -> int:
+    def record_archive_run(self, query: str, messages_archived: int, archive_file: str) -> int:
         """
         Record an archive run.
 
@@ -213,15 +212,13 @@ class ArchiveState:
         Returns:
             Run ID
         """
-        cursor = self.conn.execute('''
+        cursor = self.conn.execute(
+            """
             INSERT INTO archive_runs (run_timestamp, query, messages_archived, archive_file)
             VALUES (?, ?, ?, ?)
-        ''', (
-            datetime.now().isoformat(),
-            query,
-            messages_archived,
-            archive_file
-        ))
+        """,
+            (datetime.now().isoformat(), query, messages_archived, archive_file),
+        )
         # Note: Commit is deferred to allow batch operations
         # Call commit() explicitly or use context manager to auto-commit
         return cursor.lastrowid if cursor.lastrowid is not None else -1
@@ -234,7 +231,7 @@ class ArchiveState:
             Count of archived messages
         """
         table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
-        cursor = self.conn.execute(f'SELECT COUNT(*) FROM {table_name}')
+        cursor = self.conn.execute(f"SELECT COUNT(*) FROM {table_name}")
         result = cursor.fetchone()
         return result[0] if result else 0
 
@@ -248,22 +245,27 @@ class ArchiveState:
         Returns:
             List of archive run dictionaries
         """
-        cursor = self.conn.execute('''
+        cursor = self.conn.execute(
+            """
             SELECT run_id, run_timestamp, query, messages_archived, archive_file
             FROM archive_runs
             ORDER BY run_timestamp DESC
             LIMIT ?
-        ''', (limit,))
+        """,
+            (limit,),
+        )
 
         runs = []
         for row in cursor.fetchall():
-            runs.append({
-                'run_id': row[0],
-                'timestamp': row[1],
-                'query': row[2],
-                'messages_archived': row[3],
-                'archive_file': row[4]
-            })
+            runs.append(
+                {
+                    "run_id": row[0],
+                    "timestamp": row[1],
+                    "query": row[2],
+                    "messages_archived": row[3],
+                    "archive_file": row[4],
+                }
+            )
         return runs
 
     def get_archived_message_ids(self) -> set[str]:
@@ -274,7 +276,7 @@ class ArchiveState:
             Set of Gmail message IDs
         """
         table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
-        cursor = self.conn.execute(f'SELECT gmail_id FROM {table_name}')
+        cursor = self.conn.execute(f"SELECT gmail_id FROM {table_name}")
         return {row[0] for row in cursor.fetchall()}
 
     def get_archived_message_ids_for_file(self, archive_file: str) -> set[str]:
@@ -289,8 +291,7 @@ class ArchiveState:
         """
         table_name = "messages" if self._schema_version == "1.1" else "archived_messages"
         cursor = self.conn.execute(
-            f'SELECT gmail_id FROM {table_name} WHERE archive_file = ?',
-            (archive_file,)
+            f"SELECT gmail_id FROM {table_name} WHERE archive_file = ?", (archive_file,)
         )
         return {row[0] for row in cursor.fetchall()}
 

@@ -45,10 +45,7 @@ class ArchiveValidator:
     """Validate archive integrity before deletion."""
 
     def __init__(
-        self,
-        archive_path: str,
-        state_db_path: str = 'archive_state.db',
-        output: Any | None = None
+        self, archive_path: str, state_db_path: str = "archive_state.db", output: Any | None = None
     ) -> None:
         """
         Initialize validator.
@@ -94,25 +91,25 @@ class ArchiveValidator:
         suffix = self.archive_path.suffix.lower()
 
         # If uncompressed, return as-is
-        if suffix == '.mbox':
+        if suffix == ".mbox":
             return (self.archive_path, False)
 
         # Need to decompress to temporary file
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.mbox', prefix='gmailarchive_')
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".mbox", prefix="gmailarchive_")
         temp_mbox = Path(temp_path)
 
         try:
-            if suffix == '.gz':
-                with gzip.open(self.archive_path, 'rb') as f_in:
-                    with open(temp_mbox, 'wb') as f_out:
+            if suffix == ".gz":
+                with gzip.open(self.archive_path, "rb") as f_in:
+                    with open(temp_mbox, "wb") as f_out:
                         f_out.write(f_in.read())
-            elif suffix == '.xz':
-                with lzma.open(self.archive_path, 'rb') as f_in:
-                    with open(temp_mbox, 'wb') as f_out:
+            elif suffix == ".xz":
+                with lzma.open(self.archive_path, "rb") as f_in:
+                    with open(temp_mbox, "wb") as f_out:
                         f_out.write(f_in.read())
-            elif suffix == '.zst':
-                with zstd.open(self.archive_path, 'rb') as f_in:
-                    with open(temp_mbox, 'wb') as f_out:
+            elif suffix == ".zst":
+                with zstd.open(self.archive_path, "rb") as f_in:
+                    with open(temp_mbox, "wb") as f_out:
                         f_out.write(f_in.read())
             else:
                 # Unknown compression, try as-is
@@ -122,12 +119,11 @@ class ArchiveValidator:
         finally:
             # Close the file descriptor
             import os
+
             os.close(temp_fd)
 
     def validate_comprehensive(
-        self,
-        expected_message_ids: set[str],
-        sample_size: int = 100
+        self, expected_message_ids: set[str], sample_size: int = 100
     ) -> dict[str, Any]:
         """
         Perform comprehensive multi-layer validation.
@@ -140,12 +136,12 @@ class ArchiveValidator:
             Validation results dictionary with passed/failed status
         """
         results: dict[str, Any] = {
-            'count_check': False,
-            'database_check': False,
-            'integrity_check': False,
-            'spot_check': False,
-            'errors': [],
-            'passed': False
+            "count_check": False,
+            "database_check": False,
+            "integrity_check": False,
+            "spot_check": False,
+            "errors": [],
+            "passed": False,
         }
 
         schema_version = self._detect_schema_version()
@@ -161,9 +157,9 @@ class ArchiveValidator:
                     expected_count = len(expected_message_ids)
 
                     if archive_count == expected_count:
-                        results['count_check'] = True
+                        results["count_check"] = True
                     else:
-                        results['errors'].append(
+                        results["errors"].append(
                             f"Count mismatch: {archive_count} in archive vs "
                             f"{expected_count} expected"
                         )
@@ -175,13 +171,13 @@ class ArchiveValidator:
                             message_count += 1
 
                         if message_count > 0:
-                            results['integrity_check'] = True
+                            results["integrity_check"] = True
                         else:
-                            results['errors'].append("Archive contains no readable messages")
+                            results["errors"].append("Archive contains no readable messages")
                     except Exception as e:
-                        results['errors'].append(f"Integrity check failed: {e}")
+                        results["errors"].append(f"Integrity check failed: {e}")
             except Exception as e:
-                results['errors'].append(f"Failed to read archive: {e}")
+                results["errors"].append(f"Failed to read archive: {e}")
                 return results
 
             # 2. Database cross-check
@@ -211,15 +207,15 @@ class ArchiveValidator:
                     conn.close()
 
                     if db_count == expected_count:
-                        results['database_check'] = True
+                        results["database_check"] = True
                     else:
-                        results['errors'].append(
+                        results["errors"].append(
                             f"DB count mismatch: {db_count} in DB vs {expected_count} expected"
                         )
                 except Exception as e:
-                    results['errors'].append(f"Database check failed: {e}")
+                    results["errors"].append(f"Database check failed: {e}")
             else:
-                results['errors'].append("State database not found")
+                results["errors"].append("State database not found")
 
             # 4. Spot check sampling
             if expected_message_ids and self.state_db_path.exists():
@@ -256,21 +252,23 @@ class ArchiveValidator:
                     conn.close()
 
                     if found == sample_count:
-                        results['spot_check'] = True
+                        results["spot_check"] = True
                     else:
-                        results['errors'].append(
+                        results["errors"].append(
                             f"Spot check: {found}/{sample_count} messages found in DB"
                         )
                 except Exception as e:
-                    results['errors'].append(f"Spot check failed: {e}")
+                    results["errors"].append(f"Spot check failed: {e}")
 
             # Overall pass/fail
-            results['passed'] = all([
-                results['count_check'],
-                results['database_check'],
-                results['integrity_check'],
-                results['spot_check'] or not expected_message_ids
-            ])
+            results["passed"] = all(
+                [
+                    results["count_check"],
+                    results["database_check"],
+                    results["integrity_check"],
+                    results["spot_check"] or not expected_message_ids,
+                ]
+            )
 
             return results
         finally:
@@ -347,32 +345,32 @@ class ArchiveValidator:
         Args:
             results: Validation results from validate_comprehensive()
         """
-        self._log("\n" + "="*60, "INFO")
+        self._log("\n" + "=" * 60, "INFO")
         self._log("ARCHIVE VALIDATION REPORT", "INFO")
-        self._log("="*60, "INFO")
+        self._log("=" * 60, "INFO")
 
         checks = [
-            ('Count Check', results['count_check']),
-            ('Database Check', results['database_check']),
-            ('Integrity Check', results['integrity_check']),
-            ('Spot Check', results['spot_check'])
+            ("Count Check", results["count_check"]),
+            ("Database Check", results["database_check"]),
+            ("Integrity Check", results["integrity_check"]),
+            ("Spot Check", results["spot_check"]),
         ]
 
         for name, passed in checks:
             status = "✓ PASSED" if passed else "✗ FAILED"
             self._log(f"{name:20s} {status}", "INFO")
 
-        if results['errors']:
+        if results["errors"]:
             self._log("\nErrors:", "INFO")
-            for error in results['errors']:
+            for error in results["errors"]:
                 self._log(f"  - {error}", "WARNING")
 
-        self._log("\n" + "="*60, "INFO")
-        if results['passed']:
+        self._log("\n" + "=" * 60, "INFO")
+        if results["passed"]:
             self._log("VALIDATION: ✓ PASSED", "SUCCESS")
         else:
             self._log("VALIDATION: ✗ FAILED", "ERROR")
-        self._log("="*60 + "\n", "INFO")
+        self._log("=" * 60 + "\n", "INFO")
 
     def _detect_schema_version(self) -> str:
         """
@@ -420,7 +418,7 @@ class ArchiveValidator:
                 successful_reads=0,
                 failed_reads=0,
                 accuracy_percentage=0.0,
-                skipped=True
+                skipped=True,
             )
 
         archive_str = str(self.archive_path)
@@ -447,7 +445,7 @@ class ArchiveValidator:
             failed_reads = 0
             failures = []
 
-            with open(mbox_path, 'rb') as f:
+            with open(mbox_path, "rb") as f:
                 for gmail_id, rfc_message_id, offset, length in records:
                     try:
                         # Seek to offset
@@ -469,7 +467,7 @@ class ArchiveValidator:
                         msg = email.message_from_bytes(data)
 
                         # Extract Message-ID
-                        actual_message_id = msg.get('Message-ID', '')
+                        actual_message_id = msg.get("Message-ID", "")
 
                         # Compare with database
                         if actual_message_id != rfc_message_id:
@@ -496,7 +494,7 @@ class ArchiveValidator:
                 successful_reads=successful_reads,
                 failed_reads=failed_reads,
                 accuracy_percentage=accuracy_percentage,
-                failures=failures
+                failures=failures,
             )
 
         finally:
@@ -521,7 +519,7 @@ class ArchiveValidator:
             duplicate_gmail_ids=0,
             duplicate_rfc_message_ids=0,
             fts_synced=True,
-            passed=True
+            passed=True,
         )
 
         # Skip if no database
@@ -538,7 +536,7 @@ class ArchiveValidator:
             with closing(mailbox.mbox(str(mbox_path))) as mbox:
                 mbox_message_ids = set()
                 for msg in mbox:
-                    msg_id = msg.get('Message-ID', '')
+                    msg_id = msg.get("Message-ID", "")
                     if msg_id:
                         mbox_message_ids.add(msg_id)
 
@@ -569,27 +567,27 @@ class ArchiveValidator:
 
                 # Check for duplicate gmail_ids
                 cursor = conn.execute(
-                    '''SELECT gmail_id, COUNT(*) as cnt FROM messages
-                       GROUP BY gmail_id HAVING cnt > 1'''
+                    """SELECT gmail_id, COUNT(*) as cnt FROM messages
+                       GROUP BY gmail_id HAVING cnt > 1"""
                 )
                 report.duplicate_gmail_ids = len(cursor.fetchall())
 
                 # Check for duplicate rfc_message_ids
                 cursor = conn.execute(
-                    '''SELECT rfc_message_id, COUNT(*) as cnt FROM messages GROUP BY
-                       rfc_message_id HAVING cnt > 1'''
+                    """SELECT rfc_message_id, COUNT(*) as cnt FROM messages GROUP BY
+                       rfc_message_id HAVING cnt > 1"""
                 )
                 report.duplicate_rfc_message_ids = len(cursor.fetchall())
 
                 # Check FTS5 sync
                 try:
-                    cursor = conn.execute('SELECT COUNT(*) FROM messages')
+                    cursor = conn.execute("SELECT COUNT(*) FROM messages")
                     messages_count = cursor.fetchone()[0]
 
-                    cursor = conn.execute('SELECT COUNT(*) FROM messages_fts')
+                    cursor = conn.execute("SELECT COUNT(*) FROM messages_fts")
                     fts_count = cursor.fetchone()[0]
 
-                    report.fts_synced = (messages_count == fts_count)
+                    report.fts_synced = messages_count == fts_count
                 except sqlite3.OperationalError:
                     # FTS5 table doesn't exist
                     report.fts_synced = False
@@ -603,11 +601,11 @@ class ArchiveValidator:
 
             # Determine overall pass/fail
             report.passed = (
-                report.orphaned_records == 0 and
-                report.missing_records == 0 and
-                report.duplicate_gmail_ids == 0 and
-                report.duplicate_rfc_message_ids == 0 and
-                report.fts_synced
+                report.orphaned_records == 0
+                and report.missing_records == 0
+                and report.duplicate_gmail_ids == 0
+                and report.duplicate_rfc_message_ids == 0
+                and report.fts_synced
             )
 
             return report

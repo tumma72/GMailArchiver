@@ -1117,6 +1117,7 @@ class TestExceptionHandling:
             mock_cursor.fetchall.return_value = []
             mock_db.conn.execute.return_value = mock_cursor
             mock_db.close.return_value = None
+            mock_db.get_all_rfc_message_ids.return_value = set()  # For duplicate pre-filtering
             mock_db_class.return_value = mock_db
 
             # Setup mock client

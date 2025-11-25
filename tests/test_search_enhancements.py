@@ -26,8 +26,8 @@ def v11_db_with_messages(v11_db_factory):
 
     try:
         # Create test archive file
-        archive_file = tmpdir / 'test_archive.mbox'
-        with open(archive_file, 'w') as f:
+        archive_file = tmpdir / "test_archive.mbox"
+        with open(archive_file, "w") as f:
             f.write("From test@example.com Mon Jan 01 00:00:00 2024\n")
             f.write("Subject: Test Message\n\n")
             f.write("This is a test message body.\n\n")
@@ -35,58 +35,119 @@ def v11_db_with_messages(v11_db_factory):
         # Insert sample messages with varying body_preview lengths
         sample_messages = [
             # Message 1: Short preview
-            ('msg001', '<msg001@gmail>', 'thread1', 'Meeting Tomorrow',
-             'alice@example.com', 'team@example.com', None,
-             '2024-01-15T10:00:00', '2024-01-20T12:00:00',
-             str(archive_file), 0, 100,
-             'Hi team, quick meeting tomorrow at 10am.',
-             'checksum001', 100, '["INBOX"]', 'default'),
-
+            (
+                "msg001",
+                "<msg001@gmail>",
+                "thread1",
+                "Meeting Tomorrow",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-01-15T10:00:00",
+                "2024-01-20T12:00:00",
+                str(archive_file),
+                0,
+                100,
+                "Hi team, quick meeting tomorrow at 10am.",
+                "checksum001",
+                100,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 2: Long preview (>200 chars, should be truncated)
-            ('msg002', '<msg002@gmail>', 'thread2', 'Important Project Update',
-             'bob@example.com', 'team@example.com', None,
-             '2024-02-01T14:30:00', '2024-02-10T12:00:00',
-             str(archive_file), 100, 300,
-             'This is a very long message body preview that contains a lot of detailed '
-             'information about the project status, including various metrics, updates '
-             'from different team members, and action items that need to be addressed '
-             'in the upcoming sprint planning session.',
-             'checksum002', 300, '["INBOX"]', 'default'),
-
+            (
+                "msg002",
+                "<msg002@gmail>",
+                "thread2",
+                "Important Project Update",
+                "bob@example.com",
+                "team@example.com",
+                None,
+                "2024-02-01T14:30:00",
+                "2024-02-10T12:00:00",
+                str(archive_file),
+                100,
+                300,
+                "This is a very long message body preview that contains a lot of detailed "
+                "information about the project status, including various metrics, updates "
+                "from different team members, and action items that need to be addressed "
+                "in the upcoming sprint planning session.",
+                "checksum002",
+                300,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 3: Medium preview
-            ('msg003', '<msg003@gmail>', 'thread3', 'Invoice Payment',
-             'charlie@vendor.com', 'billing@example.com', None,
-             '2024-03-10T09:15:00', '2024-03-15T12:00:00',
-             str(archive_file), 400, 200,
-             'Please find attached invoice #12345 for payment processing.',
-             'checksum003', 200, '["INBOX"]', 'default'),
-
+            (
+                "msg003",
+                "<msg003@gmail>",
+                "thread3",
+                "Invoice Payment",
+                "charlie@vendor.com",
+                "billing@example.com",
+                None,
+                "2024-03-10T09:15:00",
+                "2024-03-15T12:00:00",
+                str(archive_file),
+                400,
+                200,
+                "Please find attached invoice #12345 for payment processing.",
+                "checksum003",
+                200,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 4: No body preview (NULL)
-            ('msg004', '<msg004@gmail>', 'thread4', 'Newsletter',
-             'dave@newsletter.com', 'subscribers@example.com', None,
-             '2024-04-01T08:00:00', '2024-04-05T12:00:00',
-             str(archive_file), 600, 150,
-             None,  # No body preview
-             'checksum004', 150, '["INBOX"]', 'default'),
-
+            (
+                "msg004",
+                "<msg004@gmail>",
+                "thread4",
+                "Newsletter",
+                "dave@newsletter.com",
+                "subscribers@example.com",
+                None,
+                "2024-04-01T08:00:00",
+                "2024-04-05T12:00:00",
+                str(archive_file),
+                600,
+                150,
+                None,  # No body preview
+                "checksum004",
+                150,
+                '["INBOX"]',
+                "default",
+            ),
             # Message 5: Another searchable message
-            ('msg005', '<msg005@gmail>', 'thread5', 'Team Announcement',
-             'alice@example.com', 'team@example.com', None,
-             '2024-05-01T11:00:00', '2024-05-05T12:00:00',
-             str(archive_file), 750, 180,
-             'Important announcement regarding the upcoming team event.',
-             'checksum005', 180, '["INBOX"]', 'default'),
+            (
+                "msg005",
+                "<msg005@gmail>",
+                "thread5",
+                "Team Announcement",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-05-01T11:00:00",
+                "2024-05-05T12:00:00",
+                str(archive_file),
+                750,
+                180,
+                "Important announcement regarding the upcoming team event.",
+                "checksum005",
+                180,
+                '["INBOX"]',
+                "default",
+            ),
         ]
 
         for msg in sample_messages:
             conn.execute(
-                '''
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
                  date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
+                """,
                 msg,
             )
 
@@ -103,8 +164,7 @@ class TestSearchWithPreview:
     def test_search_with_preview_shows_preview_text(self, v11_db_with_messages):
         """Test that --with-preview flag displays body preview in results."""
         result = runner.invoke(
-            app,
-            ["search", "meeting", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "meeting", "--with-preview", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
@@ -115,8 +175,7 @@ class TestSearchWithPreview:
     def test_search_with_preview_truncates_long_text(self, v11_db_with_messages):
         """Test that preview text is truncated to 200 chars with ellipsis."""
         result = runner.invoke(
-            app,
-            ["search", "project", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "project", "--with-preview", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
@@ -124,7 +183,7 @@ class TestSearchWithPreview:
         # Check that preview is truncated (should end with "...")
         assert "..." in result.stdout
         # Verify truncation happens (long text should be cut off)
-        lines = result.stdout.split('\n')
+        lines = result.stdout.split("\n")
         preview_lines = [line for line in lines if "Preview:" in line]
         for line in preview_lines:
             # Extract preview text (after "Preview:")
@@ -136,8 +195,7 @@ class TestSearchWithPreview:
     def test_search_with_preview_handles_no_preview(self, v11_db_with_messages):
         """Test that messages without body_preview show (no preview)."""
         result = runner.invoke(
-            app,
-            ["search", "newsletter", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "newsletter", "--with-preview", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
@@ -148,7 +206,7 @@ class TestSearchWithPreview:
         """Test that --with-preview works with --json output."""
         result = runner.invoke(
             app,
-            ["search", "meeting", "--with-preview", "--json", "--state-db", v11_db_with_messages]
+            ["search", "meeting", "--with-preview", "--json", "--state-db", v11_db_with_messages],
         )
 
         assert result.exit_code == 0
@@ -163,10 +221,7 @@ class TestSearchWithPreview:
 
     def test_search_without_preview_no_preview_shown(self, v11_db_with_messages):
         """Test that without --with-preview, no preview is shown."""
-        result = runner.invoke(
-            app,
-            ["search", "meeting", "--state-db", v11_db_with_messages]
-        )
+        result = runner.invoke(app, ["search", "meeting", "--state-db", v11_db_with_messages])
 
         assert result.exit_code == 0
         assert "Preview:" not in result.stdout
@@ -174,8 +229,7 @@ class TestSearchWithPreview:
     def test_search_with_preview_multiple_results(self, v11_db_with_messages):
         """Test --with-preview displays previews for multiple results."""
         result = runner.invoke(
-            app,
-            ["search", "from:alice", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "from:alice", "--with-preview", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
@@ -187,21 +241,20 @@ class TestSearchWithPreview:
 class TestSearchInteractive:
     """Tests for --interactive flag."""
 
-    @patch('questionary.checkbox')
+    @patch("questionary.checkbox")
     def test_search_interactive_allows_message_selection(
         self, mock_checkbox, v11_db_with_messages, tmp_path
     ):
         """Test that --interactive flag allows message selection."""
         # Mock questionary checkbox to return selected messages
-        mock_checkbox.return_value.ask.return_value = ['msg001', 'msg003']
+        mock_checkbox.return_value.ask.return_value = ["msg001", "msg003"]
 
         # Mock questionary path for output directory
-        with patch('questionary.path') as mock_path:
+        with patch("questionary.path") as mock_path:
             mock_path.return_value.ask.return_value = str(tmp_path / "extracted")
 
             result = runner.invoke(
-                app,
-                ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
+                app, ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
             )
 
             # Should show interactive selection
@@ -209,7 +262,7 @@ class TestSearchInteractive:
             # Should extract selected messages
             assert result.exit_code == 0
 
-    @patch('questionary.checkbox')
+    @patch("questionary.checkbox")
     def test_search_interactive_no_selection_exits_gracefully(
         self, mock_checkbox, v11_db_with_messages
     ):
@@ -218,108 +271,100 @@ class TestSearchInteractive:
         mock_checkbox.return_value.ask.return_value = None
 
         result = runner.invoke(
-            app,
-            ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
+            app, ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
         assert (
-            "cancelled" in result.stdout.lower()
-            or "no messages selected" in result.stdout.lower()
+            "cancelled" in result.stdout.lower() or "no messages selected" in result.stdout.lower()
         )
 
-    @patch('questionary.checkbox')
-    @patch('questionary.path')
+    @patch("questionary.checkbox")
+    @patch("questionary.path")
     def test_search_interactive_extracts_to_directory(
         self, mock_path, mock_checkbox, v11_db_with_messages, tmp_path
     ):
         """Test that interactive mode extracts selected messages to directory."""
         # Mock selections
-        mock_checkbox.return_value.ask.return_value = ['msg001', 'msg002']
+        mock_checkbox.return_value.ask.return_value = ["msg001", "msg002"]
         output_dir = tmp_path / "extracted"
         mock_path.return_value.ask.return_value = str(output_dir)
 
         result = runner.invoke(
-            app,
-            ["search", "meeting", "--interactive", "--state-db", v11_db_with_messages]
+            app, ["search", "meeting", "--interactive", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
         # Should show extraction progress
         assert "extract" in result.stdout.lower() or "selected" in result.stdout.lower()
 
-    @patch('questionary.checkbox')
-    def test_search_interactive_with_no_results(
-        self, mock_checkbox, v11_db_with_messages
-    ):
+    @patch("questionary.checkbox")
+    def test_search_interactive_with_no_results(self, mock_checkbox, v11_db_with_messages):
         """Test that interactive mode handles no search results gracefully."""
         result = runner.invoke(
             app,
-            ["search", "nonexistentquery123", "--interactive", "--state-db", v11_db_with_messages]
+            ["search", "nonexistentquery123", "--interactive", "--state-db", v11_db_with_messages],
         )
 
         # Should not call checkbox if no results
         assert not mock_checkbox.called
         assert result.exit_code == 0
 
-    @patch('questionary.checkbox')
-    @patch('questionary.path')
+    @patch("questionary.checkbox")
+    @patch("questionary.path")
     def test_search_interactive_shows_summary(
         self, mock_path, mock_checkbox, v11_db_with_messages, tmp_path
     ):
         """Test that interactive mode shows extraction summary."""
-        mock_checkbox.return_value.ask.return_value = ['msg001', 'msg003']
+        mock_checkbox.return_value.ask.return_value = ["msg001", "msg003"]
         mock_path.return_value.ask.return_value = str(tmp_path / "extracted")
 
         result = runner.invoke(
-            app,
-            ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
+            app, ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
         # Should show how many messages were selected/extracted
         assert "2" in result.stdout or "selected" in result.stdout.lower()
 
-    @patch('questionary.checkbox')
-    def test_search_interactive_empty_selection(
-        self, mock_checkbox, v11_db_with_messages
-    ):
+    @patch("questionary.checkbox")
+    def test_search_interactive_empty_selection(self, mock_checkbox, v11_db_with_messages):
         """Test that selecting no messages in interactive mode exits gracefully."""
         # User selects no messages (empty list)
         mock_checkbox.return_value.ask.return_value = []
 
         result = runner.invoke(
-            app,
-            ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
+            app, ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
         assert (
-            "no messages selected" in result.stdout.lower()
-            or "cancelled" in result.stdout.lower()
+            "no messages selected" in result.stdout.lower() or "cancelled" in result.stdout.lower()
         )
 
 
 class TestSearchCombinedFlags:
     """Tests for combining --with-preview and --interactive flags."""
 
-    @patch('questionary.checkbox')
-    @patch('questionary.path')
+    @patch("questionary.checkbox")
+    @patch("questionary.path")
     def test_search_with_preview_and_interactive(
         self, mock_path, mock_checkbox, v11_db_with_messages, tmp_path
     ):
         """Test that --with-preview and --interactive work together."""
-        mock_checkbox.return_value.ask.return_value = ['msg001']
+        mock_checkbox.return_value.ask.return_value = ["msg001"]
         mock_path.return_value.ask.return_value = str(tmp_path / "extracted")
 
         result = runner.invoke(
             app,
             [
-                "search", "meeting",
+                "search",
+                "meeting",
                 "--with-preview",
                 "--interactive",
-                "--state-db", v11_db_with_messages
-            ]
+                "--state-db",
+                v11_db_with_messages,
+            ],
         )
 
         assert result.exit_code == 0
@@ -329,13 +374,7 @@ class TestSearchCombinedFlags:
     def test_search_with_preview_and_json(self, v11_db_with_messages):
         """Test that --with-preview works with --json (no interactive)."""
         result = runner.invoke(
-            app,
-            [
-                "search", "team",
-                "--with-preview",
-                "--json",
-                "--state-db", v11_db_with_messages
-            ]
+            app, ["search", "team", "--with-preview", "--json", "--state-db", v11_db_with_messages]
         )
 
         assert result.exit_code == 0
@@ -351,33 +390,31 @@ class TestSearchErrorHandling:
         """Test that missing questionary shows helpful error."""
         # This test verifies graceful degradation if questionary is not installed
         # We'll simulate this by patching the import
-        with patch.dict('sys.modules', {'questionary': None}):
+        with patch.dict("sys.modules", {"questionary": None}):
             result = runner.invoke(
-                app,
-                ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
+                app, ["search", "team", "--interactive", "--state-db", v11_db_with_messages]
             )
 
             # Should either work or show helpful error
             # (Implementation should handle ImportError gracefully)
             assert result.exit_code in [0, 1]
 
-    @patch('questionary.checkbox')
+    @patch("questionary.checkbox")
     def test_search_interactive_extraction_failure_handling(
         self, mock_checkbox, v11_db_with_messages, tmp_path
     ):
         """Test that extraction failures in interactive mode are handled gracefully."""
         # Select a message that doesn't exist in archive file
-        mock_checkbox.return_value.ask.return_value = ['msg001']
+        mock_checkbox.return_value.ask.return_value = ["msg001"]
 
-        with patch('questionary.path') as mock_path:
+        with patch("questionary.path") as mock_path:
             # Point to a non-existent directory that will cause extraction to fail
             mock_path.return_value.ask.return_value = str(tmp_path / "extracted")
 
             # Delete the archive file to cause extraction failure
             # (This is handled by batch_extract error handling)
             result = runner.invoke(
-                app,
-                ["search", "meeting", "--interactive", "--state-db", v11_db_with_messages]
+                app, ["search", "meeting", "--interactive", "--state-db", v11_db_with_messages]
             )
 
             # Should handle error gracefully (not crash)
@@ -405,17 +442,34 @@ class TestSearchPreviewTruncation:
         # Insert message with exactly 200 char preview
         conn = writable_conn
         preview_200 = "X" * 200
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
              date, archived_timestamp, archive_file, mbox_offset, mbox_length,
              body_preview, checksum, size_bytes, labels, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', ('msg_200', '<msg200@gmail>', 'thread_200', 'Exactly 200 chars',
-              'test@example.com', 'team@example.com', None,
-              '2024-06-01T10:00:00', '2024-06-05T12:00:00',
-              '/tmp/test.mbox', 1000, 200,
-              preview_200, 'checksum_200', 200, '["INBOX"]', 'default'))
+        """,
+            (
+                "msg_200",
+                "<msg200@gmail>",
+                "thread_200",
+                "Exactly 200 chars",
+                "test@example.com",
+                "team@example.com",
+                None,
+                "2024-06-01T10:00:00",
+                "2024-06-05T12:00:00",
+                "/tmp/test.mbox",
+                1000,
+                200,
+                preview_200,
+                "checksum_200",
+                200,
+                '["INBOX"]',
+                "default",
+            ),
+        )
         conn.commit()
 
         # Test JSON output for precise truncation behavior
@@ -428,7 +482,7 @@ class TestSearchPreviewTruncation:
                 "--json",
                 "--state-db",
                 v11_db_with_messages,
-            ]
+            ],
         )
         assert result_json.exit_code == 0
         data = json.loads(result_json.stdout)
@@ -439,8 +493,7 @@ class TestSearchPreviewTruncation:
 
         # Test rich output includes preview
         result_rich = runner.invoke(
-            app,
-            ["search", "Exactly 200", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "Exactly 200", "--with-preview", "--state-db", v11_db_with_messages]
         )
         assert result_rich.exit_code == 0
         assert "Preview:" in result_rich.stdout
@@ -450,23 +503,40 @@ class TestSearchPreviewTruncation:
         """Test preview with 201 chars gets truncated."""
         conn = writable_conn
         preview_201 = "X" * 201
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
              date, archived_timestamp, archive_file, mbox_offset, mbox_length,
              body_preview, checksum, size_bytes, labels, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', ('msg_201', '<msg201@gmail>', 'thread_201', 'Over 200 chars',
-              'test@example.com', 'team@example.com', None,
-              '2024-06-01T10:00:00', '2024-06-05T12:00:00',
-              '/tmp/test.mbox', 1200, 201,
-              preview_201, 'checksum_201', 201, '["INBOX"]', 'default'))
+        """,
+            (
+                "msg_201",
+                "<msg201@gmail>",
+                "thread_201",
+                "Over 200 chars",
+                "test@example.com",
+                "team@example.com",
+                None,
+                "2024-06-01T10:00:00",
+                "2024-06-05T12:00:00",
+                "/tmp/test.mbox",
+                1200,
+                201,
+                preview_201,
+                "checksum_201",
+                201,
+                '["INBOX"]',
+                "default",
+            ),
+        )
         conn.commit()
 
         # Test JSON output for precise truncation behavior
         result_json = runner.invoke(
             app,
-            ["search", "Over 200", "--with-preview", "--json", "--state-db", v11_db_with_messages]
+            ["search", "Over 200", "--with-preview", "--json", "--state-db", v11_db_with_messages],
         )
         assert result_json.exit_code == 0
         data = json.loads(result_json.stdout)
@@ -478,8 +548,7 @@ class TestSearchPreviewTruncation:
 
         # Test rich output includes preview
         result_rich = runner.invoke(
-            app,
-            ["search", "Over 200", "--with-preview", "--state-db", v11_db_with_messages]
+            app, ["search", "Over 200", "--with-preview", "--state-db", v11_db_with_messages]
         )
         assert result_rich.exit_code == 0
         assert "Preview:" in result_rich.stdout

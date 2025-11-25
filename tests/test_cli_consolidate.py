@@ -28,8 +28,7 @@ def v1_1_database(tmp_path):
 
     # Set schema version
     manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)",
-        ('1.1', datetime.now().isoformat())
+        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
     )
 
     manager.conn.commit()
@@ -48,12 +47,12 @@ def sample_mbox_files(tmp_path):
     mb1 = mailbox.mbox(str(mbox1))
     for i in range(1, 4):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i}@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Subject'] = f'Archive 1 Message {i}'
-        msg['Date'] = f'Mon, {i} Jan 2024 12:00:00 +0000'
-        msg['Message-ID'] = f'<msg1_{i}@example.com>'
-        msg.set_payload(f'Content from archive 1, message {i}')
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Archive 1 Message {i}"
+        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = f"<msg1_{i}@example.com>"
+        msg.set_payload(f"Content from archive 1, message {i}")
         mb1.add(msg)
     mb1.close()
     mbox_files.append(mbox1)
@@ -63,12 +62,12 @@ def sample_mbox_files(tmp_path):
     mb2 = mailbox.mbox(str(mbox2))
     for i in range(1, 4):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i+3}@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Subject'] = f'Archive 2 Message {i}'
-        msg['Date'] = f'Mon, {i+3} Jan 2024 12:00:00 +0000'
-        msg['Message-ID'] = f'<msg2_{i}@example.com>'
-        msg.set_payload(f'Content from archive 2, message {i}')
+        msg["From"] = f"sender{i + 3}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Archive 2 Message {i}"
+        msg["Date"] = f"Mon, {i + 3} Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = f"<msg2_{i}@example.com>"
+        msg.set_payload(f"Content from archive 2, message {i}")
         mb2.add(msg)
     mb2.close()
     mbox_files.append(mbox2)
@@ -86,11 +85,11 @@ def sample_mbox_with_duplicates(tmp_path):
     mb1 = mailbox.mbox(str(mbox1))
     for i in range(1, 3):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i}@example.com'
-        msg['Subject'] = f'Unique Message {i}'
-        msg['Date'] = f'Mon, {i} Jan 2024 12:00:00 +0000'
-        msg['Message-ID'] = f'<unique{i}@example.com>'
-        msg.set_payload(f'Unique content {i}')
+        msg["From"] = f"sender{i}@example.com"
+        msg["Subject"] = f"Unique Message {i}"
+        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = f"<unique{i}@example.com>"
+        msg.set_payload(f"Unique content {i}")
         mb1.add(msg)
     mb1.close()
     mbox_files.append(mbox1)
@@ -100,19 +99,19 @@ def sample_mbox_with_duplicates(tmp_path):
     mb2 = mailbox.mbox(str(mbox2))
     # Duplicate of first message from mbox1
     msg = mailbox.mboxMessage()
-    msg['From'] = 'sender1@example.com'
-    msg['Subject'] = 'Unique Message 1'
-    msg['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
-    msg['Message-ID'] = '<unique1@example.com>'
-    msg.set_payload('Unique content 1')
+    msg["From"] = "sender1@example.com"
+    msg["Subject"] = "Unique Message 1"
+    msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+    msg["Message-ID"] = "<unique1@example.com>"
+    msg.set_payload("Unique content 1")
     mb2.add(msg)
     # New unique message
     msg = mailbox.mboxMessage()
-    msg['From'] = 'sender3@example.com'
-    msg['Subject'] = 'Unique Message 3'
-    msg['Date'] = 'Mon, 3 Jan 2024 12:00:00 +0000'
-    msg['Message-ID'] = '<unique3@example.com>'
-    msg.set_payload('Unique content 3')
+    msg["From"] = "sender3@example.com"
+    msg["Subject"] = "Unique Message 3"
+    msg["Date"] = "Mon, 3 Jan 2024 12:00:00 +0000"
+    msg["Message-ID"] = "<unique3@example.com>"
+    msg.set_payload("Unique content 3")
     mb2.add(msg)
     mb2.close()
     mbox_files.append(mbox2)
@@ -130,16 +129,21 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
-        assert 'consolidat' in result.stdout.lower()
+        assert "consolidat" in result.stdout.lower()
         assert output_file.exists()
 
         # Verify merged file has all messages
@@ -154,12 +158,17 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            'archive*.mbox',
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                "archive*.mbox",
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -176,23 +185,28 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "sorted.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--sort',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--sort",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
-        assert 'sort' in result.stdout.lower()
+        assert "sort" in result.stdout.lower()
 
         # Verify messages are sorted by date
         merged_mbox = mailbox.mbox(str(output_file))
         dates = []
         for msg in merged_mbox:
-            date_str = msg.get('Date', '')
+            date_str = msg.get("Date", "")
             if date_str:
                 dates.append(date_str)
 
@@ -207,14 +221,19 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "unsorted.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--no-sort',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--no-sort",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -226,17 +245,22 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "deduped.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_with_duplicates[0]),
-            str(sample_mbox_with_duplicates[1]),
-            '-o', str(output_file),
-            '--dedupe',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_with_duplicates[0]),
+                str(sample_mbox_with_duplicates[1]),
+                "-o",
+                str(output_file),
+                "--dedupe",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
-        assert 'duplicate' in result.stdout.lower()
+        assert "duplicate" in result.stdout.lower()
 
         # Verify duplicates removed (should have 3 unique, not 4 total)
         merged_mbox = mailbox.mbox(str(output_file))
@@ -250,14 +274,19 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "with_dupes.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_with_duplicates[0]),
-            str(sample_mbox_with_duplicates[1]),
-            '-o', str(output_file),
-            '--no-dedupe',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_with_duplicates[0]),
+                str(sample_mbox_with_duplicates[1]),
+                "-o",
+                str(output_file),
+                "--no-dedupe",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -274,14 +303,20 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "newest.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_with_duplicates[0]),
-            str(sample_mbox_with_duplicates[1]),
-            '-o', str(output_file),
-            '--dedupe-strategy', 'newest',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_with_duplicates[0]),
+                str(sample_mbox_with_duplicates[1]),
+                "-o",
+                str(output_file),
+                "--dedupe-strategy",
+                "newest",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -293,14 +328,20 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "largest.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_with_duplicates[0]),
-            str(sample_mbox_with_duplicates[1]),
-            '-o', str(output_file),
-            '--dedupe-strategy', 'largest',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_with_duplicates[0]),
+                str(sample_mbox_with_duplicates[1]),
+                "-o",
+                str(output_file),
+                "--dedupe-strategy",
+                "largest",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -312,14 +353,20 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "first.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_with_duplicates[0]),
-            str(sample_mbox_with_duplicates[1]),
-            '-o', str(output_file),
-            '--dedupe-strategy', 'first',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_with_duplicates[0]),
+                str(sample_mbox_with_duplicates[1]),
+                "-o",
+                str(output_file),
+                "--dedupe-strategy",
+                "first",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -331,17 +378,22 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "compressed.mbox.gz"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
-        assert 'compress' in result.stdout.lower() or 'gzip' in result.stdout.lower()
+        assert "compress" in result.stdout.lower() or "gzip" in result.stdout.lower()
 
     def test_consolidate_missing_output_flag_error(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
@@ -349,11 +401,9 @@ class TestConsolidateCommand:
         """Test consolidate without -o flag shows error."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app, ["consolidate", str(sample_mbox_files[0]), "--state-db", str(v1_1_database)]
+        )
 
         # Should fail due to missing required -o option
         assert result.exit_code != 0
@@ -365,16 +415,21 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            'nonexistent*.mbox',
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                "nonexistent*.mbox",
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 1
         # Error panel shows "No Archives Found" title and descriptive message
-        assert 'no archives found' in result.stdout.lower()
+        assert "no archives found" in result.stdout.lower()
 
     def test_consolidate_shows_summary_table(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
@@ -383,19 +438,24 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         # Should show summary statistics
-        assert 'summary' in result.stdout.lower() or 'consolidat' in result.stdout.lower()
+        assert "summary" in result.stdout.lower() or "consolidat" in result.stdout.lower()
         # Should show message count
-        assert '6' in result.stdout  # Total messages
+        assert "6" in result.stdout  # Total messages
 
     def test_consolidate_shows_performance_metrics(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
@@ -404,17 +464,22 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         # Should show performance metrics
-        assert 'second' in result.stdout.lower() or 'performance' in result.stdout.lower()
+        assert "second" in result.stdout.lower() or "performance" in result.stdout.lower()
 
     def test_consolidate_auto_detects_compression_from_extension(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
@@ -424,24 +489,34 @@ class TestConsolidateCommand:
 
         # Test .gz extension
         gz_output = tmp_path / "compressed.mbox.gz"
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            '-o', str(gz_output),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                "-o",
+                str(gz_output),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert gz_output.exists()
 
         # Test .zst extension
         zst_output = tmp_path / "compressed.mbox.zst"
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            '-o', str(zst_output),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                "-o",
+                str(zst_output),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         assert zst_output.exists()
@@ -453,13 +528,19 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            '-o', str(output_file),
-            '--dedupe-strategy', 'invalid_strategy',
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                "-o",
+                str(output_file),
+                "--dedupe-strategy",
+                "invalid_strategy",
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         # Should fail with invalid strategy error
         assert result.exit_code != 0
@@ -476,19 +557,16 @@ class TestConsolidateCommand:
         manager._connect()
         manager._create_enhanced_schema(manager.conn)
         manager.conn.execute(
-            "INSERT INTO schema_version VALUES (?, ?)",
-            ('1.1', datetime.now().isoformat())
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
         )
         manager.conn.commit()
         manager._close()
 
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            '-o', str(output_file)
-        ])
+        result = runner.invoke(
+            app, ["consolidate", str(sample_mbox_files[0]), "-o", str(output_file)]
+        )
 
         assert result.exit_code == 0
         assert output_file.exists()
@@ -500,20 +578,25 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database),
-            '--auto-verify'
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+                "--auto-verify",
+            ],
+        )
 
         assert result.exit_code == 0
         # Should show verification running
-        assert 'verif' in result.stdout.lower()
+        assert "verif" in result.stdout.lower()
         # Should show verification passed
-        assert 'passed' in result.stdout.lower() or 'ok' in result.stdout.lower()
+        assert "passed" in result.stdout.lower() or "ok" in result.stdout.lower()
 
     def test_consolidate_with_auto_verify_without_flag(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
@@ -522,17 +605,22 @@ class TestConsolidateCommand:
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(app, [
-            'consolidate',
-            str(sample_mbox_files[0]),
-            str(sample_mbox_files[1]),
-            '-o', str(output_file),
-            '--state-db', str(v1_1_database)
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(sample_mbox_files[0]),
+                str(sample_mbox_files[1]),
+                "-o",
+                str(output_file),
+                "--state-db",
+                str(v1_1_database),
+            ],
+        )
 
         assert result.exit_code == 0
         # Should NOT show verification-specific messages beyond suggested next steps
         # Count occurrences - should only appear in "next steps" suggestion
-        verify_count = result.stdout.lower().count('verify')
+        verify_count = result.stdout.lower().count("verify")
         # Should have at least one mention in next steps, but not extra "Running verification"
         assert verify_count < 3  # Not running verification automatically

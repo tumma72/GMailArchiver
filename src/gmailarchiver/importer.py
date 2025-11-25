@@ -65,12 +65,12 @@ class ArchiveImporter:
             Compression format: 'gzip', 'lzma', 'zstd', or None
         """
         suffix = archive_path.suffix.lower()
-        if suffix == '.gz':
-            return 'gzip'
-        elif suffix in ('.xz', '.lzma'):
-            return 'lzma'
-        elif suffix == '.zst':
-            return 'zstd'
+        if suffix == ".gz":
+            return "gzip"
+        elif suffix in (".xz", ".lzma"):
+            return "lzma"
+        elif suffix == ".zst":
+            return "zstd"
         return None
 
     def _decompress_to_temp(self, archive_path: Path) -> tuple[Path, bool]:
@@ -90,20 +90,21 @@ class ArchiveImporter:
             return archive_path, False
 
         # Create temporary file for decompressed data
-        temp = NamedTemporaryFile(mode='wb', delete=False, suffix='.mbox')
+        temp = NamedTemporaryFile(mode="wb", delete=False, suffix=".mbox")
         temp_path = Path(temp.name)
 
         try:
-            if compression == 'gzip':
-                with gzip.open(archive_path, 'rb') as f_in:
+            if compression == "gzip":
+                with gzip.open(archive_path, "rb") as f_in:
                     temp.write(f_in.read())
-            elif compression == 'lzma':
-                with lzma.open(archive_path, 'rb') as f_in:
+            elif compression == "lzma":
+                with lzma.open(archive_path, "rb") as f_in:
                     temp.write(f_in.read())
-            elif compression == 'zstd':
+            elif compression == "zstd":
                 # Python 3.14+ has native zstd support
                 from compression import zstd
-                with zstd.open(archive_path, 'rb') as f_in:
+
+                with zstd.open(archive_path, "rb") as f_in:
                     temp.write(f_in.read())
 
             temp.close()
@@ -125,11 +126,11 @@ class ArchiveImporter:
         Returns:
             Message-ID header value (or generated fallback)
         """
-        message_id = msg.get('Message-ID', '').strip()
+        message_id = msg.get("Message-ID", "").strip()
         if not message_id:
             # Generate fallback Message-ID from Subject + Date
-            subject = msg.get('Subject', 'no-subject')
-            date = msg.get('Date', 'no-date')
+            subject = msg.get("Subject", "no-subject")
+            date = msg.get("Date", "no-date")
             fallback_id = f"<{hashlib.sha256(f'{subject}{date}'.encode()).hexdigest()}@generated>"
             return fallback_id
         return message_id
@@ -154,7 +155,7 @@ class ArchiveImporter:
                     try:
                         payload = part.get_payload(decode=True)
                         if payload and isinstance(payload, bytes):
-                            body = payload.decode('utf-8', errors='ignore')
+                            body = payload.decode("utf-8", errors="ignore")
                             break
                     except Exception:
                         continue
@@ -162,7 +163,7 @@ class ArchiveImporter:
             try:
                 payload = msg.get_payload(decode=True)
                 if payload and isinstance(payload, bytes):
-                    body = payload.decode('utf-8', errors='ignore')
+                    body = payload.decode("utf-8", errors="ignore")
             except Exception:
                 pass
 
@@ -179,12 +180,12 @@ class ArchiveImporter:
             Thread ID or None
         """
         # Try X-GM-THRID header first (Gmail-specific)
-        thread_id = msg.get('X-GM-THRID', '').strip()
+        thread_id = msg.get("X-GM-THRID", "").strip()
         if thread_id:
             return thread_id
 
         # Fallback to References header
-        references = msg.get('References', '').strip()
+        references = msg.get("References", "").strip()
         if references:
             # Use first reference as thread ID
             refs = references.split()
@@ -198,7 +199,7 @@ class ArchiveImporter:
         archive_path: str,
         offset: int,
         length: int,
-        account_id: str
+        account_id: str,
     ) -> dict[str, Any]:
         """
         Extract all v1.1 metadata from email message.
@@ -217,34 +218,31 @@ class ArchiveImporter:
         rfc_message_id = self._extract_rfc_message_id(msg)
 
         # Generate gmail_id as hash of Message-ID + Date
-        gmail_id = hashlib.sha256(
-            f"{rfc_message_id}{msg.get('Date', '')}".encode()
-        ).hexdigest()[:16]
+        gmail_id = hashlib.sha256(f"{rfc_message_id}{msg.get('Date', '')}".encode()).hexdigest()[
+            :16
+        ]
 
         return {
-            'gmail_id': gmail_id,
-            'rfc_message_id': rfc_message_id,
-            'thread_id': self._extract_thread_id(msg),
-            'subject': msg.get('Subject'),
-            'from_addr': msg.get('From'),
-            'to_addr': msg.get('To'),
-            'cc_addr': msg.get('Cc'),
-            'date': msg.get('Date'),  # Changed from 'message_date' to 'date' for DBManager
-            'archive_file': archive_path,
-            'mbox_offset': offset,
-            'mbox_length': length,
-            'body_preview': self._extract_body_preview(msg),
-            'checksum': hashlib.sha256(message_bytes).hexdigest(),
-            'size_bytes': len(message_bytes),
-            'labels': None,
-            'account_id': account_id
+            "gmail_id": gmail_id,
+            "rfc_message_id": rfc_message_id,
+            "thread_id": self._extract_thread_id(msg),
+            "subject": msg.get("Subject"),
+            "from_addr": msg.get("From"),
+            "to_addr": msg.get("To"),
+            "cc_addr": msg.get("Cc"),
+            "date": msg.get("Date"),  # Changed from 'message_date' to 'date' for DBManager
+            "archive_file": archive_path,
+            "mbox_offset": offset,
+            "mbox_length": length,
+            "body_preview": self._extract_body_preview(msg),
+            "checksum": hashlib.sha256(message_bytes).hexdigest(),
+            "size_bytes": len(message_bytes),
+            "labels": None,
+            "account_id": account_id,
         }
 
     def import_archive(
-        self,
-        archive_path: str | Path,
-        account_id: str = 'default',
-        skip_duplicates: bool = True
+        self, archive_path: str | Path, account_id: str = "default", skip_duplicates: bool = True
     ) -> ImportResult:
         """
         Import single mbox archive into database.
@@ -274,7 +272,7 @@ class ArchiveImporter:
             messages_skipped=0,
             messages_failed=0,
             execution_time_ms=0.0,
-            errors=[]
+            errors=[],
         )
 
         start_time = time.time()
@@ -294,9 +292,7 @@ class ArchiveImporter:
                     existing_ids = set()
                     if skip_duplicates:
                         try:
-                            cursor = db.conn.execute(
-                                "SELECT rfc_message_id FROM messages"
-                            )
+                            cursor = db.conn.execute("SELECT rfc_message_id FROM messages")
                             existing_ids = {row[0] for row in cursor.fetchall()}
                         except Exception:
                             # Table might not exist yet, continue
@@ -346,7 +342,7 @@ class ArchiveImporter:
                                 str(archive_path),  # Store original path (compressed if applicable)
                                 offset,
                                 length,
-                                account_id
+                                account_id,
                             )
 
                             # Insert into database using DBManager or direct
@@ -363,6 +359,7 @@ class ArchiveImporter:
                                     # DBManager doesn't support OR REPLACE, so we use direct SQL
                                     # This is acceptable as it's a specific use case for importing
                                     from datetime import datetime
+
                                     archived_timestamp = datetime.now().isoformat()
 
                                     db.conn.execute(
@@ -378,23 +375,23 @@ class ArchiveImporter:
                                                   ?, ?, ?, ?, ?, ?, ?)
                                         """,
                                         (
-                                            metadata['gmail_id'],
-                                            metadata['rfc_message_id'],
-                                            metadata['thread_id'],
-                                            metadata['subject'],
-                                            metadata['from_addr'],
-                                            metadata['to_addr'],
-                                            metadata['cc_addr'],
-                                            metadata['date'],
+                                            metadata["gmail_id"],
+                                            metadata["rfc_message_id"],
+                                            metadata["thread_id"],
+                                            metadata["subject"],
+                                            metadata["from_addr"],
+                                            metadata["to_addr"],
+                                            metadata["cc_addr"],
+                                            metadata["date"],
                                             archived_timestamp,
-                                            metadata['archive_file'],
-                                            metadata['mbox_offset'],
-                                            metadata['mbox_length'],
-                                            metadata['body_preview'],
-                                            metadata['checksum'],
-                                            metadata['size_bytes'],
-                                            metadata['labels'],
-                                            metadata['account_id'],
+                                            metadata["archive_file"],
+                                            metadata["mbox_offset"],
+                                            metadata["mbox_length"],
+                                            metadata["body_preview"],
+                                            metadata["checksum"],
+                                            metadata["size_bytes"],
+                                            metadata["labels"],
+                                            metadata["account_id"],
                                         ),
                                     )
                                     session_ids.add(rfc_message_id)
@@ -419,7 +416,7 @@ class ArchiveImporter:
                             operation="import",
                             messages_count=result.messages_imported,
                             archive_file=str(archive_path),
-                            account_id=account_id
+                            account_id=account_id,
                         )
             finally:
                 # Close mbox to prevent ResourceWarning
@@ -434,10 +431,7 @@ class ArchiveImporter:
         return result
 
     def import_multiple(
-        self,
-        pattern: str,
-        account_id: str = 'default',
-        skip_duplicates: bool = True
+        self, pattern: str, account_id: str = "default", skip_duplicates: bool = True
     ) -> MultiImportResult:
         """
         Import multiple archives using glob pattern.
@@ -457,15 +451,13 @@ class ArchiveImporter:
             total_messages_imported=0,
             total_messages_skipped=0,
             total_messages_failed=0,
-            file_results=[]
+            file_results=[],
         )
 
         for file_path in files:
             try:
                 file_result = self.import_archive(
-                    file_path,
-                    account_id=account_id,
-                    skip_duplicates=skip_duplicates
+                    file_path, account_id=account_id, skip_duplicates=skip_duplicates
                 )
 
                 result.file_results.append(file_result)
@@ -481,7 +473,7 @@ class ArchiveImporter:
                     messages_skipped=0,
                     messages_failed=0,
                     execution_time_ms=0.0,
-                    errors=[f"Failed to import: {str(e)}"]
+                    errors=[f"Failed to import: {str(e)}"],
                 )
                 result.file_results.append(file_result)
 

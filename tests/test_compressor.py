@@ -757,7 +757,7 @@ def test_compressor_cleanup_on_verification_failure(temp_dir, state_db):
     compressor = ArchiveCompressor(str(state_db))
 
     # Mock verification to fail
-    with patch.object(compressor, '_verify_compressed_file', return_value=False):
+    with patch.object(compressor, "_verify_compressed_file", return_value=False):
         dest_path = temp_dir / "test.mbox.zst"
 
         # Compression should raise ValueError due to verification failure

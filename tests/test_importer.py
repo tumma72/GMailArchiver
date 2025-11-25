@@ -22,33 +22,33 @@ def sample_mbox_simple(tmp_path):
 
     # Message 1
     msg1 = email.message.EmailMessage()
-    msg1['Message-ID'] = '<msg1@example.com>'
-    msg1['Subject'] = 'Test Message 1'
-    msg1['From'] = 'alice@example.com'
-    msg1['To'] = 'bob@example.com'
-    msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-    msg1.set_content('This is test message 1.')
+    msg1["Message-ID"] = "<msg1@example.com>"
+    msg1["Subject"] = "Test Message 1"
+    msg1["From"] = "alice@example.com"
+    msg1["To"] = "bob@example.com"
+    msg1["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+    msg1.set_content("This is test message 1.")
     mbox.add(msg1)
 
     # Message 2
     msg2 = email.message.EmailMessage()
-    msg2['Message-ID'] = '<msg2@example.com>'
-    msg2['Subject'] = 'Test Message 2'
-    msg2['From'] = 'bob@example.com'
-    msg2['To'] = 'alice@example.com'
-    msg2['Date'] = 'Tue, 02 Jan 2024 12:00:00 +0000'
-    msg2.set_content('This is test message 2.')
+    msg2["Message-ID"] = "<msg2@example.com>"
+    msg2["Subject"] = "Test Message 2"
+    msg2["From"] = "bob@example.com"
+    msg2["To"] = "alice@example.com"
+    msg2["Date"] = "Tue, 02 Jan 2024 12:00:00 +0000"
+    msg2.set_content("This is test message 2.")
     mbox.add(msg2)
 
     # Message 3
     msg3 = email.message.EmailMessage()
-    msg3['Message-ID'] = '<msg3@example.com>'
-    msg3['Subject'] = 'Test Message 3'
-    msg3['From'] = 'charlie@example.com'
-    msg3['To'] = 'alice@example.com'
-    msg3['Cc'] = 'bob@example.com'
-    msg3['Date'] = 'Wed, 03 Jan 2024 12:00:00 +0000'
-    msg3.set_content('This is test message 3 with longer content for body preview testing.')
+    msg3["Message-ID"] = "<msg3@example.com>"
+    msg3["Subject"] = "Test Message 3"
+    msg3["From"] = "charlie@example.com"
+    msg3["To"] = "alice@example.com"
+    msg3["Cc"] = "bob@example.com"
+    msg3["Date"] = "Wed, 03 Jan 2024 12:00:00 +0000"
+    msg3.set_content("This is test message 3 with longer content for body preview testing.")
     mbox.add(msg3)
 
     mbox.close()
@@ -63,32 +63,32 @@ def sample_mbox_with_duplicates(tmp_path):
 
     # Message 1 (unique)
     msg1 = email.message.EmailMessage()
-    msg1['Message-ID'] = '<unique1@example.com>'
-    msg1['Subject'] = 'Unique Message 1'
-    msg1['From'] = 'alice@example.com'
-    msg1['To'] = 'bob@example.com'
-    msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-    msg1.set_content('Unique message 1.')
+    msg1["Message-ID"] = "<unique1@example.com>"
+    msg1["Subject"] = "Unique Message 1"
+    msg1["From"] = "alice@example.com"
+    msg1["To"] = "bob@example.com"
+    msg1["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+    msg1.set_content("Unique message 1.")
     mbox.add(msg1)
 
     # Message 2 (duplicate - same Message-ID as msg1)
     msg2 = email.message.EmailMessage()
-    msg2['Message-ID'] = '<unique1@example.com>'  # Duplicate!
-    msg2['Subject'] = 'Duplicate Message'
-    msg2['From'] = 'bob@example.com'
-    msg2['To'] = 'alice@example.com'
-    msg2['Date'] = 'Tue, 02 Jan 2024 12:00:00 +0000'
-    msg2.set_content('This is a duplicate.')
+    msg2["Message-ID"] = "<unique1@example.com>"  # Duplicate!
+    msg2["Subject"] = "Duplicate Message"
+    msg2["From"] = "bob@example.com"
+    msg2["To"] = "alice@example.com"
+    msg2["Date"] = "Tue, 02 Jan 2024 12:00:00 +0000"
+    msg2.set_content("This is a duplicate.")
     mbox.add(msg2)
 
     # Message 3 (unique)
     msg3 = email.message.EmailMessage()
-    msg3['Message-ID'] = '<unique2@example.com>'
-    msg3['Subject'] = 'Unique Message 2'
-    msg3['From'] = 'charlie@example.com'
-    msg3['To'] = 'alice@example.com'
-    msg3['Date'] = 'Wed, 03 Jan 2024 12:00:00 +0000'
-    msg3.set_content('Unique message 2.')
+    msg3["Message-ID"] = "<unique2@example.com>"
+    msg3["Subject"] = "Unique Message 2"
+    msg3["From"] = "charlie@example.com"
+    msg3["To"] = "alice@example.com"
+    msg3["Date"] = "Wed, 03 Jan 2024 12:00:00 +0000"
+    msg3.set_content("Unique message 2.")
     mbox.add(msg3)
 
     mbox.close()
@@ -101,7 +101,7 @@ def sample_mbox_malformed(tmp_path):
     mbox_path = tmp_path / "malformed.mbox"
 
     # Write raw mbox with one good message and one malformed
-    with open(mbox_path, 'w') as f:
+    with open(mbox_path, "w") as f:
         # Good message
         f.write("From alice@example.com Mon Jan 01 12:00:00 2024\n")
         f.write("Message-ID: <good@example.com>\n")
@@ -138,29 +138,29 @@ def sample_mbox_compressed(tmp_path):
     mbox = mailbox.mbox(str(mbox_path))
 
     msg1 = email.message.EmailMessage()
-    msg1['Message-ID'] = '<compressed1@example.com>'
-    msg1['Subject'] = 'Compressed Message 1'
-    msg1['From'] = 'alice@example.com'
-    msg1['To'] = 'bob@example.com'
-    msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-    msg1.set_content('This message will be compressed.')
+    msg1["Message-ID"] = "<compressed1@example.com>"
+    msg1["Subject"] = "Compressed Message 1"
+    msg1["From"] = "alice@example.com"
+    msg1["To"] = "bob@example.com"
+    msg1["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+    msg1.set_content("This message will be compressed.")
     mbox.add(msg1)
 
     msg2 = email.message.EmailMessage()
-    msg2['Message-ID'] = '<compressed2@example.com>'
-    msg2['Subject'] = 'Compressed Message 2'
-    msg2['From'] = 'bob@example.com'
-    msg2['To'] = 'alice@example.com'
-    msg2['Date'] = 'Tue, 02 Jan 2024 12:00:00 +0000'
-    msg2.set_content('This message will also be compressed.')
+    msg2["Message-ID"] = "<compressed2@example.com>"
+    msg2["Subject"] = "Compressed Message 2"
+    msg2["From"] = "bob@example.com"
+    msg2["To"] = "alice@example.com"
+    msg2["Date"] = "Tue, 02 Jan 2024 12:00:00 +0000"
+    msg2.set_content("This message will also be compressed.")
     mbox.add(msg2)
 
     mbox.close()
 
     # Compress the mbox file
     compressed_path = tmp_path / "compressed.mbox.gz"
-    with open(mbox_path, 'rb') as f_in:
-        with gzip.open(compressed_path, 'wb') as f_out:
+    with open(mbox_path, "rb") as f_in:
+        with gzip.open(compressed_path, "wb") as f_out:
             f_out.writelines(f_in)
 
     # Remove uncompressed file
@@ -174,7 +174,7 @@ def sample_mbox_no_message_id(tmp_path):
     """Create mbox file with messages lacking Message-ID headers."""
     mbox_path = tmp_path / "no_message_id.mbox"
 
-    with open(mbox_path, 'w') as f:
+    with open(mbox_path, "w") as f:
         # Message without Message-ID (should generate fallback)
         f.write("From alice@example.com Mon Jan 01 12:00:00 2024\n")
         f.write("Subject: No Message ID\n")
@@ -206,7 +206,7 @@ def v1_1_db(tmp_path):
     conn = sqlite3.connect(str(db_path))
 
     # Create v1.1 messages table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -226,22 +226,19 @@ def v1_1_db(tmp_path):
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Create schema_version table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE schema_version (
             version TEXT PRIMARY KEY,
             migrated_timestamp TEXT NOT NULL
         )
-    ''')
-    conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)",
-        ("1.1", "2024-01-01T00:00:00")
-    )
+    """)
+    conn.execute("INSERT INTO schema_version VALUES (?, ?)", ("1.1", "2024-01-01T00:00:00"))
 
     # Create archive_runs table with operation_type column
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -251,7 +248,7 @@ def v1_1_db(tmp_path):
             account_id TEXT DEFAULT 'default',
             operation_type TEXT DEFAULT 'archive'
         )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -306,10 +303,7 @@ class TestImportSingleArchive:
     def test_import_with_skip_duplicates_true(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing with duplicate Message-IDs (skipped)."""
         importer = ArchiveImporter(str(v1_1_db))
-        result = importer.import_archive(
-            str(sample_mbox_with_duplicates),
-            skip_duplicates=True
-        )
+        result = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=True)
 
         # File has 3 messages: unique1, unique1 (dup), unique2
         # With skip_duplicates=True, only 2 unique messages are imported
@@ -317,10 +311,7 @@ class TestImportSingleArchive:
         assert result.messages_skipped == 1  # 1 duplicate skipped within file
 
         # Import again - should skip all duplicates
-        result2 = importer.import_archive(
-            str(sample_mbox_with_duplicates),
-            skip_duplicates=True
-        )
+        result2 = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=True)
 
         # On second import: all messages already exist in DB
         assert result2.messages_imported == 0
@@ -329,10 +320,7 @@ class TestImportSingleArchive:
     def test_import_with_skip_duplicates_false(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing without skipping duplicates (uses INSERT OR REPLACE)."""
         importer = ArchiveImporter(str(v1_1_db))
-        result = importer.import_archive(
-            str(sample_mbox_with_duplicates),
-            skip_duplicates=False
-        )
+        result = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=False)
 
         # With skip_duplicates=False, INSERT OR REPLACE is used
         # File has: unique1, unique1 (dup), unique2
@@ -349,10 +337,7 @@ class TestImportSingleArchive:
         assert count == 2  # Only 2 unique Message-IDs
 
         # Second import also succeeds (replaces existing records)
-        result2 = importer.import_archive(
-            str(sample_mbox_with_duplicates),
-            skip_duplicates=False
-        )
+        result2 = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=False)
 
         # All messages imported (replaced) successfully
         assert result2.messages_imported == 3
@@ -373,10 +358,7 @@ class TestImportSingleArchive:
     def test_import_with_custom_account_id(self, v1_1_db, sample_mbox_simple):
         """Test importing with custom account_id."""
         importer = ArchiveImporter(str(v1_1_db))
-        result = importer.import_archive(
-            str(sample_mbox_simple),
-            account_id='custom-account'
-        )
+        result = importer.import_archive(str(sample_mbox_simple), account_id="custom-account")
 
         assert result.messages_imported == 3
 
@@ -386,7 +368,7 @@ class TestImportSingleArchive:
         account_ids = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert 'custom-account' in account_ids
+        assert "custom-account" in account_ids
 
     def test_import_returns_execution_time(self, v1_1_db, sample_mbox_simple):
         """Test that import result includes execution time."""
@@ -419,13 +401,13 @@ class TestOffsetCalculation:
 
         # Verify each message can be read at its offset
         for rfc_message_id, offset, length, archive_file in rows:
-            with open(archive_file, 'rb') as f:
+            with open(archive_file, "rb") as f:
                 f.seek(offset)
                 message_bytes = f.read(length)
 
                 # Parse and verify Message-ID
                 msg = email.message_from_bytes(message_bytes)
-                assert msg.get('Message-ID', '').strip() == rfc_message_id
+                assert msg.get("Message-ID", "").strip() == rfc_message_id
 
     def test_offsets_are_non_negative(self, v1_1_db, sample_mbox_simple):
         """Test that all offsets are non-negative."""
@@ -492,17 +474,30 @@ class TestMetadataExtraction:
         conn.close()
 
         assert row is not None
-        (gmail_id, rfc_message_id, subject, from_addr, to_addr, cc_addr,
-         date, archive_file, mbox_offset, mbox_length, body_preview,
-         checksum, size_bytes, account_id) = row
+        (
+            gmail_id,
+            rfc_message_id,
+            subject,
+            from_addr,
+            to_addr,
+            cc_addr,
+            date,
+            archive_file,
+            mbox_offset,
+            mbox_length,
+            body_preview,
+            checksum,
+            size_bytes,
+            account_id,
+        ) = row
 
         # Verify all required fields are present
         assert gmail_id is not None
-        assert rfc_message_id == '<msg3@example.com>'
-        assert subject == 'Test Message 3'
-        assert from_addr == 'charlie@example.com'
-        assert to_addr == 'alice@example.com'
-        assert cc_addr == 'bob@example.com'
+        assert rfc_message_id == "<msg3@example.com>"
+        assert subject == "Test Message 3"
+        assert from_addr == "charlie@example.com"
+        assert to_addr == "alice@example.com"
+        assert cc_addr == "bob@example.com"
         assert date is not None
         assert archive_file is not None
         assert mbox_offset >= 0
@@ -510,14 +505,14 @@ class TestMetadataExtraction:
         assert body_preview is not None
         assert checksum is not None
         assert size_bytes > 0
-        assert account_id == 'default'
+        assert account_id == "default"
 
     def test_extract_thread_id_from_xgm_thrid(self, v1_1_db, tmp_path):
         """Test thread ID extraction from X-GM-THRID header."""
         mbox_path = tmp_path / "thread_test.mbox"
 
         # Create message with X-GM-THRID header
-        with open(mbox_path, 'w') as f:
+        with open(mbox_path, "w") as f:
             f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
             f.write("Message-ID: <thread-test@example.com>\n")
             f.write("Subject: Thread Test\n")
@@ -541,14 +536,14 @@ class TestMetadataExtraction:
         thread_id = cursor.fetchone()[0]
         conn.close()
 
-        assert thread_id == '1234567890abcdef'
+        assert thread_id == "1234567890abcdef"
 
     def test_extract_thread_id_from_references_fallback(self, v1_1_db, tmp_path):
         """Test thread ID extraction from References header when X-GM-THRID is missing."""
         mbox_path = tmp_path / "references_test.mbox"
 
         # Create message with References header (no X-GM-THRID)
-        with open(mbox_path, 'w') as f:
+        with open(mbox_path, "w") as f:
             f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
             f.write("Message-ID: <references-test@example.com>\n")
             f.write("Subject: References Test\n")
@@ -567,20 +562,19 @@ class TestMetadataExtraction:
         # Verify thread_id is first reference
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute(
-            "SELECT thread_id FROM messages "
-            "WHERE rfc_message_id = '<references-test@example.com>'"
+            "SELECT thread_id FROM messages WHERE rfc_message_id = '<references-test@example.com>'"
         )
         thread_id = cursor.fetchone()[0]
         conn.close()
 
-        assert thread_id == '<original@example.com>'
+        assert thread_id == "<original@example.com>"
 
     def test_extract_thread_id_none_when_missing(self, v1_1_db, tmp_path):
         """Test thread ID is None when both X-GM-THRID and References are missing."""
         mbox_path = tmp_path / "no_thread.mbox"
 
         # Create message with no thread headers
-        with open(mbox_path, 'w') as f:
+        with open(mbox_path, "w") as f:
             f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
             f.write("Message-ID: <no-thread@example.com>\n")
             f.write("Subject: No Thread Test\n")
@@ -615,14 +609,14 @@ class TestMetadataExtraction:
 
         # Create multipart message with problematic encoding
         msg = MIMEMultipart()
-        msg['Message-ID'] = '<multipart-error@example.com>'
-        msg['Subject'] = 'Multipart Error Test'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg["Message-ID"] = "<multipart-error@example.com>"
+        msg["Subject"] = "Multipart Error Test"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
 
         # Add valid text part
-        text_part = MIMEText('Valid text content')
+        text_part = MIMEText("Valid text content")
         msg.attach(text_part)
 
         mbox.add(msg)
@@ -642,14 +636,14 @@ class TestMetadataExtraction:
         body_preview = cursor.fetchone()[0]
         conn.close()
 
-        assert 'Valid text content' in body_preview
+        assert "Valid text content" in body_preview
 
     def test_body_preview_non_multipart_with_decoding_error(self, v1_1_db, tmp_path):
         """Test body preview extraction handles decoding errors in non-multipart messages."""
         mbox_path = tmp_path / "decode_error.mbox"
 
         # Create message with invalid UTF-8 in body
-        with open(mbox_path, 'wb') as f:
+        with open(mbox_path, "wb") as f:
             f.write(b"From sender@example.com Mon Jan 01 12:00:00 2024\n")
             f.write(b"Message-ID: <decode-error@example.com>\n")
             f.write(b"Subject: Decode Error Test\n")
@@ -669,14 +663,13 @@ class TestMetadataExtraction:
         # Verify body preview exists (invalid bytes ignored)
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute(
-            "SELECT body_preview FROM messages "
-            "WHERE rfc_message_id = '<decode-error@example.com>'"
+            "SELECT body_preview FROM messages WHERE rfc_message_id = '<decode-error@example.com>'"
         )
         body_preview = cursor.fetchone()[0]
         conn.close()
 
         assert body_preview is not None
-        assert 'Valid content' in body_preview
+        assert "Valid content" in body_preview
 
     def test_extract_rfc_message_id(self, v1_1_db, sample_mbox_simple):
         """Test RFC Message-ID extraction."""
@@ -688,9 +681,9 @@ class TestMetadataExtraction:
         message_ids = [row[0] for row in cursor.fetchall()]
         conn.close()
 
-        assert '<msg1@example.com>' in message_ids
-        assert '<msg2@example.com>' in message_ids
-        assert '<msg3@example.com>' in message_ids
+        assert "<msg1@example.com>" in message_ids
+        assert "<msg2@example.com>" in message_ids
+        assert "<msg3@example.com>" in message_ids
 
     def test_generate_fallback_message_id(self, v1_1_db, sample_mbox_no_message_id):
         """Test fallback Message-ID generation for messages without Message-ID."""
@@ -706,9 +699,9 @@ class TestMetadataExtraction:
         conn.close()
 
         # One should be the actual Message-ID, one should be generated
-        assert '<has-id@example.com>' in message_ids
+        assert "<has-id@example.com>" in message_ids
         # Fallback should be a hash-based ID
-        assert any('@generated>' in mid for mid in message_ids)
+        assert any("@generated>" in mid for mid in message_ids)
 
     def test_body_preview_extraction(self, v1_1_db, sample_mbox_simple):
         """Test body preview extraction (first 1000 chars)."""
@@ -724,7 +717,7 @@ class TestMetadataExtraction:
         conn.close()
 
         assert body_preview is not None
-        assert 'longer content for body preview testing' in body_preview
+        assert "longer content for body preview testing" in body_preview
         assert len(body_preview) <= 1000
 
     def test_checksum_calculation(self, v1_1_db, sample_mbox_simple):
@@ -741,7 +734,7 @@ class TestMetadataExtraction:
         for checksum in checksums:
             assert checksum is not None
             assert len(checksum) == 64
-            assert all(c in '0123456789abcdef' for c in checksum)
+            assert all(c in "0123456789abcdef" for c in checksum)
 
 
 class TestDuplicateHandling:
@@ -778,12 +771,12 @@ class TestDuplicateHandling:
         mbox = mailbox.mbox(str(mbox_path2))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<msg1@example.com>'  # Same as sample_mbox_simple
-        msg['Subject'] = 'Duplicate from another archive'
-        msg['From'] = 'different@example.com'
-        msg['To'] = 'another@example.com'
-        msg['Date'] = 'Thu, 04 Jan 2024 12:00:00 +0000'
-        msg.set_content('This is a duplicate message from a different archive.')
+        msg["Message-ID"] = "<msg1@example.com>"  # Same as sample_mbox_simple
+        msg["Subject"] = "Duplicate from another archive"
+        msg["From"] = "different@example.com"
+        msg["To"] = "another@example.com"
+        msg["Date"] = "Thu, 04 Jan 2024 12:00:00 +0000"
+        msg.set_content("This is a duplicate message from a different archive.")
         mbox.add(msg)
         mbox.close()
 
@@ -842,19 +835,19 @@ class TestCompressionSupport:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<lzma-test@example.com>'
-        msg['Subject'] = 'LZMA Test Message'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('This message will be LZMA compressed.')
+        msg["Message-ID"] = "<lzma-test@example.com>"
+        msg["Subject"] = "LZMA Test Message"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("This message will be LZMA compressed.")
         mbox.add(msg)
         mbox.close()
 
         # Compress with lzma (.xz extension)
         compressed_path = tmp_path / "lzma_test.mbox.xz"
-        with open(mbox_path, 'rb') as f_in:
-            with lzma.open(compressed_path, 'wb') as f_out:
+        with open(mbox_path, "rb") as f_in:
+            with lzma.open(compressed_path, "wb") as f_out:
                 f_out.write(f_in.read())
 
         # Remove uncompressed file
@@ -879,20 +872,20 @@ class TestCompressionSupport:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<zstd-test@example.com>'
-        msg['Subject'] = 'Zstandard Test Message'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('This message will be Zstandard compressed.')
+        msg["Message-ID"] = "<zstd-test@example.com>"
+        msg["Subject"] = "Zstandard Test Message"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("This message will be Zstandard compressed.")
         mbox.add(msg)
         mbox.close()
 
         # Compress with zstd
         compressed_path = tmp_path / "zstd_test.mbox.zst"
         cctx = zstd.ZstdCompressor()
-        with open(mbox_path, 'rb') as f_in:
-            with open(compressed_path, 'wb') as f_out:
+        with open(mbox_path, "rb") as f_in:
+            with open(compressed_path, "wb") as f_out:
                 f_out.write(cctx.compress(f_in.read()))
 
         # Remove uncompressed file
@@ -912,16 +905,16 @@ class TestCompressionSupport:
         importer = ArchiveImporter(str(tmp_path / "test.db"))
 
         # Test gzip detection
-        assert importer._get_compression_format(Path("test.mbox.gz")) == 'gzip'
+        assert importer._get_compression_format(Path("test.mbox.gz")) == "gzip"
 
         # Test lzma detection (.xz)
-        assert importer._get_compression_format(Path("test.mbox.xz")) == 'lzma'
+        assert importer._get_compression_format(Path("test.mbox.xz")) == "lzma"
 
         # Test lzma detection (.lzma)
-        assert importer._get_compression_format(Path("test.mbox.lzma")) == 'lzma'
+        assert importer._get_compression_format(Path("test.mbox.lzma")) == "lzma"
 
         # Test zstd detection
-        assert importer._get_compression_format(Path("test.mbox.zst")) == 'zstd'
+        assert importer._get_compression_format(Path("test.mbox.zst")) == "zstd"
 
         # Test no compression
         assert importer._get_compression_format(Path("test.mbox")) is None
@@ -931,8 +924,8 @@ class TestCompressionSupport:
 
         # Create a corrupted gzip file
         corrupted_path = tmp_path / "corrupted.mbox.gz"
-        with open(corrupted_path, 'wb') as f:
-            f.write(b'This is not valid gzip data')
+        with open(corrupted_path, "wb") as f:
+            f.write(b"This is not valid gzip data")
 
         importer = ArchiveImporter(str(v1_1_db))
 
@@ -954,12 +947,12 @@ class TestErrorHandling:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg1 = email.message.EmailMessage()
-        msg1['Message-ID'] = '<good@example.com>'
-        msg1['Subject'] = 'Good Message'
-        msg1['From'] = 'sender@example.com'
-        msg1['To'] = 'recipient@example.com'
-        msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg1.set_content('This is a good message.')
+        msg1["Message-ID"] = "<good@example.com>"
+        msg1["Subject"] = "Good Message"
+        msg1["From"] = "sender@example.com"
+        msg1["To"] = "recipient@example.com"
+        msg1["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg1.set_content("This is a good message.")
         mbox.add(msg1)
         mbox.close()
 
@@ -983,7 +976,7 @@ class TestErrorHandling:
             messages_skipped=0,
             messages_failed=1,
             execution_time_ms=0.0,
-            errors=["Test error message"]
+            errors=["Test error message"],
         )
 
         assert len(result.errors) == 1
@@ -1004,12 +997,12 @@ class TestErrorHandling:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<test@example.com>'
-        msg['Subject'] = 'Test'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('Test content.')
+        msg["Message-ID"] = "<test@example.com>"
+        msg["Subject"] = "Test"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("Test content.")
         mbox.add(msg)
         mbox.close()
 
@@ -1032,22 +1025,22 @@ class TestErrorHandling:
 
         # Add first message
         msg1 = email.message.EmailMessage()
-        msg1['Message-ID'] = '<insert1@example.com>'
-        msg1['Subject'] = 'Insert Test 1'
-        msg1['From'] = 'sender@example.com'
-        msg1['To'] = 'recipient@example.com'
-        msg1['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg1.set_content('First message.')
+        msg1["Message-ID"] = "<insert1@example.com>"
+        msg1["Subject"] = "Insert Test 1"
+        msg1["From"] = "sender@example.com"
+        msg1["To"] = "recipient@example.com"
+        msg1["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg1.set_content("First message.")
         mbox.add(msg1)
 
         # Add second message
         msg2 = email.message.EmailMessage()
-        msg2['Message-ID'] = '<insert2@example.com>'
-        msg2['Subject'] = 'Insert Test 2'
-        msg2['From'] = 'sender@example.com'
-        msg2['To'] = 'recipient@example.com'
-        msg2['Date'] = 'Tue, 02 Jan 2024 12:00:00 +0000'
-        msg2.set_content('Second message.')
+        msg2["Message-ID"] = "<insert2@example.com>"
+        msg2["Subject"] = "Insert Test 2"
+        msg2["From"] = "sender@example.com"
+        msg2["To"] = "recipient@example.com"
+        msg2["Date"] = "Tue, 02 Jan 2024 12:00:00 +0000"
+        msg2.set_content("Second message.")
         mbox.add(msg2)
 
         mbox.close()
@@ -1071,18 +1064,18 @@ class TestErrorHandling:
         mbox = mailbox.mbox(str(mbox1_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<valid@example.com>'
-        msg['Subject'] = 'Valid Message'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('Valid message.')
+        msg["Message-ID"] = "<valid@example.com>"
+        msg["Subject"] = "Valid Message"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("Valid message.")
         mbox.add(msg)
         mbox.close()
 
         # Create an invalid file (not an mbox)
         invalid_path = tmp_path / "invalid.mbox"
-        with open(invalid_path, 'w') as f:
+        with open(invalid_path, "w") as f:
             f.write("This is not a valid mbox file\n")
 
         importer = ArchiveImporter(str(v1_1_db))
@@ -1108,15 +1101,15 @@ class TestErrorHandling:
 
         # Create multipart message with non-text parts
         msg = MIMEMultipart()
-        msg['Message-ID'] = '<multipart-exception@example.com>'
-        msg['Subject'] = 'Multipart Exception Test'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg["Message-ID"] = "<multipart-exception@example.com>"
+        msg["Subject"] = "Multipart Exception Test"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
 
         # Add a binary part (image)
-        binary_part = MIMEBase('image', 'png')
-        binary_part.set_payload(b'\x89PNG\r\n\x1a\n')  # PNG header
+        binary_part = MIMEBase("image", "png")
+        binary_part.set_payload(b"\x89PNG\r\n\x1a\n")  # PNG header
         msg.attach(binary_part)
 
         mbox.add(msg)
@@ -1145,7 +1138,7 @@ class TestErrorHandling:
         mbox_path = tmp_path / "non_multipart_exception.mbox"
 
         # Create message with Content-Transfer-Encoding that might cause issues
-        with open(mbox_path, 'w') as f:
+        with open(mbox_path, "w") as f:
             f.write("From sender@example.com Mon Jan 01 12:00:00 2024\n")
             f.write("Message-ID: <non-multipart-exception@example.com>\n")
             f.write("Subject: Non-Multipart Exception Test\n")
@@ -1169,12 +1162,12 @@ class TestErrorHandling:
         mbox = mailbox.mbox(str(valid_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<valid-multiple@example.com>'
-        msg['Subject'] = 'Valid Message'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('Valid content.')
+        msg["Message-ID"] = "<valid-multiple@example.com>"
+        msg["Subject"] = "Valid Message"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("Valid content.")
         mbox.add(msg)
         mbox.close()
 
@@ -1211,12 +1204,12 @@ class TestMultipleArchiveImport:
             mbox = mailbox.mbox(str(mbox_path))
 
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = f'<msg{i}@example.com>'
-            msg['Subject'] = f'Message {i}'
-            msg['From'] = f'sender{i}@example.com'
-            msg['To'] = 'recipient@example.com'
-            msg['Date'] = f'Mon, 0{i+1} Jan 2024 12:00:00 +0000'
-            msg.set_content(f'Content of message {i}.')
+            msg["Message-ID"] = f"<msg{i}@example.com>"
+            msg["Subject"] = f"Message {i}"
+            msg["From"] = f"sender{i}@example.com"
+            msg["To"] = "recipient@example.com"
+            msg["Date"] = f"Mon, 0{i + 1} Jan 2024 12:00:00 +0000"
+            msg.set_content(f"Content of message {i}.")
             mbox.add(msg)
             mbox.close()
 
@@ -1238,12 +1231,12 @@ class TestMultipleArchiveImport:
             mbox = mailbox.mbox(str(mbox_path))
 
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = f'<multi{i}@example.com>'
-            msg['Subject'] = f'Multi Message {i}'
-            msg['From'] = f'sender{i}@example.com'
-            msg['To'] = 'recipient@example.com'
-            msg['Date'] = f'Mon, 0{i+1} Jan 2024 12:00:00 +0000'
-            msg.set_content(f'Content {i}.')
+            msg["Message-ID"] = f"<multi{i}@example.com>"
+            msg["Subject"] = f"Multi Message {i}"
+            msg["From"] = f"sender{i}@example.com"
+            msg["To"] = "recipient@example.com"
+            msg["Date"] = f"Mon, 0{i + 1} Jan 2024 12:00:00 +0000"
+            msg.set_content(f"Content {i}.")
             mbox.add(msg)
             mbox.close()
 
@@ -1276,12 +1269,12 @@ class TestPerformance:
 
         for i in range(1000):
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = f'<perf{i}@example.com>'
-            msg['Subject'] = f'Performance Test Message {i}'
-            msg['From'] = f'sender{i}@example.com'
-            msg['To'] = 'recipient@example.com'
-            msg['Date'] = f'Mon, 01 Jan 2024 {i % 24:02d}:{i % 60:02d}:00 +0000'
-            msg.set_content(f'This is performance test message {i} with some content.')
+            msg["Message-ID"] = f"<perf{i}@example.com>"
+            msg["Subject"] = f"Performance Test Message {i}"
+            msg["From"] = f"sender{i}@example.com"
+            msg["To"] = "recipient@example.com"
+            msg["Date"] = f"Mon, 01 Jan 2024 {i % 24:02d}:{i % 60:02d}:00 +0000"
+            msg.set_content(f"This is performance test message {i} with some content.")
             mbox.add(msg)
 
         mbox.close()
@@ -1303,12 +1296,12 @@ class TestPerformance:
 
         for i in range(100):
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = f'<speed{i}@example.com>'
-            msg['Subject'] = f'Speed Test {i}'
-            msg['From'] = 'sender@example.com'
-            msg['To'] = 'recipient@example.com'
-            msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-            msg.set_content(f'Message {i}.')
+            msg["Message-ID"] = f"<speed{i}@example.com>"
+            msg["Subject"] = f"Speed Test {i}"
+            msg["From"] = "sender@example.com"
+            msg["To"] = "recipient@example.com"
+            msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+            msg.set_content(f"Message {i}.")
             mbox.add(msg)
 
         mbox.close()
@@ -1361,7 +1354,7 @@ class TestDBManagerIntegration:
         importer = ArchiveImporter(str(v1_1_db))
 
         # Import messages
-        importer.import_archive(str(sample_mbox_simple), account_id='test-import')
+        importer.import_archive(str(sample_mbox_simple), account_id="test-import")
 
         # Verify archive_runs has entries
         conn = sqlite3.connect(str(v1_1_db))
@@ -1384,12 +1377,12 @@ class TestDBManagerIntegration:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<rollback-test@example.com>'
-        msg['Subject'] = 'Test Message'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-        msg.set_content('Test content.')
+        msg["Message-ID"] = "<rollback-test@example.com>"
+        msg["Subject"] = "Test Message"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+        msg.set_content("Test content.")
         mbox.add(msg)
         mbox.close()
 
@@ -1421,16 +1414,14 @@ class TestDBManagerIntegration:
 
             # Verify each message has proper metadata
             for msg_data in messages:
-                assert msg_data['gmail_id'] is not None
-                assert msg_data['rfc_message_id'] is not None
-                assert msg_data['mbox_offset'] >= 0
-                assert msg_data['mbox_length'] > 0
-                assert msg_data['archive_file'] == str(sample_mbox_simple)
+                assert msg_data["gmail_id"] is not None
+                assert msg_data["rfc_message_id"] is not None
+                assert msg_data["mbox_offset"] >= 0
+                assert msg_data["mbox_length"] > 0
+                assert msg_data["archive_file"] == str(sample_mbox_simple)
 
     def test_extract_body_preview_multipart_exception_handling(
-        self,
-        v1_1_db: Path,
-        tmp_path: Path
+        self, v1_1_db: Path, tmp_path: Path
     ) -> None:
         """Test body preview extraction when get_payload raises exception (lines 159-160)."""
         # Create mbox with multipart message
@@ -1438,17 +1429,17 @@ class TestDBManagerIntegration:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<multipart@example.com>'
-        msg['Subject'] = 'Multipart Test'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg["Message-ID"] = "<multipart@example.com>"
+        msg["Subject"] = "Multipart Test"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
         msg.make_mixed()
 
         # Add a text part
         text_part = email.message.EmailMessage()
         text_part.set_content("This is the body")
-        text_part.set_type('text/plain')
+        text_part.set_type("text/plain")
         msg.attach(text_part)
 
         mbox.add(msg)
@@ -1460,9 +1451,7 @@ class TestDBManagerIntegration:
         assert result.messages_imported == 1
 
     def test_extract_body_preview_non_multipart_exception_handling(
-        self,
-        v1_1_db: Path,
-        tmp_path: Path
+        self, v1_1_db: Path, tmp_path: Path
     ) -> None:
         """Test body preview extraction for non-multipart message exception (lines 166-167)."""
         # Create mbox with simple message
@@ -1470,11 +1459,11 @@ class TestDBManagerIntegration:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<simple@example.com>'
-        msg['Subject'] = 'Simple Test'
-        msg['From'] = 'sender@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
+        msg["Message-ID"] = "<simple@example.com>"
+        msg["Subject"] = "Simple Test"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
         msg.set_content("Simple body text")
 
         mbox.add(msg)
@@ -1485,6 +1474,7 @@ class TestDBManagerIntegration:
         result = importer.import_archive(str(mbox_path))
         assert result.messages_imported == 1
 
+
 def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: Path) -> None:
     """Test import handles database constraint violations gracefully (lines 402-414).
 
@@ -1493,7 +1483,7 @@ def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: P
     """
     # Create mbox with 2 messages having the same Message-ID
     mbox_path = tmp_path / "duplicates.mbox"
-    with open(mbox_path, 'wb') as f:
+    with open(mbox_path, "wb") as f:
         # First message
         f.write(b"From first@example.com Mon Jan 01 12:00:00 2024\n")
         f.write(b"Message-ID: <duplicate@example.com>\n")
@@ -1548,15 +1538,15 @@ def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) ->
         # Create mbox with non-multipart message that might cause decode issues
         mbox_obj = mailbox.mbox(str(mbox_path))
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<decode_error@example.com>'
-        msg['Subject'] = 'Decode Error Test'
-        msg['From'] = 'sender@example.com'
+        msg["Message-ID"] = "<decode_error@example.com>"
+        msg["Subject"] = "Decode Error Test"
+        msg["From"] = "sender@example.com"
 
         # Set binary content that might cause decode issues
         msg.set_content(
-            b'Binary content with invalid UTF-8: \xff\xfe',
-            maintype='application',
-            subtype='octet-stream'
+            b"Binary content with invalid UTF-8: \xff\xfe",
+            maintype="application",
+            subtype="octet-stream",
         )
 
         mbox_obj.add(msg)
@@ -1588,18 +1578,18 @@ def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
         mbox_obj = mailbox.mbox(str(mbox_path))
 
         msg1 = email.message.EmailMessage()
-        msg1['Message-ID'] = '<msg1@example.com>'
-        msg1['X-Gmail-Labels'] = 'UNREAD'  # Force gmail_id extraction
-        msg1['Subject'] = 'Message 1'
-        msg1['From'] = 'sender@example.com'
+        msg1["Message-ID"] = "<msg1@example.com>"
+        msg1["X-Gmail-Labels"] = "UNREAD"  # Force gmail_id extraction
+        msg1["Subject"] = "Message 1"
+        msg1["From"] = "sender@example.com"
         msg1.set_content("Body 1")
         mbox_obj.add(msg1)
 
         msg2 = email.message.EmailMessage()
-        msg2['Message-ID'] = '<msg2@example.com>'  # Different Message-ID
-        msg2['X-Gmail-Labels'] = 'UNREAD'  # But will use same gmail_id if we manipulate
-        msg2['Subject'] = 'Message 2'
-        msg2['From'] = 'sender@example.com'
+        msg2["Message-ID"] = "<msg2@example.com>"  # Different Message-ID
+        msg2["X-Gmail-Labels"] = "UNREAD"  # But will use same gmail_id if we manipulate
+        msg2["Subject"] = "Message 2"
+        msg2["From"] = "sender@example.com"
         msg2.set_content("Body 2")
         mbox_obj.add(msg2)
 
@@ -1613,8 +1603,9 @@ def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
         result2 = importer.import_archive(str(mbox_path))
 
         # Second import should have some failures (duplicates)
-        assert result2.messages_failed > 0 or result2.messages_skipped > 0, \
+        assert result2.messages_failed > 0 or result2.messages_skipped > 0, (
             "Second import should detect duplicates"
+        )
 
 
 def test_importer_message_processing_exception(v1_1_db: Path) -> None:
@@ -1629,7 +1620,7 @@ def test_importer_message_processing_exception(v1_1_db: Path) -> None:
         mbox_path = Path(tmpdir) / "corrupt.mbox"
 
         # Create mbox with corrupt message
-        with open(mbox_path, 'wb') as f:
+        with open(mbox_path, "wb") as f:
             f.write(b"From MAILER-DAEMON Mon Jan 01 00:00:00 2024\n")
             f.write(b"Message-ID: <corrupt@example.com>\n")
             # Missing required headers, malformed structure
@@ -1663,16 +1654,16 @@ def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
         # Create multipart message with potentially problematic payload
         mbox_obj = mailbox.mbox(str(mbox_path))
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<multipart_decode@example.com>'
-        msg['Subject'] = 'Multipart Decode Test'
-        msg['From'] = 'sender@example.com'
+        msg["Message-ID"] = "<multipart_decode@example.com>"
+        msg["Subject"] = "Multipart Decode Test"
+        msg["From"] = "sender@example.com"
 
         # Make it multipart
         msg.make_mixed()
 
         # Add a text part
         text_part = email.message.EmailMessage()
-        text_part.set_content("Plain text content", subtype='plain')
+        text_part.set_content("Plain text content", subtype="plain")
         msg.attach(text_part)
 
         mbox_obj.add(msg)
@@ -1701,9 +1692,9 @@ def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
         # Create message that might cause decode exception
         mbox_obj = mailbox.mbox(str(mbox_path))
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<exception_path@example.com>'
-        msg['Subject'] = 'Exception Path Test'
-        msg['From'] = 'sender@example.com'
+        msg["Message-ID"] = "<exception_path@example.com>"
+        msg["Subject"] = "Exception Path Test"
+        msg["From"] = "sender@example.com"
 
         # Simple text content (should work, but exercises the code path)
         msg.set_content("Simple text content")

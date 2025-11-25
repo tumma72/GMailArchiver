@@ -32,13 +32,13 @@ def parse_age(age_str: str) -> datetime:
     """
     # Phase 1: Try parsing as ISO date (YYYY-MM-DD)
     try:
-        return datetime.strptime(age_str, '%Y-%m-%d')
+        return datetime.strptime(age_str, "%Y-%m-%d")
     except ValueError:
         # Not a valid ISO date, continue to relative age parsing
         pass
 
     # Phase 2: Try parsing as relative age
-    match = re.match(r'^(\d+)([ymwd])$', age_str.lower())
+    match = re.match(r"^(\d+)([ymwd])$", age_str.lower())
     if not match:
         raise ValueError(
             f"Invalid age/date format: '{age_str}'. "
@@ -50,13 +50,13 @@ def parse_age(age_str: str) -> datetime:
     value, unit = int(match.group(1)), match.group(2)
     now = datetime.now()
 
-    if unit == 'y':
+    if unit == "y":
         return now - relativedelta(years=value)
-    elif unit == 'm':
+    elif unit == "m":
         return now - relativedelta(months=value)
-    elif unit == 'w':
+    elif unit == "w":
         return now - timedelta(weeks=value)
-    elif unit == 'd':
+    elif unit == "d":
         return now - timedelta(days=value)
     else:
         raise ValueError(f"Unknown time unit: {unit}")
@@ -77,7 +77,7 @@ def datetime_to_gmail_query(dt: datetime) -> str:
         >>> datetime_to_gmail_query(dt)
         '2022/01/15'
     """
-    return dt.strftime('%Y/%m/%d')
+    return dt.strftime("%Y/%m/%d")
 
 
 def format_bytes(size: int) -> str:
@@ -97,7 +97,7 @@ def format_bytes(size: int) -> str:
         '1.0 MB'
     """
     size_float = float(size)
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_float < 1024.0:
             return f"{size_float:.1f} {unit}"
         size_float /= 1024.0
@@ -119,4 +119,4 @@ def chunk_list(lst: list[Any], chunk_size: int) -> list[list[Any]]:
         >>> chunk_list([1, 2, 3, 4, 5], 2)
         [[1, 2], [3, 4], [5]]
     """
-    return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+    return [lst[i : i + chunk_size] for i in range(0, len(lst), chunk_size)]

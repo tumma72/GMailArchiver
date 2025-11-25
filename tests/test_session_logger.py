@@ -59,7 +59,7 @@ class TestSessionLoggerInitialization:
     def test_init_permission_error_handling(self) -> None:
         """Test graceful handling of permission errors during directory creation."""
         # Use a path that will fail on permission (root directory on Unix, C:\\ on Windows)
-        if os.name == 'nt':
+        if os.name == "nt":
             bad_path = Path("C:\\Windows\\System32\\gmailarchiver_logs")
         else:
             bad_path = Path("/root/gmailarchiver_logs")
@@ -227,7 +227,7 @@ class TestSessionLoggerWriting:
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = SessionLogger(log_dir=Path(tmpdir))
 
-            special_msg = "Test with unicode: 🔥 ⚠️ ✓ and symbols: <>&\""
+            special_msg = 'Test with unicode: 🔥 ⚠️ ✓ and symbols: <>&"'
             logger.write(special_msg, level="INFO")
             logger.close()
 
@@ -306,7 +306,7 @@ class TestSessionLoggerCleanup:
 
             # Create 10 fake old log files
             for i in range(10):
-                fake_log = log_dir / f"session_2024-01-{i+1:02d}_120000.log"
+                fake_log = log_dir / f"session_2024-01-{i + 1:02d}_120000.log"
                 fake_log.write_text(f"Old log {i}")
 
             # Create new logger with keep_last=5
@@ -351,7 +351,7 @@ class TestSessionLoggerCleanup:
 
             # Create 5 old logs
             for i in range(5):
-                fake_log = log_dir / f"session_2024-01-{i+1:02d}_120000.log"
+                fake_log = log_dir / f"session_2024-01-{i + 1:02d}_120000.log"
                 fake_log.write_text(f"Old log {i}")
 
             # Create logger with keep_last=0 (no cleanup)
@@ -369,7 +369,7 @@ class TestSessionLoggerCleanup:
 
             # Create some session logs
             for i in range(3):
-                fake_log = log_dir / f"session_2024-01-{i+1:02d}_120000.log"
+                fake_log = log_dir / f"session_2024-01-{i + 1:02d}_120000.log"
                 fake_log.write_text(f"Old log {i}")
 
             # Create non-session files
@@ -399,7 +399,7 @@ class TestSessionLoggerCleanup:
             # Create 3 old log files
             old_logs = []
             for i in range(3):
-                fake_log = log_dir / f"session_2024-01-{i+1:02d}_120000.log"
+                fake_log = log_dir / f"session_2024-01-{i + 1:02d}_120000.log"
                 fake_log.write_text(f"Old log {i}")
                 old_logs.append(fake_log)
 

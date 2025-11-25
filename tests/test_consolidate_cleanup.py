@@ -29,7 +29,7 @@ def state_db(temp_dir):
     conn = sqlite3.connect(str(db_path))
 
     # Create messages table with full v1.1 schema
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT NOT NULL,
@@ -49,10 +49,10 @@ def state_db(temp_dir):
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Create archive_runs table
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -62,31 +62,30 @@ def state_db(temp_dir):
             account_id TEXT DEFAULT 'default',
             operation_type TEXT
         )
-    ''')
+    """)
 
     # Create FTS table for full-text search
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             subject, from_addr, to_addr, body_preview,
             content='messages',
             content_rowid='rowid'
         )
-    ''')
+    """)
 
     # Create schema_version table (for v1.1 detection)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             version TEXT PRIMARY KEY,
             applied_timestamp TEXT NOT NULL
         )
-    ''')
+    """)
     conn.execute(
-        "INSERT OR REPLACE INTO schema_version VALUES ('1.1', ?)",
-        (datetime.now(UTC).isoformat(),)
+        "INSERT OR REPLACE INTO schema_version VALUES ('1.1', ?)", (datetime.now(UTC).isoformat(),)
     )
 
     # Create old tables for backward compatibility
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archived_messages (
             gmail_id TEXT PRIMARY KEY,
             archived_timestamp TEXT NOT NULL,
@@ -96,7 +95,7 @@ def state_db(temp_dir):
             message_date TEXT,
             checksum TEXT
         )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -117,12 +116,12 @@ def create_test_mbox(path: Path, num_messages: int = 5) -> int:
     try:
         for i in range(num_messages):
             msg = mailbox.mboxMessage()
-            msg['From'] = f'sender{i}@example.com'
-            msg['To'] = 'recipient@example.com'
-            msg['Subject'] = f'Test Message {i}'
-            msg['Message-ID'] = f'<test{i}@example.com>'
-            msg['Date'] = 'Mon, 01 Jan 2024 12:00:00 +0000'
-            msg.set_payload(f'This is test message {i}.\n')
+            msg["From"] = f"sender{i}@example.com"
+            msg["To"] = "recipient@example.com"
+            msg["Subject"] = f"Test Message {i}"
+            msg["Message-ID"] = f"<test{i}@example.com>"
+            msg["Date"] = "Mon, 01 Jan 2024 12:00:00 +0000"
+            msg.set_payload(f"This is test message {i}.\n")
             mbox.add(msg)
 
         mbox.flush()
@@ -141,27 +140,30 @@ def add_messages_to_db(state_db: str, archive_file: str, num_messages: int = 5) 
     archive_name = Path(archive_file).stem
 
     for i in range(num_messages):
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages (
                 gmail_id, rfc_message_id, thread_id, subject, from_addr,
                 to_addr, date, archived_timestamp, archive_file,
                 mbox_offset, mbox_length, checksum, size_bytes
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            f'{archive_name}_gmail_{i}',
-            f'<test{i}@example.com>',
-            f'thread_{i}',
-            f'Test Message {i}',
-            f'sender{i}@example.com',
-            'recipient@example.com',
-            '2024-01-01 12:00:00',
-            timestamp,
-            archive_file,
-            i * 100,  # offset
-            100,      # length
-            f'checksum_{i}',
-            150
-        ))
+        """,
+            (
+                f"{archive_name}_gmail_{i}",
+                f"<test{i}@example.com>",
+                f"thread_{i}",
+                f"Test Message {i}",
+                f"sender{i}@example.com",
+                "recipient@example.com",
+                "2024-01-01 12:00:00",
+                timestamp,
+                archive_file,
+                i * 100,  # offset
+                100,  # length
+                f"checksum_{i}",
+                150,
+            ),
+        )
 
     conn.commit()
     conn.close()
@@ -187,14 +189,20 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=5)
 
         # Execute consolidate with --remove-sources and --yes
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources",
-            "--yes"  # Skip confirmation
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+                "--yes",  # Skip confirmation
+            ],
+        )
 
         # Verify
         assert result.exit_code == 0, f"Failed with: {result.stdout}"
@@ -220,13 +228,20 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Execute with confirmation = "y"
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources"
-        ], input="y\n")
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+            ],
+            input="y\n",
+        )
 
         # Verify prompt appeared and files were removed
         assert result.exit_code == 0
@@ -250,13 +265,20 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Execute with confirmation = "n"
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources"
-        ], input="n\n")
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+            ],
+            input="n\n",
+        )
 
         # Verify files still exist
         assert result.exit_code == 0
@@ -285,14 +307,21 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=5)
 
         # Execute consolidate (will overwrite existing.mbox)
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources",
-            "--yes"
-        ], input="y\n")  # Confirm overwrite
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+                "--yes",
+            ],
+            input="y\n",
+        )  # Confirm overwrite
 
         # Verify
         assert result.exit_code == 0
@@ -315,19 +344,25 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Mock validator to fail
-        with patch('gmailarchiver.__main__.ArchiveValidator') as mock_validator_class:
+        with patch("gmailarchiver.__main__.ArchiveValidator") as mock_validator_class:
             mock_validator = Mock()
             mock_validator.validate_all.return_value = False  # Validation fails
             mock_validator_class.return_value = mock_validator
 
-            result = runner.invoke(app, [
-                "consolidate",
-                str(src1), str(src2),
-                "-o", str(output),
-                "--state-db", state_db,
-                "--remove-sources",
-                "--yes"
-            ])
+            result = runner.invoke(
+                app,
+                [
+                    "consolidate",
+                    str(src1),
+                    str(src2),
+                    "-o",
+                    str(output),
+                    "--state-db",
+                    state_db,
+                    "--remove-sources",
+                    "--yes",
+                ],
+            )
 
         # Verify files still exist due to validation failure
         assert src1.exists(), "Source file 1 should still exist (validation failed)"
@@ -352,14 +387,20 @@ class TestConsolidateCleanup:
         total_size = src1_size + src2_size
 
         # Execute
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources",
-            "--yes"
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+                "--yes",
+            ],
+        )
 
         # Verify space reporting
         assert result.exit_code == 0
@@ -390,15 +431,21 @@ class TestConsolidateCleanup:
                 raise PermissionError("Permission denied")
             return original_unlink(self, *args, **kwargs)
 
-        with patch.object(Path, 'unlink', mock_unlink):
-            result = runner.invoke(app, [
-                "consolidate",
-                str(src1), str(src2),
-                "-o", str(output),
-                "--state-db", state_db,
-                "--remove-sources",
-                "--yes"
-            ])
+        with patch.object(Path, "unlink", mock_unlink):
+            result = runner.invoke(
+                app,
+                [
+                    "consolidate",
+                    str(src1),
+                    str(src2),
+                    "-o",
+                    str(output),
+                    "--state-db",
+                    state_db,
+                    "--remove-sources",
+                    "--yes",
+                ],
+            )
 
         # Should handle error gracefully
         assert (
@@ -430,15 +477,21 @@ class TestConsolidateCleanup:
                 raise FileNotFoundError("File not found")
             return original_unlink(self, *args, **kwargs)
 
-        with patch.object(Path, 'unlink', mock_unlink):
-            result = runner.invoke(app, [
-                "consolidate",
-                str(src1), str(src2),
-                "-o", str(output),
-                "--state-db", state_db,
-                "--remove-sources",
-                "--yes"
-            ])
+        with patch.object(Path, "unlink", mock_unlink):
+            result = runner.invoke(
+                app,
+                [
+                    "consolidate",
+                    str(src1),
+                    str(src2),
+                    "-o",
+                    str(output),
+                    "--state-db",
+                    state_db,
+                    "--remove-sources",
+                    "--yes",
+                ],
+            )
 
         # Should handle gracefully (file already deleted is OK)
         assert result.exit_code == 0
@@ -459,12 +512,9 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=5)
 
         # Execute WITHOUT --remove-sources
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db
-        ])
+        result = runner.invoke(
+            app, ["consolidate", str(src1), str(src2), "-o", str(output), "--state-db", state_db]
+        )
 
         # Verify all files still exist
         assert result.exit_code == 0
@@ -489,14 +539,20 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Execute with compression
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources",
-            "--yes"
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+                "--yes",
+            ],
+        )
 
         # Verify
         assert result.exit_code == 0
@@ -520,20 +576,27 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Execute with JSON output
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources",
-            "--yes",
-            "--json"
-        ])
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+                "--yes",
+                "--json",
+            ],
+        )
 
         # Verify JSON output
         assert result.exit_code == 0
         # Output should be valid JSON
         import json
+
         try:
             data = json.loads(result.stdout)
             assert "success" in data or "status" in data
@@ -558,13 +621,20 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=2)
 
         # Execute without --yes to see prompt
-        result = runner.invoke(app, [
-            "consolidate",
-            str(src1), str(src2),
-            "-o", str(output),
-            "--state-db", state_db,
-            "--remove-sources"
-        ], input="n\n")  # Decline to see full prompt
+        result = runner.invoke(
+            app,
+            [
+                "consolidate",
+                str(src1),
+                str(src2),
+                "-o",
+                str(output),
+                "--state-db",
+                state_db,
+                "--remove-sources",
+            ],
+            input="n\n",
+        )  # Decline to see full prompt
 
         # Verify file names appear in prompt
         assert "src1.mbox" in result.stdout

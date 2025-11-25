@@ -14,7 +14,7 @@ runner = CliRunner()
 
 def create_v1_1_schema_for_repair(conn: sqlite3.Connection) -> None:
     """Helper to create v1.1 schema with external content FTS for repair tests."""
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -34,13 +34,13 @@ def create_v1_1_schema_for_repair(conn: sqlite3.Connection) -> None:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Use external content FTS for testing FTS repairs
     # NOTE: Production uses content=messages which has automatic sync triggers,
     # but for testing we need to be able to manually create orphaned/missing FTS records.
     # The repair logic works the same for both modes (rowid-based matching).
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             subject,
             from_addr,
@@ -48,10 +48,10 @@ def create_v1_1_schema_for_repair(conn: sqlite3.Connection) -> None:
             body_preview,
             content=''
         )
-    ''')
+    """)
 
     # Create archive_runs table (needed for repairs)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -61,7 +61,7 @@ def create_v1_1_schema_for_repair(conn: sqlite3.Connection) -> None:
             account_id TEXT DEFAULT 'default',
             operation_type TEXT DEFAULT 'archive'
         )
-    ''')
+    """)
 
 
 @pytest.fixture
@@ -75,25 +75,47 @@ def db_with_fts_issues(tmp_path: Path) -> Path:
 
     # Insert 2 messages WITHOUT triggering FTS sync
     # We'll create FTS issues manually
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test 1', 'sender1@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', 'test.mbox', 0, 100, 'Body 1'
-    ))
+    """,
+        (
+            "msg1",
+            "<msg1@test.com>",
+            "Test 1",
+            "sender1@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            "test.mbox",
+            0,
+            100,
+            "Body 1",
+        ),
+    )
 
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg2', '<msg2@test.com>', 'Test 2', 'sender2@test.com>', 'recipient@test.com',
-        '2025-01-01T00:00:00', 'test.mbox', 100, 100, 'Body 2'
-    ))
+    """,
+        (
+            "msg2",
+            "<msg2@test.com>",
+            "Test 2",
+            "sender2@test.com>",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            "test.mbox",
+            100,
+            100,
+            "Body 2",
+        ),
+    )
 
     conn.commit()
 
@@ -105,16 +127,22 @@ def db_with_fts_issues(tmp_path: Path) -> Path:
 
     # Manually create FTS issues:
     # 1. Insert FTS for msg2 only (msg1 will be missing from FTS)
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         VALUES (?, ?, ?, ?, ?)
-    ''', (msg2_rowid, 'Test 2', 'sender2@test.com', 'recipient@test.com', 'Body 2'))
+    """,
+        (msg2_rowid, "Test 2", "sender2@test.com", "recipient@test.com", "Body 2"),
+    )
 
     # 2. Insert orphaned FTS with rowid 999 (doesn't exist in messages)
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         VALUES (?, ?, ?, ?, ?)
-    ''', (999, 'Orphaned', 'orphan@test.com', 'recipient@test.com', 'Orphaned body'))
+    """,
+        (999, "Orphaned", "orphan@test.com", "recipient@test.com", "Orphaned body"),
+    )
 
     conn.commit()
     conn.close()
@@ -131,7 +159,7 @@ def db_with_invalid_offsets_and_mbox(tmp_path: Path) -> tuple[Path, Path]:
     conn = sqlite3.connect(str(db_path))
 
     # Create schema
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -145,9 +173,9 @@ def db_with_invalid_offsets_and_mbox(tmp_path: Path) -> tuple[Path, Path]:
             mbox_length INTEGER NOT NULL,
             body_preview TEXT
         )
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE messages_fts USING fts5(
             subject,
             from_addr,
@@ -156,10 +184,10 @@ def db_with_invalid_offsets_and_mbox(tmp_path: Path) -> tuple[Path, Path]:
             content=messages,
             content_rowid=rowid
         )
-    ''')
+    """)
 
     # Create archive_runs table (needed for backfill repairs)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -169,62 +197,84 @@ def db_with_invalid_offsets_and_mbox(tmp_path: Path) -> tuple[Path, Path]:
             account_id TEXT DEFAULT 'default',
             operation_type TEXT DEFAULT 'archive'
         )
-    ''')
+    """)
 
     # Create real mbox file with 2 messages
     mbox = mailbox.mbox(str(mbox_path))
 
     # Message 1
     msg1 = mailbox.mboxMessage()
-    msg1['Message-ID'] = '<msg1@test.com>'
-    msg1['Subject'] = 'Test Message 1'
-    msg1['From'] = 'sender1@test.com'
-    msg1['To'] = 'recipient@test.com'
-    msg1['Date'] = 'Mon, 1 Jan 2025 12:00:00 +0000'
-    msg1.set_payload('Body 1')
+    msg1["Message-ID"] = "<msg1@test.com>"
+    msg1["Subject"] = "Test Message 1"
+    msg1["From"] = "sender1@test.com"
+    msg1["To"] = "recipient@test.com"
+    msg1["Date"] = "Mon, 1 Jan 2025 12:00:00 +0000"
+    msg1.set_payload("Body 1")
     mbox.add(msg1)
 
     # Message 2
     msg2 = mailbox.mboxMessage()
-    msg2['Message-ID'] = '<msg2@test.com>'
-    msg2['Subject'] = 'Test Message 2'
-    msg2['From'] = 'sender2@test.com'
-    msg2['To'] = 'recipient@test.com'
-    msg2['Date'] = 'Mon, 1 Jan 2025 13:00:00 +0000'
-    msg2.set_payload('Body 2')
+    msg2["Message-ID"] = "<msg2@test.com>"
+    msg2["Subject"] = "Test Message 2"
+    msg2["From"] = "sender2@test.com"
+    msg2["To"] = "recipient@test.com"
+    msg2["Date"] = "Mon, 1 Jan 2025 13:00:00 +0000"
+    msg2.set_payload("Body 2")
     mbox.add(msg2)
 
     mbox.close()
 
     # Insert records with placeholder offsets (-1, -1)
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr, date,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'gmail_msg1', '<msg1@test.com>', 'Test Message 1', 'sender1@test.com',
-        'recipient@test.com', 'Mon, 1 Jan 2025 12:00:00 +0000',
-        '2025-01-01T00:00:00', str(mbox_path), -1, -1, 'Body 1'
-    ))
+    """,
+        (
+            "gmail_msg1",
+            "<msg1@test.com>",
+            "Test Message 1",
+            "sender1@test.com",
+            "recipient@test.com",
+            "Mon, 1 Jan 2025 12:00:00 +0000",
+            "2025-01-01T00:00:00",
+            str(mbox_path),
+            -1,
+            -1,
+            "Body 1",
+        ),
+    )
 
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr, date,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'gmail_msg2', '<msg2@test.com>', 'Test Message 2', 'sender2@test.com',
-        'recipient@test.com', 'Mon, 1 Jan 2025 13:00:00 +0000',
-        '2025-01-01T00:00:00', str(mbox_path), -1, -1, 'Body 2'
-    ))
+    """,
+        (
+            "gmail_msg2",
+            "<msg2@test.com>",
+            "Test Message 2",
+            "sender2@test.com",
+            "recipient@test.com",
+            "Mon, 1 Jan 2025 13:00:00 +0000",
+            "2025-01-01T00:00:00",
+            str(mbox_path),
+            -1,
+            -1,
+            "Body 2",
+        ),
+    )
 
     # Sync FTS
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -264,9 +314,7 @@ def test_repair_actual_requires_confirmation(db_with_fts_issues: Path) -> None:
     """Test actual repair requires user confirmation."""
     # Decline confirmation
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"],
-        input="n\n"
+        app, ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"], input="n\n"
     )
 
     assert result.exit_code == 0
@@ -276,9 +324,7 @@ def test_repair_actual_requires_confirmation(db_with_fts_issues: Path) -> None:
 def test_repair_actual_with_confirmation(db_with_fts_issues: Path) -> None:
     """Test actual repair with user confirmation."""
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"],
-        input="y\n"
+        app, ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"], input="y\n"
     )
 
     assert result.exit_code == 0
@@ -306,9 +352,7 @@ def test_repair_actual_with_confirmation(db_with_fts_issues: Path) -> None:
 def test_repair_fts_only(db_with_fts_issues: Path) -> None:
     """Test repair fixes FTS sync issues."""
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"],
-        input="y\n"
+        app, ["repair", "--state-db", str(db_with_fts_issues), "--no-dry-run"], input="y\n"
     )
 
     assert result.exit_code == 0
@@ -319,10 +363,7 @@ def test_repair_backfill_dry_run(db_with_invalid_offsets_and_mbox: tuple[Path, P
     """Test repair --backfill in dry-run mode."""
     db_path, mbox_path = db_with_invalid_offsets_and_mbox
 
-    result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_path), "--backfill", "--dry-run"]
-    )
+    result = runner.invoke(app, ["repair", "--state-db", str(db_path), "--backfill", "--dry-run"])
 
     assert result.exit_code == 0
     # Should report what would be fixed
@@ -343,9 +384,7 @@ def test_repair_backfill_actual(db_with_invalid_offsets_and_mbox: tuple[Path, Pa
     db_path, mbox_path = db_with_invalid_offsets_and_mbox
 
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"],
-        input="y\n"
+        app, ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"], input="y\n"
     )
 
     assert result.exit_code == 0
@@ -368,7 +407,7 @@ def test_repair_backfill_actual(db_with_invalid_offsets_and_mbox: tuple[Path, Pa
 
 
 def test_repair_combined_fts_and_backfill(
-    db_with_invalid_offsets_and_mbox: tuple[Path, Path]
+    db_with_invalid_offsets_and_mbox: tuple[Path, Path],
 ) -> None:
     """Test repair can fix both FTS issues and backfill offsets."""
     db_path, mbox_path = db_with_invalid_offsets_and_mbox
@@ -385,9 +424,7 @@ def test_repair_combined_fts_and_backfill(
 
     # Run combined repair
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"],
-        input="y\n"
+        app, ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"], input="y\n"
     )
 
     assert result.exit_code == 0
@@ -440,7 +477,7 @@ def test_repair_backfill_missing_mbox(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(db_path))
 
     # Create schema
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -449,9 +486,9 @@ def test_repair_backfill_missing_mbox(tmp_path: Path) -> None:
             mbox_offset INTEGER NOT NULL,
             mbox_length INTEGER NOT NULL
         )
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE messages_fts USING fts5(
             subject,
             from_addr,
@@ -460,10 +497,10 @@ def test_repair_backfill_missing_mbox(tmp_path: Path) -> None:
             content=messages,
             content_rowid=rowid
         )
-    ''')
+    """)
 
     # Create archive_runs table (needed for backfill repairs)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -473,24 +510,25 @@ def test_repair_backfill_missing_mbox(tmp_path: Path) -> None:
             account_id TEXT DEFAULT 'default',
             operation_type TEXT DEFAULT 'archive'
         )
-    ''')
+    """)
 
     # Insert with invalid offset referencing non-existent mbox
     missing_mbox = str(tmp_path / "missing.mbox")
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, archived_timestamp,
             archive_file, mbox_offset, mbox_length
         ) VALUES (?, ?, ?, ?, ?, ?)
-    ''', ('msg1', '<msg1@test.com>', '2025-01-01T00:00:00', missing_mbox, -1, -1))
+    """,
+        ("msg1", "<msg1@test.com>", "2025-01-01T00:00:00", missing_mbox, -1, -1),
+    )
 
     conn.commit()
     conn.close()
 
     result = runner.invoke(
-        app,
-        ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"],
-        input="y\n"
+        app, ["repair", "--state-db", str(db_path), "--backfill", "--no-dry-run"], input="y\n"
     )
 
     # Should handle gracefully (maybe skip or warn)

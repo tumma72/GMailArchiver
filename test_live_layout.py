@@ -12,14 +12,13 @@ import time
 from pathlib import Path
 
 from rich.console import Console
+from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-from rich.table import Table
-from rich.layout import Layout
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 # Import from gmailarchiver
-from gmailarchiver.output import LogBuffer, SessionLogger, LiveLayoutContext
+from gmailarchiver.output import LogBuffer, SessionLogger
 
 
 def create_live_display(log_buffer: LogBuffer, progress: Progress, task_id: int) -> Layout:
@@ -31,10 +30,7 @@ def create_live_display(log_buffer: LogBuffer, progress: Progress, task_id: int)
         - Bottom: Log table (10 rows)
     """
     layout = Layout()
-    layout.split_column(
-        Layout(name="progress", size=3),
-        Layout(name="logs", size=12)
-    )
+    layout.split_column(Layout(name="progress", size=3), Layout(name="logs", size=12))
 
     # Top section: Progress bar
     layout["progress"].update(Panel(progress, title="Archive Progress", border_style="blue"))
@@ -61,12 +57,13 @@ def simulate_archiving():
         BarColumn(),
         TaskProgressColumn(),
         console=console,
-        transient=False
+        transient=False,
     )
     task_id = progress.add_task("Archiving messages", total=20)
 
     # Simulate archiving with live display
-    with Live(create_live_display(log_buffer, progress, task_id), refresh_per_second=4, console=console) as live:
+    live_display = create_live_display(log_buffer, progress, task_id)
+    with Live(live_display, refresh_per_second=4, console=console) as live:
         # Simulate initial messages
         log_buffer.add("Starting archiving process...", "INFO")
         session_logger.write("Starting archiving process...", "INFO")
@@ -95,7 +92,7 @@ def simulate_archiving():
                 "Follow-up Discussion",
                 "Quarterly Review",
                 "Design Proposal",
-                "Code Review Request"
+                "Code Review Request",
             ]
             subject = subjects[i % len(subjects)]
 

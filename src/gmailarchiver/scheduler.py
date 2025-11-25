@@ -188,23 +188,15 @@ class Scheduler:
         # Validate frequency-specific requirements
         if frequency == "weekly":
             if day_of_week is None:
-                raise ScheduleValidationError(
-                    "Weekly schedules require day_of_week (0-6)"
-                )
+                raise ScheduleValidationError("Weekly schedules require day_of_week (0-6)")
             if not isinstance(day_of_week, int) or not (0 <= day_of_week <= 6):
-                raise ScheduleValidationError(
-                    f"day_of_week must be 0-6, got: {day_of_week}"
-                )
+                raise ScheduleValidationError(f"day_of_week must be 0-6, got: {day_of_week}")
 
         if frequency == "monthly":
             if day_of_month is None:
-                raise ScheduleValidationError(
-                    "Monthly schedules require day_of_month (1-31)"
-                )
+                raise ScheduleValidationError("Monthly schedules require day_of_month (1-31)")
             if not isinstance(day_of_month, int) or not (1 <= day_of_month <= 31):
-                raise ScheduleValidationError(
-                    f"day_of_month must be 1-31, got: {day_of_month}"
-                )
+                raise ScheduleValidationError(f"day_of_month must be 1-31, got: {day_of_month}")
 
     def _is_valid_time(self, time_str: str) -> bool:
         """Validate time format.
@@ -339,9 +331,7 @@ class Scheduler:
             True if schedule was enabled, False if not found
         """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE schedules SET enabled = 1 WHERE id = ?", (schedule_id,)
-        )
+        cursor.execute("UPDATE schedules SET enabled = 1 WHERE id = ?", (schedule_id,))
         self.conn.commit()
 
         return cursor.rowcount > 0
@@ -356,9 +346,7 @@ class Scheduler:
             True if schedule was disabled, False if not found
         """
         cursor = self.conn.cursor()
-        cursor.execute(
-            "UPDATE schedules SET enabled = 0 WHERE id = ?", (schedule_id,)
-        )
+        cursor.execute("UPDATE schedules SET enabled = 0 WHERE id = ?", (schedule_id,))
         self.conn.commit()
 
         return cursor.rowcount > 0
@@ -371,9 +359,7 @@ class Scheduler:
         """
         cursor = self.conn.cursor()
         last_run = datetime.now().isoformat()
-        cursor.execute(
-            "UPDATE schedules SET last_run = ? WHERE id = ?", (last_run, schedule_id)
-        )
+        cursor.execute("UPDATE schedules SET last_run = ? WHERE id = ?", (last_run, schedule_id))
         self.conn.commit()
 
     def close(self) -> None:

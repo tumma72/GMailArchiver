@@ -30,7 +30,7 @@ def state_db(temp_dir):
 
     # Create messages table with full v1.1 schema
     # NOTE: Removed UNIQUE constraint on rfc_message_id for testing deduplication
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT NOT NULL,
@@ -50,10 +50,10 @@ def state_db(temp_dir):
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Create archive_runs table (match DBManager expectations)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archive_runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_timestamp TEXT NOT NULL,
@@ -63,31 +63,30 @@ def state_db(temp_dir):
             account_id TEXT DEFAULT 'default',
             operation_type TEXT
         )
-    ''')
+    """)
 
     # Create FTS table for full-text search
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             subject, from_addr, to_addr, body_preview,
             content='messages',
             content_rowid='rowid'
         )
-    ''')
+    """)
 
     # Create schema_version table (for v1.1 detection)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS schema_version (
             version TEXT PRIMARY KEY,
             applied_timestamp TEXT NOT NULL
         )
-    ''')
+    """)
     conn.execute(
-        "INSERT OR REPLACE INTO schema_version VALUES ('1.1', ?)",
-        (datetime.now(UTC).isoformat(),)
+        "INSERT OR REPLACE INTO schema_version VALUES ('1.1', ?)", (datetime.now(UTC).isoformat(),)
     )
 
     # Create old tables for backward compatibility (ArchiveState expects these)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS archived_messages (
             gmail_id TEXT PRIMARY KEY,
             archived_timestamp TEXT NOT NULL,
@@ -97,7 +96,7 @@ def state_db(temp_dir):
             message_date TEXT,
             checksum TEXT
         )
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -114,12 +113,12 @@ def sample_mbox_1(temp_dir, state_db):
     # Add 3 messages with different dates
     for i in range(3):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i}@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Subject'] = f'Test Message {i}'
-        msg['Message-ID'] = f'<msg{i}@example.com>'
-        msg['Date'] = f'Wed, {10+i} Jan 2024 12:00:00 +0000'
-        msg.set_payload(f'Body of message {i}')
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Test Message {i}"
+        msg["Message-ID"] = f"<msg{i}@example.com>"
+        msg["Date"] = f"Wed, {10 + i} Jan 2024 12:00:00 +0000"
+        msg.set_payload(f"Body of message {i}")
         mbox.add(msg)
 
     mbox.close()
@@ -127,31 +126,34 @@ def sample_mbox_1(temp_dir, state_db):
     # Add to database with v1.1 schema
     with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3):
-            state.conn.execute('''
+            state.conn.execute(
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
                  cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f'gmail{i}',
-                f'<msg{i}@example.com>',
-                f'thread{i}',
-                f'Test Message {i}',
-                f'sender{i}@example.com',
-                'recipient@example.com',
-                None,
-                f'2024-01-{10+i}T12:00:00+00:00',
-                datetime.now(UTC).isoformat(),
-                str(mbox_path),
-                0,  # placeholder offset
-                100,  # placeholder length
-                f'Body of message {i}',
-                'abc123',
-                100,
-                '[]',
-                'default'
-            ))
+            """,
+                (
+                    f"gmail{i}",
+                    f"<msg{i}@example.com>",
+                    f"thread{i}",
+                    f"Test Message {i}",
+                    f"sender{i}@example.com",
+                    "recipient@example.com",
+                    None,
+                    f"2024-01-{10 + i}T12:00:00+00:00",
+                    datetime.now(UTC).isoformat(),
+                    str(mbox_path),
+                    0,  # placeholder offset
+                    100,  # placeholder length
+                    f"Body of message {i}",
+                    "abc123",
+                    100,
+                    "[]",
+                    "default",
+                ),
+            )
         state.conn.commit()
 
     return mbox_path
@@ -166,12 +168,12 @@ def sample_mbox_2(temp_dir, state_db):
     # Add 3 messages with different dates
     for i in range(3, 6):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i}@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Subject'] = f'Test Message {i}'
-        msg['Message-ID'] = f'<msg{i}@example.com>'
-        msg['Date'] = f'Wed, {10+i} Jan 2024 12:00:00 +0000'
-        msg.set_payload(f'Body of message {i}')
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Test Message {i}"
+        msg["Message-ID"] = f"<msg{i}@example.com>"
+        msg["Date"] = f"Wed, {10 + i} Jan 2024 12:00:00 +0000"
+        msg.set_payload(f"Body of message {i}")
         mbox.add(msg)
 
     mbox.close()
@@ -179,31 +181,34 @@ def sample_mbox_2(temp_dir, state_db):
     # Add to database with v1.1 schema
     with ArchiveState(str(state_db), validate_path=False) as state:
         for i in range(3, 6):
-            state.conn.execute('''
+            state.conn.execute(
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
                  cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f'gmail{i}',
-                f'<msg{i}@example.com>',
-                f'thread{i}',
-                f'Test Message {i}',
-                f'sender{i}@example.com',
-                'recipient@example.com',
-                None,
-                f'2024-01-{10+i}T12:00:00+00:00',
-                datetime.now(UTC).isoformat(),
-                str(mbox_path),
-                0,  # placeholder offset
-                100,  # placeholder length
-                f'Body of message {i}',
-                'abc123',
-                100,
-                '[]',
-                'default'
-            ))
+            """,
+                (
+                    f"gmail{i}",
+                    f"<msg{i}@example.com>",
+                    f"thread{i}",
+                    f"Test Message {i}",
+                    f"sender{i}@example.com",
+                    "recipient@example.com",
+                    None,
+                    f"2024-01-{10 + i}T12:00:00+00:00",
+                    datetime.now(UTC).isoformat(),
+                    str(mbox_path),
+                    0,  # placeholder offset
+                    100,  # placeholder length
+                    f"Body of message {i}",
+                    "abc123",
+                    100,
+                    "[]",
+                    "default",
+                ),
+            )
         state.conn.commit()
 
     return mbox_path
@@ -219,12 +224,12 @@ def mbox_with_duplicates(temp_dir, state_db):
     mbox1 = mailbox.mbox(str(mbox1_path))
     for i in range(2):
         msg = mailbox.mboxMessage()
-        msg['From'] = f'sender{i}@example.com'
-        msg['To'] = 'recipient@example.com'
-        msg['Subject'] = f'Duplicate Test {i}'
-        msg['Message-ID'] = f'<dup{i}@example.com>'
-        msg['Date'] = f'Mon, {5+i} Feb 2024 10:00:00 +0000'
-        msg.set_payload(f'First version of message {i}')
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Duplicate Test {i}"
+        msg["Message-ID"] = f"<dup{i}@example.com>"
+        msg["Date"] = f"Mon, {5 + i} Feb 2024 10:00:00 +0000"
+        msg.set_payload(f"First version of message {i}")
         mbox1.add(msg)
     mbox1.close()
 
@@ -233,22 +238,22 @@ def mbox_with_duplicates(temp_dir, state_db):
 
     # Duplicate of message 1 (newer date)
     msg_dup = mailbox.mboxMessage()
-    msg_dup['From'] = 'sender1@example.com'
-    msg_dup['To'] = 'recipient@example.com'
-    msg_dup['Subject'] = 'Duplicate Test 1'
-    msg_dup['Message-ID'] = '<dup1@example.com>'
-    msg_dup['Date'] = 'Tue, 7 Feb 2024 10:00:00 +0000'  # Newer
-    msg_dup.set_payload('Second version of message 1 (newer)')
+    msg_dup["From"] = "sender1@example.com"
+    msg_dup["To"] = "recipient@example.com"
+    msg_dup["Subject"] = "Duplicate Test 1"
+    msg_dup["Message-ID"] = "<dup1@example.com>"
+    msg_dup["Date"] = "Tue, 7 Feb 2024 10:00:00 +0000"  # Newer
+    msg_dup.set_payload("Second version of message 1 (newer)")
     mbox2.add(msg_dup)
 
     # Unique message
     msg_unique = mailbox.mboxMessage()
-    msg_unique['From'] = 'sender2@example.com'
-    msg_unique['To'] = 'recipient@example.com'
-    msg_unique['Subject'] = 'Unique Message'
-    msg_unique['Message-ID'] = '<unique@example.com>'
-    msg_unique['Date'] = 'Wed, 8 Feb 2024 10:00:00 +0000'
-    msg_unique.set_payload('This message is unique')
+    msg_unique["From"] = "sender2@example.com"
+    msg_unique["To"] = "recipient@example.com"
+    msg_unique["Subject"] = "Unique Message"
+    msg_unique["Message-ID"] = "<unique@example.com>"
+    msg_unique["Date"] = "Wed, 8 Feb 2024 10:00:00 +0000"
+    msg_unique.set_payload("This message is unique")
     mbox2.add(msg_unique)
 
     mbox2.close()
@@ -257,81 +262,93 @@ def mbox_with_duplicates(temp_dir, state_db):
     with ArchiveState(str(state_db), validate_path=False) as state:
         # From archive1
         for i in range(2):
-            state.conn.execute('''
+            state.conn.execute(
+                """
                 INSERT INTO messages
                 (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
                  cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
                  body_preview, checksum, size_bytes, labels, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                f'gmail_dup{i}',
-                f'<dup{i}@example.com>',
-                f'thread_dup{i}',
-                f'Duplicate Test {i}',
-                f'sender{i}@example.com',
-                'recipient@example.com',
-                None,
-                f'2024-02-0{5+i}T10:00:00+00:00',
-                datetime.now(UTC).isoformat(),
-                str(mbox1_path),
-                0, 100,
-                f'First version of message {i}',
-                'abc123',
-                100,
-                '[]',
-                'default'
-            ))
+            """,
+                (
+                    f"gmail_dup{i}",
+                    f"<dup{i}@example.com>",
+                    f"thread_dup{i}",
+                    f"Duplicate Test {i}",
+                    f"sender{i}@example.com",
+                    "recipient@example.com",
+                    None,
+                    f"2024-02-0{5 + i}T10:00:00+00:00",
+                    datetime.now(UTC).isoformat(),
+                    str(mbox1_path),
+                    0,
+                    100,
+                    f"First version of message {i}",
+                    "abc123",
+                    100,
+                    "[]",
+                    "default",
+                ),
+            )
 
         # From archive2 (duplicate has different gmail_id)
-        state.conn.execute('''
+        state.conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
              cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
              body_preview, checksum, size_bytes, labels, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            'gmail_dup1_v2',
-            '<dup1@example.com>',
-            'thread_dup1',
-            'Duplicate Test 1',
-            'sender1@example.com',
-            'recipient@example.com',
-            None,
-            '2024-02-07T10:00:00+00:00',
-            datetime.now(UTC).isoformat(),
-            str(mbox2_path),
-            0, 100,
-            'Second version of message 1 (newer)',
-            'abc123',
-            100,
-            '[]',
-            'default'
-        ))
+        """,
+            (
+                "gmail_dup1_v2",
+                "<dup1@example.com>",
+                "thread_dup1",
+                "Duplicate Test 1",
+                "sender1@example.com",
+                "recipient@example.com",
+                None,
+                "2024-02-07T10:00:00+00:00",
+                datetime.now(UTC).isoformat(),
+                str(mbox2_path),
+                0,
+                100,
+                "Second version of message 1 (newer)",
+                "abc123",
+                100,
+                "[]",
+                "default",
+            ),
+        )
 
-        state.conn.execute('''
+        state.conn.execute(
+            """
             INSERT INTO messages
             (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr,
              cc_addr, date, archived_timestamp, archive_file, mbox_offset, mbox_length,
              body_preview, checksum, size_bytes, labels, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            'gmail_unique',
-            '<unique@example.com>',
-            'thread_unique',
-            'Unique Message',
-            'sender2@example.com',
-            'recipient@example.com',
-            None,
-            '2024-02-08T10:00:00+00:00',
-            datetime.now(UTC).isoformat(),
-            str(mbox2_path),
-            0, 100,
-            'This message is unique',
-            'abc123',
-            100,
-            '[]',
-            'default'
-        ))
+        """,
+            (
+                "gmail_unique",
+                "<unique@example.com>",
+                "thread_unique",
+                "Unique Message",
+                "sender2@example.com",
+                "recipient@example.com",
+                None,
+                "2024-02-08T10:00:00+00:00",
+                datetime.now(UTC).isoformat(),
+                str(mbox2_path),
+                0,
+                100,
+                "This message is unique",
+                "abc123",
+                100,
+                "[]",
+                "default",
+            ),
+        )
 
         state.conn.commit()
 
@@ -365,7 +382,7 @@ class TestBasicConsolidation:
             source_archives=[sample_mbox_1, sample_mbox_2],
             output_archive=output_path,
             sort_by_date=False,
-            deduplicate=False
+            deduplicate=False,
         )
 
         assert isinstance(result, ConsolidationResult)
@@ -386,8 +403,7 @@ class TestBasicConsolidation:
         output_path = temp_dir / "consolidated.mbox"
 
         result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path
+            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
         )
 
         assert result.output_file == str(output_path)
@@ -412,8 +428,7 @@ class TestBasicConsolidation:
         output_path = temp_dir / "consolidated.mbox"
 
         result = consolidator.consolidate(
-            source_archives=[empty1, empty2],
-            output_archive=output_path
+            source_archives=[empty1, empty2], output_archive=output_path
         )
 
         assert result.total_messages == 0
@@ -425,8 +440,7 @@ class TestBasicConsolidation:
         output_path = temp_dir / "consolidated.mbox"
 
         result = consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path
+            source_archives=[sample_mbox_1], output_archive=output_path
         )
 
         assert result.total_messages == 3
@@ -438,9 +452,7 @@ class TestBasicConsolidation:
         output_path = temp_dir / "consolidated.mbox"
 
         consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path,
-            sort_by_date=False
+            source_archives=[sample_mbox_1], output_archive=output_path, sort_by_date=False
         )
 
         # Compare original and consolidated
@@ -450,9 +462,9 @@ class TestBasicConsolidation:
         orig_msg = orig_mbox[0]
         cons_msg = cons_mbox[0]
 
-        assert orig_msg['Subject'] == cons_msg['Subject']
-        assert orig_msg['From'] == cons_msg['From']
-        assert orig_msg['Message-ID'] == cons_msg['Message-ID']
+        assert orig_msg["Subject"] == cons_msg["Subject"]
+        assert orig_msg["From"] == cons_msg["From"]
+        assert orig_msg["Message-ID"] == cons_msg["Message-ID"]
         assert orig_msg.get_payload() == cons_msg.get_payload()
 
         orig_mbox.close()
@@ -470,7 +482,7 @@ class TestSorting:
         result = consolidator.consolidate(
             source_archives=[sample_mbox_2, sample_mbox_1],  # Reversed order
             output_archive=output_path,
-            sort_by_date=True
+            sort_by_date=True,
         )
 
         assert result.sort_applied is True
@@ -479,12 +491,12 @@ class TestSorting:
         mbox = mailbox.mbox(str(output_path))
         dates = []
         for msg in mbox:
-            dates.append(msg['Date'])
+            dates.append(msg["Date"])
         mbox.close()
 
         # Should be in ascending order by date
-        assert dates[0].startswith('Wed, 10 Jan')
-        assert dates[-1].startswith('Wed, 15 Jan')
+        assert dates[0].startswith("Wed, 10 Jan")
+        assert dates[-1].startswith("Wed, 15 Jan")
 
     def test_no_sort_preserves_order(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
         """Test without sorting preserves original order."""
@@ -494,7 +506,7 @@ class TestSorting:
         result = consolidator.consolidate(
             source_archives=[sample_mbox_2, sample_mbox_1],  # archive2 first
             output_archive=output_path,
-            sort_by_date=False
+            sort_by_date=False,
         )
 
         assert result.sort_applied is False
@@ -502,7 +514,7 @@ class TestSorting:
         # First 3 messages should be from archive2 (msg3, msg4, msg5)
         mbox = mailbox.mbox(str(output_path))
         first_msg = mbox[0]
-        assert first_msg['Message-ID'] == '<msg3@example.com>'
+        assert first_msg["Message-ID"] == "<msg3@example.com>"
         mbox.close()
 
     def test_sort_handles_malformed_dates(self, temp_dir, state_db):
@@ -512,15 +524,15 @@ class TestSorting:
         mbox = mailbox.mbox(str(mbox_path))
 
         msg1 = mailbox.mboxMessage()
-        msg1['Message-ID'] = '<good@example.com>'
-        msg1['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
-        msg1.set_payload('Good date')
+        msg1["Message-ID"] = "<good@example.com>"
+        msg1["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg1.set_payload("Good date")
         mbox.add(msg1)
 
         msg2 = mailbox.mboxMessage()
-        msg2['Message-ID'] = '<bad@example.com>'
-        msg2['Date'] = 'INVALID DATE'
-        msg2.set_payload('Bad date')
+        msg2["Message-ID"] = "<bad@example.com>"
+        msg2["Date"] = "INVALID DATE"
+        msg2.set_payload("Bad date")
         mbox.add(msg2)
 
         mbox.close()
@@ -530,9 +542,7 @@ class TestSorting:
 
         # Should not crash
         result = consolidator.consolidate(
-            source_archives=[mbox_path],
-            output_archive=output_path,
-            sort_by_date=True
+            source_archives=[mbox_path], output_archive=output_path, sort_by_date=True
         )
 
         assert result.total_messages == 2
@@ -551,7 +561,7 @@ class TestDeduplication:
             source_archives=[mbox1, mbox2],
             output_archive=output_path,
             deduplicate=True,
-            dedupe_strategy='newest'
+            dedupe_strategy="newest",
         )
 
         assert result.duplicates_removed == 1
@@ -572,21 +582,21 @@ class TestDeduplication:
             source_archives=[mbox1, mbox2],
             output_archive=output_path,
             deduplicate=True,
-            dedupe_strategy='newest'
+            dedupe_strategy="newest",
         )
 
         # Find the kept message with Message-ID <dup1@example.com>
         mbox = mailbox.mbox(str(output_path))
         kept_msg = None
         for msg in mbox:
-            if msg['Message-ID'] == '<dup1@example.com>':
+            if msg["Message-ID"] == "<dup1@example.com>":
                 kept_msg = msg
                 break
         mbox.close()
 
         assert kept_msg is not None
         # Newer version has different body
-        assert 'newer' in kept_msg.get_payload()
+        assert "newer" in kept_msg.get_payload()
 
     def test_no_deduplicate_keeps_all(self, temp_dir, state_db, mbox_with_duplicates):
         """Test without deduplication keeps all messages."""
@@ -595,9 +605,7 @@ class TestDeduplication:
         output_path = temp_dir / "no_dedup.mbox"
 
         result = consolidator.consolidate(
-            source_archives=[mbox1, mbox2],
-            output_archive=output_path,
-            deduplicate=False
+            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=False
         )
 
         assert result.duplicates_removed == 0
@@ -611,17 +619,17 @@ class TestDeduplication:
 
         mbox1 = mailbox.mbox(str(mbox1_path))
         msg_small = mailbox.mboxMessage()
-        msg_small['Message-ID'] = '<same@example.com>'
-        msg_small['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
-        msg_small.set_payload('Small body')
+        msg_small["Message-ID"] = "<same@example.com>"
+        msg_small["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg_small.set_payload("Small body")
         mbox1.add(msg_small)
         mbox1.close()
 
         mbox2 = mailbox.mbox(str(mbox2_path))
         msg_large = mailbox.mboxMessage()
-        msg_large['Message-ID'] = '<same@example.com>'
-        msg_large['Date'] = 'Mon, 1 Jan 2024 12:00:00 +0000'
-        msg_large.set_payload('Large body with much more content here')
+        msg_large["Message-ID"] = "<same@example.com>"
+        msg_large["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+        msg_large.set_payload("Large body with much more content here")
         mbox2.add(msg_large)
         mbox2.close()
 
@@ -632,13 +640,13 @@ class TestDeduplication:
             source_archives=[mbox1_path, mbox2_path],
             output_archive=output_path,
             deduplicate=True,
-            dedupe_strategy='largest'
+            dedupe_strategy="largest",
         )
 
         # Verify larger message kept
         mbox = mailbox.mbox(str(output_path))
         kept_msg = mbox[0]
-        assert 'much more content' in kept_msg.get_payload()
+        assert "much more content" in kept_msg.get_payload()
         mbox.close()
 
 
@@ -653,15 +661,14 @@ class TestDatabaseUpdate:
         output_path = temp_dir / "consolidated.mbox"
 
         consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path
+            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
         )
 
         # Check database
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute("""
                 SELECT DISTINCT archive_file FROM messages
-            ''')
+            """)
             archive_files = [row[0] for row in cursor.fetchall()]
 
         # All messages should point to consolidated archive
@@ -672,18 +679,18 @@ class TestDatabaseUpdate:
         consolidator = ArchiveConsolidator(str(state_db))
         output_path = temp_dir / "consolidated.mbox"
 
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path
-        )
+        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
 
         # Check offsets are updated
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(
+                """
                 SELECT rfc_message_id, mbox_offset, mbox_length
                 FROM messages
                 WHERE archive_file = ?
-            ''', (str(output_path),))
+            """,
+                (str(output_path),),
+            )
             rows = cursor.fetchall()
 
         assert len(rows) == 3
@@ -700,18 +707,16 @@ class TestDatabaseUpdate:
 
         # Count before
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_before = cursor.fetchone()[0]
 
         consolidator.consolidate(
-            source_archives=[mbox1, mbox2],
-            output_archive=output_path,
-            deduplicate=True
+            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
         )
 
         # Count after
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_after = cursor.fetchone()[0]
 
         # Should have 1 less entry (duplicate removed)
@@ -724,25 +729,28 @@ class TestDatabaseUpdate:
 
         # Get original metadata
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(
+                """
                 SELECT rfc_message_id, subject, from_addr
                 FROM messages
                 WHERE archive_file = ?
-            ''', (str(sample_mbox_1),))
+            """,
+                (str(sample_mbox_1),),
+            )
             original_metadata = cursor.fetchall()
 
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path
-        )
+        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
 
         # Get new metadata
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(
+                """
                 SELECT rfc_message_id, subject, from_addr
                 FROM messages
                 WHERE archive_file = ?
-            ''', (str(output_path),))
+            """,
+                (str(output_path),),
+            )
             new_metadata = cursor.fetchall()
 
         # Metadata should match (except archive_file)
@@ -766,16 +774,16 @@ class TestCompression:
         result = consolidator.consolidate(
             source_archives=[sample_mbox_1, sample_mbox_2],
             output_archive=output_path,
-            compress='gzip'
+            compress="gzip",
         )
 
-        assert result.compression_used == 'gzip'
+        assert result.compression_used == "gzip"
         assert output_path.exists()
 
         # Verify it's actually compressed
-        with open(output_path, 'rb') as f:
+        with open(output_path, "rb") as f:
             magic = f.read(2)
-            assert magic == b'\x1f\x8b'  # gzip magic number
+            assert magic == b"\x1f\x8b"  # gzip magic number
 
     def test_consolidate_without_compression(self, temp_dir, state_db, sample_mbox_1):
         """Test consolidation without compression."""
@@ -783,9 +791,7 @@ class TestCompression:
         output_path = temp_dir / "consolidated.mbox"
 
         result = consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path,
-            compress=None
+            source_archives=[sample_mbox_1], output_archive=output_path, compress=None
         )
 
         assert result.compression_used is None
@@ -802,10 +808,7 @@ class TestErrorHandling:
         missing_path = temp_dir / "nonexistent.mbox"
 
         with pytest.raises(FileNotFoundError):
-            consolidator.consolidate(
-                source_archives=[missing_path],
-                output_archive=output_path
-            )
+            consolidator.consolidate(source_archives=[missing_path], output_archive=output_path)
 
     def test_consolidate_empty_source_list(self, temp_dir, state_db):
         """Test error with empty source archives list."""
@@ -813,10 +816,7 @@ class TestErrorHandling:
         output_path = temp_dir / "consolidated.mbox"
 
         with pytest.raises(ValueError):
-            consolidator.consolidate(
-                source_archives=[],
-                output_archive=output_path
-            )
+            consolidator.consolidate(source_archives=[], output_archive=output_path)
 
     def test_consolidate_invalid_dedupe_strategy(self, temp_dir, state_db, sample_mbox_1):
         """Test error with invalid deduplication strategy."""
@@ -828,7 +828,7 @@ class TestErrorHandling:
                 source_archives=[sample_mbox_1],
                 output_archive=output_path,
                 deduplicate=True,
-                dedupe_strategy='invalid_strategy'
+                dedupe_strategy="invalid_strategy",
             )
 
 
@@ -847,7 +847,7 @@ class TestAtomicConsolidation:
             source_archives=[sample_mbox_1, sample_mbox_2],
             output_archive=output_path,
             sort_by_date=False,
-            deduplicate=False
+            deduplicate=False,
         )
 
         # Verify mbox exists and has correct count
@@ -859,8 +859,7 @@ class TestAtomicConsolidation:
         # Verify database updated
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
-                'SELECT COUNT(*) FROM messages WHERE archive_file = ?',
-                (str(output_path),)
+                "SELECT COUNT(*) FROM messages WHERE archive_file = ?", (str(output_path),)
             )
             db_count = cursor.fetchone()[0]
 
@@ -873,21 +872,18 @@ class TestAtomicConsolidation:
         output_path = temp_dir / "consolidated.mbox"
 
         # Perform consolidation
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path
-        )
+        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
 
         # Verify offsets are updated and valid
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
-                '''
+                """
                 SELECT rfc_message_id, mbox_offset, mbox_length
                 FROM messages
                 WHERE archive_file = ?
                 ORDER BY mbox_offset
-                ''',
-                (str(output_path),)
+                """,
+                (str(output_path),),
             )
             rows = cursor.fetchall()
 
@@ -901,7 +897,7 @@ class TestAtomicConsolidation:
         # Offsets should be sequential (no overlap)
         for i in range(len(rows) - 1):
             _, offset1, length1 = rows[i]
-            _, offset2, _ = rows[i+1]
+            _, offset2, _ = rows[i + 1]
             assert offset1 + length1 <= offset2, "Overlapping offsets detected"
 
     def test_consolidation_creates_audit_trail(
@@ -913,18 +909,17 @@ class TestAtomicConsolidation:
 
         # Count archive_runs before
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM archive_runs')
+            cursor = conn.execute("SELECT COUNT(*) FROM archive_runs")
             runs_before = cursor.fetchone()[0]
 
         # Perform consolidation
         consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path
+            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
         )
 
         # Verify audit trail created
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM archive_runs')
+            cursor = conn.execute("SELECT COUNT(*) FROM archive_runs")
             runs_after = cursor.fetchone()[0]
 
         # Should have at least one new entry
@@ -940,18 +935,18 @@ class TestAtomicConsolidation:
         result = consolidator.consolidate(
             source_archives=[sample_mbox_1, sample_mbox_2],
             output_archive=output_path,
-            compress='gzip'
+            compress="gzip",
         )
 
         # Verify compressed file exists
         assert output_path.exists()
-        assert result.compression_used == 'gzip'
+        assert result.compression_used == "gzip"
 
         # Verify database points to compressed file
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
-                'SELECT DISTINCT archive_file FROM messages WHERE archive_file = ?',
-                (str(output_path),)
+                "SELECT DISTINCT archive_file FROM messages WHERE archive_file = ?",
+                (str(output_path),),
             )
             db_files = [row[0] for row in cursor.fetchall()]
 
@@ -967,19 +962,17 @@ class TestAtomicConsolidation:
 
         # Count messages before
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_before = cursor.fetchone()[0]
 
         # Perform consolidation with deduplication
         result = consolidator.consolidate(
-            source_archives=[mbox1, mbox2],
-            output_archive=output_path,
-            deduplicate=True
+            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
         )
 
         # Count messages after
         with sqlite3.connect(str(state_db)) as conn:
-            cursor = conn.execute('SELECT COUNT(*) FROM messages')
+            cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_after = cursor.fetchone()[0]
 
         # Should have removed 1 duplicate
@@ -994,30 +987,27 @@ class TestAtomicConsolidation:
         # Get original metadata
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
-                '''
+                """
                 SELECT gmail_id, rfc_message_id, subject, from_addr
                 FROM messages
                 WHERE archive_file = ?
-                ''',
-                (str(sample_mbox_1),)
+                """,
+                (str(sample_mbox_1),),
             )
             original_metadata = {row[0]: row for row in cursor.fetchall()}
 
         # Perform consolidation
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1],
-            output_archive=output_path
-        )
+        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
 
         # Get new metadata
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
-                '''
+                """
                 SELECT gmail_id, rfc_message_id, subject, from_addr
                 FROM messages
                 WHERE archive_file = ?
-                ''',
-                (str(output_path),)
+                """,
+                (str(output_path),),
             )
             new_metadata = {row[0]: row for row in cursor.fetchall()}
 

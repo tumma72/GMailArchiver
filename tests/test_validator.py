@@ -18,9 +18,9 @@ class TestArchiveValidatorInit:
 
     def test_init(self) -> None:
         """Test initialization."""
-        validator = ArchiveValidator('archive.mbox', 'state.db')
-        assert validator.archive_path == Path('archive.mbox')
-        assert validator.state_db_path == Path('state.db')
+        validator = ArchiveValidator("archive.mbox", "state.db")
+        assert validator.archive_path == Path("archive.mbox")
+        assert validator.state_db_path == Path("state.db")
         assert validator.errors == []
 
 
@@ -29,7 +29,7 @@ class TestGetMboxPath:
 
     def test_get_mbox_path_uncompressed(self) -> None:
         """Test getting path for uncompressed mbox."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         try:
@@ -44,17 +44,17 @@ class TestGetMboxPath:
     def test_get_mbox_path_gzip(self) -> None:
         """Test decompressing gzip archive."""
         # Create a test mbox
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             test_mbox = Path(f.name)
-            f.write(b'From test@example.com\nSubject: Test\n\nBody')
+            f.write(b"From test@example.com\nSubject: Test\n\nBody")
 
         # Compress it
-        with tempfile.NamedTemporaryFile(suffix='.gz', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".gz", delete=False) as f:
             gz_path = Path(f.name)
 
         try:
-            with gzip.open(gz_path, 'wb') as f_out:
-                with open(test_mbox, 'rb') as f_in:
+            with gzip.open(gz_path, "wb") as f_out:
+                with open(test_mbox, "rb") as f_in:
                     f_out.write(f_in.read())
 
             validator = ArchiveValidator(str(gz_path))
@@ -62,7 +62,7 @@ class TestGetMboxPath:
 
             assert is_temp is True
             assert path.exists()
-            assert path.suffix == '.mbox'
+            assert path.suffix == ".mbox"
 
             # Clean up temp file
             if path.exists():
@@ -74,17 +74,17 @@ class TestGetMboxPath:
     def test_get_mbox_path_lzma(self) -> None:
         """Test decompressing lzma archive."""
         # Create a test mbox
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             test_mbox = Path(f.name)
-            f.write(b'From test@example.com\nSubject: Test\n\nBody')
+            f.write(b"From test@example.com\nSubject: Test\n\nBody")
 
         # Compress it
-        with tempfile.NamedTemporaryFile(suffix='.xz', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".xz", delete=False) as f:
             xz_path = Path(f.name)
 
         try:
-            with lzma.open(xz_path, 'wb') as f_out:
-                with open(test_mbox, 'rb') as f_in:
+            with lzma.open(xz_path, "wb") as f_out:
+                with open(test_mbox, "rb") as f_in:
                     f_out.write(f_in.read())
 
             validator = ArchiveValidator(str(xz_path))
@@ -92,7 +92,7 @@ class TestGetMboxPath:
 
             assert is_temp is True
             assert path.exists()
-            assert path.suffix == '.mbox'
+            assert path.suffix == ".mbox"
 
             # Clean up temp file
             if path.exists():
@@ -104,17 +104,17 @@ class TestGetMboxPath:
     def test_get_mbox_path_zstd(self) -> None:
         """Test decompressing zstd archive."""
         # Create a test mbox
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             test_mbox = Path(f.name)
-            f.write(b'From test@example.com\nSubject: Test\n\nBody')
+            f.write(b"From test@example.com\nSubject: Test\n\nBody")
 
         # Compress it
-        with tempfile.NamedTemporaryFile(suffix='.zst', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".zst", delete=False) as f:
             zst_path = Path(f.name)
 
         try:
-            with zstd.open(zst_path, 'wb') as f_out:
-                with open(test_mbox, 'rb') as f_in:
+            with zstd.open(zst_path, "wb") as f_out:
+                with open(test_mbox, "rb") as f_in:
                     f_out.write(f_in.read())
 
             validator = ArchiveValidator(str(zst_path))
@@ -122,7 +122,7 @@ class TestGetMboxPath:
 
             assert is_temp is True
             assert path.exists()
-            assert path.suffix == '.mbox'
+            assert path.suffix == ".mbox"
 
             # Clean up temp file
             if path.exists():
@@ -133,7 +133,7 @@ class TestGetMboxPath:
 
     def test_get_mbox_path_unknown_extension(self) -> None:
         """Test handling unknown file extension."""
-        with tempfile.NamedTemporaryFile(suffix='.unknown', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".unknown", delete=False) as f:
             unknown_path = Path(f.name)
 
         try:
@@ -153,32 +153,32 @@ class TestValidateComprehensive:
     def test_validate_comprehensive_success(self) -> None:
         """Test successful comprehensive validation."""
         # Create test mbox with 2 messages
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         # Create test database
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with test messages
             mbox = mailbox.mbox(str(mbox_path))
             msg1 = mailbox.mboxMessage()
-            msg1['From'] = 'test1@example.com'
-            msg1['Subject'] = 'Test 1'
-            msg1.set_payload('Body 1')
+            msg1["From"] = "test1@example.com"
+            msg1["Subject"] = "Test 1"
+            msg1.set_payload("Body 1")
             mbox.add(msg1)
 
             msg2 = mailbox.mboxMessage()
-            msg2['From'] = 'test2@example.com'
-            msg2['Subject'] = 'Test 2'
-            msg2.set_payload('Body 2')
+            msg2["From"] = "test2@example.com"
+            msg2["Subject"] = "Test 2"
+            msg2.set_payload("Body 2")
             mbox.add(msg2)
             mbox.close()
 
             # Create test database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archived_timestamp TEXT,
@@ -188,30 +188,44 @@ class TestValidateComprehensive:
                     message_date TEXT,
                     checksum TEXT
                 )
-            ''')
+            """)
             conn.execute(
-                'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg1', '2025-01-01', 'archive.mbox', 'Test 1',
-                 'test1@example.com', '2025-01-01', 'abc')
+                "INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "msg1",
+                    "2025-01-01",
+                    "archive.mbox",
+                    "Test 1",
+                    "test1@example.com",
+                    "2025-01-01",
+                    "abc",
+                ),
             )
             conn.execute(
-                'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg2', '2025-01-01', 'archive.mbox', 'Test 2',
-                 'test2@example.com', '2025-01-01', 'def')
+                "INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "msg2",
+                    "2025-01-01",
+                    "archive.mbox",
+                    "Test 2",
+                    "test2@example.com",
+                    "2025-01-01",
+                    "def",
+                ),
             )
             conn.commit()
             conn.close()
 
             validator = ArchiveValidator(str(mbox_path), str(db_path))
-            expected_ids = {'msg1', 'msg2'}
+            expected_ids = {"msg1", "msg2"}
             results = validator.validate_comprehensive(expected_ids, sample_size=2)
 
-            assert results['count_check'] is True
-            assert results['database_check'] is True
-            assert results['integrity_check'] is True
-            assert results['spot_check'] is True
-            assert results['passed'] is True
-            assert results['errors'] == []
+            assert results["count_check"] is True
+            assert results["database_check"] is True
+            assert results["integrity_check"] is True
+            assert results["spot_check"] is True
+            assert results["passed"] is True
+            assert results["errors"] == []
 
         finally:
             mbox_path.unlink()
@@ -219,24 +233,24 @@ class TestValidateComprehensive:
 
     def test_validate_comprehensive_count_mismatch(self) -> None:
         """Test validation with count mismatch."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 1 message
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['From'] = 'test@example.com'
-            msg.set_payload('Body')
+            msg["From"] = "test@example.com"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Create database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archived_timestamp TEXT,
@@ -246,23 +260,30 @@ class TestValidateComprehensive:
                     message_date TEXT,
                     checksum TEXT
                 )
-            ''')
+            """)
             conn.execute(
-                'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('msg1', '2025-01-01', 'archive.mbox', 'Test',
-                 'test@example.com', '2025-01-01', 'abc')
+                "INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "msg1",
+                    "2025-01-01",
+                    "archive.mbox",
+                    "Test",
+                    "test@example.com",
+                    "2025-01-01",
+                    "abc",
+                ),
             )
             conn.commit()
             conn.close()
 
             validator = ArchiveValidator(str(mbox_path), str(db_path))
             # Expect 2 messages but only have 1
-            expected_ids = {'msg1', 'msg2'}
+            expected_ids = {"msg1", "msg2"}
             results = validator.validate_comprehensive(expected_ids, sample_size=2)
 
-            assert results['count_check'] is False
-            assert results['passed'] is False
-            assert any('Count mismatch' in err for err in results['errors'])
+            assert results["count_check"] is False
+            assert results["passed"] is False
+            assert any("Count mismatch" in err for err in results["errors"])
 
         finally:
             mbox_path.unlink()
@@ -270,7 +291,7 @@ class TestValidateComprehensive:
 
     def test_validate_comprehensive_db_not_found(self) -> None:
         """Test validation when database doesn't exist."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         try:
@@ -278,38 +299,38 @@ class TestValidateComprehensive:
             mbox = mailbox.mbox(str(mbox_path))
             mbox.close()
 
-            validator = ArchiveValidator(str(mbox_path), '/nonexistent/db.db')
+            validator = ArchiveValidator(str(mbox_path), "/nonexistent/db.db")
             results = validator.validate_comprehensive(set(), sample_size=10)
 
-            assert results['database_check'] is False
-            assert any('State database not found' in err for err in results['errors'])
+            assert results["database_check"] is False
+            assert any("State database not found" in err for err in results["errors"])
 
         finally:
             mbox_path.unlink()
 
     def test_validate_comprehensive_invalid_mbox(self) -> None:
         """Test validation with invalid mbox file."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
             # Write invalid content
-            f.write(b'Not a valid mbox file')
+            f.write(b"Not a valid mbox file")
 
         try:
-            validator = ArchiveValidator(str(mbox_path), 'nonexistent.db')
-            results = validator.validate_comprehensive({'msg1'}, sample_size=10)
+            validator = ArchiveValidator(str(mbox_path), "nonexistent.db")
+            results = validator.validate_comprehensive({"msg1"}, sample_size=10)
 
             # Should fail gracefully
-            assert results['passed'] is False
+            assert results["passed"] is False
 
         finally:
             mbox_path.unlink()
 
     def test_validate_comprehensive_empty_expected_ids(self) -> None:
         """Test validation with empty expected IDs (spot check skipped)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
@@ -319,7 +340,7 @@ class TestValidateComprehensive:
 
             # Create empty database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archived_timestamp TEXT,
@@ -329,7 +350,7 @@ class TestValidateComprehensive:
                     message_date TEXT,
                     checksum TEXT
                 )
-            ''')
+            """)
             conn.commit()
             conn.close()
 
@@ -339,8 +360,8 @@ class TestValidateComprehensive:
             # Spot check should be skipped for empty expected_ids
             # Overall validation considers: spot_check OR not expected_message_ids
             # So it should still be able to pass other checks
-            assert results['count_check'] is True  # 0 == 0
-            assert results['database_check'] is True  # 0 >= 0
+            assert results["count_check"] is True  # 0 == 0
+            assert results["database_check"] is True  # 0 >= 0
 
         finally:
             mbox_path.unlink()
@@ -352,15 +373,15 @@ class TestValidateCount:
 
     def test_validate_count_match(self) -> None:
         """Test count validation with matching count."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         try:
             mbox = mailbox.mbox(str(mbox_path))
             for i in range(3):
                 msg = mailbox.mboxMessage()
-                msg['From'] = f'test{i}@example.com'
-                msg.set_payload(f'Body {i}')
+                msg["From"] = f"test{i}@example.com"
+                msg.set_payload(f"Body {i}")
                 mbox.add(msg)
             mbox.close()
 
@@ -372,14 +393,14 @@ class TestValidateCount:
 
     def test_validate_count_mismatch(self) -> None:
         """Test count validation with mismatching count."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         try:
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['From'] = 'test@example.com'
-            msg.set_payload('Body')
+            msg["From"] = "test@example.com"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
@@ -391,7 +412,7 @@ class TestValidateCount:
 
     def test_validate_count_invalid_file(self) -> None:
         """Test count validation with invalid file."""
-        validator = ArchiveValidator('/nonexistent/file.mbox')
+        validator = ArchiveValidator("/nonexistent/file.mbox")
         assert validator.validate_count(10) is False
         assert len(validator.errors) > 0
 
@@ -401,8 +422,8 @@ class TestComputeChecksum:
 
     def test_compute_checksum(self) -> None:
         """Test checksum computation."""
-        validator = ArchiveValidator('dummy.mbox')
-        data = b'test data'
+        validator = ArchiveValidator("dummy.mbox")
+        data = b"test data"
         expected = hashlib.sha256(data).hexdigest()
 
         checksum = validator.compute_checksum(data)
@@ -411,9 +432,9 @@ class TestComputeChecksum:
 
     def test_compute_checksum_different_data(self) -> None:
         """Test that different data produces different checksum."""
-        validator = ArchiveValidator('dummy.mbox')
-        checksum1 = validator.compute_checksum(b'data1')
-        checksum2 = validator.compute_checksum(b'data2')
+        validator = ArchiveValidator("dummy.mbox")
+        checksum1 = validator.compute_checksum(b"data1")
+        checksum2 = validator.compute_checksum(b"data2")
 
         assert checksum1 != checksum2
 
@@ -421,17 +442,17 @@ class TestComputeChecksum:
 class TestReport:
     """Tests for report method."""
 
-    @patch('builtins.print')
+    @patch("builtins.print")
     def test_report_success(self, mock_print: patch) -> None:
         """Test report with successful validation."""
-        validator = ArchiveValidator('archive.mbox')
+        validator = ArchiveValidator("archive.mbox")
         results = {
-            'count_check': True,
-            'database_check': True,
-            'integrity_check': True,
-            'spot_check': True,
-            'errors': [],
-            'passed': True
+            "count_check": True,
+            "database_check": True,
+            "integrity_check": True,
+            "spot_check": True,
+            "errors": [],
+            "passed": True,
         }
 
         validator.report(results)
@@ -440,20 +461,20 @@ class TestReport:
         assert mock_print.called
         # Check that success message appears
         calls = [str(call) for call in mock_print.call_args_list]
-        full_output = ' '.join(calls)
-        assert 'PASSED' in full_output
+        full_output = " ".join(calls)
+        assert "PASSED" in full_output
 
-    @patch('builtins.print')
+    @patch("builtins.print")
     def test_report_failure(self, mock_print: patch) -> None:
         """Test report with failed validation."""
-        validator = ArchiveValidator('archive.mbox')
+        validator = ArchiveValidator("archive.mbox")
         results = {
-            'count_check': False,
-            'database_check': True,
-            'integrity_check': True,
-            'spot_check': False,
-            'errors': ['Count mismatch', 'Spot check failed'],
-            'passed': False
+            "count_check": False,
+            "database_check": True,
+            "integrity_check": True,
+            "spot_check": False,
+            "errors": ["Count mismatch", "Spot check failed"],
+            "passed": False,
         }
 
         validator.report(results)
@@ -462,9 +483,9 @@ class TestReport:
         assert mock_print.called
         # Check that failure message and errors appear
         calls = [str(call) for call in mock_print.call_args_list]
-        full_output = ' '.join(calls)
-        assert 'FAILED' in full_output
-        assert 'Count mismatch' in full_output
+        full_output = " ".join(calls)
+        assert "FAILED" in full_output
+        assert "Count mismatch" in full_output
 
 
 class TestOffsetVerification:
@@ -473,43 +494,43 @@ class TestOffsetVerification:
     def test_verify_offsets_valid_offsets(self) -> None:
         """Test verify_offsets with valid offsets (all pass)."""
         # Create test mbox with 2 messages
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
         # Create test database with v1.1 schema
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with test messages
             mbox = mailbox.mbox(str(mbox_path))
             msg1 = mailbox.mboxMessage()
-            msg1['Message-ID'] = '<msg1@example.com>'
-            msg1['From'] = 'test1@example.com'
-            msg1['Subject'] = 'Test 1'
-            msg1.set_payload('Body 1')
+            msg1["Message-ID"] = "<msg1@example.com>"
+            msg1["From"] = "test1@example.com"
+            msg1["Subject"] = "Test 1"
+            msg1.set_payload("Body 1")
             mbox.add(msg1)
 
             msg2 = mailbox.mboxMessage()
-            msg2['Message-ID'] = '<msg2@example.com>'
-            msg2['From'] = 'test2@example.com'
-            msg2['Subject'] = 'Test 2'
-            msg2.set_payload('Body 2')
+            msg2["Message-ID"] = "<msg2@example.com>"
+            msg2["From"] = "test2@example.com"
+            msg2["Subject"] = "Test 2"
+            msg2.set_payload("Body 2")
             mbox.add(msg2)
             mbox.close()
 
             # Read mbox to get actual offsets and lengths
-            with open(mbox_path, 'rb') as f:
+            with open(mbox_path, "rb") as f:
                 content = f.read()
                 # Find offsets for each message (they start with "From ")
-                offset1 = content.find(b'From ')
-                offset2 = content.find(b'From ', offset1 + 1)
+                offset1 = content.find(b"From ")
+                offset2 = content.find(b"From ", offset1 + 1)
                 length1 = offset2 - offset1 if offset2 != -1 else len(content) - offset1
                 length2 = len(content) - offset2 if offset2 != -1 else 0
 
             # Create v1.1 database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -529,20 +550,36 @@ class TestOffsetVerification:
                     labels TEXT,
                     account_id TEXT DEFAULT 'default'
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                """INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
-                 '2025-01-01', str(mbox_path), offset1, length1)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "gmail1",
+                    "<msg1@example.com>",
+                    "Test 1",
+                    "test1@example.com",
+                    "2025-01-01",
+                    str(mbox_path),
+                    offset1,
+                    length1,
+                ),
             )
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                """INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
-                 '2025-01-01', str(mbox_path), offset2, length2)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "gmail2",
+                    "<msg2@example.com>",
+                    "Test 2",
+                    "test2@example.com",
+                    "2025-01-01",
+                    str(mbox_path),
+                    offset2,
+                    length2,
+                ),
             )
             conn.commit()
             conn.close()
@@ -563,40 +600,40 @@ class TestOffsetVerification:
     def test_verify_offsets_compressed_archive(self) -> None:
         """Test verify_offsets with a gzip-compressed archive."""
         # Create uncompressed mbox and corresponding compressed archive
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.mbox.gz', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox.gz", delete=False) as f:
             gz_path = Path(f.name)
 
         try:
             # Create mbox with a single message
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg['From'] = 'test@example.com'
-            msg['Subject'] = 'Test compressed'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg["From"] = "test@example.com"
+            msg["Subject"] = "Test compressed"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Compute offset and length in the uncompressed mbox
-            with open(mbox_path, 'rb') as f_in:
+            with open(mbox_path, "rb") as f_in:
                 content = f_in.read()
-                offset = content.find(b'From ')
+                offset = content.find(b"From ")
                 length = len(content) - offset
 
             # Compress to gzip archive
-            with open(mbox_path, 'rb') as f_in:
-                with gzip.open(gz_path, 'wb') as f_out:
+            with open(mbox_path, "rb") as f_in:
+                with gzip.open(gz_path, "wb") as f_out:
                     f_out.write(f_in.read())
 
             # Create v1.1 database referencing the compressed archive file
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -605,12 +642,12 @@ class TestOffsetVerification:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(gz_path), offset, length)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<msg1@example.com>", "2025-01-01", str(gz_path), offset, length),
             )
             conn.commit()
             conn.close()
@@ -631,25 +668,25 @@ class TestOffsetVerification:
 
     def test_verify_offsets_corrupted_offset(self) -> None:
         """Test verify_offsets with corrupted offset (fails gracefully)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg['From'] = 'test@example.com'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg["From"] = "test@example.com"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Create v1.1 database with WRONG offset
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -658,12 +695,12 @@ class TestOffsetVerification:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 99999, 100)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<msg1@example.com>", "2025-01-01", str(mbox_path), 99999, 100),
             )
             conn.commit()
             conn.close()
@@ -683,31 +720,31 @@ class TestOffsetVerification:
 
     def test_verify_offsets_wrong_message_id(self) -> None:
         """Test verify_offsets with wrong Message-ID (detects mismatch)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<actual@example.com>'
-            msg['From'] = 'test@example.com'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<actual@example.com>"
+            msg["From"] = "test@example.com"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Get actual offset
-            with open(mbox_path, 'rb') as f:
+            with open(mbox_path, "rb") as f:
                 content = f.read()
-                offset = content.find(b'From ')
+                offset = content.find(b"From ")
                 length = len(content) - offset
 
             # Create v1.1 database with WRONG Message-ID
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -716,12 +753,12 @@ class TestOffsetVerification:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<wrong@example.com>', '2025-01-01', str(mbox_path), offset, length)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<wrong@example.com>", "2025-01-01", str(mbox_path), offset, length),
             )
             conn.commit()
             conn.close()
@@ -732,7 +769,7 @@ class TestOffsetVerification:
             assert result.total_checked == 1
             assert result.successful_reads == 0
             assert result.failed_reads == 1
-            assert 'Message-ID mismatch' in result.failures[0]
+            assert "Message-ID mismatch" in result.failures[0]
 
         finally:
             mbox_path.unlink()
@@ -740,10 +777,10 @@ class TestOffsetVerification:
 
     def test_verify_offsets_v10_schema(self) -> None:
         """Test verify_offsets with v1.0 schema (skips gracefully)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
@@ -753,7 +790,7 @@ class TestOffsetVerification:
 
             # Create v1.0 database (old schema without offsets)
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archived_timestamp TEXT,
@@ -763,7 +800,7 @@ class TestOffsetVerification:
                     message_date TEXT,
                     checksum TEXT
                 )
-            ''')
+            """)
             conn.commit()
             conn.close()
 
@@ -782,31 +819,31 @@ class TestOffsetVerification:
 
     def test_verify_offsets_length_mismatch(self) -> None:
         """Test verify_offsets with incorrect mbox_length."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg['From'] = 'test@example.com'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg["From"] = "test@example.com"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Get actual offset and actual length
-            with open(mbox_path, 'rb') as f:
+            with open(mbox_path, "rb") as f:
                 content = f.read()
-                offset = content.find(b'From ')
+                offset = content.find(b"From ")
                 actual_length = len(content) - offset
 
             # Create v1.1 database with WRONG length (larger than file)
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -815,13 +852,19 @@ class TestOffsetVerification:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path),
-                 offset, actual_length + 1000)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "gmail1",
+                    "<msg1@example.com>",
+                    "2025-01-01",
+                    str(mbox_path),
+                    offset,
+                    actual_length + 1000,
+                ),
             )
             conn.commit()
             conn.close()
@@ -831,7 +874,7 @@ class TestOffsetVerification:
 
             assert result.total_checked == 1
             assert result.failed_reads == 1
-            assert 'length mismatch' in result.failures[0].lower()
+            assert "length mismatch" in result.failures[0].lower()
 
         finally:
             mbox_path.unlink()
@@ -843,31 +886,31 @@ class TestConsistencyChecks:
 
     def test_verify_consistency_perfect_database(self) -> None:
         """Test verify_consistency with perfect database (all checks pass)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 2 messages
             mbox = mailbox.mbox(str(mbox_path))
             msg1 = mailbox.mboxMessage()
-            msg1['Message-ID'] = '<msg1@example.com>'
-            msg1['From'] = 'test1@example.com'
-            msg1.set_payload('Body 1')
+            msg1["Message-ID"] = "<msg1@example.com>"
+            msg1["From"] = "test1@example.com"
+            msg1.set_payload("Body 1")
             mbox.add(msg1)
 
             msg2 = mailbox.mboxMessage()
-            msg2['Message-ID'] = '<msg2@example.com>'
-            msg2['From'] = 'test2@example.com'
-            msg2.set_payload('Body 2')
+            msg2["Message-ID"] = "<msg2@example.com>"
+            msg2["From"] = "test2@example.com"
+            msg2.set_payload("Body 2")
             mbox.add(msg2)
             mbox.close()
 
             # Create v1.1 database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -878,28 +921,44 @@ class TestConsistencyChecks:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
-            conn.execute('''
+            """)
+            conn.execute("""
                 CREATE VIRTUAL TABLE messages_fts USING fts5(
                     subject,
                     from_addr,
                     content=messages,
                     content_rowid=rowid
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                """INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', 'Test 1', 'test1@example.com',
-                 '2025-01-01', str(mbox_path), 0, 100)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "gmail1",
+                    "<msg1@example.com>",
+                    "Test 1",
+                    "test1@example.com",
+                    "2025-01-01",
+                    str(mbox_path),
+                    0,
+                    100,
+                ),
             )
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
+                """INSERT INTO messages (gmail_id, rfc_message_id, subject, from_addr,
                    archived_timestamp, archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                ('gmail2', '<msg2@example.com>', 'Test 2', 'test2@example.com',
-                 '2025-01-01', str(mbox_path), 100, 100)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "gmail2",
+                    "<msg2@example.com>",
+                    "Test 2",
+                    "test2@example.com",
+                    "2025-01-01",
+                    str(mbox_path),
+                    100,
+                    100,
+                ),
             )
             # Sync FTS5
             conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
@@ -922,24 +981,24 @@ class TestConsistencyChecks:
 
     def test_verify_consistency_orphaned_records(self) -> None:
         """Test verify_consistency with orphaned records (detects)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 1 message
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Create v1.1 database with 2 messages (one orphaned)
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -948,18 +1007,18 @@ class TestConsistencyChecks:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<msg1@example.com>", "2025-01-01", str(mbox_path), 0, 100),
             )
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail2', '<orphan@example.com>', '2025-01-01', str(mbox_path), 100, 100)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail2", "<orphan@example.com>", "2025-01-01", str(mbox_path), 100, 100),
             )
             conn.commit()
             conn.close()
@@ -976,29 +1035,29 @@ class TestConsistencyChecks:
 
     def test_verify_consistency_missing_records(self) -> None:
         """Test verify_consistency with missing records (detects)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 2 messages
             mbox = mailbox.mbox(str(mbox_path))
             msg1 = mailbox.mboxMessage()
-            msg1['Message-ID'] = '<msg1@example.com>'
-            msg1.set_payload('Body 1')
+            msg1["Message-ID"] = "<msg1@example.com>"
+            msg1.set_payload("Body 1")
             mbox.add(msg1)
 
             msg2 = mailbox.mboxMessage()
-            msg2['Message-ID'] = '<msg2@example.com>'
-            msg2.set_payload('Body 2')
+            msg2["Message-ID"] = "<msg2@example.com>"
+            msg2.set_payload("Body 2")
             mbox.add(msg2)
             mbox.close()
 
             # Create v1.1 database with only 1 message (one missing)
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -1007,12 +1066,12 @@ class TestConsistencyChecks:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<msg1@example.com>", "2025-01-01", str(mbox_path), 0, 100),
             )
             conn.commit()
             conn.close()
@@ -1029,24 +1088,24 @@ class TestConsistencyChecks:
 
     def test_verify_consistency_fts_desync(self) -> None:
         """Test verify_consistency with FTS5 desync (detects)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 1 message
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Create v1.1 database with messages table but empty FTS
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT UNIQUE NOT NULL,
@@ -1055,20 +1114,20 @@ class TestConsistencyChecks:
                     mbox_offset INTEGER NOT NULL,
                     mbox_length INTEGER NOT NULL
                 )
-            ''')
-            conn.execute('''
+            """)
+            conn.execute("""
                 CREATE VIRTUAL TABLE messages_fts USING fts5(
                     subject,
                     from_addr,
                     content=messages,
                     content_rowid=rowid
                 )
-            ''')
+            """)
             conn.execute(
-                '''INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
+                """INSERT INTO messages (gmail_id, rfc_message_id, archived_timestamp,
                    archive_file, mbox_offset, mbox_length)
-                   VALUES (?, ?, ?, ?, ?, ?)''',
-                ('gmail1', '<msg1@example.com>', '2025-01-01', str(mbox_path), 0, 100)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("gmail1", "<msg1@example.com>", "2025-01-01", str(mbox_path), 0, 100),
             )
             # Don't sync FTS5 - create desync
             conn.commit()
@@ -1086,24 +1145,24 @@ class TestConsistencyChecks:
 
     def test_verify_consistency_v10_schema(self) -> None:
         """Test verify_consistency with v1.0 schema (limited checks)."""
-        with tempfile.NamedTemporaryFile(suffix='.mbox', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
 
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = Path(f.name)
 
         try:
             # Create mbox with 1 message
             mbox = mailbox.mbox(str(mbox_path))
             msg = mailbox.mboxMessage()
-            msg['Message-ID'] = '<msg1@example.com>'
-            msg.set_payload('Body')
+            msg["Message-ID"] = "<msg1@example.com>"
+            msg.set_payload("Body")
             mbox.add(msg)
             mbox.close()
 
             # Create v1.0 database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archived_timestamp TEXT,
@@ -1113,11 +1172,18 @@ class TestConsistencyChecks:
                     message_date TEXT,
                     checksum TEXT
                 )
-            ''')
+            """)
             conn.execute(
-                'INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)',
-                ('gmail1', '2025-01-01', 'archive.mbox', 'Test',
-                 'test@example.com', '2025-01-01', 'abc')
+                "INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "gmail1",
+                    "2025-01-01",
+                    "archive.mbox",
+                    "Test",
+                    "test@example.com",
+                    "2025-01-01",
+                    "abc",
+                ),
             )
             conn.commit()
             conn.close()
@@ -1126,14 +1192,12 @@ class TestConsistencyChecks:
             report = validator.verify_consistency()
 
             # Should have limited checks for v1.0 schema
-            assert report.schema_version == '1.0'
+            assert report.schema_version == "1.0"
             assert report.fts_synced is True  # No FTS in v1.0
 
         finally:
             mbox_path.unlink()
             db_path.unlink()
-
-
 
 
 class TestValidatorSimpleCases:
@@ -1150,9 +1214,9 @@ class TestValidatorSimpleCases:
             validator = ArchiveValidator(str(archive_path))
 
             # Empty mbox should fail integrity check
-            results = validator.validate_comprehensive(set(['msg1']))
+            results = validator.validate_comprehensive(set(["msg1"]))
 
-            assert 'readable messages' in ' '.join(results['errors']).lower()
+            assert "readable messages" in " ".join(results["errors"]).lower()
 
     def test_validate_comprehensive_spot_check_pass(self) -> None:
         """Test spot check when messages are found (lines 191-192, 236-237)."""
@@ -1161,31 +1225,31 @@ class TestValidatorSimpleCases:
             db_path = Path(tmpdir) / "test.db"
 
             # Create simple mbox
-            with open(archive_path, 'w') as f:
+            with open(archive_path, "w") as f:
                 f.write("From test@example.com\nMessage-ID: <test@example.com>\n\nBody\n")
 
             # Create v1.1 database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT,
                     archive_file TEXT
                 )
-            ''')
+            """)
             conn.execute(
                 "INSERT INTO messages VALUES (?, ?, ?)",
-                ("msg1", "<test@example.com>", str(archive_path))
+                ("msg1", "<test@example.com>", str(archive_path)),
             )
             conn.commit()
             conn.close()
 
             validator = ArchiveValidator(str(archive_path), str(db_path))
 
-            results = validator.validate_comprehensive(set(['msg1']))
+            results = validator.validate_comprehensive(set(["msg1"]))
 
             # spot_check should pass
-            assert results['spot_check'] is True or results['passed'] is True
+            assert results["spot_check"] is True or results["passed"] is True
 
     def test_validate_all_exception(self) -> None:
         """Test validate_all handles exceptions (lines 281-283)."""
@@ -1193,8 +1257,8 @@ class TestValidatorSimpleCases:
             archive_path = Path(tmpdir) / "corrupt.mbox"
 
             # Create corrupt mbox
-            with open(archive_path, 'wb') as f:
-                f.write(b'\x00\xff\xfe')
+            with open(archive_path, "wb") as f:
+                f.write(b"\x00\xff\xfe")
 
             validator = ArchiveValidator(str(archive_path))
 
@@ -1215,30 +1279,27 @@ class TestValidatorMissingCoverage:
             db_path = Path(tmpdir) / "test.db"
 
             # Create simple mbox
-            with open(archive_path, 'w') as f:
+            with open(archive_path, "w") as f:
                 f.write("From test@example.com\n\ntest\n")
 
             # Create v1.0 database (archived_messages table)
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE archived_messages (
                     gmail_id TEXT PRIMARY KEY,
                     archive_file TEXT
                 )
-            ''')
-            conn.execute(
-                "INSERT INTO archived_messages VALUES (?, ?)",
-                ("msg1", str(archive_path))
-            )
+            """)
+            conn.execute("INSERT INTO archived_messages VALUES (?, ?)", ("msg1", str(archive_path)))
             conn.commit()
             conn.close()
 
             validator = ArchiveValidator(str(archive_path), str(db_path))
 
-            results = validator.validate_comprehensive(set(['msg1']))
+            results = validator.validate_comprehensive(set(["msg1"]))
 
             # Should handle v1.0 schema
-            assert 'database_check' in results
+            assert "database_check" in results
 
     def test_validate_count_exception(self) -> None:
         """Test validate_count handles exceptions properly (line 211)."""
@@ -1266,7 +1327,7 @@ class TestValidatorMissingCoverage:
 
             # Should fail for empty archive
             assert result is False
-            assert "empty" in ' '.join(validator.errors).lower()
+            assert "empty" in " ".join(validator.errors).lower()
 
 
 def test_validator_empty_archive_integrity_check() -> None:
@@ -1289,12 +1350,13 @@ def test_validator_empty_archive_integrity_check() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should fail integrity check
-        assert results['integrity_check'] is False, "Empty archive should fail integrity check"
+        assert results["integrity_check"] is False, "Empty archive should fail integrity check"
 
         # Should have error mentioning no messages or empty
-        error_text = ' '.join(results.get('errors', [])).lower()
-        assert 'no readable messages' in error_text or 'empty' in error_text, \
+        error_text = " ".join(results.get("errors", [])).lower()
+        assert "no readable messages" in error_text or "empty" in error_text, (
             f"Expected error about no messages, got: {results.get('errors', [])}"
+        )
 
 
 def test_validator_log_with_output_manager() -> None:
@@ -1364,8 +1426,8 @@ def test_validator_comprehensive_with_corrupt_archive() -> None:
         archive_path = Path(tmpdir) / "corrupt.mbox"
 
         # Create a corrupt mbox (not a valid mbox format)
-        with open(archive_path, 'wb') as f:
-            f.write(b'\x00\xff\xfe\xfd Invalid binary data')
+        with open(archive_path, "wb") as f:
+            f.write(b"\x00\xff\xfe\xfd Invalid binary data")
 
         validator = ArchiveValidator(str(archive_path))
 
@@ -1373,10 +1435,11 @@ def test_validator_comprehensive_with_corrupt_archive() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should have errors
-        assert len(results['errors']) > 0, "Should have errors for corrupt archive"
-        error_text = ' '.join(results['errors']).lower()
-        assert 'failed' in error_text or 'no readable messages' in error_text, \
-               f"Expected failure error, got: {results['errors']}"
+        assert len(results["errors"]) > 0, "Should have errors for corrupt archive"
+        error_text = " ".join(results["errors"]).lower()
+        assert "failed" in error_text or "no readable messages" in error_text, (
+            f"Expected failure error, got: {results['errors']}"
+        )
 
 
 def test_validator_comprehensive_empty_message_list() -> None:
@@ -1399,11 +1462,11 @@ def test_validator_comprehensive_empty_message_list() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should fail integrity check
-        assert results['integrity_check'] is False
+        assert results["integrity_check"] is False
 
         # Should mention no readable messages
-        error_text = ' '.join(results.get('errors', [])).lower()
-        assert 'no readable messages' in error_text
+        error_text = " ".join(results.get("errors", [])).lower()
+        assert "no readable messages" in error_text
 
 
 def test_validator_comprehensive_database_missing() -> None:
@@ -1422,8 +1485,8 @@ def test_validator_comprehensive_database_missing() -> None:
         # Create valid mbox with one message
         mbox_obj = mailbox.mbox(str(archive_path))
         msg = email.message.EmailMessage()
-        msg['Message-ID'] = '<test@example.com>'
-        msg['Subject'] = 'Test'
+        msg["Message-ID"] = "<test@example.com>"
+        msg["Subject"] = "Test"
         msg.set_content("Body")
         mbox_obj.add(msg)
         mbox_obj.close()
@@ -1433,13 +1496,13 @@ def test_validator_comprehensive_database_missing() -> None:
         validator = ArchiveValidator(str(archive_path), state_db_path=non_existent_db)
 
         # Run validation
-        results = validator.validate_comprehensive(expected_message_ids={'<test@example.com>'})
+        results = validator.validate_comprehensive(expected_message_ids={"<test@example.com>"})
 
         # Should pass integrity check
-        assert results['integrity_check'] is True
+        assert results["integrity_check"] is True
 
         # Database check should be skipped (no error)
-        assert results.get('database_check') is None or results.get('database_check') is False
+        assert results.get("database_check") is None or results.get("database_check") is False
 
 
 class TestValidatorErrorHandling:
@@ -1459,7 +1522,7 @@ class TestValidatorErrorHandling:
             validator = ArchiveValidator(str(archive_path))
 
             # Patch mailbox.mbox to raise exception during iteration
-            with patch('mailbox.mbox') as mock_mbox:
+            with patch("mailbox.mbox") as mock_mbox:
                 mock_mbox_instance = MagicMock()
                 mock_mbox_instance.__enter__ = MagicMock(return_value=mock_mbox_instance)
                 mock_mbox_instance.__exit__ = MagicMock(return_value=False)
@@ -1470,8 +1533,8 @@ class TestValidatorErrorHandling:
                 results = validator.validate_comprehensive(expected_message_ids=set())
 
                 # Should handle exception and add error
-                assert 'errors' in results
-                assert any('Integrity check failed' in err for err in results['errors'])
+                assert "errors" in results
+                assert any("Integrity check failed" in err for err in results["errors"])
 
     def test_read_archive_outer_exception(self) -> None:
         """Test read archive handles outer exceptions (lines 183-185)."""
@@ -1485,14 +1548,14 @@ class TestValidatorErrorHandling:
             validator = ArchiveValidator(str(archive_path))
 
             # Patch mailbox.mbox to raise exception on opening
-            with patch('mailbox.mbox', side_effect=Exception("Failed to open")):
+            with patch("mailbox.mbox", side_effect=Exception("Failed to open")):
                 results = validator.validate_comprehensive(expected_message_ids=set())
 
                 # Should handle exception and return early
-                assert 'errors' in results
-                assert any('Failed to read archive' in err for err in results['errors'])
+                assert "errors" in results
+                assert any("Failed to read archive" in err for err in results["errors"])
                 # Integrity check should be False
-                assert results.get('integrity_check') is False
+                assert results.get("integrity_check") is False
 
     def test_database_check_exception(self) -> None:
         """Test database check handles exceptions (lines 219-220)."""
@@ -1508,7 +1571,7 @@ class TestValidatorErrorHandling:
             # Create valid mbox
             mbox_obj = mailbox.mbox(str(archive_path))
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = '<test@example.com>'
+            msg["Message-ID"] = "<test@example.com>"
             msg.set_content("Body")
             mbox_obj.add(msg)
             mbox_obj.close()
@@ -1519,16 +1582,16 @@ class TestValidatorErrorHandling:
             conn.close()
 
             # Now corrupt it
-            with open(db_path, 'ab') as f:
-                f.write(b'\xFF' * 1000)
+            with open(db_path, "ab") as f:
+                f.write(b"\xff" * 1000)
 
             validator = ArchiveValidator(str(archive_path), state_db_path=db_path)
 
-            results = validator.validate_comprehensive(expected_message_ids={'<test@example.com>'})
+            results = validator.validate_comprehensive(expected_message_ids={"<test@example.com>"})
 
             # Should handle database exception
-            assert 'errors' in results
-            assert any('Database check failed' in err for err in results['errors'])
+            assert "errors" in results
+            assert any("Database check failed" in err for err in results["errors"])
 
     def test_spot_check_exception(self) -> None:
         """Test spot check handles exceptions (lines 309-311)."""
@@ -1545,25 +1608,25 @@ class TestValidatorErrorHandling:
             # Create valid mbox
             mbox_obj = mailbox.mbox(str(archive_path))
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = '<test@example.com>'
+            msg["Message-ID"] = "<test@example.com>"
             msg.set_content("Body")
             mbox_obj.add(msg)
             mbox_obj.close()
 
             # Create v1.1 database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT,
                     archive_file TEXT
                 )
-            ''')
-            conn.execute('''
+            """)
+            conn.execute("""
                 CREATE TABLE schema_version (
                     version TEXT PRIMARY KEY
                 )
-            ''')
+            """)
             conn.execute("INSERT INTO schema_version VALUES ('1.1')")
             conn.commit()
             conn.close()
@@ -1580,15 +1643,15 @@ class TestValidatorErrorHandling:
                     raise Exception("Database connection failed")
                 return original_connect(db_path, *args, **kwargs)
 
-            with patch('sqlite3.connect', side_effect=failing_connect):
+            with patch("sqlite3.connect", side_effect=failing_connect):
                 results = validator.validate_comprehensive(
-                    expected_message_ids={'<test@example.com>'}
+                    expected_message_ids={"<test@example.com>"}
                 )
 
                 # Should handle spot check exception
-                assert 'errors' in results
+                assert "errors" in results
                 # May have spot check error
-                errors_text = ' '.join(results['errors'])
+                errors_text = " ".join(results["errors"])
 
     def test_compute_checksum_exception(self) -> None:
         """Test compute_checksum handles exceptions (line 403)."""
@@ -1615,12 +1678,12 @@ class TestValidatorErrorHandling:
             db_path = Path(tmpdir) / "test.db"
 
             # Create mbox
-            with open(archive_path, 'w') as f:
+            with open(archive_path, "w") as f:
                 f.write("From test\n\nBody")
 
             # Create database
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     rfc_message_id TEXT,
@@ -1628,10 +1691,13 @@ class TestValidatorErrorHandling:
                     mbox_offset INTEGER,
                     mbox_length INTEGER
                 )
-            ''')
-            conn.execute('''
+            """)
+            conn.execute(
+                """
                 INSERT INTO messages VALUES (?, ?, ?, ?, ?)
-            ''', ('msg1', '<test@example.com>', str(archive_path), 0, 10))
+            """,
+                ("msg1", "<test@example.com>", str(archive_path), 0, 10),
+            )
             conn.commit()
             conn.close()
 
@@ -1664,22 +1730,22 @@ class TestValidatorErrorHandling:
             # Create mbox with one message
             mbox_obj = mailbox.mbox(str(archive_path))
             msg = email.message.EmailMessage()
-            msg['Message-ID'] = '<test@example.com>'
+            msg["Message-ID"] = "<test@example.com>"
             msg.set_content("Body")
             mbox_obj.add(msg)
             mbox_obj.close()
 
             # Create database claiming TWO messages
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     archive_file TEXT
                 )
-            ''')
-            conn.execute('''
+            """)
+            conn.execute("""
                 CREATE TABLE schema_version (version TEXT PRIMARY KEY)
-            ''')
+            """)
             conn.execute("INSERT INTO schema_version VALUES ('1.1')")
             conn.execute("INSERT INTO messages VALUES ('msg1', ?)", (str(archive_path),))
             conn.execute("INSERT INTO messages VALUES ('msg2', ?)", (str(archive_path),))
@@ -1688,15 +1754,13 @@ class TestValidatorErrorHandling:
 
             validator = ArchiveValidator(str(archive_path), state_db_path=db_path)
 
-            results = validator.validate_comprehensive(
-                expected_message_ids={'msg1', 'msg2'}
-            )
+            results = validator.validate_comprehensive(expected_message_ids={"msg1", "msg2"})
 
             # Should detect mismatch
-            assert 'errors' in results
-            errors_text = ' '.join(results['errors'])
+            assert "errors" in results
+            errors_text = " ".join(results["errors"])
             # DB has 2, mbox has 1
-            assert 'mismatch' in errors_text.lower() or 'count' in errors_text.lower()
+            assert "mismatch" in errors_text.lower() or "count" in errors_text.lower()
 
     def test_checksum_content_error(self) -> None:
         """Test content checksum verification with error (line 279)."""
@@ -1708,17 +1772,17 @@ class TestValidatorErrorHandling:
             db_path = Path(tmpdir) / "test.db"
 
             # Create mbox
-            with open(archive_path, 'w') as f:
+            with open(archive_path, "w") as f:
                 f.write("From test\n\nBody content")
 
             # Create database with expected content
             conn = sqlite3.connect(str(db_path))
-            conn.execute('''
+            conn.execute("""
                 CREATE TABLE messages (
                     gmail_id TEXT PRIMARY KEY,
                     checksum TEXT
                 )
-            ''')
+            """)
             # Insert WRONG checksum
             conn.execute("INSERT INTO messages VALUES ('msg1', 'wrong_checksum')")
             conn.commit()
@@ -1727,6 +1791,6 @@ class TestValidatorErrorHandling:
             validator = ArchiveValidator(str(archive_path), state_db_path=db_path)
 
             # Verify content - will compute actual checksum
-            results = validator.validate_comprehensive(expected_message_ids={'msg1'})
+            results = validator.validate_comprehensive(expected_message_ids={"msg1"})
 
             # Validation should pass (checksum mismatch is not critical in comprehensive)

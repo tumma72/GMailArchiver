@@ -18,6 +18,7 @@ console = Console()
 
 class MigrationError(Exception):
     """Raised when migration fails."""
+
     pass
 
 
@@ -140,7 +141,7 @@ class MigrationManager:
             conn: SQLite connection
         """
         # Create messages table (enhanced schema)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT UNIQUE NOT NULL,
@@ -160,7 +161,7 @@ class MigrationManager:
                 labels TEXT,
                 account_id TEXT DEFAULT 'default'
             )
-        ''')
+        """)
 
         # Create performance indexes
         indexes = [
@@ -175,7 +176,7 @@ class MigrationManager:
             conn.execute(index_sql)
 
         # Create FTS5 virtual table for full-text search
-        conn.execute('''
+        conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 subject,
                 from_addr,
@@ -185,17 +186,17 @@ class MigrationManager:
                 content_rowid=rowid,
                 tokenize='porter unicode61 remove_diacritics 1'
             )
-        ''')
+        """)
 
         # Create auto-sync triggers for FTS5
-        conn.execute('''
+        conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
                 INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
                 VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
             END
-        ''')
+        """)
 
-        conn.execute('''
+        conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
                 UPDATE messages_fts
                 SET subject = new.subject,
@@ -204,16 +205,16 @@ class MigrationManager:
                     body_preview = new.body_preview
                 WHERE rowid = new.rowid;
             END
-        ''')
+        """)
 
-        conn.execute('''
+        conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
                 DELETE FROM messages_fts WHERE rowid = old.rowid;
             END
-        ''')
+        """)
 
         # Create accounts table (for future multi-account support)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY,
                 email TEXT NOT NULL UNIQUE,
@@ -222,16 +223,19 @@ class MigrationManager:
                 added_timestamp TEXT,
                 last_sync_timestamp TEXT
             )
-        ''')
+        """)
 
         # Insert default account
-        conn.execute('''
+        conn.execute(
+            """
             INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp)
             VALUES ('default', 'default', ?)
-        ''', (datetime.now().isoformat(),))
+        """,
+            (datetime.now().isoformat(),),
+        )
 
         # Keep archive_runs table (already exists, just ensure it's there)
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS archive_runs (
                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_timestamp TEXT NOT NULL,
@@ -241,15 +245,15 @@ class MigrationManager:
                 account_id TEXT DEFAULT 'default',
                 operation_type TEXT DEFAULT 'archive'
             )
-        ''')
+        """)
 
         # Create schema_version table
-        conn.execute('''
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT NOT NULL
             )
-        ''')
+        """)
 
         conn.commit()
 
@@ -263,11 +267,11 @@ class MigrationManager:
         Returns:
             Message-ID header value (or generated fallback)
         """
-        message_id = msg.get('Message-ID', '').strip()
+        message_id = msg.get("Message-ID", "").strip()
         if not message_id:
             # Generate fallback Message-ID from Subject + Date
-            subject = msg.get('Subject', 'no-subject')
-            date = msg.get('Date', 'no-date')
+            subject = msg.get("Subject", "no-subject")
+            date = msg.get("Date", "no-date")
             fallback_id = f"<{hashlib.sha256(f'{subject}{date}'.encode()).hexdigest()}@generated>"
             return fallback_id
         return message_id
@@ -292,7 +296,7 @@ class MigrationManager:
                     try:
                         payload = part.get_payload(decode=True)
                         if payload and isinstance(payload, bytes):
-                            body = payload.decode('utf-8', errors='ignore')
+                            body = payload.decode("utf-8", errors="ignore")
                             break
                     except Exception:
                         continue
@@ -300,7 +304,7 @@ class MigrationManager:
             try:
                 payload = msg.get_payload(decode=True)
                 if payload and isinstance(payload, bytes):
-                    body = payload.decode('utf-8', errors='ignore')
+                    body = payload.decode("utf-8", errors="ignore")
             except Exception:
                 pass
 
@@ -317,12 +321,12 @@ class MigrationManager:
             Thread ID or None
         """
         # Try X-GM-THRID header first (Gmail-specific)
-        thread_id = msg.get('X-GM-THRID', '').strip()
+        thread_id = msg.get("X-GM-THRID", "").strip()
         if thread_id:
             return thread_id
 
         # Fallback to References header
-        references = msg.get('References', '').strip()
+        references = msg.get("References", "").strip()
         if references:
             # Use first reference as thread ID
             refs = references.split()
@@ -362,7 +366,7 @@ class MigrationManager:
             cursor = conn.execute("PRAGMA table_info(archive_runs)")
             columns = {row[1] for row in cursor.fetchall()}
 
-            if 'operation_type' not in columns:
+            if "operation_type" not in columns:
                 console.print("[cyan]Adding operation_type column to archive_runs...[/cyan]")
                 conn.execute("""
                     ALTER TABLE archive_runs
@@ -372,7 +376,7 @@ class MigrationManager:
             # Note: account_id is already added by _create_enhanced_schema
             # via CREATE TABLE IF NOT EXISTS. But if the table already existed,
             # we need to add it
-            if 'account_id' not in columns:
+            if "account_id" not in columns:
                 console.print("[cyan]Adding account_id column to archive_runs...[/cyan]")
                 conn.execute("""
                     ALTER TABLE archive_runs
@@ -387,9 +391,7 @@ class MigrationManager:
             console.print(f"[cyan]Processing {total_messages} messages...[/cyan]")
 
             # Group messages by archive file for efficient processing
-            cursor = conn.execute(
-                "SELECT DISTINCT archive_file FROM archived_messages_old"
-            )
+            cursor = conn.execute("SELECT DISTINCT archive_file FROM archived_messages_old")
             archive_files = [row[0] for row in cursor.fetchall()]
 
             migrated_count = 0
@@ -400,7 +402,7 @@ class MigrationManager:
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TaskProgressColumn(),
-                console=console
+                console=console,
             ) as progress:
                 task = progress.add_task("Migrating messages...", total=total_messages)
 
@@ -415,7 +417,7 @@ class MigrationManager:
                         # Count messages that will be skipped
                         cursor = conn.execute(
                             "SELECT COUNT(*) FROM archived_messages_old WHERE archive_file = ?",
-                            (archive_file,)
+                            (archive_file,),
                         )
                         skip_count = cursor.fetchone()[0]
                         skipped_count += skip_count
@@ -424,19 +426,19 @@ class MigrationManager:
 
                     # Get all messages from v1.0 for this archive
                     cursor = conn.execute(
-                        '''SELECT gmail_id, archived_timestamp, subject, from_addr,
+                        """SELECT gmail_id, archived_timestamp, subject, from_addr,
                                   message_date, checksum
                            FROM archived_messages_old
-                           WHERE archive_file = ?''',
-                        (archive_file,)
+                           WHERE archive_file = ?""",
+                        (archive_file,),
                     )
                     old_messages = {
                         row[0]: {
-                            'archived_timestamp': row[1],
-                            'subject': row[2],
-                            'from_addr': row[3],
-                            'message_date': row[4],
-                            'checksum': row[5]
+                            "archived_timestamp": row[1],
+                            "subject": row[2],
+                            "from_addr": row[3],
+                            "message_date": row[4],
+                            "checksum": row[5],
                         }
                         for row in cursor.fetchall()
                     }
@@ -490,7 +492,7 @@ class MigrationManager:
 
                                         # Insert with real metadata
                                         conn.execute(
-                                            '''
+                                            """
                                             INSERT INTO messages
                                             (gmail_id, rfc_message_id, thread_id,
                                              subject, from_addr, to_addr, cc_addr,
@@ -500,17 +502,17 @@ class MigrationManager:
                                              labels, account_id)
                                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                                                     ?, ?, ?, ?, ?, ?, ?)
-                                            ''',
+                                            """,
                                             (
                                                 gmail_id,
                                                 rfc_message_id,
                                                 thread_id,
-                                                msg.get('Subject'),
-                                                msg.get('From'),
-                                                msg.get('To'),
-                                                msg.get('Cc'),
-                                                msg.get('Date'),
-                                                old_meta['archived_timestamp'],
+                                                msg.get("Subject"),
+                                                msg.get("From"),
+                                                msg.get("To"),
+                                                msg.get("Cc"),
+                                                msg.get("Date"),
+                                                old_meta["archived_timestamp"],
                                                 archive_file,
                                                 offset,
                                                 length,
@@ -518,7 +520,7 @@ class MigrationManager:
                                                 checksum,
                                                 len(message_bytes),
                                                 None,  # labels
-                                                'default'  # account_id
+                                                "default",  # account_id
                                             ),
                                         )
 
@@ -527,8 +529,7 @@ class MigrationManager:
 
                                 except Exception as e:
                                     warn_msg = (
-                                        f"[yellow]Warning: Failed to process "
-                                        f"message {key}: {e}"
+                                        f"[yellow]Warning: Failed to process message {key}: {e}"
                                     )
                                     console.print(f"{warn_msg}[/yellow]")
                                     skipped_count += 1
@@ -559,7 +560,7 @@ class MigrationManager:
             console.print("[cyan]Setting schema version to 1.1...[/cyan]")
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version VALUES (?, ?)",
-                (self.SCHEMA_VERSION_1_1, datetime.now().isoformat())
+                (self.SCHEMA_VERSION_1_1, datetime.now().isoformat()),
             )
 
             # Commit the transaction before VACUUM
@@ -653,10 +654,7 @@ class MigrationManager:
         except Exception as e:
             raise MigrationError(f"Rollback failed: {e}") from e
 
-    def backfill_offsets_from_mbox(
-        self,
-        invalid_messages: list[dict[str, Any]]
-    ) -> int:
+    def backfill_offsets_from_mbox(self, invalid_messages: list[dict[str, Any]]) -> int:
         """
         Backfill invalid offsets by scanning mbox files.
 
@@ -684,7 +682,7 @@ class MigrationManager:
         # Group messages by archive file for efficient scanning
         by_archive: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for msg in invalid_messages:
-            by_archive[msg['archive_file']].append(msg)
+            by_archive[msg["archive_file"]].append(msg)
 
         backfilled = 0
 
@@ -700,7 +698,7 @@ class MigrationManager:
                     continue
 
                 # Create lookup dictionary by RFC Message-ID
-                msg_lookup = {m['rfc_message_id']: m for m in msgs}
+                msg_lookup = {m["rfc_message_id"]: m for m in msgs}
 
                 try:
                     # Scan mbox file
@@ -729,15 +727,15 @@ class MigrationManager:
                                         length = file_size - offset
 
                                     # Update database with real offsets
-                                    gmail_id = msg_lookup[rfc_message_id]['gmail_id']
+                                    gmail_id = msg_lookup[rfc_message_id]["gmail_id"]
 
                                     conn.execute(
-                                        '''
+                                        """
                                         UPDATE messages
                                         SET mbox_offset = ?, mbox_length = ?
                                         WHERE gmail_id = ?
-                                        ''',
-                                        (offset, length, gmail_id)
+                                        """,
+                                        (offset, length, gmail_id),
                                     )
 
                                     backfilled += 1
@@ -751,9 +749,7 @@ class MigrationManager:
                                 continue
 
                 except Exception as e:
-                    console.print(
-                        f"[yellow]Warning: Failed to scan {archive_path}: {e}[/yellow]"
-                    )
+                    console.print(f"[yellow]Warning: Failed to scan {archive_path}: {e}[/yellow]")
                     continue
 
             # Commit all updates

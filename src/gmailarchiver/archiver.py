@@ -174,14 +174,21 @@ class GmailArchiver:
         )
         self._log(f"Query: {query}", operation=operation)
 
-        # List messages from Gmail API
-        # Note: This is a blocking API call. We log status before/after.
+        # List messages from Gmail API with progress updates
+        # Define progress callback to update the log with message count
+        def list_progress(messages_found: int, page_number: int) -> None:
+            if operation:
+                msg = f"Listing messages... {messages_found:,} found (page {page_number})"
+                operation.log(msg, "INFO")
+
         if operation:
             operation.log("Listing messages from Gmail...", "INFO")
 
-        message_list: list[dict[str, Any]] = self.client.list_messages(query)
+        message_list: list[dict[str, Any]] = self.client.list_messages(
+            query, progress_callback=list_progress if operation else None
+        )
 
-        # Log result
+        # Log final result
         if message_list:
             msg = f"Found {len(message_list):,} messages"
             if operation:
@@ -222,8 +229,45 @@ class GmailArchiver:
 
             if skipped_count > 0:
                 self._log(
-                    f"Skipping {skipped_count} already-archived messages", operation=operation
+                    f"Skipping {skipped_count} already-archived messages (by gmail_id)",
+                    operation=operation,
                 )
+
+        # Phase 2: Pre-filter by RFC Message-ID (avoids downloading duplicates)
+        # This is much faster than downloading full messages and then checking
+        if message_ids and incremental:
+            self._log("Checking for duplicates by Message-ID...", operation=operation)
+
+            # Load known RFC Message-IDs from database
+            try:
+                db = DBManager(str(db_path), validate_schema=False, auto_create=True)
+                known_rfc_ids = db.get_all_rfc_message_ids()
+                db.close()
+            except Exception:
+                known_rfc_ids = set()
+
+            if known_rfc_ids:
+                # Fetch just the Message-ID headers (lightweight metadata request)
+                def filter_progress(processed: int, total: int) -> None:
+                    if operation:
+                        operation.log(f"Checking duplicates... {processed:,}/{total:,}", "INFO")
+
+                gmail_to_rfc = self.client.get_message_ids_batch(
+                    message_ids, progress_callback=filter_progress if operation else None
+                )
+
+                # Filter out messages whose RFC Message-ID is already known
+                original_count = len(message_ids)
+                message_ids = [
+                    mid for mid in message_ids if gmail_to_rfc.get(mid, "") not in known_rfc_ids
+                ]
+                rfc_duplicates = original_count - len(message_ids)
+
+                if rfc_duplicates > 0:
+                    self._log(
+                        f"Skipping {rfc_duplicates} duplicates (by Message-ID)",
+                        operation=operation,
+                    )
 
         if not message_ids:
             self._log("All messages already archived", operation=operation)
@@ -511,9 +555,7 @@ class GmailArchiver:
             # Handle KeyboardInterrupt at outer level (during batch fetch)
             interrupted = True
             final_path = partial_path
-            self._log(
-                "Interrupt received - saving progress...", "WARNING", operation=operation
-            )
+            self._log("Interrupt received - saving progress...", "WARNING", operation=operation)
             if archived_count > 0 and session_id and self.db_manager:
                 self.db_manager.update_session_progress(session_id, archived_count)
 

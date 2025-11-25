@@ -13,7 +13,7 @@ runner = CliRunner()
 
 def create_v1_1_schema(conn: sqlite3.Connection) -> None:
     """Helper to create full v1.1 schema."""
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -33,9 +33,9 @@ def create_v1_1_schema(conn: sqlite3.Connection) -> None:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             subject,
             from_addr,
@@ -44,7 +44,7 @@ def create_v1_1_schema(conn: sqlite3.Connection) -> None:
             content=messages,
             content_rowid=rowid
         )
-    ''')
+    """)
 
 
 @pytest.fixture
@@ -64,33 +64,33 @@ def clean_db(tmp_path: Path) -> Path:
 
     # Insert test data with real mbox_length
     conn.execute(
-        '''
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''',
+        """,
         (
-            'msg1',
-            '<msg1@test.com>',
-            'Test 1',
-            'sender@test.com',
-            'recipient@test.com',
-            '2025-01-01T00:00:00',
+            "msg1",
+            "<msg1@test.com>",
+            "Test 1",
+            "sender@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
             str(mbox_path),
             0,
             mbox_length,
-            'Test body',
+            "Test body",
         ),
     )
 
     # Sync FTS
     conn.execute(
-        '''
+        """
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-        '''
+        """
     )
 
     conn.commit()
@@ -101,6 +101,7 @@ def clean_db(tmp_path: Path) -> Path:
 
     return db_path
 
+
 @pytest.fixture
 def db_with_orphaned_fts(tmp_path: Path) -> Path:
     """Create database with orphaned FTS records."""
@@ -108,7 +109,7 @@ def db_with_orphaned_fts(tmp_path: Path) -> Path:
     conn = sqlite3.connect(str(db_path))
 
     # Create schema WITHOUT triggers so we can create orphans manually
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -128,10 +129,10 @@ def db_with_orphaned_fts(tmp_path: Path) -> Path:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Use external content FTS (content='') so it doesn't auto-sync with messages table
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE messages_fts USING fts5(
             subject,
             from_addr,
@@ -139,28 +140,42 @@ def db_with_orphaned_fts(tmp_path: Path) -> Path:
             body_preview,
             content=''
         )
-    ''')
+    """)
 
     # Insert message
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', 'test.mbox', 0, 100, 'Body'
-    ))
+    """,
+        (
+            "msg1",
+            "<msg1@test.com>",
+            "Test",
+            "sender@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            "test.mbox",
+            0,
+            100,
+            "Body",
+        ),
+    )
 
     # Get rowid
     cursor = conn.execute("SELECT rowid FROM messages WHERE gmail_id = 'msg1'")
     rowid = cursor.fetchone()[0]
 
     # Manually insert FTS record
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         VALUES (?, ?, ?, ?, ?)
-    ''', (rowid, 'Test', 'sender@test.com', 'recipient@test.com', 'Body'))
+    """,
+        (rowid, "Test", "sender@test.com", "recipient@test.com", "Body"),
+    )
 
     # Delete message but leave FTS record (orphaned) - no triggers means FTS won't delete
     conn.execute("DELETE FROM messages WHERE gmail_id = 'msg1'")
@@ -178,7 +193,7 @@ def db_with_missing_fts(tmp_path: Path) -> Path:
     conn = sqlite3.connect(str(db_path))
 
     # Create schema WITHOUT triggers so FTS doesn't auto-populate
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT UNIQUE NOT NULL,
@@ -198,10 +213,10 @@ def db_with_missing_fts(tmp_path: Path) -> Path:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
     # Use external content FTS (content='') so it doesn't auto-populate
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE messages_fts USING fts5(
             subject,
             from_addr,
@@ -209,18 +224,29 @@ def db_with_missing_fts(tmp_path: Path) -> Path:
             body_preview,
             content=''
         )
-    ''')
+    """)
 
     # Insert message WITHOUT FTS sync - triggers don't exist so FTS won't populate
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', 'test.mbox', 0, 100, 'Body'
-    ))
+    """,
+        (
+            "msg1",
+            "<msg1@test.com>",
+            "Test",
+            "sender@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            "test.mbox",
+            0,
+            100,
+            "Body",
+        ),
+    )
 
     # Don't insert into FTS - this creates missing FTS issue
 
@@ -240,22 +266,33 @@ def db_with_invalid_offsets(tmp_path: Path) -> Path:
     create_v1_1_schema(conn)
 
     # Insert message with placeholder offsets (-1, -1)
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', 'test.mbox', -1, -1, 'Body preview'
-    ))
+    """,
+        (
+            "msg1",
+            "<msg1@test.com>",
+            "Test",
+            "sender@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            "test.mbox",
+            -1,
+            -1,
+            "Body preview",
+        ),
+    )
 
     # Sync FTS
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -274,22 +311,33 @@ def db_with_missing_file(tmp_path: Path) -> Path:
 
     # Insert message referencing non-existent file
     missing_file = str(tmp_path / "missing.mbox")
-    conn.execute('''
+    conn.execute(
+        """
         INSERT INTO messages (
             gmail_id, rfc_message_id, subject, from_addr, to_addr,
             archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        'msg1', '<msg1@test.com>', 'Test', 'sender@test.com', 'recipient@test.com',
-        '2025-01-01T00:00:00', missing_file, 0, 100, 'Body'
-    ))
+    """,
+        (
+            "msg1",
+            "<msg1@test.com>",
+            "Test",
+            "sender@test.com",
+            "recipient@test.com",
+            "2025-01-01T00:00:00",
+            missing_file,
+            0,
+            100,
+            "Body",
+        ),
+    )
 
     # Sync FTS
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -305,7 +353,7 @@ def db_with_duplicates(tmp_path: Path) -> Path:
 
     # Create schema WITHOUT unique constraint on rfc_message_id
     # (to simulate the duplicate issue)
-    conn.execute('''
+    conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
             rfc_message_id TEXT NOT NULL,
@@ -325,9 +373,9 @@ def db_with_duplicates(tmp_path: Path) -> Path:
             labels TEXT,
             account_id TEXT DEFAULT 'default'
         )
-    ''')
+    """)
 
-    conn.execute('''
+    conn.execute("""
         CREATE VIRTUAL TABLE messages_fts USING fts5(
             subject,
             from_addr,
@@ -336,26 +384,37 @@ def db_with_duplicates(tmp_path: Path) -> Path:
             content=messages,
             content_rowid=rowid
         )
-    ''')
+    """)
 
     # Insert duplicate Message-IDs
     for i in range(2):
-        conn.execute('''
+        conn.execute(
+            """
             INSERT INTO messages (
                 gmail_id, rfc_message_id, subject, from_addr, to_addr,
                 archived_timestamp, archive_file, mbox_offset, mbox_length, body_preview
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            f'msg{i}', '<duplicate@test.com>', 'Test', 'sender@test.com', 'recipient@test.com',
-            '2025-01-01T00:00:00', 'test.mbox', i * 100, 100, 'Body'
-        ))
+        """,
+            (
+                f"msg{i}",
+                "<duplicate@test.com>",
+                "Test",
+                "sender@test.com",
+                "recipient@test.com",
+                "2025-01-01T00:00:00",
+                "test.mbox",
+                i * 100,
+                100,
+                "Body",
+            ),
+        )
 
     # Sync FTS
-    conn.execute('''
+    conn.execute("""
         INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
         SELECT rowid, subject, from_addr, to_addr, body_preview
         FROM messages
-    ''')
+    """)
 
     conn.commit()
     conn.close()
@@ -411,8 +470,7 @@ def test_verify_integrity_missing_file(db_with_missing_file: Path) -> None:
 
     assert result.exit_code == 1
     assert (
-        "Missing archive file" in result.stdout
-        or "missing archive file" in result.stdout.lower()
+        "Missing archive file" in result.stdout or "missing archive file" in result.stdout.lower()
     )
     # Path might be truncated in output, so just check for "missing"
     assert "missing" in result.stdout.lower()

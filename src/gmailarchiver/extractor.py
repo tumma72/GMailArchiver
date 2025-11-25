@@ -47,9 +47,7 @@ class MessageExtractor:
 
         self.db = DBManager(str(db_path))
 
-    def extract_by_gmail_id(
-        self, gmail_id: str, output_path: str | Path | None = None
-    ) -> bytes:
+    def extract_by_gmail_id(self, gmail_id: str, output_path: str | Path | None = None) -> bytes:
         """
         Extract message by Gmail ID.
 
@@ -92,15 +90,13 @@ class MessageExtractor:
         if not message:
             raise ExtractorError(f"Message not found in database: {rfc_message_id}")
 
-        archive_file = message['archive_file']
-        mbox_offset = message['mbox_offset']
-        mbox_length = message['mbox_length']
+        archive_file = message["archive_file"]
+        mbox_offset = message["mbox_offset"]
+        mbox_length = message["mbox_length"]
 
         return self._extract_from_archive(archive_file, mbox_offset, mbox_length, output_path)
 
-    def batch_extract(
-        self, gmail_ids: list[str], output_dir: Path
-    ) -> ExtractStats:
+    def batch_extract(self, gmail_ids: list[str], output_dir: Path) -> ExtractStats:
         """
         Extract multiple messages to directory.
 
@@ -119,7 +115,7 @@ class MessageExtractor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        stats: ExtractStats = {'extracted': 0, 'failed': 0, 'errors': []}
+        stats: ExtractStats = {"extracted": 0, "failed": 0, "errors": []}
 
         for gmail_id in gmail_ids:
             try:
@@ -128,11 +124,11 @@ class MessageExtractor:
 
                 # Extract message
                 self.extract_by_gmail_id(gmail_id, output_file)
-                stats['extracted'] += 1
+                stats["extracted"] += 1
 
             except Exception as e:
-                stats['failed'] += 1
-                stats['errors'].append(f"{gmail_id}: {e}")
+                stats["failed"] += 1
+                stats["errors"].append(f"{gmail_id}: {e}")
 
         return stats
 
@@ -173,7 +169,7 @@ class MessageExtractor:
                 )
             else:
                 # Extract directly from uncompressed mbox
-                with open(archive_path, 'rb') as f:
+                with open(archive_path, "rb") as f:
                     f.seek(mbox_offset)
                     message_bytes = f.read(mbox_length)
 
@@ -181,7 +177,7 @@ class MessageExtractor:
             if output_path:
                 output_path = Path(output_path)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, 'wb') as f:
+                with open(output_path, "wb") as f:
                     f.write(message_bytes)
             else:
                 # Write to stdout
@@ -216,15 +212,16 @@ class MessageExtractor:
         try:
             # Open compressed file
             f: IOBase
-            if compression == 'gzip':
-                f = gzip.open(archive_path, 'rb')
-            elif compression == 'lzma':
-                f = lzma.open(archive_path, 'rb')
-            elif compression == 'zstd':
+            if compression == "gzip":
+                f = gzip.open(archive_path, "rb")
+            elif compression == "lzma":
+                f = lzma.open(archive_path, "rb")
+            elif compression == "zstd":
                 # Python 3.14+ has native zstd support
                 try:
                     from compression import zstd
-                    f = zstd.open(archive_path, 'rb')
+
+                    f = zstd.open(archive_path, "rb")
                 except ImportError:
                     raise ExtractorError(
                         "zstd compression requires Python 3.14+ or 'zstandard' package"
@@ -240,9 +237,7 @@ class MessageExtractor:
             return message_bytes
 
         except Exception as e:
-            raise ExtractorError(
-                f"Failed to extract from compressed archive: {e}"
-            ) from e
+            raise ExtractorError(f"Failed to extract from compressed archive: {e}") from e
 
     def _get_compression_format(self, archive_path: Path) -> str | None:
         """
@@ -255,12 +250,12 @@ class MessageExtractor:
             Compression format: 'gzip', 'lzma', 'zstd', or None
         """
         suffix = archive_path.suffix.lower()
-        if suffix == '.gz':
-            return 'gzip'
-        elif suffix in ('.xz', '.lzma'):
-            return 'lzma'
-        elif suffix == '.zst':
-            return 'zstd'
+        if suffix == ".gz":
+            return "gzip"
+        elif suffix in (".xz", ".lzma"):
+            return "lzma"
+        elif suffix == ".zst":
+            return "zstd"
         return None
 
     def close(self) -> None:

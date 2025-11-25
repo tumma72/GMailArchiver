@@ -39,7 +39,7 @@ def validate_gmail_query(query: str) -> str:
 
     # Check for shell metacharacters that could be dangerous
     # These should never appear in legitimate Gmail queries
-    dangerous_chars = [';', '|', '&', '`', '$', '\n', '\r', '\0']
+    dangerous_chars = [";", "|", "&", "`", "$", "\n", "\r", "\0"]
     for char in dangerous_chars:
         if char in query:
             raise InvalidInputError(
@@ -49,9 +49,7 @@ def validate_gmail_query(query: str) -> str:
 
     # Check for excessive length (Gmail query limit is ~1024 chars)
     if len(query) > 1024:
-        raise InvalidInputError(
-            f"Query too long ({len(query)} chars). Maximum is 1024 characters."
-        )
+        raise InvalidInputError(f"Query too long ({len(query)} chars). Maximum is 1024 characters.")
 
     return query
 
@@ -86,18 +84,19 @@ def validate_age_expression(age: str) -> str:
     age = age.strip()
 
     # Try ISO date format first (YYYY-MM-DD)
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', age):
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", age):
         # Validate it's a real date
         try:
             from datetime import datetime
-            datetime.strptime(age, '%Y-%m-%d')
+
+            datetime.strptime(age, "%Y-%m-%d")
             return age  # Valid ISO date
         except ValueError as e:
             raise InvalidInputError(f"Invalid ISO date: '{age}'. {str(e)}")
 
     # Try relative age format (number + unit)
     age_lower = age.lower()
-    if not re.match(r'^\d+[ymwd]$', age_lower):
+    if not re.match(r"^\d+[ymwd]$", age_lower):
         raise InvalidInputError(
             f"Invalid age/date format: '{age}'. "
             "Expected formats:\n"
@@ -137,7 +136,7 @@ def validate_compression_format(format: str | None) -> str | None:
 
     format = format.strip().lower()
 
-    valid_formats = ['gzip', 'lzma', 'zstd']
+    valid_formats = ["gzip", "lzma", "zstd"]
     if format not in valid_formats:
         raise InvalidInputError(
             f"Unsupported compression format: '{format}'. "
@@ -177,10 +176,10 @@ def sanitize_filename(filename: str, max_length: int = 255) -> str:
 
     # Remove or replace problematic characters
     # Allowed: alphanumeric, underscore, hyphen, dot
-    filename = re.sub(r'[^\w\-.]', '_', filename)
+    filename = re.sub(r"[^\w\-.]", "_", filename)
 
     # Remove leading/trailing dots and spaces
-    filename = filename.strip('. ')
+    filename = filename.strip(". ")
 
     # Ensure it's not empty after sanitization
     if not filename:
@@ -188,10 +187,10 @@ def sanitize_filename(filename: str, max_length: int = 255) -> str:
 
     # Truncate if too long, but preserve extension
     if len(filename) > max_length:
-        name_part, ext_part = filename.rsplit('.', 1) if '.' in filename else (filename, '')
+        name_part, ext_part = filename.rsplit(".", 1) if "." in filename else (filename, "")
         if ext_part:
             max_name_length = max_length - len(ext_part) - 1
-            filename = name_part[:max_name_length] + '.' + ext_part
+            filename = name_part[:max_name_length] + "." + ext_part
         else:
             filename = filename[:max_length]
 

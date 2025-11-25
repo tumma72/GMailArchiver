@@ -37,9 +37,7 @@ class TestSchedulerDatabase:
         # Verify table exists
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='schedules'"
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='schedules'")
         result = cursor.fetchone()
         assert result is not None
         assert result[0] == "schedules"
@@ -66,9 +64,7 @@ class TestSchedulerDatabase:
 
         # Create database with first instance
         scheduler1 = Scheduler(str(db_path))
-        schedule_id = scheduler1.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler1.add_schedule(command="check", frequency="daily", time="02:00")
         scheduler1.close()
 
         # Open with second instance
@@ -86,9 +82,7 @@ class TestAddSchedule:
         """Test adding a daily check schedule."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
 
         assert schedule_id is not None
         schedules = scheduler.list_schedules()
@@ -182,7 +176,9 @@ class TestScheduleValidation:
 
         with pytest.raises(ScheduleValidationError, match="Invalid frequency"):
             scheduler.add_schedule(
-                command="check", frequency="hourly", time="02:00"  # Invalid
+                command="check",
+                frequency="hourly",
+                time="02:00",  # Invalid
             )
         scheduler.close()
 
@@ -192,7 +188,9 @@ class TestScheduleValidation:
 
         with pytest.raises(ScheduleValidationError, match="Invalid time format"):
             scheduler.add_schedule(
-                command="check", frequency="daily", time="25:00"  # Invalid hour
+                command="check",
+                frequency="daily",
+                time="25:00",  # Invalid hour
             )
         scheduler.close()
 
@@ -202,7 +200,9 @@ class TestScheduleValidation:
 
         with pytest.raises(ScheduleValidationError, match="Invalid time format"):
             scheduler.add_schedule(
-                command="check", frequency="daily", time="0200"  # Missing colon
+                command="check",
+                frequency="daily",
+                time="0200",  # Missing colon
             )
         scheduler.close()
 
@@ -236,9 +236,7 @@ class TestScheduleValidation:
         """Test that weekly frequency requires day_of_week."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        with pytest.raises(
-            ScheduleValidationError, match="Weekly schedules require day_of_week"
-        ):
+        with pytest.raises(ScheduleValidationError, match="Weekly schedules require day_of_week"):
             scheduler.add_schedule(command="check", frequency="weekly", time="02:00")
         scheduler.close()
 
@@ -246,9 +244,7 @@ class TestScheduleValidation:
         """Test that monthly frequency requires day_of_month."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        with pytest.raises(
-            ScheduleValidationError, match="Monthly schedules require day_of_month"
-        ):
+        with pytest.raises(ScheduleValidationError, match="Monthly schedules require day_of_month"):
             scheduler.add_schedule(command="check", frequency="monthly", time="02:00")
         scheduler.close()
 
@@ -289,9 +285,7 @@ class TestListSchedules:
         """Test that list_schedules includes disabled schedules."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
         scheduler.disable_schedule(schedule_id)
 
         schedules = scheduler.list_schedules()
@@ -322,9 +316,7 @@ class TestGetSchedule:
         """Test getting a schedule by ID."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
 
         schedule = scheduler.get_schedule(schedule_id)
         assert schedule is not None
@@ -348,9 +340,7 @@ class TestRemoveSchedule:
         """Test removing a schedule."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
 
         result = scheduler.remove_schedule(schedule_id)
         assert result is True
@@ -391,9 +381,7 @@ class TestEnableDisableSchedule:
         """Test disabling a schedule."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
 
         result = scheduler.disable_schedule(schedule_id)
         assert result is True
@@ -407,9 +395,7 @@ class TestEnableDisableSchedule:
         """Test enabling a disabled schedule."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
         scheduler.disable_schedule(schedule_id)
 
         result = scheduler.enable_schedule(schedule_id)
@@ -444,9 +430,7 @@ class TestUpdateLastRun:
         """Test updating the last_run timestamp."""
         scheduler = Scheduler(str(tmp_path / "test.db"))
 
-        schedule_id = scheduler.add_schedule(
-            command="check", frequency="daily", time="02:00"
-        )
+        schedule_id = scheduler.add_schedule(command="check", frequency="daily", time="02:00")
 
         # Initially last_run should be None
         schedule = scheduler.get_schedule(schedule_id)
