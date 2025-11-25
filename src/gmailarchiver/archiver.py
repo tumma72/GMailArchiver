@@ -229,45 +229,12 @@ class GmailArchiver:
 
             if skipped_count > 0:
                 self._log(
-                    f"Skipping {skipped_count} already-archived messages (by gmail_id)",
+                    f"Skipping {skipped_count} already-archived messages",
                     operation=operation,
                 )
 
-        # Phase 2: Pre-filter by RFC Message-ID (avoids downloading duplicates)
-        # This is much faster than downloading full messages and then checking
-        if message_ids and incremental:
-            self._log("Checking for duplicates by Message-ID...", operation=operation)
-
-            # Load known RFC Message-IDs from database
-            try:
-                db = DBManager(str(db_path), validate_schema=False, auto_create=True)
-                known_rfc_ids = db.get_all_rfc_message_ids()
-                db.close()
-            except Exception:
-                known_rfc_ids = set()
-
-            if known_rfc_ids:
-                # Fetch just the Message-ID headers (lightweight metadata request)
-                def filter_progress(processed: int, total: int) -> None:
-                    if operation:
-                        operation.log(f"Checking duplicates... {processed:,}/{total:,}", "INFO")
-
-                gmail_to_rfc = self.client.get_message_ids_batch(
-                    message_ids, progress_callback=filter_progress if operation else None
-                )
-
-                # Filter out messages whose RFC Message-ID is already known
-                original_count = len(message_ids)
-                message_ids = [
-                    mid for mid in message_ids if gmail_to_rfc.get(mid, "") not in known_rfc_ids
-                ]
-                rfc_duplicates = original_count - len(message_ids)
-
-                if rfc_duplicates > 0:
-                    self._log(
-                        f"Skipping {rfc_duplicates} duplicates (by Message-ID)",
-                        operation=operation,
-                    )
+        # Note: RFC Message-ID deduplication happens in HybridStorage during archive
+        # This catches edge cases where same email has different gmail_ids
 
         if not message_ids:
             self._log("All messages already archived", operation=operation)
