@@ -183,9 +183,9 @@ class GmailArchiver:
             }
 
         if dry_run:
-            self._log(f"\nDRY RUN: Would archive {len(message_ids)} messages to {output_file}")
+            self._log(f"DRY RUN: Would archive {len(message_ids)} messages to {output_file}", operation=operation)
             if compress:
-                self._log(f"          With {compress} compression")
+                self._log(f"With {compress} compression", operation=operation)
             return {
                 'messages_found': len(message_list),
                 'messages_to_archive': len(message_ids),
@@ -334,14 +334,14 @@ class GmailArchiver:
             if self.db_manager:
                 self.db_manager.close()
 
-        # Print summary
+        # Print summary (route through operation handle if available)
         final_path = output_path
         file_size = final_path.stat().st_size if final_path.exists() else 0
-        self._log(f"\n✓ Archived {archived_count} messages", "SUCCESS")
+        self._log(f"Archived {archived_count} messages", "SUCCESS", operation=operation)
         if failed_count > 0:
-            self._log(f"  ⚠ Failed: {failed_count} messages (errors during archiving)", "WARNING")
-        self._log(f"  File: {final_path}")
-        self._log(f"  Size: {format_bytes(file_size)}")
+            self._log(f"Failed: {failed_count} messages (errors during archiving)", "WARNING", operation=operation)
+        self._log(f"File: {final_path}", operation=operation)
+        self._log(f"Size: {format_bytes(file_size)}", operation=operation)
 
         return {
             'archived': archived_count,
