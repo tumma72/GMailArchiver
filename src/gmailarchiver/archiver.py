@@ -51,7 +51,9 @@ class GmailArchiver:
         self.db_manager: DBManager | None = None
         self.hybrid_storage: HybridStorage | None = None
 
-    def _log(self, message: str, level: str = "INFO", operation: OperationHandle | None = None) -> None:
+    def _log(
+        self, message: str, level: str = "INFO", operation: OperationHandle | None = None
+    ) -> None:
         """Log message through operation handle or OutputManager.
 
         Args:
@@ -110,7 +112,10 @@ class GmailArchiver:
         cutoff_date = parse_age(age_threshold)
         query = f"before:{datetime_to_gmail_query(cutoff_date)}"
 
-        self._log(f"Searching for emails older than {age_threshold} ({cutoff_date.date()})", operation=operation)
+        self._log(
+            f"Searching for emails older than {age_threshold} ({cutoff_date.date()})",
+            operation=operation
+        )
         self._log(f"Query: {query}", operation=operation)
 
         # List messages (use operation for logging if available)
@@ -163,7 +168,10 @@ class GmailArchiver:
             skipped_count = original_count - len(message_ids)
 
             if skipped_count > 0:
-                self._log(f"Skipping {skipped_count} already-archived messages", operation=operation)
+                self._log(
+                    f"Skipping {skipped_count} already-archived messages",
+                    operation=operation
+                )
 
         if not message_ids:
             self._log("All messages already archived", operation=operation)
@@ -268,6 +276,8 @@ class GmailArchiver:
         # Log initial status if operation handle provided
         if operation:
             operation.log(f"Processing {len(message_ids)} messages", "INFO")
+            # Set total for progress tracking now that we know the count
+            operation.set_total(len(message_ids), "Archiving messages")
 
         # Fetch messages in batches
         try:
@@ -533,7 +543,7 @@ class GmailArchiver:
         self,
         archive_file: str,
         expected_message_ids: set[str]
-    ) -> bool:
+    ) -> dict[str, Any]:
         """
         Validate archive integrity.
 
@@ -542,12 +552,12 @@ class GmailArchiver:
             expected_message_ids: Set of expected message IDs
 
         Returns:
-            True if validation passes
+            Validation results dict with 'passed' key and check details
         """
-        validator = ArchiveValidator(archive_file, self.state_db_path)
+        validator = ArchiveValidator(archive_file, self.state_db_path, output=self.output)
         results = validator.validate_comprehensive(expected_message_ids)
-        validator.report(results)
-        return results['passed']  # type: ignore[no-any-return]
+        # Don't call validator.report() - let caller handle display
+        return results
 
     def _extract_rfc_message_id(self, msg: email.message.Message) -> str:
         """

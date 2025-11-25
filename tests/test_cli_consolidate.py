@@ -373,7 +373,8 @@ class TestConsolidateCommand:
         ])
 
         assert result.exit_code == 1
-        assert 'error' in result.stdout.lower() or 'not found' in result.stdout.lower()
+        # Error panel shows "No Archives Found" title and descriptive message
+        assert 'no archives found' in result.stdout.lower()
 
     def test_consolidate_shows_summary_table(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch

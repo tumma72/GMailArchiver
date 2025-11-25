@@ -297,6 +297,10 @@ class LiveOperationHandle:
         self.total = total
         self.completed = 0
 
+        # Initialize progress on context if total is known
+        if total is not None and total > 0:
+            self._live_context.set_progress_total(total, description)
+
     def log(self, message: str, level: str = "INFO") -> None:
         """Log message to LiveLayoutContext and update display.
 
@@ -316,6 +320,27 @@ class LiveOperationHandle:
             advance: Number of units to advance
         """
         self.completed += advance
+        # Sync progress with context for display
+        self._live_context.update_progress(advance)
+        # Trigger display update if handler available
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
+
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking (call after total is known).
+
+        Args:
+            total: Total number of items to process
+            description: Optional new description for the progress bar
+        """
+        self.total = total
+        if description:
+            self.description = description
+        # Initialize progress on context
+        self._live_context.set_progress_total(total, self.description)
+        # Trigger display update
+        if self._live_handler and self._live_handler._live:
+            self._live_handler._live.update(self._live_handler._render_layout())
 
     def set_status(self, status: str) -> None:
         """Update operation status/description.
@@ -377,21 +402,59 @@ class LiveOutputHandler:
         self._live: Live | None = None
 
     def _render_layout(self) -> Any:
-        """Render current layout with log buffer.
+        """Render current layout with progress bar and log buffer.
 
         Returns:
-            Rich renderable (Panel with log buffer)
+            Rich renderable (Panel with optional progress bar + log buffer)
         """
+        from rich.console import Group
         from rich.panel import Panel
+        from rich.progress import BarColumn, Progress, TextColumn
+        from rich.text import Text
 
         if not self._live_context:
             return Panel("Loading...", title="Processing", border_style="blue")
 
-        # Render log buffer
-        log_display = self._live_context.log_buffer.render()
+        # Build content elements
+        content_elements: list[Any] = []
 
+        # Add progress bar if total is set
+        ctx = self._live_context
+        if ctx.progress_total is not None and ctx.progress_total > 0:
+            # Calculate progress percentage
+            percentage = (ctx.progress_completed / ctx.progress_total) * 100
+            completed = ctx.progress_completed
+            total = ctx.progress_total
+
+            # Build progress bar manually for full control
+            bar_width = 40
+            filled = int(bar_width * percentage / 100)
+            bar = "━" * filled + "╸" + "─" * (bar_width - filled - 1)
+
+            # Get ETA
+            eta = ctx.get_progress_eta()
+
+            # Create progress text with colors
+            progress_text = Text()
+            progress_text.append(f"{ctx.progress_description}: ", style="bold")
+            progress_text.append(bar[:filled], style="green")
+            if filled < bar_width:
+                progress_text.append(bar[filled], style="green")
+                progress_text.append(bar[filled + 1 :], style="dim")
+            progress_text.append(f" {completed:,}/{total:,}", style="cyan")
+            progress_text.append(f" ({percentage:.1f}%)", style="cyan")
+            progress_text.append(f" • {eta}", style="dim")
+
+            content_elements.append(progress_text)
+            content_elements.append(Text(""))  # Empty line separator
+
+        # Add log buffer
+        log_display = ctx.log_buffer.render()
+        content_elements.append(log_display)
+
+        # Combine into panel
         return Panel(
-            log_display,
+            Group(*content_elements),
             title="[bold blue]Live Processing Log[/bold blue]",
             border_style="blue",
             padding=(0, 1),
@@ -431,8 +494,6 @@ class LiveOutputHandler:
     def __enter__(self) -> LiveOutputHandler:
         """Context manager entry - creates LiveLayoutContext and Rich Live display."""
         from rich.live import Live
-        from rich.panel import Panel
-        from rich.console import Group as RichGroup
 
         self._live_context = LiveLayoutContext(
             log_dir=self._log_dir, max_visible=self._max_visible
@@ -592,6 +653,7 @@ class LiveLayoutContext:
     Features:
     - Flicker-free updates via Rich Live
     - Integrated log display (LogBuffer) + session logging (SessionLogger)
+    - Progress bar with ETA tracking
     - Automatic component initialization
     - Context manager support
 
@@ -623,6 +685,63 @@ class LiveLayoutContext:
             self.session_logger = session_logger
         else:
             self.session_logger = SessionLogger(log_dir=log_dir)
+
+        # Progress tracking state
+        self.progress_total: int | None = None
+        self.progress_completed: int = 0
+        self.progress_start_time: float | None = None
+        self.progress_description: str = "Processing"
+
+    def set_progress_total(self, total: int, description: str = "Processing") -> None:
+        """Set the total for progress tracking.
+
+        Args:
+            total: Total number of items to process
+            description: Description text for the progress bar
+        """
+        self.progress_total = total
+        self.progress_completed = 0
+        self.progress_start_time = time.time()
+        self.progress_description = description
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance the progress counter.
+
+        Args:
+            advance: Number of items to advance by
+        """
+        self.progress_completed += advance
+
+    def get_progress_eta(self) -> str:
+        """Calculate estimated time remaining.
+
+        Returns:
+            Human-readable ETA string (e.g., "2m 30s remaining")
+        """
+        if (
+            self.progress_total is None
+            or self.progress_start_time is None
+            or self.progress_completed == 0
+        ):
+            return "calculating..."
+
+        elapsed = time.time() - self.progress_start_time
+        rate = self.progress_completed / elapsed if elapsed > 0 else 0
+        remaining = self.progress_total - self.progress_completed
+
+        if rate > 0:
+            eta_seconds = remaining / rate
+            if eta_seconds < 60:
+                return f"{eta_seconds:.0f}s remaining"
+            elif eta_seconds < 3600:
+                minutes = int(eta_seconds // 60)
+                seconds = int(eta_seconds % 60)
+                return f"{minutes}m {seconds}s remaining"
+            else:
+                hours = int(eta_seconds // 3600)
+                minutes = int((eta_seconds % 3600) // 60)
+                return f"{hours}h {minutes}m remaining"
+        return "calculating..."
 
     def add_log(self, message: str, level: str = "INFO") -> None:
         """Add log entry to both LogBuffer (UI) and SessionLogger (file).
@@ -1381,6 +1500,143 @@ class OutputManager:
 
         if exit_code > 0:
             sys.exit(exit_code)
+
+    def show_error_panel(
+        self,
+        title: str,
+        message: str,
+        suggestion: str | None = None,
+        details: Sequence[str] | None = None,
+        exit_code: int = 0,
+    ) -> None:
+        """Show error in a prominent Rich Panel (modal-style dialog).
+
+        Use this for critical errors that need user attention. The panel provides
+        visual separation from surrounding output and is easier to spot.
+
+        Args:
+            title: Panel title (e.g., "Validation Failed", "Archive Error")
+            message: Main error message
+            suggestion: Optional suggested fix (shown below message)
+            details: Optional list of detail lines (errors, warnings)
+            exit_code: Exit code (0 = don't exit, >0 = exit with code)
+        """
+        if self.json_mode:
+            self._json_events.append({
+                "event": "error_panel",
+                "title": title,
+                "message": message,
+                "suggestion": suggestion,
+                "details": list(details) if details else None,
+            })
+            if exit_code > 0:
+                self._flush_json()
+                sys.exit(exit_code)
+            return
+
+        if self.quiet:
+            if exit_code > 0:
+                sys.exit(exit_code)
+            return
+
+        if self.console:
+            # Build panel content
+            content_parts = [f"[bold red]{message}[/bold red]"]
+
+            if details:
+                content_parts.append("")
+                for detail in details:
+                    content_parts.append(f"  [dim]•[/dim] {detail}")
+
+            if suggestion:
+                content_parts.append("")
+                content_parts.append(f"[yellow]Suggestion:[/yellow] {suggestion}")
+
+            content = "\n".join(content_parts)
+
+            panel = Panel(
+                content,
+                title=f"[bold red]✗ {title}[/bold red]",
+                border_style="red",
+                padding=(1, 2),
+            )
+            self.console.print()
+            self.console.print(panel)
+            self.console.print()
+
+        if exit_code > 0:
+            sys.exit(exit_code)
+
+    def show_validation_report(
+        self,
+        results: dict[str, Any],
+        title: str = "Validation Results",
+    ) -> None:
+        """Show validation results in a structured Rich Panel.
+
+        Args:
+            results: Validation results dict with check results and errors
+            title: Report title
+        """
+        if self.json_mode:
+            self._json_events.append({
+                "event": "validation_report",
+                "title": title,
+                "results": results,
+            })
+            return
+
+        if self.quiet or not self.console:
+            return
+
+        # Build check results table
+        checks = [
+            ("Count Check", results.get("count_check", False)),
+            ("Database Check", results.get("database_check", False)),
+            ("Integrity Check", results.get("integrity_check", False)),
+            ("Spot Check", results.get("spot_check", False)),
+        ]
+
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Check", style="bold")
+        table.add_column("Status")
+
+        for name, passed in checks:
+            status = "[green]✓ PASSED[/green]" if passed else "[red]✗ FAILED[/red]"
+            table.add_row(name, status)
+
+        # Build content with table and errors
+        content_parts: list[Any] = [table]
+
+        errors = results.get("errors", [])
+        if errors:
+            content_parts.append(Text())  # blank line
+            content_parts.append(Text("Errors:", style="bold yellow"))
+            for err in errors:
+                content_parts.append(Text(f"  • {err}", style="dim"))
+
+        # Determine panel style based on overall result
+        passed = results.get("passed", False)
+        if passed:
+            border_style = "green"
+            status_text = "[bold green]✓ VALIDATION PASSED[/bold green]"
+        else:
+            border_style = "red"
+            status_text = "[bold red]✗ VALIDATION FAILED[/bold red]"
+
+        # Add status at bottom
+        content_parts.append(Text())
+        content_parts.append(Text.from_markup(status_text))
+
+        panel = Panel(
+            Group(*content_parts),
+            title=f"[bold]{title}[/bold]",
+            border_style=border_style,
+            padding=(1, 2),
+        )
+        self.console.print()
+        self.console.print(panel)
+        self.console.print()
 
     def success(self, message: str) -> None:
         """Show success message.

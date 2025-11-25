@@ -124,34 +124,35 @@ def archive(
     operation_mode = "archive (dry-run)" if dry_run else "archive"
     out.start_operation(operation_mode, f"Archiving messages older than {age_threshold}")
 
-    # Use handler context manager for live mode
+    # Phase 1: Authentication (outside live context for cleaner output)
+    try:
+        out.info("Authenticating with Gmail...")
+        authenticator = GmailAuthenticator(credentials_file=credentials)
+        creds = authenticator.authenticate()
+        out.success("Authentication successful")
+    except FileNotFoundError as e:
+        out.show_error_panel(
+            title="Authentication Failed",
+            message=str(e),
+            suggestion="Check credentials file path or use bundled credentials",
+            exit_code=1,
+        )
+
+    # Initialize clients
+    gmail_client = GmailClient(creds)
+    archiver = GmailArchiver(gmail_client, output=out)
+
+    # Phase 2: Archiving (inside live context for progress tracking)
+    result: dict[str, Any] | None = None
+    archive_error: Exception | None = None
+
     with out._handler:
-        # Authenticate
-        try:
-            # credentials=None uses bundled OAuth credentials
-            # token_file=None uses ~/.config/gmailarchiver/token.json
-            out.info("Authenticating with Gmail...")
-            authenticator = GmailAuthenticator(credentials_file=credentials)
-            creds = authenticator.authenticate()
-            out.success("Authentication successful")
-        except FileNotFoundError as e:
-            out.error(
-                str(e),
-                suggestion="Check credentials file path or use bundled credentials",
-                exit_code=1,
-            )
-
-        # Initialize clients
-        gmail_client = GmailClient(creds)
-        archiver = GmailArchiver(gmail_client, output=out)
-
-        # Start operation and get handle
+        # Start operation and get handle for live progress
         operation = out._handler.start_operation(
             f"Archiving messages older than {age_threshold}",
             total=None
         )
 
-        # Perform archiving
         try:
             result = archiver.archive(
                 age_threshold=age_threshold,
@@ -165,133 +166,147 @@ def archive(
             # Handle results based on mode
             if dry_run:
                 operation.succeed(f"Would archive {result['messages_to_archive']} messages")
-                out.warning("DRY RUN completed - no changes made")
-                report_data = {
-                    "Messages Found": result["messages_to_archive"],
-                    "Output File": output,
-                    "Mode": "Dry Run (no changes made)",
-                }
-                out.show_report("Archive Preview", report_data)
-                out.end_operation(success=True)
-                return
-
-            # Handle actual archive results
-            if result["messages_archived"] > 0:
+            elif result["messages_archived"] > 0:
                 operation.succeed(f"Archived {result['messages_archived']} messages")
             else:
                 operation.log("No messages to archive", "WARNING")
 
-            if result["messages_archived"] == 0:
-                out.warning("No messages to archive")
-                out.suggest_next_steps(
-                    [
-                        "Check your age threshold",
-                        "Verify messages exist in Gmail matching the criteria",
-                    ]
-                )
+        except Exception as e:
+            operation.fail(f"Archive operation failed: {e}")
+            archive_error = e
+
+    # Phase 3: Handle archive errors (outside live context)
+    if archive_error:
+        out.show_error_panel(
+            title="Archive Failed",
+            message=str(archive_error),
+            suggestion="Check your network connection and Gmail API access",
+            exit_code=1,
+        )
+        return  # exit_code=1 should exit, but return for type safety
+
+    # Phase 4: Handle results (outside live context)
+    if result is None:
+        out.show_error_panel(
+            title="Archive Failed",
+            message="No result returned from archive operation",
+            exit_code=1,
+        )
+        return  # exit_code=1 should exit, but return for type safety
+
+    # Handle dry run result
+    if dry_run:
+        out.warning("DRY RUN completed - no changes made")
+        report_data = {
+            "Messages Found": result.get("messages_to_archive", 0),
+            "Output File": output,
+            "Mode": "Dry Run (no changes made)",
+        }
+        out.show_report("Archive Preview", report_data)
+        out.end_operation(success=True)
+        return
+
+    # Handle zero messages case
+    if result["messages_archived"] == 0:
+        out.warning("No messages to archive")
+        out.suggest_next_steps([
+            "Check your age threshold",
+            "Verify messages exist in Gmail matching the criteria",
+        ])
+        out.end_operation(success=True)
+        return
+
+    # Phase 5: Validation (outside live context for clean output)
+    out.info("Validating archive...")
+
+    # Get the actual message IDs that were archived
+    with ArchiveState() as state:
+        archived_ids = state.get_archived_message_ids_for_file(output)
+
+    validation_results = archiver.validate_archive(output, archived_ids)
+
+    # Show validation report using new panel method
+    out.show_validation_report(validation_results, title="Archive Validation")
+
+    if not validation_results["passed"]:
+        out.show_error_panel(
+            title="Validation Failed",
+            message="Archive validation did not pass all checks",
+            details=validation_results.get("errors", []),
+            suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
+            exit_code=1,
+        )
+
+    out.success("Archive validation passed")
+
+    # Phase 6: Deletion (if requested)
+    if trash or delete:
+        if delete:
+            # Permanent deletion requires explicit confirmation
+            out.warning("WARNING: PERMANENT DELETION")
+            msg_count = result["messages_archived"]
+            out.warning(f"This will permanently delete {msg_count} messages.")
+            out.warning("This action CANNOT be undone!")
+
+            confirmation = typer.prompt(
+                f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
+            )
+
+            if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
+                out.info("Deletion cancelled")
                 out.end_operation(success=True)
                 return
 
-            # Validate archive
-            out.info("Validating archive...")
+            # Perform permanent deletion
+            with out.progress_context("Permanently deleting messages", total=None):
+                archiver.delete_archived_messages(list(archived_ids), permanent=True)
+            out.success("Messages permanently deleted")
 
-            # Get the actual message IDs that were archived
-            with ArchiveState() as state:
-                # Get recently archived messages for this file
-                archived_ids = state.get_archived_message_ids_for_file(output)
+        elif trash:
+            # Move to trash with confirmation
+            if not typer.confirm(
+                f"\nMove {result['messages_archived']} messages to trash? "
+                "(30-day recovery period)"
+            ):
+                out.info("Cancelled")
+                out.end_operation(success=True)
+                return
 
-            validation_passed = archiver.validate_archive(output, archived_ids)
+            with out.progress_context("Moving messages to trash", total=None):
+                archiver.delete_archived_messages(list(archived_ids), permanent=False)
+            out.success("Messages moved to trash")
 
-            if not validation_passed:
-                out.error(
-                    "Archive validation failed!",
-                    suggestion=(
-                        "Check disk space and file permissions. DO NOT delete Gmail messages yet."
-                    ),
-                    exit_code=1,
-                )
+    # Phase 7: Final report
+    report_data = {
+        "Messages Archived": result["messages_archived"],
+        "Archive File": output,
+        "Incremental Mode": "Yes" if incremental else "No",
+    }
 
-            out.success("Archive validation passed")
+    if compress:
+        report_data["Compression"] = compress
 
-            # Handle deletion if requested
-            if trash or delete:
-                if not validation_passed:
-                    out.error(
-                        "Cannot delete: Archive validation failed",
-                        suggestion="Resolve validation issues before attempting deletion",
-                        exit_code=1,
-                    )
+    if trash:
+        report_data["Gmail Status"] = "Moved to trash (30-day recovery)"
+    elif delete:
+        report_data["Gmail Status"] = "Permanently deleted"
 
-                if delete:
-                    # Permanent deletion requires explicit confirmation
-                    out.warning("⚠ WARNING: PERMANENT DELETION")
-                    msg_count = result["messages_archived"]
-                    out.warning(f"This will permanently delete {msg_count} messages.")
-                    out.warning("This action CANNOT be undone!")
+    out.show_report("Archive Summary", report_data)
+    out.success("Archive completed successfully!")
 
-                    confirmation = typer.prompt(
-                        f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
-                    )
+    # Suggest next steps
+    next_steps = [
+        f"Validate archive: gmailarchiver validate {output}",
+    ]
 
-                    if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
-                        out.info("Deletion cancelled")
-                        out.end_operation(success=True)
-                        return
+    if not trash and not delete:
+        next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
+        next_steps.append(
+            f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
+        )
 
-                    # Perform permanent deletion
-                    with out.progress_context("Permanently deleting messages", total=None):
-                        archiver.delete_archived_messages(list(archived_ids), permanent=True)
-                    out.success("Messages permanently deleted")
-
-                elif trash:
-                    # Move to trash with confirmation
-                    if not typer.confirm(
-                        f"\nMove {result['messages_archived']} messages to trash? "
-                        "(30-day recovery period)"
-                    ):
-                        out.info("Cancelled")
-                        out.end_operation(success=True)
-                        return
-
-                    with out.progress_context("Moving messages to trash", total=None):
-                        archiver.delete_archived_messages(list(archived_ids), permanent=False)
-                    out.success("Messages moved to trash")
-
-            # Build final report
-            report_data = {
-                "Messages Archived": result["messages_archived"],
-                "Archive File": output,
-                "Incremental Mode": "Yes" if incremental else "No",
-            }
-
-            if compress:
-                report_data["Compression"] = compress
-
-            if trash:
-                report_data["Gmail Status"] = "Moved to trash (30-day recovery)"
-            elif delete:
-                report_data["Gmail Status"] = "Permanently deleted"
-
-            out.show_report("Archive Summary", report_data)
-            out.success("Archive completed successfully!")
-
-            # Suggest next steps
-            next_steps = [
-                f"Validate archive: gmailarchiver validate {output}",
-            ]
-
-            if not trash and not delete:
-                next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
-                next_steps.append(
-                    f"Permanently delete: gmailarchiver retry-delete {output} --permanent"
-                )
-
-            out.suggest_next_steps(next_steps)
-            out.end_operation(success=True)
-
-        except Exception as e:
-            operation.fail(f"Archive operation failed: {e}")
-            out.error(f"Archive operation failed: {e}", exit_code=1)
+    out.suggest_next_steps(next_steps)
+    out.end_operation(success=True)
 
 
 @app.command()
@@ -316,33 +331,43 @@ def validate(
 
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.error(
-            f"Archive file not found: {archive_file}",
+        output.show_error_panel(
+            title="File Not Found",
+            message=f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
             exit_code=1,
         )
+        return
 
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion=(
                 f"Import the archive first: 'gmailarchiver import {archive_file}' "
                 f"or specify database path with --state-db"
             ),
             exit_code=1,
         )
+        return
 
     # Get expected message IDs from state database for this specific archive
     try:
         with ArchiveState(state_db) as state:
             expected_ids = state.get_archived_message_ids_for_file(archive_file)
     except Exception as e:
-        output.error(f"Failed to read database: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Database Error",
+            message=f"Failed to read database: {e}",
+            suggestion="Check database file permissions and integrity",
+            exit_code=1,
+        )
+        return
 
     # Run validation with progress tracking
-    validator = ArchiveValidator(archive_file, state_db)
+    validator = ArchiveValidator(archive_file, state_db, output=output)
 
     output.info(f"Validating {len(expected_ids):,} expected messages...")
 
@@ -355,35 +380,17 @@ def validate(
         if progress and task:
             progress.update(task, completed=4)
 
-    # Show results
-    checks = [
-        ("Count Check", results["count_check"]),
-        ("Database Check", results["database_check"]),
-        ("Integrity Check", results["integrity_check"]),
-        ("Spot Check", results["spot_check"]),
-    ]
+    # Show validation report using new panel method
+    output.show_validation_report(results, title="Archive Validation")
 
-    # Build report data
-    report_data = {
-        check_name: "✓ PASSED" if passed else "✗ FAILED" for check_name, passed in checks
-    }
-
-    output.show_report("Validation Results", report_data)
-
-    # Show errors if any
-    if results["errors"]:
-        output.warning(f"Found {len(results['errors'])} error(s):")
-        for error in results["errors"]:
-            output.info(f"  • {error}")
-
-    # Suggest next steps on failure
+    # Handle failure with error panel and suggestions
     if not results["passed"]:
         suggestions = []
 
         if not results["database_check"]:
             suggestions.append(
-                "Import archive into database: "
-                f"gmailarchiver import {archive_file} --state-db {state_db}"
+                f"Import archive into database: gmailarchiver import {archive_file} "
+                f"--state-db {state_db}"
             )
 
         if not results["integrity_check"]:
@@ -394,8 +401,8 @@ def validate(
                 f"Verify database integrity: gmailarchiver verify-integrity --state-db {state_db}"
             )
             suggestions.append(
-                f"Repair database if needed: gmailarchiver repair --no-dry-run --state-db "
-                f"{state_db}"
+                f"Repair database if needed: gmailarchiver repair --no-dry-run "
+                f"--state-db {state_db}"
             )
 
         if suggestions:
@@ -446,18 +453,18 @@ def retry_delete_cmd(
             message_ids = list(state.get_archived_message_ids_for_file(archive_file))
 
         if not message_ids:
-            # Provide detailed suggestion about common causes
-            suggestion = (
-                "Possible causes:\n"
-                "  - Archive file name doesn't match database records\n"
-                "  - Wrong state database path\n"
-                f"  - Using state database: {state_db}"
-            )
-            output.error(
-                f"No archived messages found for: {archive_file}",
-                suggestion=suggestion,
+            output.show_error_panel(
+                title="No Messages Found",
+                message=f"No archived messages found for: {archive_file}",
+                details=[
+                    "Archive file name doesn't match database records",
+                    "Wrong state database path",
+                    f"Using state database: {state_db}",
+                ],
+                suggestion="Check the archive file name and state database path",
                 exit_code=1,
             )
+            return
 
         output.info(f"Found {len(message_ids)} archived messages")
         output.info(f"Archive: {archive_file}\n")
@@ -471,15 +478,16 @@ def retry_delete_cmd(
         output.info("Validating permissions...")
         if not authenticator.validate_scopes(["https://mail.google.com/"]):
             # Keep wording so tests still find 'Missing deletion permission' and 'auth-reset'
-            message = "Missing deletion permission"
-            suggestion = (
-                "Your current authorization doesn't include permission to delete messages.\n"
-                "This was likely caused by using an older version of the app.\n\n"
-                "To fix this:\n"
-                "  1. Run: gmailarchiver auth-reset\n"
-                "  2. Run this command again to re-authenticate with full permissions"
+            output.show_error_panel(
+                title="Missing deletion permission",
+                message="Your current authorization doesn't include permission to delete messages",
+                details=[
+                    "This was likely caused by using an older version of the app",
+                ],
+                suggestion="Run 'gmailarchiver auth-reset' then retry this command",
+                exit_code=1,
             )
-            output.error(message, suggestion=suggestion, exit_code=1)
+            return
 
         output.success("Permissions validated")
 
@@ -491,7 +499,7 @@ def retry_delete_cmd(
 
         # 6. Delete messages with appropriate confirmation
         if permanent:
-            output.warning("⚠ WARNING: PERMANENT DELETION")
+            output.warning("WARNING: PERMANENT DELETION")
             output.warning(
                 f"This will permanently delete {len(message_ids)} messages. "
                 "This action CANNOT be undone!"
@@ -526,7 +534,12 @@ def retry_delete_cmd(
         output.end_operation(success=True)
 
     except Exception as e:
-        output.error(f"Retry delete failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Retry Delete Failed",
+            message=str(e),
+            suggestion="Check your network connection and authentication status",
+            exit_code=1,
+        )
 
 
 @app.command()
@@ -626,11 +639,13 @@ def migrate(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Check the database path or use --state-db to specify location",
             exit_code=1,
         )
+        return
 
     # Initialize migration manager
     manager = MigrationManager(db_path)
@@ -646,13 +661,13 @@ def migrate(
         return
 
     if current_version == "none":
-        output.error(
-            "Database appears to be empty or invalid",
-            suggestion=(
-                "Create a new database with 'gmailarchiver archive' or 'gmailarchiver import'"
-            ),
+        output.show_error_panel(
+            title="Invalid Database",
+            message="Database appears to be empty or invalid",
+            suggestion="Create a database with 'gmailarchiver archive' or 'gmailarchiver import'",
             exit_code=1,
         )
+        return
 
     # Show migration info
     output.info(f"Current schema version: {current_version}")
@@ -711,7 +726,12 @@ def migrate(
         output.end_operation(success=True)
 
     except Exception as e:
-        output.error(f"Migration failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Migration Failed",
+            message=str(e),
+            suggestion="Check database integrity or restore from backup",
+            exit_code=1,
+        )
     finally:
         manager._close()
 
@@ -799,7 +819,12 @@ def db_info(
             output.end_operation(success=True)
 
     except Exception as e:
-        output.error(f"Error reading database: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Database Error",
+            message=f"Error reading database: {e}",
+            suggestion="Check database file integrity",
+            exit_code=1,
+        )
     finally:
         manager._close()
 
@@ -839,11 +864,13 @@ def rollback(
         backups = sorted(db_path.parent.glob(backup_pattern), reverse=True)
 
         if not backups:
-            output.error(
-                "No backup files found",
+            output.show_error_panel(
+                title="No Backups Found",
+                message="No backup files found",
                 suggestion=f"Looking for pattern: {backup_pattern}",
                 exit_code=1,
             )
+            return
 
         headers = ["Backup File", "Size", "Created"]
         rows: list[list[str]] = []
@@ -879,11 +906,13 @@ def rollback(
     backup_path = Path(backup_file)
 
     if not backup_path.exists():
-        output.error(
-            f"Backup file not found: {backup_file}",
+        output.show_error_panel(
+            title="Backup Not Found",
+            message=f"Backup file not found: {backup_file}",
             suggestion="Check the backup path and try again",
             exit_code=1,
         )
+        return
 
     output.info(f"Backup file: {backup_file}")
     output.info(f"Target database: {state_db}\n")
@@ -907,7 +936,12 @@ def rollback(
         output.end_operation(success=True)
 
     except Exception as e:
-        output.error(f"Rollback failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Rollback Failed",
+            message=str(e),
+            suggestion="Check backup file integrity and try again",
+            exit_code=1,
+        )
 
 
 @utilities_app.command(name="dedupe-report")
@@ -938,11 +972,13 @@ def dedupe_report(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
             exit_code=1,
         )
+        return
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
@@ -990,13 +1026,19 @@ def dedupe_report(
             output.end_operation(success=True)
 
     except ValueError as e:
-        output.error(
-            str(e),
+        output.show_error_panel(
+            title="Schema Error",
+            message=str(e),
             suggestion="Run 'gmailarchiver migrate' to upgrade your database",
             exit_code=1,
         )
     except Exception as e:
-        output.error(f"Deduplication analysis failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Analysis Failed",
+            message=f"Deduplication analysis failed: {e}",
+            suggestion="Check database integrity and try again",
+            exit_code=1,
+        )
 
 
 @utilities_app.command()
@@ -1044,20 +1086,24 @@ def dedupe(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
             exit_code=1,
         )
+        return
 
     # Validate strategy
     valid_strategies = ["newest", "largest", "first"]
     if strategy not in valid_strategies:
-        output.error(
-            f"Invalid strategy: {strategy}",
+        output.show_error_panel(
+            title="Invalid Strategy",
+            message=f"Invalid strategy: {strategy}",
             suggestion=f"Must be one of: {', '.join(valid_strategies)}",
             exit_code=1,
         )
+        return
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
@@ -1168,13 +1214,19 @@ def dedupe(
             output.end_operation(success=True)
 
     except ValueError as e:
-        output.error(
-            str(e),
+        output.show_error_panel(
+            title="Schema Error",
+            message=str(e),
             suggestion="Run 'gmailarchiver migrate' to upgrade your database",
             exit_code=1,
         )
     except Exception as e:
-        output.error(f"Deduplication failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Deduplication Failed",
+            message=str(e),
+            suggestion="Check database integrity and try again",
+            exit_code=1,
+        )
 
 
 @utilities_app.command(name="verify-offsets")
@@ -1203,23 +1255,27 @@ def verify_offsets_cmd(
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.error(
-            f"Archive file not found: {archive_file}",
+        output.show_error_panel(
+            title="File Not Found",
+            message=f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
             exit_code=1,
         )
+        return
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
             exit_code=1,
         )
+        return
 
     # Create validator and run verification
     try:
-        validator = ArchiveValidator(archive_file, state_db)
+        validator = ArchiveValidator(archive_file, state_db, output=output)
 
         with output.progress_context("Verifying offsets", total=1) as progress:
             task = progress.add_task("Offset verification", total=1) if progress else None
@@ -1275,7 +1331,12 @@ def verify_offsets_cmd(
         raise typer.Exit(1)
 
     except Exception as e:
-        output.error(f"Offset verification failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Verification Failed",
+            message=f"Offset verification failed: {e}",
+            suggestion="Check database and archive file integrity",
+            exit_code=1,
+        )
 
 
 @utilities_app.command(name="verify-consistency")
@@ -1304,23 +1365,27 @@ def verify_consistency_cmd(
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.error(
-            f"Archive file not found: {archive_file}",
+        output.show_error_panel(
+            title="File Not Found",
+            message=f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
             exit_code=1,
         )
+        return
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
             exit_code=1,
         )
+        return
 
     # Create validator and run consistency check
     try:
-        validator = ArchiveValidator(archive_file, state_db)
+        validator = ArchiveValidator(archive_file, state_db, output=output)
 
         with output.progress_context("Running consistency checks", total=5) as progress:
             task = progress.add_task("Consistency checks", total=5) if progress else None
@@ -1366,7 +1431,12 @@ def verify_consistency_cmd(
         raise typer.Exit(1)
 
     except Exception as e:
-        output.error(f"Consistency check failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Consistency Check Failed",
+            message=str(e),
+            suggestion="Check database and archive file integrity",
+            exit_code=1,
+        )
 
 
 @app.command()
@@ -1414,35 +1484,43 @@ def search(
 
     # Validate flags
     if extract and not output_dir:
-        output.error(
-            "--extract requires --output-dir",
+        output.show_error_panel(
+            title="Missing Output Directory",
+            message="--extract requires --output-dir",
             suggestion="Specify output directory: --output-dir /path/to/directory",
             exit_code=1,
         )
+        return
 
     # Interactive mode is mutually exclusive with some flags
     if interactive and json_output:
-        output.error(
-            "--interactive cannot be used with --json",
+        output.show_error_panel(
+            title="Invalid Option Combination",
+            message="--interactive cannot be used with --json",
             suggestion="Remove --json flag for interactive mode",
             exit_code=1,
         )
+        return
 
     if interactive and extract:
-        output.error(
-            "--interactive cannot be used with --extract",
+        output.show_error_panel(
+            title="Invalid Option Combination",
+            message="--interactive cannot be used with --extract",
             suggestion="Use --interactive alone (extraction is part of interactive mode)",
             exit_code=1,
         )
+        return
 
     # Check database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' or 'gmailarchiver import' to create database",
             exit_code=1,
         )
+        return
 
     # Check schema version (require v1.1)
     manager = MigrationManager(db_path)
@@ -1450,32 +1528,38 @@ def search(
     manager._close()
 
     if schema_version != "1.1":
-        output.error(
-            "Search requires v1.1 database schema",
+        output.show_error_panel(
+            title="Schema Upgrade Required",
+            message="Search requires v1.1 database schema",
             suggestion="Run 'gmailarchiver migrate' to upgrade",
             exit_code=1,
         )
+        return
 
     # Validate dates if provided
     if after:
         try:
             datetime.strptime(after, "%Y-%m-%d")
         except ValueError:
-            output.error(
-                f"Invalid date format: {after}",
+            output.show_error_panel(
+                title="Invalid Date Format",
+                message=f"Invalid date format: {after}",
                 suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
                 exit_code=1,
             )
+            return
 
     if before:
         try:
             datetime.strptime(before, "%Y-%m-%d")
         except ValueError:
-            output.error(
-                f"Invalid date format: {before}",
+            output.show_error_panel(
+                title="Invalid Date Format",
+                message=f"Invalid date format: {before}",
                 suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
                 exit_code=1,
             )
+            return
 
     # Build query string from filters if no query provided
     if not query:
@@ -1492,11 +1576,13 @@ def search(
             query_parts.append(f"before:{before}")
 
         if not query_parts:
-            output.error(
-                "No search query or filters provided",
-                suggestion="Provide a query argument or use filters like --from, --subject, etc.",
+            output.show_error_panel(
+                title="Missing Query",
+                message="No search query or filters provided",
+                suggestion="Provide a query argument or use filters like --from, --subject",
                 exit_code=1,
             )
+            return
 
         query = " ".join(query_parts)
 
@@ -1572,11 +1658,13 @@ def search(
             try:
                 import questionary
             except ImportError:
-                output.error(
-                    "Interactive mode requires 'questionary' package",
+                output.show_error_panel(
+                    title="Missing Dependency",
+                    message="Interactive mode requires the 'questionary' package",
                     suggestion="Install with: pip install questionary",
                     exit_code=1,
                 )
+                return
 
             # Build choices for interactive selection
             choices = []
@@ -1699,9 +1787,18 @@ def search(
         output.end_operation(success=True)
 
     except ValueError as e:
-        output.error(f"Search query error: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Search Query Error",
+            message=str(e),
+            suggestion="Check your search query syntax",
+            exit_code=1,
+        )
     except Exception as e:
-        output.error(f"Search failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Search Failed",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @app.command()
@@ -1836,7 +1933,13 @@ def import_cmd(
                 output.success("Migration completed successfully")
             except Exception as e:
                 manager._close()
-                output.error(f"Migration failed: {e}", exit_code=1)
+                output.show_error_panel(
+                    title="Migration Failed",
+                    message=f"Failed to migrate database: {e}",
+                    suggestion="Run 'gmailarchiver migrate' manually for more details",
+                    exit_code=1,
+                )
+                return
         elif version == "none":
             # Empty database file exists - delete it and let DBManager create a fresh one
             manager._close()
@@ -1844,14 +1947,22 @@ def import_cmd(
             try:
                 db_path.unlink()
             except Exception as e:
-                output.error(f"Failed to delete empty database: {e}", exit_code=1)
+                output.show_error_panel(
+                    title="Database Error",
+                    message=f"Failed to delete empty database: {e}",
+                    suggestion="Check file permissions and try again",
+                    exit_code=1,
+                )
+                return
         elif version != "1.1":
             manager._close()
-            output.error(
-                f"Unsupported database schema version: {version}",
+            output.show_error_panel(
+                title="Unsupported Database",
+                message=f"Unsupported database schema version: {version}",
                 suggestion="Delete the database or use --state-db with a different path",
                 exit_code=1,
             )
+            return
         else:
             # version == "1.1", all good
             pass
@@ -1863,11 +1974,13 @@ def import_cmd(
     # Expand glob pattern
     files = glob.glob(archive_pattern)
     if not files:
-        output.error(
-            f"No files match pattern: {archive_pattern}",
+        output.show_error_panel(
+            title="No Files Found",
+            message=f"No files match pattern: {archive_pattern}",
             suggestion="Check the file path or glob pattern",
             exit_code=1,
         )
+        return
 
     output.info(f"Found {len(files)} file(s) to import")
 
@@ -2041,22 +2154,26 @@ def consolidate(
             all_files.extend(matches)
 
     if not all_files:
-        output.error(
-            "No archive files found",
+        output.show_error_panel(
+            title="No Archives Found",
+            message="No archive files found matching the specified patterns",
             suggestion="Check file paths or glob patterns",
             exit_code=1,
         )
+        return
 
     output.info(f"Found {len(all_files)} archive(s) to consolidate")
 
     # 2. Validate dedupe strategy
     valid_strategies = ["newest", "largest", "first"]
     if dedupe_strategy not in valid_strategies:
-        output.error(
-            f"Invalid dedupe strategy: {dedupe_strategy}",
+        output.show_error_panel(
+            title="Invalid Dedupe Strategy",
+            message=f"'{dedupe_strategy}' is not a valid dedupe strategy",
             suggestion=f"Valid strategies: {', '.join(valid_strategies)}",
             exit_code=1,
         )
+        return
 
     # 3. Auto-detect compression from output extension
     if compress is None:
@@ -2312,11 +2429,24 @@ def consolidate(
         output.end_operation(success=True)
 
     except ValueError as e:
-        output.error(f"Validation error: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Validation Error",
+            message=str(e),
+            exit_code=1,
+        )
     except FileNotFoundError as e:
-        output.error(f"File not found: {e}", exit_code=1)
+        output.show_error_panel(
+            title="File Not Found",
+            message=str(e),
+            exit_code=1,
+        )
     except Exception as e:
-        output.error(f"Consolidation failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Consolidation Failed",
+            message=str(e),
+            suggestion="Check archive files and try again",
+            exit_code=1,
+        )
 
 
 @utilities_app.command(name="verify-integrity")
@@ -2356,13 +2486,15 @@ def verify_integrity_cmd(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion=(
                 "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
             ),
             exit_code=1,
         )
+        return
 
     issues = None
     try:
@@ -2378,9 +2510,20 @@ def verify_integrity_cmd(
         db.close()
 
     except FileNotFoundError as e:
-        output.error(f"File not found: {e}", exit_code=1)
+        output.show_error_panel(
+            title="File Not Found",
+            message=str(e),
+            exit_code=1,
+        )
+        return
     except Exception as e:
-        output.error(f"Integrity check failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Integrity Check Failed",
+            message=str(e),
+            suggestion="Check that the database file is not corrupted",
+            exit_code=1,
+        )
+        return
 
     if issues is None:
         # An earlier error handler should already have exited via OutputManager.error
@@ -2468,13 +2611,15 @@ def repair(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion=(
                 "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
             ),
             exit_code=1,
         )
+        return
 
     # Get confirmation for non-dry-run
     if not dry_run:
@@ -2528,9 +2673,18 @@ def repair(
         output.end_operation(success=True if total_repairs >= 0 else False)
 
     except FileNotFoundError as e:
-        output.error(f"File not found: {e}", exit_code=1)
+        output.show_error_panel(
+            title="File Not Found",
+            message=str(e),
+            exit_code=1,
+        )
     except Exception as e:
-        output.error(f"Repair failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Repair Failed",
+            message=str(e),
+            suggestion="Check the database file and try again",
+            exit_code=1,
+        )
 
 
 def _display_repair_results(output: OutputManager, repairs: dict[str, int], dry_run: bool) -> None:
@@ -2614,13 +2768,15 @@ def check(
 
     # Check if database exists
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion=(
                 "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
             ),
             exit_code=1,
         )
+        return
 
     # Detect schema version
     manager = MigrationManager(db_path)
@@ -2628,13 +2784,15 @@ def check(
     manager._close()
 
     if schema_version == "none":
-        output.error(
-            "Database is empty or invalid",
+        output.show_error_panel(
+            title="Invalid Database",
+            message="Database is empty or invalid",
             suggestion=(
                 "Create a new database with 'gmailarchiver archive' or 'gmailarchiver import'"
             ),
             exit_code=1,
         )
+        return
 
     # Initialize results dictionary
     check_results: dict[str, Any] = {
@@ -2889,7 +3047,13 @@ def check(
                 raise typer.Exit(2)
 
         except Exception as e:
-            output.error(f"Auto-repair failed: {e}", exit_code=2)
+            output.show_error_panel(
+                title="Auto-Repair Failed",
+                message=str(e),
+                suggestion="Run 'gmailarchiver repair --no-dry-run' manually to fix issues",
+                exit_code=2,
+            )
+            return
 
     # ==================== EXIT ====================
     if all_passed:
@@ -2946,11 +3110,13 @@ def schedule_list(
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
             exit_code=1,
         )
+        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
@@ -3006,7 +3172,11 @@ def schedule_list(
         output.end_operation(success=True)
 
     except Exception as e:
-        output.error(f"Failed to list schedules: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Failed to List Schedules",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @schedule_app.command("add")
@@ -3047,17 +3217,21 @@ def schedule_add(
     # Validate frequency
     frequency_count = sum([daily, weekly, monthly])
     if frequency_count == 0:
-        output.error(
-            "No frequency specified",
+        output.show_error_panel(
+            title="No Frequency Specified",
+            message="A schedule frequency must be specified",
             suggestion="Use --daily, --weekly, or --monthly",
             exit_code=1,
         )
+        return
     elif frequency_count > 1:
-        output.error(
-            "Multiple frequencies specified",
+        output.show_error_panel(
+            title="Multiple Frequencies Specified",
+            message="Only one frequency can be specified at a time",
             suggestion="Use only one of: --daily, --weekly, --monthly",
             exit_code=1,
         )
+        return
 
     # Determine frequency
     if daily:
@@ -3067,11 +3241,13 @@ def schedule_add(
     elif weekly:
         frequency = "weekly"
         if not day:
-            output.error(
-                "Weekly schedules require --day",
+            output.show_error_panel(
+                title="Day Required",
+                message="Weekly schedules require --day to specify which day of the week",
                 suggestion="Use --day with day name (e.g., Sunday, Monday, ...)",
                 exit_code=1,
             )
+            return
         # Parse day name to day_of_week (0=Sunday)
         day_names = {
             "sunday": 0,
@@ -3089,37 +3265,39 @@ def schedule_add(
             "saturday": 6,
             "sat": 6,
         }
-        assert day is not None, "Weekly frequency requires day parameter"
         day_lower = day.lower()
         if day_lower not in day_names:
-            output.error(
-                f"Invalid day name: {day}",
-                suggestion=(
-                    "Use day name: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday"
-                ),
+            output.show_error_panel(
+                title="Invalid Day Name",
+                message=f"'{day}' is not a valid day name",
+                suggestion="Use: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday",
                 exit_code=1,
             )
+            return
         day_of_week = day_names[day_lower]
         day_of_month = None
     else:  # monthly
         frequency = "monthly"
         if not day:
-            output.error(
-                "Monthly schedules require --day",
+            output.show_error_panel(
+                title="Day Required",
+                message="Monthly schedules require --day to specify which day of the month",
                 suggestion="Use --day with day of month (1-31)",
                 exit_code=1,
             )
-        assert day is not None, "Monthly frequency requires day parameter"
+            return
         try:
             day_of_month = int(day)
             if not (1 <= day_of_month <= 31):
                 raise ValueError("Day must be 1-31")
         except ValueError:
-            output.error(
-                f"Invalid day of month: {day}",
+            output.show_error_panel(
+                title="Invalid Day of Month",
+                message=f"'{day}' is not a valid day of month",
                 suggestion="Use a number between 1 and 31",
                 exit_code=1,
             )
+            return
         day_of_week = None
 
     db_path = Path(state_db)
@@ -3137,7 +3315,12 @@ def schedule_add(
             schedule = scheduler.get_schedule(schedule_id)
 
         if not schedule:
-            output.error("Failed to retrieve created schedule", exit_code=1)
+            output.show_error_panel(
+                title="Schedule Creation Failed",
+                message="Failed to retrieve created schedule",
+                exit_code=1,
+            )
+            return
 
         output.success(f"Schedule created with ID: {schedule_id}")
 
@@ -3186,9 +3369,17 @@ def schedule_add(
         output.end_operation(success=True)
 
     except ScheduleValidationError as e:
-        output.error(f"Validation error: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Validation Error",
+            message=str(e),
+            exit_code=1,
+        )
     except Exception as e:
-        output.error(f"Failed to add schedule: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Failed to Add Schedule",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @schedule_app.command("remove")
@@ -3218,22 +3409,26 @@ def schedule_remove(
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
             exit_code=1,
         )
+        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
             # Get schedule before removing
             schedule = scheduler.get_schedule(schedule_id)
             if not schedule:
-                output.error(
-                    f"Schedule not found: ID {schedule_id}",
+                output.show_error_panel(
+                    title="Schedule Not Found",
+                    message=f"Schedule with ID {schedule_id} does not exist",
                     suggestion="List schedules: gmailarchiver schedule list",
                     exit_code=1,
                 )
+                return
 
             # Uninstall from system scheduler if requested
             if uninstall:
@@ -3260,10 +3455,18 @@ def schedule_remove(
             )
             output.end_operation(success=True)
         else:
-            output.error(f"Failed to remove schedule {schedule_id}", exit_code=1)
+            output.show_error_panel(
+                title="Failed to Remove Schedule",
+                message=f"Failed to remove schedule {schedule_id}",
+                exit_code=1,
+            )
 
     except Exception as e:
-        output.error(f"Failed to remove schedule: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Failed to Remove Schedule",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @schedule_app.command("enable")
@@ -3286,11 +3489,13 @@ def schedule_enable(
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
             exit_code=1,
         )
+        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
@@ -3305,14 +3510,19 @@ def schedule_enable(
             )
             output.end_operation(success=True)
         else:
-            output.error(
-                f"Schedule not found: ID {schedule_id}",
+            output.show_error_panel(
+                title="Schedule Not Found",
+                message=f"Schedule with ID {schedule_id} does not exist",
                 suggestion="List schedules: gmailarchiver schedule list",
                 exit_code=1,
             )
 
     except Exception as e:
-        output.error(f"Failed to enable schedule: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Failed to Enable Schedule",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @schedule_app.command("disable")
@@ -3335,11 +3545,13 @@ def schedule_disable(
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.error(
-            f"Database not found: {state_db}",
+        output.show_error_panel(
+            title="Database Not Found",
+            message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
             exit_code=1,
         )
+        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
@@ -3355,14 +3567,19 @@ def schedule_disable(
             )
             output.end_operation(success=True)
         else:
-            output.error(
-                f"Schedule not found: ID {schedule_id}",
+            output.show_error_panel(
+                title="Schedule Not Found",
+                message=f"Schedule with ID {schedule_id} does not exist",
                 suggestion="List schedules: gmailarchiver schedule list",
                 exit_code=1,
             )
 
     except Exception as e:
-        output.error(f"Failed to disable schedule: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Failed to Disable Schedule",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @app.command()
@@ -3430,11 +3647,13 @@ def compress(
             expanded_files.append(pattern)
 
     if not expanded_files:
-        output.error(
-            "No files specified",
+        output.show_error_panel(
+            title="No Files Specified",
+            message="No mbox files found to compress",
             suggestion="Provide mbox file paths or glob patterns",
             exit_code=1,
         )
+        return
 
     output.info(f"Found {len(expanded_files)} file(s) to compress")
 
@@ -3535,15 +3754,24 @@ def compress(
         output.end_operation(success=True)
 
     except ValueError as e:
-        output.error(f"Compression failed: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Compression Failed",
+            message=str(e),
+            exit_code=1,
+        )
     except FileNotFoundError as e:
-        output.error(
-            f"File not found: {e}",
+        output.show_error_panel(
+            title="File Not Found",
+            message=str(e),
             suggestion="Check the file path or glob pattern",
             exit_code=1,
         )
     except Exception as e:
-        output.error(f"Unexpected error: {e}", exit_code=1)
+        output.show_error_panel(
+            title="Unexpected Error",
+            message=str(e),
+            exit_code=1,
+        )
 
 
 @app.command()

@@ -238,7 +238,7 @@ class TestValidateArchive:
 
     @patch('gmailarchiver.archiver.ArchiveValidator')
     def test_validate_archive_success(self, mock_validator_class: Mock) -> None:
-        """Test successful archive validation."""
+        """Test successful archive validation returns results dict."""
         mock_client = Mock()
         archiver = GmailArchiver(mock_client)
 
@@ -251,13 +251,16 @@ class TestValidateArchive:
 
         result = archiver.validate_archive('test.mbox', {'msg1', 'msg2'})
 
-        assert result is True
+        # Now returns full results dict (caller handles display)
+        assert result['passed'] is True
+        assert result['errors'] == []
         mock_validator.validate_comprehensive.assert_called_once_with({'msg1', 'msg2'})
-        mock_validator.report.assert_called_once()
+        # report() is no longer called - caller handles display via OutputManager
+        mock_validator.report.assert_not_called()
 
     @patch('gmailarchiver.archiver.ArchiveValidator')
     def test_validate_archive_failure(self, mock_validator_class: Mock) -> None:
-        """Test failed archive validation."""
+        """Test failed archive validation returns results dict with errors."""
         mock_client = Mock()
         archiver = GmailArchiver(mock_client)
 
@@ -270,7 +273,9 @@ class TestValidateArchive:
 
         result = archiver.validate_archive('test.mbox', {'msg1'})
 
-        assert result is False
+        # Now returns full results dict (caller handles display)
+        assert result['passed'] is False
+        assert 'Count mismatch' in result['errors']
 
 
 class TestArchiveMessagesIntegration:
@@ -1536,7 +1541,8 @@ class TestArchiveWithOperationHandle:
             )
 
             # Verify we logged success for each message
-            success_logs = [call for call in log_calls if "✓ Archived:" in call]
+            # Note: v1.3.5+ removed duplicate severity symbols - message is "Archived:" not "✓ Archived:"
+            success_logs = [call for call in log_calls if "Archived:" in call]
             assert len(success_logs) == 2, "Should log success for each archived message"
 
             # Verify progress was updated for each message
