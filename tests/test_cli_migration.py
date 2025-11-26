@@ -99,6 +99,35 @@ def v1_1_database(tmp_path):
     return db_path
 
 
+@pytest.fixture
+def v1_2_database(tmp_path):
+    """Create a v1.2 database (current version) for testing."""
+    db_path = tmp_path / "archive_state.db"
+    manager = MigrationManager(db_path)
+    manager._connect()
+
+    # Create v1.1 schema (v1.2 uses same structure)
+    manager._create_enhanced_schema(manager.conn)
+
+    # Insert sample data
+    manager.conn.execute("""
+        INSERT INTO messages VALUES
+        ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
+         'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+         'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
+    """)
+
+    # Set schema version to current (1.2)
+    manager.conn.execute(
+        "INSERT INTO schema_version VALUES (?, ?)", ("1.2", datetime.now().isoformat())
+    )
+
+    manager.conn.commit()
+    manager._close()
+
+    return db_path
+
+
 class TestMigrateCommand:
     """Test 'gmailarchiver migrate' command."""
 
@@ -115,19 +144,19 @@ class TestMigrateCommand:
         assert "Migration completed successfully" in result.stdout
         assert "Backup created" in result.stdout
 
-        # Verify database was migrated
+        # Verify database was migrated to current version (1.2)
         manager = MigrationManager(v1_0_database)
         version = manager.detect_schema_version()
-        assert version == "1.1"
+        assert version == "1.2"
 
-    def test_migrate_already_migrated_database(self, runner, v1_1_database, tmp_path, monkeypatch):
+    def test_migrate_already_migrated_database(self, runner, v1_2_database, tmp_path, monkeypatch):
         """Test migrating an already-migrated database."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["migrate", "--state-db", str(v1_1_database)])
+        result = runner.invoke(app, ["migrate", "--state-db", str(v1_2_database)])
 
         assert result.exit_code == 0
-        assert "already at version 1.1" in result.stdout or "up to date" in result.stdout
+        assert "already at version 1.2" in result.stdout or "up to date" in result.stdout
 
     def test_migrate_nonexistent_database(self, runner, tmp_path, monkeypatch):
         """Test migrating a nonexistent database."""

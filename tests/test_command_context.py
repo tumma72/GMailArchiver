@@ -9,45 +9,10 @@ import typer
 from gmailarchiver.command_context import (
     CommandContext,
     _StaticOperationHandle,
-    _version_less_than,
     with_context,
 )
 from gmailarchiver.output import OutputManager
-
-
-class TestVersionLessThan:
-    """Tests for _version_less_than helper."""
-
-    def test_same_version(self) -> None:
-        """Same versions should not be less than."""
-        assert not _version_less_than("1.0", "1.0")
-        assert not _version_less_than("1.2", "1.2")
-        assert not _version_less_than("2.0.0", "2.0.0")
-
-    def test_lower_major(self) -> None:
-        """Lower major version is less than."""
-        assert _version_less_than("1.0", "2.0")
-        assert _version_less_than("0.9", "1.0")
-
-    def test_lower_minor(self) -> None:
-        """Lower minor version is less than."""
-        assert _version_less_than("1.1", "1.2")
-        assert _version_less_than("2.0", "2.1")
-
-    def test_higher_version(self) -> None:
-        """Higher version is not less than."""
-        assert not _version_less_than("2.0", "1.0")
-        assert not _version_less_than("1.2", "1.1")
-
-    def test_different_lengths(self) -> None:
-        """Versions with different lengths are padded."""
-        assert _version_less_than("1.0", "1.0.1")
-        assert not _version_less_than("1.0.1", "1.0")
-
-    def test_invalid_version(self) -> None:
-        """Invalid versions are treated as less than."""
-        assert _version_less_than("invalid", "1.0")
-        assert _version_less_than("", "1.0")
+from gmailarchiver.schema_manager import SchemaVersion, SchemaVersionError
 
 
 class TestCommandContext:
@@ -382,13 +347,21 @@ class TestWithContextDecorator:
 
         with (
             patch("gmailarchiver.command_context.OutputManager") as MockOutput,
+            patch("gmailarchiver.command_context.SchemaManager") as MockSchemaManager,
             patch("gmailarchiver.command_context.DBManager") as MockDB,
         ):
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
-            mock_db = MagicMock()
-            mock_db.schema_version = "1.1"  # Lower than required
-            MockDB.return_value = mock_db
+
+            # Mock SchemaManager to detect v1.1 and fail version requirement
+            mock_schema_mgr = MagicMock()
+            mock_schema_mgr.detect_version.return_value = SchemaVersion.V1_1
+            mock_schema_mgr.require_version.side_effect = SchemaVersionError(
+                "Schema version 1.2+ required, got 1.1",
+                current_version=SchemaVersion.V1_1,
+                required_version=SchemaVersion.V1_2,
+            )
+            MockSchemaManager.return_value = mock_schema_mgr
 
             with pytest.raises(typer.Exit) as exc_info:
                 test_cmd(state_db=str(db_path))

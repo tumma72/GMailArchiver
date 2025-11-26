@@ -15,6 +15,7 @@ from .deduplicator import MessageDeduplicator
 from .gmail_client import GmailClient
 from .migration import MigrationManager
 from .output import OutputManager
+from .schema_manager import SchemaCapability, SchemaManager, SchemaVersion
 from .state import ArchiveState
 from .utils import format_bytes
 from .validator import ArchiveValidator
@@ -784,28 +785,37 @@ def migrate(
             suggestion="Check the database path or use --state-db to specify location",
         )
 
-    # Initialize migration manager
-    manager = MigrationManager(db_path)
+    # Use centralized SchemaManager for version detection
+    schema_mgr = SchemaManager(db_path)
+    current_version = schema_mgr.detect_version()
+    manager: MigrationManager | None = None
 
     try:
-        # Detect current schema version
-        current_version = manager.detect_schema_version()
-
         # Check if migration is needed
-        if current_version == "1.1":
-            ctx.success("Database is already at version 1.1 (up to date)")
+        if not schema_mgr.needs_migration():
+            ctx.success(
+                f"Database is already at version {current_version.value} (up to date)"
+            )
             return
 
-        if current_version == "none":
+        if current_version == SchemaVersion.NONE:
             ctx.fail_and_exit(
                 title="Invalid Database",
                 message="Database appears to be empty or invalid",
                 suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
             )
 
+        if not schema_mgr.can_auto_migrate():
+            ctx.fail_and_exit(
+                title="Cannot Migrate",
+                message=f"Cannot auto-migrate from version {current_version.value}",
+                suggestion="Manual intervention required",
+            )
+
         # Show migration info
-        ctx.info(f"Current schema version: {current_version}")
-        ctx.info("\nMigration from v1.0 to v1.1 will:")
+        target_version = SchemaManager.CURRENT_VERSION
+        ctx.info(f"Current schema version: {current_version.value}")
+        ctx.info(f"\nMigration from v{current_version.value} to v{target_version.value} will:")
         ctx.info("  • Create backup of current database")
         ctx.info("  • Add enhanced schema with mbox offset tracking")
         ctx.info("  • Enable full-text search capabilities")
@@ -818,6 +828,7 @@ def migrate(
             return
 
         # Create backup with progress
+        manager = MigrationManager(db_path)
         with ctx.output.progress_context("Creating backup", total=3) as progress:
             task = progress.add_task("Migration", total=3) if progress else None
 
@@ -827,20 +838,28 @@ def migrate(
 
             ctx.success(f"Backup created: {backup_path}")
 
-            # Run migration
-            manager.migrate_v1_to_v1_1()
+            # Run migration using SchemaManager
+            schema_mgr.auto_migrate_if_needed(
+                progress_callback=lambda msg: ctx.info(msg)
+            )
             if progress and task:
                 progress.update(task, advance=1)
 
-            # Validate migration
-            manager.validate_migration()
+            # Validate migration using SchemaManager
+            schema_mgr.invalidate_cache()
+            final_version = schema_mgr.detect_version()
+            if final_version != SchemaManager.CURRENT_VERSION:
+                raise RuntimeError(
+                    f"Migration validation failed: expected {SchemaManager.CURRENT_VERSION.value}, "
+                    f"got {final_version.value}"
+                )
             if progress and task:
                 progress.update(task, advance=1)
 
         # Build report data
         report_data = {
-            "From Version": current_version,
-            "To Version": "1.1",
+            "From Version": current_version.value,
+            "To Version": target_version.value,
             "Backup Location": str(backup_path),
         }
 
@@ -861,7 +880,8 @@ def migrate(
             suggestion="Check database integrity or restore from backup",
         )
     finally:
-        manager._close()
+        if manager is not None:
+            manager._close()
 
 
 @utilities_app.command(name="db-info")
@@ -1447,7 +1467,9 @@ def verify_consistency_cmd(
             "Duplicate Gmail IDs": report.duplicate_gmail_ids,
         }
 
-        if report.schema_version == "1.1":
+        # Use SchemaManager to check capabilities instead of hardcoded version strings
+        schema_mgr = SchemaManager(state_db)
+        if schema_mgr.has_capability(SchemaCapability.FTS_SEARCH):
             report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
             report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
@@ -1906,32 +1928,16 @@ def import_cmd(
     import time
 
     from gmailarchiver.importer import ArchiveImporter
-    from gmailarchiver.migration import MigrationManager
-
     db_path = Path(state_db)
 
-    # Handle database schema: auto-create if missing, auto-migrate if v1.0
+    # Handle database schema using centralized SchemaManager
     if db_path.exists():
-        manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        schema_mgr = SchemaManager(db_path)
+        version = schema_mgr.detect_version()
 
-        if version == "1.0":
-            # Auto-migrate v1.0 to v1.1
-            ctx.warning("Detected v1.0 database, auto-migrating to v1.1...")
-            try:
-                manager.migrate_v1_to_v1_1()
-                ctx.success("Migration completed successfully")
-            except Exception as e:
-                manager._close()
-                ctx.fail_and_exit(
-                    "Migration Failed",
-                    f"Failed to migrate database: {e}",
-                    suggestion="Run 'gmailarchiver migrate' manually for more details",
-                )
-        elif version == "none":
+        if version == SchemaVersion.NONE:
             # Empty database file exists - delete it and let DBManager create a fresh one
-            manager._close()
-            ctx.warning("Found empty database file, recreating with v1.1 schema...")
+            ctx.warning("Found empty database file, recreating...")
             try:
                 db_path.unlink()
             except Exception as e:
@@ -1940,20 +1946,30 @@ def import_cmd(
                     f"Failed to delete empty database: {e}",
                     suggestion="Check file permissions and try again",
                 )
-        elif version != "1.1":
-            manager._close()
+        elif not schema_mgr.is_supported():
             ctx.fail_and_exit(
                 "Unsupported Database",
-                f"Unsupported database schema version: {version}",
+                f"Unsupported database schema version: {version.value}",
                 suggestion="Delete the database or use --state-db with a different path",
             )
-        else:
-            # version == "1.1", all good
-            pass
-
-        if version not in ("none",):  # Don't close if we deleted the database
-            manager._close()
-    # If database doesn't exist, DBManager will auto-create it with v1.1 schema
+        elif schema_mgr.needs_migration():
+            # Auto-migrate to current version
+            ctx.warning(
+                f"Detected v{version.value} database, "
+                f"auto-migrating to v{SchemaManager.CURRENT_VERSION.value}..."
+            )
+            try:
+                schema_mgr.auto_migrate_if_needed(
+                    progress_callback=lambda msg: ctx.info(msg)
+                )
+                ctx.success("Migration completed successfully")
+            except Exception as e:
+                ctx.fail_and_exit(
+                    "Migration Failed",
+                    f"Failed to migrate database: {e}",
+                    suggestion="Run 'gmailarchiver migrate' manually for more details",
+                )
+    # If database doesn't exist, DBManager will auto-create it with current schema
 
     # Expand glob pattern
     files = glob.glob(archive_pattern)
@@ -2711,8 +2727,6 @@ def check(
         $ gmailarchiver check --json
     """
     from gmailarchiver.db_manager import DBManager
-    from gmailarchiver.migration import MigrationManager
-
     db_path = Path(state_db)
 
     # Check if database exists
@@ -2723,12 +2737,11 @@ def check(
             suggestion="Run 'gmailarchiver archive' to create one, or use --state-db",
         )
 
-    # Detect schema version
-    manager = MigrationManager(db_path)
-    schema_version = manager.detect_schema_version()
-    manager._close()
+    # Use centralized SchemaManager for version detection
+    schema_mgr = SchemaManager(db_path)
+    schema_version = schema_mgr.detect_version()
 
-    if schema_version == "none":
+    if schema_version == SchemaVersion.NONE:
         ctx.fail_and_exit(
             "Invalid Database",
             "Database is empty or invalid",
@@ -2830,9 +2843,9 @@ def check(
             ctx.warning(f"  ✗ Database consistency check failed: {e}")
 
     # ==================== CHECK 4: Offset Accuracy ====================
-    # Only for v1.1 databases
+    # Only for databases with MBOX_OFFSETS capability (v1.1+)
     ctx.info("3. Checking offset accuracy...")
-    if schema_version == "1.1":
+    if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
         try:
             # Get first archive file for offset verification
             db = DBManager(str(db_path), validate_schema=False)

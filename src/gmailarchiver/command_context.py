@@ -33,6 +33,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn, ParamSpec, TypeVar
 
+from gmailarchiver.schema_manager import (
+    SchemaCapability,
+    SchemaManager,
+    SchemaVersion,
+    SchemaVersionError,
+)
+
 import typer
 
 from .auth import GmailAuthenticator
@@ -433,20 +440,25 @@ def with_context(
                             f"State database not found: {state_db}",
                             suggestion="Run 'gmailarchiver archive' or 'import' first",
                         )
-                    # Enable schema validation when requires_schema is set
-                    validate_schema = requires_schema is not None
-                    db = DBManager(str(db_path), validate_schema=validate_schema)
-                    ctx.db = db
+                    # Use SchemaManager for version checking
+                    schema_mgr = SchemaManager(db_path)
+                    detected_version = schema_mgr.detect_version()
 
                     # Check schema version if required
                     if requires_schema:
-                        current_version = db.schema_version
-                        if _version_less_than(current_version, requires_schema):
+                        required_version = SchemaVersion.from_string(requires_schema)
+                        try:
+                            schema_mgr.require_version(required_version)
+                        except SchemaVersionError as e:
                             ctx.fail_and_exit(
                                 "Schema Version Mismatch",
-                                f"Schema v{requires_schema}+ required, got v{current_version}",
-                                suggestion="Run 'gmailarchiver migrate' to upgrade",
+                                str(e),
+                                suggestion=e.suggestion,
                             )
+
+                    # Initialize DBManager (skip validation since SchemaManager already checked)
+                    db = DBManager(str(db_path), validate_schema=False)
+                    ctx.db = db
 
                 # Initialize Gmail client if required
                 if requires_gmail:
@@ -512,26 +524,3 @@ def with_context(
     return decorator
 
 
-def _version_less_than(version: str, required: str) -> bool:
-    """Compare version strings.
-
-    Args:
-        version: Current version (e.g., "1.1")
-        required: Required version (e.g., "1.2")
-
-    Returns:
-        True if version < required
-    """
-    try:
-        current_parts = [int(x) for x in version.split(".")]
-        required_parts = [int(x) for x in required.split(".")]
-
-        # Pad with zeros
-        while len(current_parts) < len(required_parts):
-            current_parts.append(0)
-        while len(required_parts) < len(current_parts):
-            required_parts.append(0)
-
-        return current_parts < required_parts
-    except (ValueError, AttributeError):
-        return True  # Treat parse errors as version mismatch
