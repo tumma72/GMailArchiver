@@ -85,7 +85,8 @@ def test_extract_by_gmail_id_missing_archive(populated_db: Path) -> None:
     # Determine the archive file path from the database and remove it
     db = DBManager(str(populated_db))
     try:
-        archive_file, _offset, _length = db.get_message_location("msg001")  # type: ignore[misc]
+        # v1.2: Use get_message_location_by_gmail_id for gmail_id lookup
+        archive_file, _offset, _length = db.get_message_location_by_gmail_id("msg001")  # type: ignore[misc]
     finally:
         db.close()
 

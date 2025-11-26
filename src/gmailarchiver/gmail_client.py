@@ -370,12 +370,13 @@ class GmailClient:
         total = len(rfc_message_ids)
 
         for i, chunk in enumerate(chunk_list(rfc_message_ids, batch_size)):
-            for rfc_id in chunk:
+            for j, rfc_id in enumerate(chunk):
                 gmail_id = self.search_by_rfc_message_id(rfc_id)
                 result[rfc_id] = gmail_id
 
-            if progress_callback:
-                progress_callback(len(result), total)
+                # Update progress after each message for responsiveness
+                if progress_callback:
+                    progress_callback(len(result), total)
 
             # Delay between batches to respect rate limits
             if i < (total - 1) // batch_size:  # Don't delay after last batch

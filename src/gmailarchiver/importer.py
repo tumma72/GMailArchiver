@@ -295,7 +295,7 @@ class ArchiveImporter:
         archive_path: str | Path,
         account_id: str = "default",
         skip_duplicates: bool = True,
-        progress_callback: "Callable[[int, int, str], None] | None" = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
     ) -> ImportResult:
         """
         Import single mbox archive into database.

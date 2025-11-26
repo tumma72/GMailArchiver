@@ -253,18 +253,18 @@ class HybridStorage:
 
             # Phase 5: Validate BEFORE commit (ensures atomicity)
             logger.debug("Phase 5: Validating consistency")
-            self._validate_message_consistency(gmail_id)
+            self._validate_message_consistency(rfc_message_id)
 
             # Phase 6: Commit database transaction (only after validation passes)
             logger.debug("Phase 6: Committing to database")
             self.db.commit()
 
             # Verify commit persisted (debug paranoia check)
-            verify = self.db.get_message_by_gmail_id(gmail_id)
+            verify = self.db.get_message_by_rfc_message_id(rfc_message_id)
             if not verify:
                 raise HybridStorageError(
                     f"Database commit verification failed: "
-                    f"message {gmail_id} not found after commit"
+                    f"message {rfc_message_id} not found after commit"
                 )
 
             # Add to known set to prevent duplicates within the same batch
@@ -688,20 +688,20 @@ class HybridStorage:
 
     # ==================== VALIDATION ====================
 
-    def _validate_message_consistency(self, gmail_id: str) -> None:
+    def _validate_message_consistency(self, rfc_message_id: str) -> None:
         """
         Validate that a message exists in both mbox and database.
 
         Args:
-            gmail_id: Gmail message ID to validate
+            rfc_message_id: RFC 2822 Message-ID to validate (primary key in v1.2)
 
         Raises:
             IntegrityError: If inconsistent
         """
         # Get location from database
-        location = self.db.get_message_location(gmail_id)
+        location = self.db.get_message_location(rfc_message_id)
         if not location:
-            raise IntegrityError(f"Message {gmail_id} not in database")
+            raise IntegrityError(f"Message {rfc_message_id} not in database")
 
         archive_file, offset, length = location
 

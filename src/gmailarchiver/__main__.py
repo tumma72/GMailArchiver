@@ -1,8 +1,8 @@
 """Gmail Archiver CLI application."""
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Callable
 from typing import Any
 
 import typer
@@ -3227,7 +3227,18 @@ def check(
         report_data["Database consistency"] = "✓ OK"
     else:
         consistency_report = check_results["database_consistency"]["report"]
-        issue_count = len(consistency_report.errors) if consistency_report else 0
+        if consistency_report:
+            # Count actual issues from report fields (not just errors list)
+            issue_count = (
+                consistency_report.orphaned_records
+                + consistency_report.missing_records
+                + consistency_report.duplicate_gmail_ids
+                + consistency_report.duplicate_rfc_message_ids
+                + (0 if consistency_report.fts_synced else 1)
+                + len(consistency_report.errors)
+            )
+        else:
+            issue_count = 0
         report_data["Database consistency"] = f"✗ {issue_count} issue(s)"
 
     # Offset accuracy
@@ -4217,6 +4228,7 @@ def backfill_gmail_ids_cmd(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without updating"),
     limit: int = typer.Option(0, "--limit", help="Maximum messages to process (0 = all)"),
     offset: int = typer.Option(0, "--offset", help="Skip first N messages (for resuming)"),
+    batch_size: int = typer.Option(50, "--batch-size", help="Messages per batch (default 50)"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     credentials: str | None = typer.Option(
         None,
@@ -4248,15 +4260,19 @@ def backfill_gmail_ids_cmd(
         $ gmailarchiver utilities backfill-gmail-ids --offset 5000
     """
     import re
+    import sys
 
     from gmailarchiver.db_manager import DBManager
     from gmailarchiver.output import OutputManager
 
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("backfill-gmail-ids", "Backfilling real Gmail IDs")
+    # Use live mode for TTY (consistent with archive command)
+    use_live_mode = not json_output and sys.stdout.isatty()
+    output = OutputManager(json_mode=json_output, live_mode=use_live_mode)
+    operation_mode = "backfill-gmail-ids (dry-run)" if dry_run else "backfill-gmail-ids"
+    output.start_operation(operation_mode, "Backfilling real Gmail IDs")
 
     # Pattern to detect synthetic gmail_ids (start with 000...)
-    SYNTHETIC_ID_PATTERN = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
+    synthetic_id_pattern = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
 
     try:
         # 1. Authenticate with Gmail
@@ -4266,30 +4282,43 @@ def backfill_gmail_ids_cmd(
         client = GmailClient(creds)
         output.success("Authenticated")
 
-        # 2. Find messages with synthetic gmail_ids
-        output.info("Scanning database for synthetic gmail_ids...")
+        # 2. Find messages needing Gmail ID lookup
+        output.info("Scanning database for messages needing backfill...")
         with DBManager(state_db, validate_schema=False, auto_create=False) as db:
             cursor = db.conn.execute(
-                "SELECT gmail_id, rfc_message_id FROM messages WHERE gmail_id IS NOT NULL"
+                "SELECT gmail_id, rfc_message_id FROM messages"
             )
             all_messages = cursor.fetchall()
 
-        synthetic_messages = [
-            (gid, rfc) for gid, rfc in all_messages if SYNTHETIC_ID_PATTERN.match(gid or "")
-        ]
-        real_messages = len(all_messages) - len(synthetic_messages)
+        # Messages needing backfill: NULL gmail_id OR synthetic pattern
+        messages_needing_backfill: list[tuple[str | None, str]] = []
+        real_messages_count = 0
+        null_gmail_id_count = 0
+        synthetic_gmail_id_count = 0
+
+        for gid, rfc in all_messages:
+            if gid is None:
+                messages_needing_backfill.append((gid, rfc))
+                null_gmail_id_count += 1
+            elif synthetic_id_pattern.match(gid):
+                messages_needing_backfill.append((gid, rfc))
+                synthetic_gmail_id_count += 1
+            else:
+                real_messages_count += 1
 
         output.info(f"Total messages in database: {len(all_messages):,}")
-        output.info(f"Messages with real Gmail IDs: {real_messages:,}")
-        output.info(f"Messages with synthetic IDs: {len(synthetic_messages):,}")
+        output.info(f"Messages with real Gmail IDs: {real_messages_count:,}")
+        output.info(f"Messages with NULL gmail_id: {null_gmail_id_count:,}")
+        output.info(f"Messages with synthetic IDs: {synthetic_gmail_id_count:,}")
+        output.info(f"Total needing backfill: {len(messages_needing_backfill):,}")
 
-        if not synthetic_messages:
+        if not messages_needing_backfill:
             output.success("No messages need backfill!")
             output.end_operation(success=True)
             return
 
         # Apply offset and limit
-        messages_to_process = synthetic_messages[offset:]
+        messages_to_process = messages_needing_backfill[offset:]
         if limit > 0:
             messages_to_process = messages_to_process[:limit]
 
@@ -4298,83 +4327,79 @@ def backfill_gmail_ids_cmd(
         if limit > 0:
             output.info(f"Processing up to {limit} messages (--limit)")
 
-        output.info(f"\nProcessing {len(messages_to_process):,} messages...")
+        total_to_process = len(messages_to_process)
+        output.info(f"\nProcessing {total_to_process:,} messages in batches of {batch_size}...")
 
-        # Estimate time
-        est_seconds = len(messages_to_process) * 0.5  # ~2 requests/second
+        # Estimate time (batch processing is faster: ~1 batch per 1.5 seconds)
+        num_batches = (total_to_process + batch_size - 1) // batch_size
+        est_seconds = num_batches * 1.5  # ~1.5s per batch (API call + delay)
         output.info(f"Estimated time: {est_seconds/60:.1f} minutes")
 
         if dry_run:
             output.warning("[DRY RUN] No changes will be made")
 
-        # 3. Process messages
+        # 3. Process messages in batches using batch API
         found = 0
         not_found = 0
-        errors = 0
-        updates: list[tuple[str | None, str]] = []  # (new_gmail_id, old_gmail_id)
+        updates: list[tuple[str | None, str]] = []  # (new_gmail_id, rfc_message_id)
 
-        with output.progress_context(
-            "Looking up Gmail IDs...", total=len(messages_to_process)
-        ) as progress:
-            task = None
-            if progress:
-                task = progress.add_task(
-                    "Looking up", total=len(messages_to_process)
-                )
+        # Extract just the rfc_message_ids for batch lookup
+        rfc_ids_to_lookup = [rfc for _, rfc in messages_to_process]
 
-            for i, (old_gmail_id, rfc_message_id) in enumerate(messages_to_process):
-                try:
-                    real_gmail_id = client.search_by_rfc_message_id(rfc_message_id)
+        # Track progress state for periodic updates
+        last_progress_update = [0]  # Use list to allow mutation in nested function
 
-                    if real_gmail_id:
-                        found += 1
-                        updates.append((real_gmail_id, old_gmail_id))
-                    else:
-                        not_found += 1
-                        updates.append((None, old_gmail_id))  # Set to NULL
+        # Use batch lookup with progress callback
+        def progress_callback(processed: int, total: int) -> None:
+            # Only update every 10 messages or at completion for clean output
+            if processed - last_progress_update[0] >= 10 or processed == total:
+                pct = 100 * processed // total if total > 0 else 0
+                output.info(f"  Progress: {processed:,}/{total:,} ({pct}%)")
+                last_progress_update[0] = processed
 
-                except Exception as e:
-                    errors += 1
-                    if "429" in str(e) or "rate" in str(e).lower():
-                        output.warning(f"Rate limited at message {i}, waiting 60s...")
-                        import time
+        # Use the batch method for efficient lookups
+        output.info("\nLooking up Gmail IDs...")
+        results = client.search_by_rfc_message_ids_batch(
+            rfc_ids_to_lookup,
+            progress_callback=progress_callback,
+            batch_size=batch_size,
+            batch_delay=1.2,  # Delay between batches to avoid rate limits
+        )
 
-                        time.sleep(60)
-
-                if progress and task:
-                    progress.update(task, advance=1)
-
-                # Rate limiting: ~2 requests per second
-                import time
-
-                time.sleep(0.5)
+        # Process results
+        for rfc_id, gmail_id in results.items():
+            if gmail_id:
+                found += 1
+                updates.append((gmail_id, rfc_id))
+            else:
+                not_found += 1
 
         # 4. Update database
         output.info("\nResults:")
         output.info(f"  Found in Gmail: {found:,}")
         output.info(f"  Not in Gmail (deleted): {not_found:,}")
-        output.info(f"  Errors: {errors:,}")
 
         if dry_run:
             output.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
             if updates[:5]:
                 output.info("Sample updates:")
-                for new_id, old_id in updates[:5]:
-                    status = new_id if new_id else "NULL"
-                    output.info(f"  {old_id[:16]}... -> {status}")
+                for new_id, rfc_id in updates[:5]:
+                    status = new_id[:16] + "..." if new_id else "NULL"
+                    rfc_display = rfc_id[:40] + "..." if len(rfc_id) > 40 else rfc_id
+                    output.info(f"  {rfc_display} -> {status}")
         else:
             output.info(f"\nUpdating database with {len(updates):,} changes...")
             with DBManager(state_db, validate_schema=False, auto_create=False) as db:
-                for new_gmail_id, old_gmail_id in updates:
+                for new_gmail_id, rfc_message_id in updates:
                     db.conn.execute(
-                        "UPDATE messages SET gmail_id = ? WHERE gmail_id = ?",
-                        (new_gmail_id, old_gmail_id),
+                        "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
+                        (new_gmail_id, rfc_message_id),
                     )
                 db.conn.commit()
             output.success("Database updated!")
 
         # Summary
-        remaining = len(synthetic_messages) - len(messages_to_process) - offset
+        remaining = len(messages_needing_backfill) - len(messages_to_process) - offset
         if remaining > 0:
             output.info(f"\nRemaining messages to process: {remaining:,}")
             next_offset = offset + len(messages_to_process)

@@ -788,8 +788,9 @@ class TestValidation:
             compression=None,
         )
 
-        # Validation should pass without raising
-        storage._validate_message_consistency("msg123")
+        # v1.2: _validate_message_consistency uses rfc_message_id (primary key)
+        rfc_message_id = sample_email_message.get("Message-ID", "<test@example.com>")
+        storage._validate_message_consistency(rfc_message_id)
 
     def test_validate_message_consistency_missing_in_database(
         self, db_manager: DBManager, mbox_path: Path
@@ -807,21 +808,22 @@ class TestValidation:
         """Test validation fails when message missing from mbox."""
         storage = HybridStorage(db_manager)
 
+        rfc_message_id = "<test123@example.com>"
         # Manually insert into database without mbox
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test123@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(mbox_path),
             mbox_offset=0,
             mbox_length=1000,  # Non-existent data
+            gmail_id="msg123",
         )
 
         # Create empty mbox
         mbox_path.touch()
 
-        # Validation should fail
+        # Validation should fail (v1.2: use rfc_message_id)
         with pytest.raises(IntegrityError, match="No data at offset"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     def test_validate_message_consistency_corrupt_email_data(
         self, db_manager: DBManager, mbox_path: Path
@@ -832,18 +834,19 @@ class TestValidation:
         # Create empty mbox file
         mbox_path.touch()
 
+        rfc_message_id = "<test123@example.com>"
         # Record in database with non-existent offset
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test123@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(mbox_path),
             mbox_offset=1000,  # Beyond end of file
             mbox_length=100,
+            gmail_id="msg123",
         )
 
-        # Validation should fail - no data at offset
+        # Validation should fail - no data at offset (v1.2: use rfc_message_id)
         with pytest.raises(IntegrityError, match="No data at offset"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     def test_validate_archive_consistency_all_good(
         self, db_manager: DBManager, sample_email_message: email.message.Message, mbox_path: Path
@@ -1180,18 +1183,20 @@ class TestEdgeCasesAndCoverage:
         corrupt_gz = temp_dir / "corrupt.mbox.gz"
         corrupt_gz.write_bytes(b"\x1f\x8b\x08\x00CORRUPT_DATA_HERE")
 
+        rfc_message_id = "<test@example.com>"
         # Record a message pointing to this corrupt archive
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(corrupt_gz),
             mbox_offset=0,
             mbox_length=100,
+            gmail_id="msg123",
         )
 
         # Validation should fail with IntegrityError wrapping decompression error
+        # v1.2: use rfc_message_id for validation
         with pytest.raises(IntegrityError, match="Failed to decompress"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     def test_decompress_corrupt_lzma(self, db_manager: DBManager, temp_dir: Path) -> None:
         """Test validation fails on corrupt lzma archive."""
@@ -1201,16 +1206,18 @@ class TestEdgeCasesAndCoverage:
         corrupt_xz = temp_dir / "corrupt.mbox.xz"
         corrupt_xz.write_bytes(b"\xfd\x37\x7a\x58\x5a\x00CORRUPT")
 
+        rfc_message_id = "<test@example.com>"
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(corrupt_xz),
             mbox_offset=0,
             mbox_length=100,
+            gmail_id="msg123",
         )
 
+        # v1.2: use rfc_message_id for validation
         with pytest.raises(IntegrityError, match="Failed to decompress"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     def test_decompress_corrupt_zstd(self, db_manager: DBManager, temp_dir: Path) -> None:
         """Test validation fails on corrupt zstd archive."""
@@ -1220,16 +1227,18 @@ class TestEdgeCasesAndCoverage:
         corrupt_zst = temp_dir / "corrupt.mbox.zst"
         corrupt_zst.write_bytes(b"\x28\xb5\x2f\xfd\x00CORRUPT")
 
+        rfc_message_id = "<test@example.com>"
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(corrupt_zst),
             mbox_offset=0,
             mbox_length=100,
+            gmail_id="msg123",
         )
 
+        # v1.2: use rfc_message_id for validation
         with pytest.raises(IntegrityError, match="Failed to decompress"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     def test_decompress_with_invalid_compression_format(
         self, db_manager: DBManager, temp_dir: Path
@@ -1562,18 +1571,20 @@ class TestEdgeCasesAndCoverage:
 
         missing_file = temp_dir / "nonexistent.mbox"
 
+        rfc_message_id = "<test@example.com>"
         # Record message pointing to non-existent file
         db_manager.record_archived_message(
-            gmail_id="msg123",
-            rfc_message_id="<test@example.com>",
+            rfc_message_id=rfc_message_id,
             archive_file=str(missing_file),
             mbox_offset=0,
             mbox_length=100,
+            gmail_id="msg123",
         )
 
         # Validation should fail with IntegrityError about missing file
+        # v1.2: use rfc_message_id for validation
         with pytest.raises(IntegrityError, match="Archive file missing"):
-            storage._validate_message_consistency("msg123")
+            storage._validate_message_consistency(rfc_message_id)
 
     # ============ Deduplication Edge Cases ============
 

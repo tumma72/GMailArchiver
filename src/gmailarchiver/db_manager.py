@@ -95,10 +95,16 @@ class DBManager:
 
     def _create_new_database(self) -> None:
         """
-        Create a new v1.1 database with complete schema.
+        Create a new v1.2 database with complete schema.
 
         This is called automatically when database doesn't exist.
         Creates all tables, indexes, triggers, and schema_version.
+
+        v1.2 Schema Change (from v1.1):
+        - PRIMARY KEY changed from gmail_id to rfc_message_id
+        - gmail_id is now nullable (for imported messages not in Gmail)
+        - Rationale: rfc_message_id is the universal email identifier (RFC 2822),
+          while gmail_id is Gmail-specific and may not exist for imported messages
         """
         # Ensure parent directory exists
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,11 +114,13 @@ class DBManager:
         conn.execute("PRAGMA foreign_keys = ON")
 
         try:
-            # Create messages table (enhanced schema)
+            # Create messages table (v1.2 schema)
+            # PRIMARY KEY is rfc_message_id (universal email identifier)
+            # gmail_id is nullable (NULL for imported messages not in Gmail)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
-                    gmail_id TEXT PRIMARY KEY,
-                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    rfc_message_id TEXT PRIMARY KEY,
+                    gmail_id TEXT,
                     thread_id TEXT,
                     subject TEXT,
                     from_addr TEXT,
@@ -132,8 +140,9 @@ class DBManager:
             """)
 
             # Create performance indexes
+            # Note: rfc_message_id is PRIMARY KEY so already indexed
             indexes = [
-                "CREATE INDEX IF NOT EXISTS idx_rfc_message_id ON messages(rfc_message_id)",
+                "CREATE INDEX IF NOT EXISTS idx_gmail_id ON messages(gmail_id)",
                 "CREATE INDEX IF NOT EXISTS idx_thread_id ON messages(thread_id)",
                 "CREATE INDEX IF NOT EXISTS idx_archive_file ON messages(archive_file)",
                 "CREATE INDEX IF NOT EXISTS idx_date ON messages(date)",
@@ -251,17 +260,17 @@ class DBManager:
                 )
             """)
 
-            # Set schema version to 1.1
+            # Set schema version to 1.2
             conn.execute(
                 """
                 INSERT OR REPLACE INTO schema_version (version, migrated_timestamp)
-                VALUES ('1.1', ?)
+                VALUES ('1.2', ?)
             """,
                 (datetime.now().isoformat(),),
             )
 
             conn.commit()
-            logger.info("Successfully created new v1.1 database")
+            logger.info("Successfully created new v1.2 database")
 
         except Exception as e:
             conn.rollback()
@@ -271,13 +280,13 @@ class DBManager:
 
     def _validate_schema_version(self) -> str:
         """
-        Validate that database has v1.1 schema.
+        Validate that database has v1.1+ schema (supports both v1.1 and v1.2).
 
         Returns:
-            Schema version string ('1.1')
+            Schema version string ('1.1' or '1.2')
 
         Raises:
-            SchemaValidationError: If schema is not v1.1
+            SchemaValidationError: If schema is not v1.1+
         """
         cursor = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
@@ -285,14 +294,13 @@ class DBManager:
         if not cursor.fetchone():
             raise SchemaValidationError(
                 "Database schema validation failed: 'messages' table not found. "
-                "Expected v1.1 schema. Run migration first."
+                "Expected v1.1+ schema. Run migration first."
             )
 
-        # Check for required columns
+        # Check for required columns (gmail_id is optional in v1.2)
         cursor = self.conn.execute("PRAGMA table_info(messages)")
         columns = {row[1] for row in cursor.fetchall()}
         required_columns = {
-            "gmail_id",
             "rfc_message_id",
             "archive_file",
             "mbox_offset",
@@ -306,6 +314,18 @@ class DBManager:
                 f"Database schema validation failed: missing columns {missing}"
             )
 
+        # Detect schema version by checking PRIMARY KEY
+        # v1.1: gmail_id is PRIMARY KEY, v1.2: rfc_message_id is PRIMARY KEY
+        cursor = self.conn.execute("PRAGMA table_info(messages)")
+        for row in cursor.fetchall():
+            col_name, col_pk = row[1], row[5]
+            if col_pk == 1:  # Primary key column
+                if col_name == "rfc_message_id":
+                    return "1.2"
+                elif col_name == "gmail_id":
+                    return "1.1"
+
+        # Fallback: assume 1.1 if we can't determine
         return "1.1"
 
     def close(self) -> None:
@@ -324,11 +344,11 @@ class DBManager:
 
     def record_archived_message(
         self,
-        gmail_id: str,
         rfc_message_id: str,
         archive_file: str,
         mbox_offset: int,
         mbox_length: int,
+        gmail_id: str | None = None,
         thread_id: str | None = None,
         subject: str | None = None,
         from_addr: str | None = None,
@@ -349,11 +369,11 @@ class DBManager:
         Optionally records in archive_runs for complete audit trail.
 
         Args:
-            gmail_id: Gmail message ID (primary key)
-            rfc_message_id: RFC 2822 Message-ID header (must be unique)
+            rfc_message_id: RFC 2822 Message-ID header (primary key in v1.2)
             archive_file: Path to archive file
             mbox_offset: Byte offset in mbox file
             mbox_length: Message length in bytes
+            gmail_id: Gmail message ID (optional - NULL for imported messages not in Gmail)
             thread_id: Gmail thread ID
             subject: Email subject
             from_addr: From address
@@ -375,15 +395,15 @@ class DBManager:
             self.conn.execute(
                 """
                 INSERT INTO messages (
-                    gmail_id, rfc_message_id, thread_id, subject, from_addr,
+                    rfc_message_id, gmail_id, thread_id, subject, from_addr,
                     to_addr, cc_addr, date, archived_timestamp, archive_file,
                     mbox_offset, mbox_length, body_preview, checksum,
                     size_bytes, labels, account_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    gmail_id,
                     rfc_message_id,
+                    gmail_id,
                     thread_id,
                     subject,
                     from_addr,
@@ -475,9 +495,29 @@ class DBManager:
         cursor = self.conn.execute("SELECT rfc_message_id FROM messages")
         return {row[0] for row in cursor.fetchall() if row[0]}
 
-    def get_message_location(self, gmail_id: str) -> tuple[str, int, int] | None:
+    def get_message_location(self, rfc_message_id: str) -> tuple[str, int, int] | None:
         """
         Get mbox file location for O(1) message access.
+
+        Args:
+            rfc_message_id: RFC 2822 Message-ID (primary key in v1.2)
+
+        Returns:
+            Tuple of (archive_file, mbox_offset, mbox_length) or None if not found
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT archive_file, mbox_offset, mbox_length
+            FROM messages WHERE rfc_message_id = ?
+            """,
+            (rfc_message_id,),
+        )
+        row = cursor.fetchone()
+        return (row[0], row[1], row[2]) if row else None
+
+    def get_message_location_by_gmail_id(self, gmail_id: str) -> tuple[str, int, int] | None:
+        """
+        Get mbox file location by Gmail ID (for backward compatibility).
 
         Args:
             gmail_id: Gmail message ID

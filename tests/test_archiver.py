@@ -705,7 +705,8 @@ class TestAtomicOperations:
 
             # Verify database has the message
             db = DBManager(str(db_path))
-            location = db.get_message_location("msg1")
+            # v1.2: Use get_message_location_by_gmail_id for gmail_id lookup
+            location = db.get_message_location_by_gmail_id("msg1")
             assert location is not None, "Message should be in database"
             assert location[0] == str(mbox_path)
             assert location[1] >= 0, "Offset should be valid"
@@ -831,7 +832,8 @@ class TestAtomicOperations:
 
             # Verify the message can be read from mbox at the stored offset
             db = DBManager(str(db_path))
-            location = db.get_message_location("msg1")
+            # v1.2: Use get_message_location_by_gmail_id for gmail_id lookup
+            location = db.get_message_location_by_gmail_id("msg1")
             assert location is not None
 
             archive_file, offset, length = location

@@ -1,8 +1,8 @@
 # Gmail Archiver Architecture
 
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-26
 **Status:** Active Development
-**Current Version:** 1.1.0 (Stable Release - November 2025)
+**Current Version:** 1.4.0+ (v1.2 Schema - November 2025)
 
 ---
 
@@ -208,48 +208,63 @@ finally:
 
 ### State Tracking
 
-**Component:** `src/gmailarchiver/state.py:ArchiveState`
+**Component:** `src/gmailarchiver/db_manager.py:DBManager` (v1.1.0+)
+
+**Note:** The legacy `ArchiveState` class (`state.py`) still exists for backward compatibility but all new code should use `DBManager`.
 
 **Responsibilities:**
 - SQLite database management
-- Track archived messages
+- Track archived messages with mbox offsets
 - Track archive runs (audit trail)
-- Transaction support
+- Transaction support with automatic rollback
+- Full-text search via FTS5
 
-**Database Schema (v1.0.x):**
+**Database Schema (v1.2 - Current):**
 ```sql
-CREATE TABLE archived_messages (
-    gmail_id TEXT PRIMARY KEY,
-    archived_timestamp TEXT,
-    archive_file TEXT,
+CREATE TABLE messages (
+    rfc_message_id TEXT PRIMARY KEY,  -- RFC 2822 Message-ID (universal)
+    gmail_id TEXT,                     -- Optional (NULL for imported messages)
+    thread_id TEXT,
+    archive_file TEXT NOT NULL,
+    mbox_offset INTEGER NOT NULL,      -- For O(1) message access
+    mbox_length INTEGER NOT NULL,
     subject TEXT,
     from_addr TEXT,
+    to_addr TEXT,
     message_date TEXT,
-    checksum TEXT
+    body_preview TEXT,
+    checksum TEXT,
+    archived_timestamp TEXT
 );
+
+CREATE INDEX idx_gmail_id ON messages(gmail_id);
+CREATE INDEX idx_date ON messages(message_date);
+CREATE INDEX idx_archive_file ON messages(archive_file);
 
 CREATE TABLE archive_runs (
     run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_timestamp TEXT,
+    operation TEXT,  -- archive, import, consolidate, dedupe, repair
     query TEXT,
     messages_archived INTEGER,
     archive_file TEXT
 );
 ```
 
-**Planned Schema (v1.1.0):**
-See [ADR-001: Hybrid Architecture Model](adrs/001-hybrid-architecture-model.md) for enhanced schema with `mbox_offset`.
+**Key v1.2 Change:** `rfc_message_id` is now PRIMARY KEY (universal email ID), while `gmail_id` is optional (NULL for messages imported without Gmail API access).
 
 **Usage:**
 ```python
-with ArchiveState() as state:
-    state.record_archived_message(
-        gmail_id="msg123",
+with DBManager(db_path) as db:
+    db.record_archived_message(
+        rfc_message_id="<unique-id@example.com>",  # Required (PRIMARY KEY)
+        archive_file="/path/to/archive.mbox.zst",
+        mbox_offset=12345,
+        mbox_length=5678,
+        gmail_id="msg123",  # Optional
         subject="Meeting Notes",
         from_addr="boss@company.com",
-        message_date=datetime.now(),
-        archive_file="/path/to/archive.mbox.zst",
-        checksum="sha256..."
+        message_date=datetime.now().isoformat(),
     )
 ```
 
@@ -336,11 +351,11 @@ class DBManager:
 
     def record_archived_message(
         self,
-        gmail_id: str,
-        rfc_message_id: str,
+        rfc_message_id: str,  # PRIMARY KEY in v1.2
         archive_file: str,
         mbox_offset: int,
         mbox_length: int,
+        gmail_id: str | None = None,  # Optional in v1.2
         **metadata
     ) -> None:
         """
@@ -348,15 +363,18 @@ class DBManager:
 
         CRITICAL: This is transactional - commits or rolls back.
         CRITICAL: Also records in archive_runs for audit trail.
+
+        v1.2 Schema Change: rfc_message_id is now PRIMARY KEY (universal email ID).
+        gmail_id is optional (NULL for imported messages not in Gmail).
         """
         with self._transaction():
             # Insert into messages table
             self.conn.execute("""
                 INSERT INTO messages (
-                    gmail_id, rfc_message_id, archive_file,
+                    rfc_message_id, gmail_id, archive_file,
                     mbox_offset, mbox_length, ...
                 ) VALUES (?, ?, ?, ?, ?, ...)
-            """, (gmail_id, rfc_message_id, archive_file,
+            """, (rfc_message_id, gmail_id, archive_file,
                   mbox_offset, mbox_length, ...))
 
             # Record in audit trail
@@ -373,9 +391,25 @@ class DBManager:
         """, (gmail_id,))
         return cursor.fetchone()
 
-    def get_message_location(self, gmail_id: str) -> tuple[str, int, int] | None:
+    def get_message_location(self, rfc_message_id: str) -> tuple[str, int, int] | None:
         """
         Get mbox file location for O(1) message access.
+
+        Args:
+            rfc_message_id: RFC 2822 Message-ID (PRIMARY KEY in v1.2)
+
+        Returns: (archive_file, mbox_offset, mbox_length) or None
+        """
+        cursor = self.conn.execute("""
+            SELECT archive_file, mbox_offset, mbox_length
+            FROM messages WHERE rfc_message_id = ?
+        """, (rfc_message_id,))
+        row = cursor.fetchone()
+        return (row[0], row[1], row[2]) if row else None
+
+    def get_message_location_by_gmail_id(self, gmail_id: str) -> tuple[str, int, int] | None:
+        """
+        Get mbox file location by Gmail ID (backward compatibility).
 
         Returns: (archive_file, mbox_offset, mbox_length) or None
         """
@@ -811,16 +845,17 @@ class HybridStorage:
 
     # ==================== VALIDATION ====================
 
-    def _validate_message_consistency(self, gmail_id: str) -> None:
+    def _validate_message_consistency(self, rfc_message_id: str) -> None:
         """
         Validate that a message exists in both mbox and database.
 
+        v1.2: Uses rfc_message_id (PRIMARY KEY) for lookup.
         Raises: IntegrityError if inconsistent
         """
-        # Get location from database
-        location = self.db.get_message_location(gmail_id)
+        # Get location from database by rfc_message_id (v1.2 PRIMARY KEY)
+        location = self.db.get_message_location(rfc_message_id)
         if not location:
-            raise IntegrityError(f"Message {gmail_id} not in database")
+            raise IntegrityError(f"Message {rfc_message_id} not in database")
 
         archive_file, offset, length = location
 
@@ -1589,4 +1624,4 @@ For architectural questions or proposals:
 
 ---
 
-**Last Updated:** 2025-11-14
+**Last Updated:** 2025-11-26

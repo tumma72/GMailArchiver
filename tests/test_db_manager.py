@@ -202,7 +202,8 @@ class TestMessageOperations:
         with DBManager(v11_db) as db:
             db.record_archived_message(**sample_message_data)
 
-            location = db.get_message_location(sample_message_data["gmail_id"])
+            # v1.2: get_message_location uses rfc_message_id (primary key)
+            location = db.get_message_location(sample_message_data["rfc_message_id"])
 
             assert location is not None
             assert location[0] == sample_message_data["archive_file"]
@@ -1042,7 +1043,7 @@ class TestGetMessageLocation:
     """Test get_message_location error paths."""
 
     def test_get_message_location_not_found(self, v11_db: str) -> None:
-        """Test get_message_location with nonexistent gmail_id."""
+        """Test get_message_location with nonexistent rfc_message_id."""
         with DBManager(v11_db) as db:
             result = db.get_message_location("nonexistent")
             assert result is None

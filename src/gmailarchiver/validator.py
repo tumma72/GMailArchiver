@@ -565,9 +565,10 @@ class ArchiveValidator:
                 missing = mbox_message_ids - db_message_ids
                 report.missing_records = len(missing)
 
-                # Check for duplicate gmail_ids
+                # Check for duplicate gmail_ids (exclude NULL - allowed in v1.2)
                 cursor = conn.execute(
                     """SELECT gmail_id, COUNT(*) as cnt FROM messages
+                       WHERE gmail_id IS NOT NULL
                        GROUP BY gmail_id HAVING cnt > 1"""
                 )
                 report.duplicate_gmail_ids = len(cursor.fetchall())

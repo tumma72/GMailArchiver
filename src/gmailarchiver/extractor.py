@@ -61,8 +61,8 @@ class MessageExtractor:
         Raises:
             ExtractorError: If message not found or extraction fails
         """
-        # Get message location from database
-        location = self.db.get_message_location(gmail_id)
+        # Get message location from database by gmail_id
+        location = self.db.get_message_location_by_gmail_id(gmail_id)
         if not location:
             raise ExtractorError(f"Message not found in database: {gmail_id}")
 
