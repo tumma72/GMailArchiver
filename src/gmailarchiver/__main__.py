@@ -10,6 +10,7 @@ import typer
 from ._version import __version__
 from .archiver import GmailArchiver
 from .auth import GmailAuthenticator
+from .command_context import CommandContext, with_context
 from .deduplicator import MessageDeduplicator
 from .gmail_client import GmailClient
 from .migration import MigrationManager
@@ -56,7 +57,9 @@ def main(
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="archive")
 def archive(
+    ctx: CommandContext,
     age_threshold: str = typer.Argument(
         ...,
         help="Age threshold or exact date. "
@@ -102,9 +105,7 @@ def archive(
     $ gmailarchiver archive 3y --trash
     $ gmailarchiver archive 3y --json
     """
-    import sys
-
-    from gmailarchiver.output import OutputManager
+    out = ctx.output
 
     # Generate default output filename if not provided
     if not output:
@@ -118,25 +119,17 @@ def archive(
             extension = ".mbox.zst"
         output = f"archive_{timestamp}{extension}"
 
-    # Detect TTY for auto-enabling live mode
-    use_live_mode = not json_output and sys.stdout.isatty()
-
-    out = OutputManager(json_mode=json_output, live_mode=use_live_mode)
-    operation_mode = "archive (dry-run)" if dry_run else "archive"
-    out.start_operation(operation_mode, f"Archiving messages older than {age_threshold}")
-
     # Phase 1: Authentication (outside live context for cleaner output)
     try:
-        out.info("Authenticating with Gmail...")
+        ctx.info("Authenticating with Gmail...")
         authenticator = GmailAuthenticator(credentials_file=credentials)
         creds = authenticator.authenticate()
-        out.success("Authentication successful")
+        ctx.success("Authentication successful")
     except FileNotFoundError as e:
-        out.show_error_panel(
+        ctx.fail_and_exit(
             title="Authentication Failed",
             message=str(e),
             suggestion="Check credentials file path or use bundled credentials",
-            exit_code=1,
         )
 
     # Initialize clients
@@ -183,64 +176,57 @@ def archive(
 
     # Phase 3: Handle archive errors (outside live context)
     if archive_error:
-        out.show_error_panel(
+        ctx.fail_and_exit(
             title="Archive Failed",
             message=str(archive_error),
             suggestion="Check your network connection and Gmail API access",
-            exit_code=1,
         )
-        return  # exit_code=1 should exit, but return for type safety
 
     # Phase 4: Handle results (outside live context)
     if result is None:
-        out.show_error_panel(
+        ctx.fail_and_exit(
             title="Archive Failed",
             message="No result returned from archive operation",
-            exit_code=1,
         )
-        return  # exit_code=1 should exit, but return for type safety
 
     # Handle dry run result
     if dry_run:
-        out.warning("DRY RUN completed - no changes made")
+        ctx.warning("DRY RUN completed - no changes made")
         report_data = {
             "Messages Found": result.get("messages_to_archive", 0),
             "Output File": output,
             "Mode": "Dry Run (no changes made)",
         }
-        out.show_report("Archive Preview", report_data)
-        out.end_operation(success=True)
+        ctx.show_report("Archive Preview", report_data)
         return
 
     # Handle zero messages case
     if result["messages_archived"] == 0:
-        out.warning("No messages to archive")
-        out.suggest_next_steps(
+        ctx.warning("No messages to archive")
+        ctx.suggest_next_steps(
             [
                 "Check your age threshold",
                 "Verify messages exist in Gmail matching the criteria",
             ]
         )
-        out.end_operation(success=True)
         return
 
     # Handle interrupted archive (Ctrl+C)
     if result.get("interrupted", False):
         actual_file = result.get("actual_file", output)
-        out.warning("Archive was interrupted (Ctrl+C)")
-        out.info(f"Partial archive saved: {actual_file}")
-        out.info(f"Progress: {result['messages_archived']} messages archived")
-        out.suggest_next_steps(
+        ctx.warning("Archive was interrupted (Ctrl+C)")
+        ctx.info(f"Partial archive saved: {actual_file}")
+        ctx.info(f"Progress: {result['messages_archived']} messages archived")
+        ctx.suggest_next_steps(
             [
                 f"Resume: gmailarchiver archive {age_threshold}",
                 "Cleanup: gmailarchiver cleanup --list",
             ]
         )
-        out.end_operation(success=True)
         return
 
     # Phase 5: Validation (outside live context for clean output)
-    out.info("Validating archive...")
+    ctx.info("Validating archive...")
 
     # Get the actual file that was written (may differ from output if interrupted)
     actual_file = result.get("actual_file", output)
@@ -255,51 +241,48 @@ def archive(
     out.show_validation_report(validation_results, title="Archive Validation")
 
     if not validation_results["passed"]:
-        out.show_error_panel(
+        ctx.fail_and_exit(
             title="Validation Failed",
             message="Archive validation did not pass all checks",
             details=validation_results.get("errors", []),
             suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
-            exit_code=1,
         )
 
-    out.success("Archive validation passed")
+    ctx.success("Archive validation passed")
 
     # Phase 6: Deletion (if requested)
     if trash or delete:
         if delete:
             # Permanent deletion requires explicit confirmation
-            out.warning("WARNING: PERMANENT DELETION")
+            ctx.warning("WARNING: PERMANENT DELETION")
             msg_count = result["messages_archived"]
-            out.warning(f"This will permanently delete {msg_count} messages.")
-            out.warning("This action CANNOT be undone!")
+            ctx.warning(f"This will permanently delete {msg_count} messages.")
+            ctx.warning("This action CANNOT be undone!")
 
             confirmation = typer.prompt(
                 f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
             )
 
             if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
-                out.info("Deletion cancelled")
-                out.end_operation(success=True)
+                ctx.info("Deletion cancelled")
                 return
 
             # Perform permanent deletion
             with out.progress_context("Permanently deleting messages", total=None):
                 archiver.delete_archived_messages(list(archived_ids), permanent=True)
-            out.success("Messages permanently deleted")
+            ctx.success("Messages permanently deleted")
 
         elif trash:
             # Move to trash with confirmation
             if not typer.confirm(
                 f"\nMove {result['messages_archived']} messages to trash? (30-day recovery period)"
             ):
-                out.info("Cancelled")
-                out.end_operation(success=True)
+                ctx.info("Cancelled")
                 return
 
             with out.progress_context("Moving messages to trash", total=None):
                 archiver.delete_archived_messages(list(archived_ids), permanent=False)
-            out.success("Messages moved to trash")
+            ctx.success("Messages moved to trash")
 
     # Phase 7: Final report
     report_data = {
@@ -316,8 +299,8 @@ def archive(
     elif delete:
         report_data["Gmail Status"] = "Permanently deleted"
 
-    out.show_report("Archive Summary", report_data)
-    out.success("Archive completed successfully!")
+    ctx.show_report("Archive Summary", report_data)
+    ctx.success("Archive completed successfully!")
 
     # Suggest next steps
     next_steps = [
@@ -328,12 +311,13 @@ def archive(
         next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
         next_steps.append(f"Permanently delete: gmailarchiver retry-delete {output} --permanent")
 
-    out.suggest_next_steps(next_steps)
-    out.end_operation(success=True)
+    ctx.suggest_next_steps(next_steps)
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="validate")
 def validate(
+    ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file to validate"),
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
@@ -347,54 +331,43 @@ def validate(
         $ gmailarchiver validate archive_20250113.mbox.gz
         $ gmailarchiver validate archive.mbox --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("validate", f"Validating {archive_file}")
-
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="File Not Found",
             message=f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
-            exit_code=1,
         )
-        return
 
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion=(
                 f"Import the archive first: 'gmailarchiver import {archive_file}' "
                 f"or specify database path with --state-db"
             ),
-            exit_code=1,
         )
-        return
 
     # Get expected message IDs from state database for this specific archive
     try:
         with ArchiveState(state_db) as state:
             expected_ids = state.get_archived_message_ids_for_file(archive_file)
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Error",
             message=f"Failed to read database: {e}",
             suggestion="Check database file permissions and integrity",
-            exit_code=1,
         )
-        return
 
     # Run validation with progress tracking
-    validator = ArchiveValidator(archive_file, state_db, output=output)
+    validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
 
-    output.info(f"Validating {len(expected_ids):,} expected messages...")
+    ctx.info(f"Validating {len(expected_ids):,} expected messages...")
 
-    with output.progress_context("Running validation checks", total=4) as progress:
+    with ctx.output.progress_context("Running validation checks", total=4) as progress:
         task = progress.add_task("Validation", total=4) if progress else None
 
         # Run comprehensive validation
@@ -403,8 +376,8 @@ def validate(
         if progress and task:
             progress.update(task, completed=4)
 
-    # Show validation report using new panel method
-    output.show_validation_report(results, title="Archive Validation")
+    # Show validation report using OutputManager method
+    ctx.output.show_validation_report(results, title="Archive Validation")
 
     # Handle failure with error panel and suggestions
     if not results["passed"]:
@@ -429,17 +402,18 @@ def validate(
             )
 
         if suggestions:
-            output.suggest_next_steps(suggestions)
+            ctx.suggest_next_steps(suggestions)
 
-        output.end_operation(success=False, summary="Validation failed")
         raise typer.Exit(1)
 
-    output.end_operation(success=True, summary="All validation checks passed")
+    ctx.success("All validation checks passed")
 
 
 @utilities_app.command("retry-delete")
 @app.command("retry-delete", hidden=True)
+@with_context(operation_name="retry-delete")
 def retry_delete_cmd(
+    ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Archive file to delete messages from"),
     permanent: bool = typer.Option(False, "--permanent", help="Permanent deletion (vs trash)"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
@@ -448,6 +422,7 @@ def retry_delete_cmd(
         "--credentials",
         help="Custom OAuth2 credentials file (optional, uses bundled by default)",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Retry deletion for already-archived messages.
@@ -465,18 +440,13 @@ def retry_delete_cmd(
         Permanent deletion (IRREVERSIBLE):
         $ gmailarchiver retry-delete archive_20251114.mbox --permanent
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager()
-    output.start_operation("retry-delete", f"Retrying deletion for {archive_file}")
-
     try:
         # 1. Get archived message IDs from database
         with ArchiveState(state_db) as state:
             message_ids = list(state.get_archived_message_ids_for_file(archive_file))
 
         if not message_ids:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="No Messages Found",
                 message=f"No archived messages found for: {archive_file}",
                 details=[
@@ -485,56 +455,51 @@ def retry_delete_cmd(
                     f"Using state database: {state_db}",
                 ],
                 suggestion="Check the archive file name and state database path",
-                exit_code=1,
             )
-            return
 
-        output.info(f"Found {len(message_ids)} archived messages")
-        output.info(f"Archive: {archive_file}\n")
+        ctx.info(f"Found {len(message_ids)} archived messages")
+        ctx.info(f"Archive: {archive_file}\n")
 
         # 2. Authenticate and validate scopes
         authenticator = GmailAuthenticator(credentials_file=credentials)
-        output.info("Authenticating with Gmail...")
+        ctx.info("Authenticating with Gmail...")
         creds = authenticator.authenticate()
 
         # 3. Validate deletion scope
-        output.info("Validating permissions...")
+        ctx.info("Validating permissions...")
         if not authenticator.validate_scopes(["https://mail.google.com/"]):
             # Keep wording so tests still find 'Missing deletion permission' and 'auth-reset'
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Missing deletion permission",
                 message="Your current authorization doesn't include permission to delete messages",
                 details=[
                     "This was likely caused by using an older version of the app",
                 ],
                 suggestion="Run 'gmailarchiver auth-reset' then retry this command",
-                exit_code=1,
             )
-            return
 
-        output.success("Permissions validated")
+        ctx.success("Permissions validated")
 
         # 4. Create Gmail client
         client = GmailClient(creds)
 
         # 5. Create archiver (for deletion functionality)
-        archiver = GmailArchiver(client, state_db, output=output)
+        archiver = GmailArchiver(client, state_db, output=ctx.output)
 
         # 6. Delete messages with appropriate confirmation
         if permanent:
-            output.warning("WARNING: PERMANENT DELETION")
-            output.warning(
+            ctx.warning("WARNING: PERMANENT DELETION")
+            ctx.warning(
                 f"This will permanently delete {len(message_ids)} messages. "
                 "This action CANNOT be undone!"
             )
-            output.info(
+            ctx.info(
                 "Deleted messages will be gone forever - not in trash and not recoverable.\n"
             )
 
             confirmation = typer.prompt(f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm")
             if confirmation != f"DELETE {len(message_ids)} MESSAGES":
-                output.info("Deletion cancelled")
-                output.end_operation(success=True)
+                ctx.info("Deletion cancelled")
                 return
 
             # Perform permanent deletion
@@ -542,31 +507,30 @@ def retry_delete_cmd(
 
         else:
             # Trash deletion (default) - still ask for confirmation
-            output.info(f"This will move {len(message_ids)} messages to trash.")
-            output.info("(Messages can be recovered from trash for 30 days)\n")
+            ctx.info(f"This will move {len(message_ids)} messages to trash.")
+            ctx.info("(Messages can be recovered from trash for 30 days)\n")
 
             if not typer.confirm(f"Move {len(message_ids)} messages to trash?"):
-                output.info("Cancelled")
-                output.end_operation(success=True)
+                ctx.info("Cancelled")
                 return
 
             # Move to trash
             archiver.delete_archived_messages(message_ids, permanent=False)
 
-        output.success("Deletion completed successfully!")
-        output.end_operation(success=True)
+        ctx.success("Deletion completed successfully!")
 
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Retry Delete Failed",
             message=str(e),
             suggestion="Check your network connection and authentication status",
-            exit_code=1,
         )
 
 
 @app.command()
+@with_context(operation_name="status")
 def status(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -579,22 +543,16 @@ def status(
         $ gmailarchiver status
         $ gmailarchiver status --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("status", "Retrieving archive statistics")
-
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        output.warning("No archive database found")
-        output.suggest_next_steps(
+        ctx.warning("No archive database found")
+        ctx.suggest_next_steps(
             [
                 "Archive emails: gmailarchiver archive 3y",
                 "Import existing archive: gmailarchiver import archive.mbox",
             ]
         )
-        output.end_operation(success=True)
         raise typer.Exit(0)
 
     with ArchiveState(state_db) as state:
@@ -610,7 +568,7 @@ def status(
             "Recent Archive Runs": len(recent_runs),
         }
 
-        output.show_report("Archive Status", report_data)
+        ctx.show_report("Archive Status", report_data)
 
         # Display recent runs table
         if recent_runs:
@@ -627,15 +585,15 @@ def status(
                     ]
                 )
 
-            output.show_table("Recent Archive Runs", headers, rows)
+            ctx.show_table("Recent Archive Runs", headers, rows)
         else:
-            output.warning("No archive runs found")
-
-    output.end_operation(success=True)
+            ctx.warning("No archive runs found")
 
 
 @app.command()
+@with_context(operation_name="cleanup")
 def cleanup(
+    ctx: CommandContext,
     session_id: str | None = typer.Argument(
         None,
         help="Specific session ID to clean up (use --list to see sessions)",
@@ -670,33 +628,27 @@ def cleanup(
         $ gmailarchiver cleanup --all --force
     """
     from gmailarchiver.db_manager import DBManager
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("cleanup", "Managing partial archive sessions")
 
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
-        output.warning("No archive database found")
-        output.suggest_next_steps(
+        ctx.warning("No archive database found")
+        ctx.suggest_next_steps(
             [
                 "Archive emails: gmailarchiver archive 3y",
             ]
         )
-        output.end_operation(success=True)
         raise typer.Exit(0)
 
     # Validate arguments
     if not list_sessions and not all_sessions and not session_id:
-        output.error("Please specify --list, --all, or provide a session ID", exit_code=0)
-        output.suggest_next_steps(
+        ctx.error("Please specify --list, --all, or provide a session ID")
+        ctx.suggest_next_steps(
             [
                 "List sessions: gmailarchiver cleanup --list",
                 "Clean all: gmailarchiver cleanup --all",
             ]
         )
-        output.end_operation(success=False)
         raise typer.Exit(1)
 
     try:
@@ -708,8 +660,7 @@ def cleanup(
 
         if list_sessions:
             if not sessions:
-                output.info("No partial archive sessions found")
-                output.end_operation(success=True)
+                ctx.info("No partial archive sessions found")
                 raise typer.Exit(0)
 
             # Display sessions table
@@ -729,15 +680,14 @@ def cleanup(
                     ]
                 )
 
-            output.show_table("Partial Archive Sessions", headers, rows)
-            output.info(f"Found {len(sessions)} partial session(s)")
-            output.suggest_next_steps(
+            ctx.show_table("Partial Archive Sessions", headers, rows)
+            ctx.info(f"Found {len(sessions)} partial session(s)")
+            ctx.suggest_next_steps(
                 [
                     "Clean specific: gmailarchiver cleanup <session-id>",
                     "Clean all: gmailarchiver cleanup --all",
                 ]
             )
-            output.end_operation(success=True)
             raise typer.Exit(0)
 
         # Determine which sessions to clean
@@ -746,35 +696,29 @@ def cleanup(
         if all_sessions:
             sessions_to_clean = sessions
             if not sessions_to_clean:
-                output.info("No partial archive sessions to clean up")
-                output.end_operation(success=True)
+                ctx.info("No partial archive sessions to clean up")
                 raise typer.Exit(0)
         elif session_id:
             # Find specific session (support partial UUID match)
             matching = [s for s in sessions if s["session_id"].startswith(session_id)]
             if not matching:
-                output.error(f"Session not found: {session_id}", exit_code=0)
-                output.suggest_next_steps(["List sessions: gmailarchiver cleanup --list"])
-                output.end_operation(success=False)
+                ctx.error(f"Session not found: {session_id}")
+                ctx.suggest_next_steps(["List sessions: gmailarchiver cleanup --list"])
                 raise typer.Exit(1)
             if len(matching) > 1:
-                output.error(
-                    f"Multiple sessions match '{session_id}'. Be more specific.", exit_code=0
-                )
-                output.end_operation(success=False)
+                ctx.error(f"Multiple sessions match '{session_id}'. Be more specific.")
                 raise typer.Exit(1)
             sessions_to_clean = matching
 
         # Confirmation prompt
         if not force:
-            output.warning(
+            ctx.warning(
                 f"This will delete {len(sessions_to_clean)} partial session(s) "
                 "and their associated data"
             )
             confirm = typer.confirm("Continue?")
             if not confirm:
-                output.info("Cleanup cancelled")
-                output.end_operation(success=True)
+                ctx.info("Cleanup cancelled")
                 raise typer.Exit(0)
 
         # Perform cleanup
@@ -786,32 +730,34 @@ def cleanup(
             # Delete partial file if it exists
             if partial_file.exists():
                 partial_file.unlink()
-                output.info(f"Deleted partial file: {partial_file.name}")
+                ctx.info(f"Deleted partial file: {partial_file.name}")
 
             # Delete messages associated with the partial file
             deleted_msgs = db.delete_messages_for_file(str(partial_file))
             if deleted_msgs > 0:
-                output.info(f"Removed {deleted_msgs} message records")
+                ctx.info(f"Removed {deleted_msgs} message records")
 
             # Delete session record
             db.delete_session(session["session_id"])
-            output.success(f"Cleaned session: {session['session_id'][:12]}...")
+            ctx.success(f"Cleaned session: {session['session_id'][:12]}...")
             cleaned_count += 1
 
         db.close()
 
-        output.success(f"Cleaned up {cleaned_count} partial session(s)")
-        output.end_operation(success=True)
+        ctx.success(f"Cleaned up {cleaned_count} partial session(s)")
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.error(f"Cleanup failed: {e}", exit_code=0)
-        output.end_operation(success=False)
+        ctx.error(f"Cleanup failed: {e}")
         raise typer.Exit(1)
 
 
 @utilities_app.command()
 @app.command(hidden=True)
+@with_context(has_progress=True, operation_name="migrate")
 def migrate(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -828,71 +774,58 @@ def migrate(
         $ gmailarchiver migrate --state-db /path/to/archive_state.db
         $ gmailarchiver migrate --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("migrate", "Migrating database schema")
-
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Check the database path or use --state-db to specify location",
-            exit_code=1,
         )
-        return
 
     # Initialize migration manager
     manager = MigrationManager(db_path)
 
-    # Detect current schema version
-    current_version = manager.detect_schema_version()
-
-    # Check if migration is needed
-    if current_version == "1.1":
-        output.success("Database is already at version 1.1 (up to date)")
-        output.end_operation(success=True)
-        manager._close()
-        return
-
-    if current_version == "none":
-        output.show_error_panel(
-            title="Invalid Database",
-            message="Database appears to be empty or invalid",
-            suggestion="Create a database with 'gmailarchiver archive' or 'gmailarchiver import'",
-            exit_code=1,
-        )
-        return
-
-    # Show migration info
-    output.info(f"Current schema version: {current_version}")
-    output.info("\nMigration from v1.0 to v1.1 will:")
-    output.info("  • Create backup of current database")
-    output.info("  • Add enhanced schema with mbox offset tracking")
-    output.info("  • Enable full-text search capabilities")
-    output.info("  • Add multi-account support (future-ready)")
-    output.info("  • Preserve all existing message data")
-
-    # Confirm migration
-    if not typer.confirm("\nProceed with migration?"):
-        output.info("Migration cancelled")
-        output.end_operation(success=True)
-        manager._close()
-        return
-
     try:
+        # Detect current schema version
+        current_version = manager.detect_schema_version()
+
+        # Check if migration is needed
+        if current_version == "1.1":
+            ctx.success("Database is already at version 1.1 (up to date)")
+            return
+
+        if current_version == "none":
+            ctx.fail_and_exit(
+                title="Invalid Database",
+                message="Database appears to be empty or invalid",
+                suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
+            )
+
+        # Show migration info
+        ctx.info(f"Current schema version: {current_version}")
+        ctx.info("\nMigration from v1.0 to v1.1 will:")
+        ctx.info("  • Create backup of current database")
+        ctx.info("  • Add enhanced schema with mbox offset tracking")
+        ctx.info("  • Enable full-text search capabilities")
+        ctx.info("  • Add multi-account support (future-ready)")
+        ctx.info("  • Preserve all existing message data")
+
+        # Confirm migration
+        if not typer.confirm("\nProceed with migration?"):
+            ctx.info("Migration cancelled")
+            return
+
         # Create backup with progress
-        with output.progress_context("Creating backup", total=3) as progress:
+        with ctx.output.progress_context("Creating backup", total=3) as progress:
             task = progress.add_task("Migration", total=3) if progress else None
 
             backup_path = manager.create_backup()
             if progress and task:
                 progress.update(task, advance=1)
 
-            output.success(f"Backup created: {backup_path}")
+            ctx.success(f"Backup created: {backup_path}")
 
             # Run migration
             manager.migrate_v1_to_v1_1()
@@ -911,24 +844,21 @@ def migrate(
             "Backup Location": str(backup_path),
         }
 
-        output.show_report("Migration Summary", report_data)
-        output.success("Migration completed successfully!")
+        ctx.show_report("Migration Summary", report_data)
+        ctx.success("Migration completed successfully!")
 
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Verify integrity: gmailarchiver verify-integrity",
                 "Search messages: gmailarchiver search <query>",
             ]
         )
 
-        output.end_operation(success=True)
-
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Migration Failed",
             message=str(e),
             suggestion="Check database integrity or restore from backup",
-            exit_code=1,
         )
     finally:
         manager._close()
@@ -936,7 +866,9 @@ def migrate(
 
 @utilities_app.command(name="db-info")
 @app.command(name="db-info", hidden=True)
+@with_context(operation_name="db-info")
 def db_info(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -952,34 +884,28 @@ def db_info(
         $ gmailarchiver db-info --state-db /path/to/archive_state.db
         $ gmailarchiver db-info --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("db-info", "Retrieving database information")
-
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        output.warning(f"Database not found: {state_db}")
-        output.suggest_next_steps(
+        ctx.warning(f"Database not found: {state_db}")
+        ctx.suggest_next_steps(
             [
                 "Create database: gmailarchiver archive 3y",
                 "Import archive: gmailarchiver import archive.mbox",
             ]
         )
-        output.end_operation(success=True)
         return
 
     # Detect schema version
     manager = MigrationManager(db_path)
-    version = manager.detect_schema_version()
-
-    # Show database file size
-    db_size = db_path.stat().st_size
-
-    # Get message count and recent runs
     try:
+        version = manager.detect_schema_version()
+
+        # Show database file size
+        db_size = db_path.stat().st_size
+
+        # Get message count and recent runs
         with ArchiveState(db_path=str(db_path), validate_path=False) as state:
             total_messages = state.get_archived_count()
 
@@ -994,7 +920,7 @@ def db_info(
                 "Recent Archive Runs": len(recent_runs),
             }
 
-            output.show_report("Database Information", report_data)
+            ctx.show_report("Database Information", report_data)
 
             # Display recent runs table
             if recent_runs:
@@ -1010,18 +936,15 @@ def db_info(
                         ]
                     )
 
-                output.show_table("Recent Archive Runs (Last 5)", headers, rows)
+                ctx.show_table("Recent Archive Runs (Last 5)", headers, rows)
             else:
-                output.warning("No archive runs found")
-
-            output.end_operation(success=True)
+                ctx.warning("No archive runs found")
 
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Error",
             message=f"Error reading database: {e}",
             suggestion="Check database file integrity",
-            exit_code=1,
         )
     finally:
         manager._close()
@@ -1029,7 +952,9 @@ def db_info(
 
 @utilities_app.command()
 @app.command(hidden=True)
+@with_context(operation_name="rollback")
 def rollback(
+    ctx: CommandContext,
     backup_file: str | None = typer.Option(
         None, "--backup-file", help="Path to backup file for rollback"
     ),
@@ -1048,11 +973,6 @@ def rollback(
         $ gmailarchiver rollback --backup-file archive_state.db.backup.20250114_120000
         $ gmailarchiver rollback --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("rollback", "Rolling back database")
-
     db_path = Path(state_db)
 
     # If no backup file specified, list available backups
@@ -1062,13 +982,11 @@ def rollback(
         backups = sorted(db_path.parent.glob(backup_pattern), reverse=True)
 
         if not backups:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="No Backups Found",
                 message="No backup files found",
                 suggestion=f"Looking for pattern: {backup_pattern}",
-                exit_code=1,
             )
-            return
 
         headers = ["Backup File", "Size", "Created"]
         rows: list[list[str]] = []
@@ -1095,56 +1013,52 @@ def rollback(
 
             rows.append([str(backup), size, timestamp])
 
-        output.show_table("Available backup files", headers, rows)
-        output.info("Use --backup-file to specify which backup to restore")
-        output.end_operation(success=True)
+        ctx.show_table("Available backup files", headers, rows)
+        ctx.info("Use --backup-file to specify which backup to restore")
         return
 
     # Rollback to specified backup
     backup_path = Path(backup_file)
 
     if not backup_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Backup Not Found",
             message=f"Backup file not found: {backup_file}",
             suggestion="Check the backup path and try again",
-            exit_code=1,
         )
-        return
 
-    output.info(f"Backup file: {backup_file}")
-    output.info(f"Target database: {state_db}\n")
+    ctx.info(f"Backup file: {backup_file}")
+    ctx.info(f"Target database: {state_db}\n")
 
-    output.warning(
-        "⚠ WARNING: This will replace the current database with the backup. "
+    ctx.warning(
+        "WARNING: This will replace the current database with the backup. "
         "Any changes made after the backup was created will be lost."
     )
 
     # Confirm rollback
     if not typer.confirm("Proceed with rollback?"):
-        output.info("Rollback cancelled")
-        output.end_operation(success=True)
+        ctx.info("Rollback cancelled")
         return
 
     try:
         manager = MigrationManager(db_path)
         manager.rollback_migration(backup_path)
 
-        output.success("Rollback completed successfully!")
-        output.end_operation(success=True)
+        ctx.success("Rollback completed successfully!")
 
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Rollback Failed",
             message=str(e),
             suggestion="Check backup file integrity and try again",
-            exit_code=1,
         )
 
 
 @utilities_app.command(name="dedupe-report")
 @app.command(name="dedupe-report", hidden=True)
+@with_context(has_progress=True, operation_name="dedupe-report")
 def dedupe_report(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -1161,27 +1075,20 @@ def dedupe_report(
         $ gmailarchiver dedupe-report --state-db /path/to/archive_state.db
         $ gmailarchiver dedupe-report --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("dedupe-report", "Analyzing duplicates")
-
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
-            exit_code=1,
         )
-        return
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
         with MessageDeduplicator(str(db_path)) as dedup:
-            with output.progress_context("Analyzing duplicates", total=None):
+            with ctx.output.progress_context("Analyzing duplicates", total=None):
                 # Find duplicates
                 duplicates = dedup.find_duplicates()
 
@@ -1190,8 +1097,7 @@ def dedupe_report(
 
             # Display results
             if report.duplicate_message_ids == 0:
-                output.success("No duplicate messages found!")
-                output.end_operation(success=True)
+                ctx.success("No duplicate messages found!")
                 return
 
             # Build report data
@@ -1203,45 +1109,43 @@ def dedupe_report(
                 "Space Recoverable": format_bytes(report.space_recoverable),
             }
 
-            output.show_report("Deduplication Analysis", report_data)
+            ctx.show_report("Deduplication Analysis", report_data)
 
             # Show breakdown by archive file
             if report.breakdown_by_archive:
-                output.info("\nBreakdown by archive file:")
+                ctx.info("\nBreakdown by archive file:")
                 for archive_file, stats in sorted(report.breakdown_by_archive.items()):
-                    output.info(
+                    ctx.info(
                         f"  • {archive_file}: {stats['messages_to_remove']} duplicates, "
                         f"{format_bytes(stats['space_recoverable'])} recoverable"
                     )
 
-            output.suggest_next_steps(
+            ctx.suggest_next_steps(
                 [
                     "Remove duplicates (dry run): gmailarchiver dedupe --dry-run",
                     "Remove duplicates: gmailarchiver dedupe --strategy newest --no-dry-run",
                 ]
             )
 
-            output.end_operation(success=True)
-
     except ValueError as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Schema Error",
             message=str(e),
             suggestion="Run 'gmailarchiver migrate' to upgrade your database",
-            exit_code=1,
         )
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Analysis Failed",
             message=f"Deduplication analysis failed: {e}",
             suggestion="Check database integrity and try again",
-            exit_code=1,
         )
 
 
 @utilities_app.command()
 @app.command(hidden=True)
+@with_context(requires_db=True, operation_name="dedupe")
 def dedupe(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -1274,46 +1178,27 @@ def dedupe(
         $ gmailarchiver dedupe --strategy largest --no-dry-run
         $ gmailarchiver dedupe --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    operation_name = "dedupe (dry-run)" if dry_run else "dedupe"
-    output.start_operation(operation_name, f"Removing duplicates (strategy: {strategy})")
-
     db_path = Path(state_db)
-
-    # Check if database exists
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
-            exit_code=1,
-        )
-        return
 
     # Validate strategy
     valid_strategies = ["newest", "largest", "first"]
     if strategy not in valid_strategies:
-        output.show_error_panel(
-            title="Invalid Strategy",
-            message=f"Invalid strategy: {strategy}",
+        ctx.fail_and_exit(
+            "Invalid Strategy",
+            f"Invalid strategy: {strategy}",
             suggestion=f"Must be one of: {', '.join(valid_strategies)}",
-            exit_code=1,
         )
-        return
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
         with MessageDeduplicator(str(db_path)) as dedup:
-            with output.progress_context("Finding duplicates", total=None):
+            with ctx.output.progress_context("Finding duplicates", total=None):
                 # Find duplicates
                 duplicates = dedup.find_duplicates()
 
             # Check if there are duplicates
             if not duplicates:
-                output.success("No duplicate messages found!")
-                output.end_operation(success=True)
+                ctx.success("No duplicate messages found!")
                 return
 
             # Show what will be done
@@ -1327,9 +1212,9 @@ def dedupe(
             }
 
             if dry_run:
-                output.warning("DRY RUN - No changes will be made")
+                ctx.warning("DRY RUN - No changes will be made")
 
-                with output.progress_context("Analyzing duplicates", total=None):
+                with ctx.output.progress_context("Analyzing duplicates", total=None):
                     # Show preview of what would be removed
                     result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
 
@@ -1337,9 +1222,9 @@ def dedupe(
                 report_data["Would Keep"] = f"{result.messages_kept:,} messages"
                 report_data["Would Save"] = format_bytes(result.space_saved)
 
-                output.show_report("Deduplication Preview (Dry Run)", report_data)
+                ctx.show_report("Deduplication Preview (Dry Run)", report_data)
 
-                output.suggest_next_steps(
+                ctx.suggest_next_steps(
                     [
                         f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run",
                     ]
@@ -1347,31 +1232,30 @@ def dedupe(
 
             else:
                 # Confirm before proceeding
-                output.warning(
+                ctx.warning(
                     "⚠ WARNING: This will permanently remove duplicate messages from the database"
                 )
-                output.info("The mbox files themselves will not be modified.")
+                ctx.info("The mbox files themselves will not be modified.")
 
                 if not typer.confirm(
                     f"Remove {report.messages_to_remove:,} duplicate messages "
                     f"using '{strategy}' strategy?"
                 ):
-                    output.info("Cancelled")
-                    output.end_operation(success=True)
+                    ctx.info("Cancelled")
                     return
 
                 # Perform deduplication
-                with output.progress_context("Removing duplicates", total=None):
+                with ctx.output.progress_context("Removing duplicates", total=None):
                     result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
 
                 report_data["Removed"] = f"{result.messages_removed:,} messages"
                 report_data["Kept"] = f"{result.messages_kept:,} messages"
                 report_data["Space Saved"] = format_bytes(result.space_saved)
 
-                output.show_report("Deduplication Results", report_data)
-                output.success("Deduplication completed!")
+                ctx.show_report("Deduplication Results", report_data)
+                ctx.success("Deduplication completed!")
 
-                output.suggest_next_steps(
+                ctx.suggest_next_steps(
                     [
                         "Verify database: gmailarchiver verify-integrity",
                         (
@@ -1385,51 +1269,49 @@ def dedupe(
                 if auto_verify:
                     from gmailarchiver.db_manager import DBManager
 
-                    output.info("\nRunning verification...")
+                    ctx.info("\nRunning verification...")
                     try:
                         db = DBManager(str(db_path), validate_schema=False)
                         issues = db.verify_database_integrity()
                         db.close()
 
                         if not issues:
-                            output.success("Verification complete - no issues found")
+                            ctx.success("Verification complete - no issues found")
                         else:
-                            output.warning(f"Verification found {len(issues)} issue(s):")
+                            ctx.warning(f"Verification found {len(issues)} issue(s):")
                             for issue in issues[:5]:  # Show first 5 issues
-                                output.info(f"  • {issue}")
+                                ctx.info(f"  • {issue}")
                             if len(issues) > 5:
-                                output.info(f"  ... and {len(issues) - 5} more issues")
+                                ctx.info(f"  ... and {len(issues) - 5} more issues")
 
-                            output.suggest_next_steps(
+                            ctx.suggest_next_steps(
                                 [
                                     "Fix issues automatically: gmailarchiver check --auto-repair",
                                     "View all issues: gmailarchiver verify-integrity --verbose",
                                 ]
                             )
                     except Exception as e:
-                        output.warning(f"Verification failed: {e}")
-
-            output.end_operation(success=True)
+                        ctx.warning(f"Verification failed: {e}")
 
     except ValueError as e:
-        output.show_error_panel(
-            title="Schema Error",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Schema Error",
+            str(e),
             suggestion="Run 'gmailarchiver migrate' to upgrade your database",
-            exit_code=1,
         )
     except Exception as e:
-        output.show_error_panel(
-            title="Deduplication Failed",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Deduplication Failed",
+            str(e),
             suggestion="Check database integrity and try again",
-            exit_code=1,
         )
 
 
 @utilities_app.command(name="verify-offsets")
 @app.command(name="verify-offsets", hidden=True)
+@with_context(requires_db=True, operation_name="verify-offsets")
 def verify_offsets_cmd(
+    ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -1445,37 +1327,20 @@ def verify_offsets_cmd(
         $ gmailarchiver verify-offsets test.mbox --state-db /path/to/archive_state.db
         $ gmailarchiver verify-offsets archive.mbox --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("verify-offsets", f"Verifying offsets for {archive_file}")
-
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.show_error_panel(
-            title="File Not Found",
-            message=f"Archive file not found: {archive_file}",
+        ctx.fail_and_exit(
+            "File Not Found",
+            f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
-            exit_code=1,
         )
-        return
-
-    db_path = Path(state_db)
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
-            exit_code=1,
-        )
-        return
 
     # Create validator and run verification
     try:
-        validator = ArchiveValidator(archive_file, state_db, output=output)
+        validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
 
-        with output.progress_context("Verifying offsets", total=1) as progress:
+        with ctx.output.progress_context("Verifying offsets", total=1) as progress:
             task = progress.add_task("Offset verification", total=1) if progress else None
             result = validator.verify_offsets()
             if progress and task:
@@ -1483,13 +1348,12 @@ def verify_offsets_cmd(
 
         # Handle skipped (v1.0 schema)
         if result.skipped:
-            output.warning("Offset verification skipped (v1.0 schema)")
-            output.suggest_next_steps(
+            ctx.warning("Offset verification skipped (v1.0 schema)")
+            ctx.suggest_next_steps(
                 [
                     "Upgrade to v1.1: gmailarchiver migrate",
                 ]
             )
-            output.end_operation(success=True)
             return
 
         # Build report data
@@ -1500,46 +1364,47 @@ def verify_offsets_cmd(
             "Accuracy": f"{result.accuracy_percentage:.1f}%",
         }
 
-        output.show_report("Offset Verification Results", report_data)
+        ctx.show_report("Offset Verification Results", report_data)
 
         # Success case
         if result.accuracy_percentage == 100.0:
-            output.success(f"All {result.total_checked} offsets verified successfully")
-            output.end_operation(success=True)
+            ctx.success(f"All {result.total_checked} offsets verified successfully")
             return
 
         # Failure case - show details
         if result.failures:
-            output.warning(f"Found {len(result.failures)} offset verification failure(s):")
+            ctx.warning(f"Found {len(result.failures)} offset verification failure(s):")
             for failure in result.failures[:10]:  # Limit to first 10
-                output.info(f"  • {failure}")
+                ctx.info(f"  • {failure}")
 
             if len(result.failures) > 10:
-                output.info(f"  ... and {len(result.failures) - 10} more failures")
+                ctx.info(f"  ... and {len(result.failures) - 10} more failures")
 
         # Suggest next steps
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Repair offsets: gmailarchiver repair --backfill --no-dry-run",
                 "Check database integrity: gmailarchiver verify-integrity",
             ]
         )
 
-        output.end_operation(success=False)
         raise typer.Exit(1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
-            title="Verification Failed",
-            message=f"Offset verification failed: {e}",
+        ctx.fail_and_exit(
+            "Verification Failed",
+            f"Offset verification failed: {e}",
             suggestion="Check database and archive file integrity",
-            exit_code=1,
         )
 
 
 @utilities_app.command(name="verify-consistency")
 @app.command(name="verify-consistency", hidden=True)
+@with_context(requires_db=True, operation_name="verify-consistency")
 def verify_consistency_cmd(
+    ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -1555,37 +1420,20 @@ def verify_consistency_cmd(
         $ gmailarchiver verify-consistency test.mbox --state-db /path/to/archive_state.db
         $ gmailarchiver verify-consistency archive.mbox --json
     """
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("verify-consistency", f"Checking consistency for {archive_file}")
-
     # Check files exist
     archive_path = Path(archive_file)
     if not archive_path.exists():
-        output.show_error_panel(
-            title="File Not Found",
-            message=f"Archive file not found: {archive_file}",
+        ctx.fail_and_exit(
+            "File Not Found",
+            f"Archive file not found: {archive_file}",
             suggestion="Check the file path or use 'gmailarchiver status' to list archives",
-            exit_code=1,
         )
-        return
-
-    db_path = Path(state_db)
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
-            exit_code=1,
-        )
-        return
 
     # Create validator and run consistency check
     try:
-        validator = ArchiveValidator(archive_file, state_db, output=output)
+        validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
 
-        with output.progress_context("Running consistency checks", total=5) as progress:
+        with ctx.output.progress_context("Running consistency checks", total=5) as progress:
             task = progress.add_task("Consistency checks", total=5) if progress else None
             report = validator.verify_consistency()
             if progress and task:
@@ -1603,42 +1451,43 @@ def verify_consistency_cmd(
             report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
             report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
-        output.show_report("Consistency Check Results", report_data)
+        ctx.show_report("Consistency Check Results", report_data)
 
         # Show errors if any
         if report.errors:
-            output.warning(f"Found {len(report.errors)} issue(s):")
+            ctx.warning(f"Found {len(report.errors)} issue(s):")
             for error in report.errors:
-                output.info(f"  • {error}")
+                ctx.info(f"  • {error}")
 
         # Overall status
         if report.passed:
-            output.success("All consistency checks passed")
-            output.end_operation(success=True)
+            ctx.success("All consistency checks passed")
             return
 
         # Suggest next steps
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Repair database: gmailarchiver repair --no-dry-run",
                 "Check integrity: gmailarchiver verify-integrity --verbose",
             ]
         )
 
-        output.end_operation(success=False)
         raise typer.Exit(1)
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
-            title="Consistency Check Failed",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Consistency Check Failed",
+            str(e),
             suggestion="Check database and archive file integrity",
-            exit_code=1,
         )
 
 
 @app.command()
+@with_context(requires_db=True, requires_schema="1.1", operation_name="search")
 def search(
+    ctx: CommandContext,
     query: str | None = typer.Argument(None, help="Gmail-style search query"),
     from_addr: str | None = typer.Option(None, "--from", help="Filter by sender"),
     to_addr: str | None = typer.Option(None, "--to", help="Filter by recipient"),
@@ -1673,91 +1522,51 @@ def search(
     import time
     from datetime import datetime
 
-    from gmailarchiver.output import OutputManager
-
-    from .migration import MigrationManager
     from .search import SearchEngine
-
-    output = OutputManager(json_mode=json_output)
 
     # Validate flags
     if extract and not output_dir:
-        output.show_error_panel(
-            title="Missing Output Directory",
-            message="--extract requires --output-dir",
+        ctx.fail_and_exit(
+            "Missing Output Directory",
+            "--extract requires --output-dir",
             suggestion="Specify output directory: --output-dir /path/to/directory",
-            exit_code=1,
         )
-        return
 
     # Interactive mode is mutually exclusive with some flags
     if interactive and json_output:
-        output.show_error_panel(
-            title="Invalid Option Combination",
-            message="--interactive cannot be used with --json",
+        ctx.fail_and_exit(
+            "Invalid Option Combination",
+            "--interactive cannot be used with --json",
             suggestion="Remove --json flag for interactive mode",
-            exit_code=1,
         )
-        return
 
     if interactive and extract:
-        output.show_error_panel(
-            title="Invalid Option Combination",
-            message="--interactive cannot be used with --extract",
+        ctx.fail_and_exit(
+            "Invalid Option Combination",
+            "--interactive cannot be used with --extract",
             suggestion="Use --interactive alone (extraction is part of interactive mode)",
-            exit_code=1,
         )
-        return
-
-    # Check database exists
-    db_path = Path(state_db)
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver archive' or 'gmailarchiver import' to create database",
-            exit_code=1,
-        )
-        return
-
-    # Check schema version (require v1.1)
-    manager = MigrationManager(db_path)
-    schema_version = manager.detect_schema_version()
-    manager._close()
-
-    if schema_version != "1.1":
-        output.show_error_panel(
-            title="Schema Upgrade Required",
-            message="Search requires v1.1 database schema",
-            suggestion="Run 'gmailarchiver migrate' to upgrade",
-            exit_code=1,
-        )
-        return
 
     # Validate dates if provided
     if after:
         try:
             datetime.strptime(after, "%Y-%m-%d")
         except ValueError:
-            output.show_error_panel(
-                title="Invalid Date Format",
-                message=f"Invalid date format: {after}",
+            ctx.fail_and_exit(
+                "Invalid Date Format",
+                f"Invalid date format: {after}",
                 suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
-                exit_code=1,
             )
-            return
 
     if before:
         try:
             datetime.strptime(before, "%Y-%m-%d")
         except ValueError:
-            output.show_error_panel(
-                title="Invalid Date Format",
-                message=f"Invalid date format: {before}",
+            ctx.fail_and_exit(
+                "Invalid Date Format",
+                f"Invalid date format: {before}",
                 suggestion="Use YYYY-MM-DD format (e.g., 2024-01-15)",
-                exit_code=1,
             )
-            return
 
     # Build query string from filters if no query provided
     if not query:
@@ -1774,18 +1583,13 @@ def search(
             query_parts.append(f"before:{before}")
 
         if not query_parts:
-            output.show_error_panel(
-                title="Missing Query",
-                message="No search query or filters provided",
+            ctx.fail_and_exit(
+                "Missing Query",
+                "No search query or filters provided",
                 suggestion="Provide a query argument or use filters like --from, --subject",
-                exit_code=1,
             )
-            return
 
         query = " ".join(query_parts)
-
-    if not json_output:
-        output.start_operation("search", f"Searching: {query}")
 
     # Execute search
     try:
@@ -1821,16 +1625,16 @@ def search(
 
         # Format output via OutputManager
         if json_output:
-            display_search_results_json(output, result_entries, with_preview=with_preview)
+            display_search_results_json(ctx.output, result_entries, with_preview=with_preview)
         else:
             display_search_results_rich(
-                output,
+                ctx.output,
                 result_entries,
                 results.total_results,
                 with_preview=with_preview,
             )
             if results.total_results == 0:
-                output.suggest_next_steps(
+                ctx.suggest_next_steps(
                     [
                         "Try a broader search query",
                         "Check query syntax with: gmailarchiver search --help",
@@ -1843,26 +1647,23 @@ def search(
                     "Results Found": results.total_results,
                     "Execution Time": f"{execution_time_ms:.2f}ms",
                 }
-                output.show_report("Search Summary", report_data)
+                ctx.show_report("Search Summary", report_data)
 
         # Interactive mode: allow user to select messages for extraction
         if interactive and not json_output:
             # If there are no search results, skip interactive UI entirely
             if results.total_results == 0:
-                output.info("No search results found; nothing to select in interactive mode.")
-                output.end_operation(success=True)
+                ctx.info("No search results found; nothing to select in interactive mode.")
                 return
 
             try:
                 import questionary
             except ImportError:
-                output.show_error_panel(
-                    title="Missing Dependency",
-                    message="Interactive mode requires the 'questionary' package",
+                ctx.fail_and_exit(
+                    "Missing Dependency",
+                    "Interactive mode requires the 'questionary' package",
                     suggestion="Install with: pip install questionary",
-                    exit_code=1,
                 )
-                return
 
             # Build choices for interactive selection
             choices = []
@@ -1879,7 +1680,7 @@ def search(
                 choices.append(questionary.Choice(title=choice_label, value=result.gmail_id))
 
             # Prompt user to select messages
-            output.info("")
+            ctx.info("")
             selected_ids = questionary.checkbox(
                 "Select messages to extract (space to select, enter to confirm):",
                 choices=choices,
@@ -1887,8 +1688,7 @@ def search(
 
             # Handle cancellation or no selection
             if not selected_ids:
-                output.info("No messages selected. Cancelled.")
-                output.end_operation(success=True)
+                ctx.info("No messages selected. Cancelled.")
                 return
 
             # Prompt for output directory
@@ -1900,19 +1700,18 @@ def search(
             ).ask()
 
             if not output_dir_str:
-                output.info("No output directory specified. Cancelled.")
-                output.end_operation(success=True)
+                ctx.info("No output directory specified. Cancelled.")
                 return
 
             # Extract selected messages
             from gmailarchiver.extractor import MessageExtractor
 
-            output.info(
+            ctx.info(
                 f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}..."
             )
 
             with MessageExtractor(state_db) as extractor:
-                with output.progress_context(
+                with ctx.output.progress_context(
                     "Extracting messages", total=len(selected_ids)
                 ) as progress:
                     task = (
@@ -1933,16 +1732,15 @@ def search(
                 "Failed": stats["failed"],
                 "Output Directory": output_dir_str,
             }
-            output.show_report("Extraction Summary", extraction_report)
+            ctx.show_report("Extraction Summary", extraction_report)
 
             if stats["errors"]:
-                output.warning(f"Encountered {len(stats['errors'])} error(s):")
+                ctx.warning(f"Encountered {len(stats['errors'])} error(s):")
                 for error in stats["errors"][:5]:  # Show first 5 errors
-                    output.info(f"  • {error}")
+                    ctx.info(f"  • {error}")
                 if len(stats["errors"]) > 5:
-                    output.info(f"  ... and {len(stats['errors']) - 5} more")
+                    ctx.info(f"  ... and {len(stats['errors']) - 5} more")
 
-            output.end_operation(success=True)
             return
 
         # Extract messages if requested
@@ -1950,12 +1748,12 @@ def search(
             from gmailarchiver.extractor import MessageExtractor
 
             assert output_dir is not None, "Output directory required for extraction"
-            output.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
+            ctx.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
 
             gmail_ids = [r.gmail_id for r in results.results]
 
             with MessageExtractor(state_db) as extractor:
-                with output.progress_context(
+                with ctx.output.progress_context(
                     "Extracting messages", total=len(gmail_ids)
                 ) as progress:
                     task = (
@@ -1973,36 +1771,34 @@ def search(
                 "Failed": stats["failed"],
                 "Output Directory": output_dir,
             }
-            output.show_report("Extraction Summary", extraction_report)
+            ctx.show_report("Extraction Summary", extraction_report)
 
             if stats["errors"]:
-                output.warning(f"Encountered {len(stats['errors'])} error(s):")
+                ctx.warning(f"Encountered {len(stats['errors'])} error(s):")
                 for error in stats["errors"][:5]:  # Show first 5 errors
-                    output.info(f"  • {error}")
+                    ctx.info(f"  • {error}")
                 if len(stats["errors"]) > 5:
-                    output.info(f"  ... and {len(stats['errors']) - 5} more")
-
-        output.end_operation(success=True)
+                    ctx.info(f"  ... and {len(stats['errors']) - 5} more")
 
     except ValueError as e:
-        output.show_error_panel(
-            title="Search Query Error",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Search Query Error",
+            str(e),
             suggestion="Check your search query syntax",
-            exit_code=1,
         )
     except Exception as e:
-        output.show_error_panel(
-            title="Search Failed",
-            message=str(e),
-            exit_code=1,
+        ctx.fail_and_exit(
+            "Search Failed",
+            str(e),
         )
 
 
 @app.command()
+@with_context(requires_db=True, operation_name="extract")
 def extract(
+    ctx: CommandContext,
     message_id: str = typer.Argument(..., help="Gmail ID or RFC Message-ID to extract"),
-    output: str | None = typer.Option(
+    output_file: str | None = typer.Option(
         None, "--output", "-o", help="Output file path (stdout if not specified)"
     ),
     archive: str | None = typer.Option(
@@ -2026,65 +1822,51 @@ def extract(
         $ gmailarchiver extract abc123 --json
     """
     from gmailarchiver.extractor import ExtractorError, MessageExtractor
-    from gmailarchiver.output import OutputManager
-
-    out = OutputManager(json_mode=json_output)
-
-    # Check database exists
-    db_path = Path(state_db)
-    if not db_path.exists():
-        out.error(
-            f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver archive' or 'gmailarchiver import' to create database",
-            exit_code=1,
-        )
-
-    out.start_operation("extract", f"Extracting message: {message_id}")
 
     try:
         with MessageExtractor(state_db) as extractor:
             # Try extracting by gmail_id first, then by rfc_message_id
             try:
-                message_bytes = extractor.extract_by_gmail_id(message_id, output)
+                message_bytes = extractor.extract_by_gmail_id(message_id, output_file)
             except ExtractorError:
                 # Not found by gmail_id, try rfc_message_id
                 try:
-                    message_bytes = extractor.extract_by_rfc_message_id(message_id, output)
+                    message_bytes = extractor.extract_by_rfc_message_id(message_id, output_file)
                 except ExtractorError:
-                    out.error(
+                    ctx.fail_and_exit(
+                        "Message Not Found",
                         f"Message not found: {message_id}",
-                        suggestion=(
-                            "Verify the message ID or search for messages: gmailarchiver search"
-                        ),
-                        exit_code=1,
+                        suggestion="Verify the message ID or search with: gmailarchiver search",
                     )
 
         # Show success
-        if output:
-            out.success(f"Message extracted to {output}")
-            out.show_report(
+        if output_file:
+            ctx.success(f"Message extracted to {output_file}")
+            ctx.show_report(
                 "Extraction Summary",
                 {
                     "Message ID": message_id,
-                    "Output File": output,
+                    "Output File": output_file,
                     "Size": format_bytes(len(message_bytes)),
                 },
             )
         else:
             # Message already written to stdout, just show summary in JSON mode
             if json_output:
-                out.info(f"Extracted {len(message_bytes)} bytes")
+                ctx.info(f"Extracted {len(message_bytes)} bytes")
 
-        out.end_operation(success=True)
-
+    except typer.Exit:
+        raise
     except ExtractorError as e:
-        out.error(f"Extraction failed: {e}", exit_code=1)
+        ctx.fail_and_exit("Extraction Failed", str(e))
     except Exception as e:
-        out.error(f"Unexpected error: {e}", exit_code=1)
+        ctx.fail_and_exit("Unexpected Error", str(e))
 
 
 @app.command(name="import")
+@with_context(has_progress=True, operation_name="import")
 def import_cmd(
+    ctx: CommandContext,
     archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
     account_id: str = typer.Option("default", help="Account identifier"),
     skip_duplicates: bool = typer.Option(True, help="Skip duplicate messages"),
@@ -2125,10 +1907,6 @@ def import_cmd(
 
     from gmailarchiver.importer import ArchiveImporter
     from gmailarchiver.migration import MigrationManager
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("import", f"Importing archives: {archive_pattern}")
 
     db_path = Path(state_db)
 
@@ -2139,42 +1917,36 @@ def import_cmd(
 
         if version == "1.0":
             # Auto-migrate v1.0 to v1.1
-            output.warning("Detected v1.0 database, auto-migrating to v1.1...")
+            ctx.warning("Detected v1.0 database, auto-migrating to v1.1...")
             try:
                 manager.migrate_v1_to_v1_1()
-                output.success("Migration completed successfully")
+                ctx.success("Migration completed successfully")
             except Exception as e:
                 manager._close()
-                output.show_error_panel(
-                    title="Migration Failed",
-                    message=f"Failed to migrate database: {e}",
+                ctx.fail_and_exit(
+                    "Migration Failed",
+                    f"Failed to migrate database: {e}",
                     suggestion="Run 'gmailarchiver migrate' manually for more details",
-                    exit_code=1,
                 )
-                return
         elif version == "none":
             # Empty database file exists - delete it and let DBManager create a fresh one
             manager._close()
-            output.warning("Found empty database file, recreating with v1.1 schema...")
+            ctx.warning("Found empty database file, recreating with v1.1 schema...")
             try:
                 db_path.unlink()
             except Exception as e:
-                output.show_error_panel(
-                    title="Database Error",
-                    message=f"Failed to delete empty database: {e}",
+                ctx.fail_and_exit(
+                    "Database Error",
+                    f"Failed to delete empty database: {e}",
                     suggestion="Check file permissions and try again",
-                    exit_code=1,
                 )
-                return
         elif version != "1.1":
             manager._close()
-            output.show_error_panel(
-                title="Unsupported Database",
-                message=f"Unsupported database schema version: {version}",
+            ctx.fail_and_exit(
+                "Unsupported Database",
+                f"Unsupported database schema version: {version}",
                 suggestion="Delete the database or use --state-db with a different path",
-                exit_code=1,
             )
-            return
         else:
             # version == "1.1", all good
             pass
@@ -2186,28 +1958,26 @@ def import_cmd(
     # Expand glob pattern
     files = glob.glob(archive_pattern)
     if not files:
-        output.show_error_panel(
-            title="No Files Found",
-            message=f"No files match pattern: {archive_pattern}",
+        ctx.fail_and_exit(
+            "No Files Found",
+            f"No files match pattern: {archive_pattern}",
             suggestion="Check the file path or glob pattern",
-            exit_code=1,
         )
-        return
 
-    output.info(f"Found {len(files)} file(s) to import")
+    ctx.info(f"Found {len(files)} file(s) to import")
 
     # Set up Gmail client for Gmail ID lookup (unless skipped)
     gmail_client = None
     if not skip_gmail_lookup:
-        output.info("Setting up Gmail ID lookup (use --skip-gmail-lookup for offline mode)")
+        ctx.info("Setting up Gmail ID lookup (use --skip-gmail-lookup for offline mode)")
         try:
             authenticator = GmailAuthenticator(credentials_file=credentials)
             creds = authenticator.authenticate()
             gmail_client = GmailClient(creds)
-            output.success("Gmail authentication successful")
+            ctx.success("Gmail authentication successful")
         except Exception as e:
-            output.warning(f"Gmail authentication failed: {e}")
-            output.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
+            ctx.warning(f"Gmail authentication failed: {e}")
+            ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
             gmail_client = None
 
     # Import each file with progress
@@ -2216,19 +1986,19 @@ def import_cmd(
     start_time = time.perf_counter()
 
     # Count total messages across all files for progress
-    output.info("Counting messages...")
+    ctx.info("Counting messages...")
     total_messages = 0
     file_message_counts = []
     for file_path in files:
         count = importer.count_messages(file_path)
         file_message_counts.append(count)
         total_messages += count
-    output.info(f"Total: {total_messages:,} messages to import")
+    ctx.info(f"Total: {total_messages:,} messages to import")
 
     # Track overall progress
     messages_processed = 0
 
-    with output.progress_context(
+    with ctx.output.progress_context(
         "Importing messages", total=total_messages
     ) as progress:
         task = progress.add_task("Import", total=total_messages) if progress else None
@@ -2236,7 +2006,7 @@ def import_cmd(
 
         for file_idx, file_path in enumerate(files):
             file_name = Path(file_path).name
-            output.info(f"\nImporting {file_name} ({file_message_counts[file_idx]:,} messages)...")
+            ctx.info(f"\nImporting {file_name} ({file_message_counts[file_idx]:,} messages)...")
 
             def make_progress_callback(
                 base_pos: int,
@@ -2263,7 +2033,7 @@ def import_cmd(
                 results.append(result)
                 current_task_pos += file_message_counts[file_idx]
             except Exception as e:
-                output.error(f"Error importing {file_path}: {e}")
+                ctx.error(f"Error importing {file_path}: {e}")
                 current_task_pos += file_message_counts[file_idx]
 
     total_time = time.perf_counter() - start_time
@@ -2287,7 +2057,7 @@ def import_cmd(
         report_data["Performance"] = f"{rate:.1f} messages/second"
 
     # High-level summary across all files
-    output.show_report("Import Summary", report_data)
+    ctx.show_report("Import Summary", report_data)
 
     # Per-file summary table so users can see which archives were processed
     if results:
@@ -2300,20 +2070,20 @@ def import_cmd(
                 f"failed={r.messages_failed}"
             )
 
-        output.show_report("Per-File Import Summary", per_file_report)
+        ctx.show_report("Per-File Import Summary", per_file_report)
 
     # Show detailed error messages if there were failures
     if total_failed > 0:
-        output.warning(f"Found {total_failed} import error(s):")
+        ctx.warning(f"Found {total_failed} import error(s):")
         for result in results:
             if result.errors:
-                output.info(f"\n{Path(result.archive_file).name}:")
+                ctx.info(f"\n{Path(result.archive_file).name}:")
                 for error in result.errors[:10]:  # Limit to first 10 errors per file
-                    output.info(f"  • {error}")
+                    ctx.info(f"  • {error}")
                 if len(result.errors) > 10:
-                    output.info(f"  ... and {len(result.errors) - 10} more errors")
+                    ctx.info(f"  ... and {len(result.errors) - 10} more errors")
 
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Check database integrity: gmailarchiver verify-integrity",
                 "Review error messages above for details",
@@ -2321,7 +2091,7 @@ def import_cmd(
         )
 
     if total_imported > 0:
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Search imported messages: gmailarchiver search <query>",
                 "Verify database: gmailarchiver verify-integrity",
@@ -2332,35 +2102,35 @@ def import_cmd(
     if auto_verify and total_failed == 0:
         from gmailarchiver.db_manager import DBManager
 
-        output.info("\nRunning verification...")
+        ctx.info("\nRunning verification...")
         try:
             db = DBManager(str(db_path), validate_schema=False)
             issues = db.verify_database_integrity()
             db.close()
 
             if not issues:
-                output.success("Verification complete - no issues found")
+                ctx.success("Verification complete - no issues found")
             else:
-                output.warning(f"Verification found {len(issues)} issue(s):")
+                ctx.warning(f"Verification found {len(issues)} issue(s):")
                 for issue in issues[:5]:  # Show first 5 issues
-                    output.info(f"  • {issue}")
+                    ctx.info(f"  • {issue}")
                 if len(issues) > 5:
-                    output.info(f"  ... and {len(issues) - 5} more issues")
+                    ctx.info(f"  ... and {len(issues) - 5} more issues")
 
-                output.suggest_next_steps(
+                ctx.suggest_next_steps(
                     [
                         "Fix issues automatically: gmailarchiver check --auto-repair",
                         "View all issues: gmailarchiver verify-integrity --verbose",
                     ]
                 )
         except Exception as e:
-            output.warning(f"Verification failed: {e}")
-
-    output.end_operation(success=total_failed == 0)
+            ctx.warning(f"Verification failed: {e}")
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="consolidate")
 def consolidate(
+    ctx: CommandContext,
     archives: list[str] = typer.Argument(..., help="Archive files or glob patterns"),
     output_file: str = typer.Option(..., "-o", "--output", help="Output archive file"),
     sort: bool = typer.Option(True, help="Sort messages chronologically"),
@@ -2395,11 +2165,7 @@ def consolidate(
     import glob
 
     from gmailarchiver.consolidator import ArchiveConsolidator
-    from gmailarchiver.output import OutputManager
     # ArchiveValidator is imported at module level for proper mocking in tests
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("consolidate", f"Consolidating to {output_file}")
 
     # 1. Expand glob patterns
     all_files = []
@@ -2410,31 +2176,27 @@ def consolidate(
             if Path(pattern).exists():
                 all_files.append(pattern)
             else:
-                output.warning(f"No files match pattern: {pattern}")
+                ctx.warning(f"No files match pattern: {pattern}")
         else:
             all_files.extend(matches)
 
     if not all_files:
-        output.show_error_panel(
-            title="No Archives Found",
-            message="No archive files found matching the specified patterns",
+        ctx.fail_and_exit(
+            "No Archives Found",
+            "No archive files found matching the specified patterns",
             suggestion="Check file paths or glob patterns",
-            exit_code=1,
         )
-        return
 
-    output.info(f"Found {len(all_files)} archive(s) to consolidate")
+    ctx.info(f"Found {len(all_files)} archive(s) to consolidate")
 
     # 2. Validate dedupe strategy
     valid_strategies = ["newest", "largest", "first"]
     if dedupe_strategy not in valid_strategies:
-        output.show_error_panel(
-            title="Invalid Dedupe Strategy",
-            message=f"'{dedupe_strategy}' is not a valid dedupe strategy",
+        ctx.fail_and_exit(
+            "Invalid Dedupe Strategy",
+            f"'{dedupe_strategy}' is not a valid dedupe strategy",
             suggestion=f"Valid strategies: {', '.join(valid_strategies)}",
-            exit_code=1,
         )
-        return
 
     # 3. Auto-detect compression from output extension
     if compress is None:
@@ -2451,15 +2213,14 @@ def consolidate(
     if output_path.exists():
         overwrite = typer.confirm(f"Output file exists: {output_file}. Overwrite?")
         if not overwrite:
-            output.info("Consolidation cancelled")
-            output.end_operation(success=True)
+            ctx.info("Consolidation cancelled")
             raise typer.Exit(0)
 
     # 5. Consolidate with progress
     consolidator = ArchiveConsolidator(state_db)
 
     try:
-        with output.progress_context("Consolidating archives", total=None) as progress:
+        with ctx.output.progress_context("Consolidating archives", total=None):
             # Convert file paths to list[str | Path] for type compatibility
             source_paths: list[str | Path] = [Path(f) for f in all_files]
 
@@ -2489,10 +2250,10 @@ def consolidate(
             rate = (result.messages_consolidated / result.execution_time_ms) * 1000
             report_data["Performance"] = f"{rate:.1f} messages/second"
 
-        output.show_report("Consolidation Summary", report_data)
-        output.success(f"Consolidation complete! Output: {result.output_file}")
+        ctx.show_report("Consolidation Summary", report_data)
+        ctx.success(f"Consolidation complete! Output: {result.output_file}")
 
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Verify consolidated archive: gmailarchiver validate " + result.output_file,
                 "Search messages: gmailarchiver search <query>",
@@ -2503,66 +2264,59 @@ def consolidate(
         if auto_verify:
             from gmailarchiver.db_manager import DBManager
 
-            output.info("\nRunning verification...")
+            ctx.info("\nRunning verification...")
             try:
                 db = DBManager(str(state_db), validate_schema=False)
                 issues = db.verify_database_integrity()
                 db.close()
 
                 if not issues:
-                    output.success("Verification passed - no issues found")
+                    ctx.success("Verification passed - no issues found")
                 else:
-                    output.warning(f"Verification found {len(issues)} issue(s):")
+                    ctx.warning(f"Verification found {len(issues)} issue(s):")
                     for issue in issues[:5]:
-                        output.info(f"  • {issue}")
+                        ctx.info(f"  • {issue}")
                     if len(issues) > 5:
-                        output.info(f"  ... and {len(issues) - 5} more issues")
+                        ctx.info(f"  ... and {len(issues) - 5} more issues")
 
-                    output.suggest_next_steps(
+                    ctx.suggest_next_steps(
                         [
                             "Fix issues automatically: gmailarchiver check --auto-repair",
                             "View all issues: gmailarchiver verify-integrity --verbose",
                         ]
                     )
             except Exception as e:  # pragma: no cover - defensive
-                output.warning(f"Verification failed: {e}")
+                ctx.warning(f"Verification failed: {e}")
 
         # 8. Validate consolidated archive before removing sources
         cleanup_data: dict[str, Any] | None = None
         if remove_sources:
             try:
                 # First: Basic safety checks - ensure consolidated output exists and is readable
-                output.info("\nValidating consolidated archive...")
+                ctx.info("\nValidating consolidated archive...")
                 output_path = Path(result.output_file)
                 if not output_path.exists():
-                    output.error(
-                        "Consolidated archive does not exist - source files NOT removed",
-                        suggestion="Check that consolidation completed successfully",
-                        exit_code=0,  # Don't exit harshly, operation partially succeeded
-                    )
-                    output.end_operation(success=True)
+                    ctx.error("Consolidated archive does not exist - source files NOT removed")
                     return
 
                 try:
                     # Verify we can read the output file (basic safety check)
                     output_size = output_path.stat().st_size
                     if output_size == 0:
-                        output.warning(
+                        ctx.warning(
                             "Consolidated archive appears to be empty "
                             "- skipping source file removal"
                         )
-                        output.end_operation(success=True)
                         return
                 except OSError as e:
-                    output.warning(f"Cannot access consolidated archive: {e}")
-                    output.info("Skipping source file removal due to access issues")
-                    output.end_operation(success=True)
+                    ctx.warning(f"Cannot access consolidated archive: {e}")
+                    ctx.info("Skipping source file removal due to access issues")
                     return
 
-                output.info(f"Safety check passed (output: {format_bytes(output_size)})")
+                ctx.info(f"Safety check passed (output: {format_bytes(output_size)})")
 
                 # Second: Verify archive is readable and non-empty via validation
-                output.info("Verifying archive readability...")
+                ctx.info("Verifying archive readability...")
                 try:
                     # Use ArchiveValidator to verify archive can be read
                     validator = ArchiveValidator(str(output_path))
@@ -2572,22 +2326,20 @@ def consolidate(
                         # Try to get error details
                         errors = validator.errors
                         if errors:
-                            output.warning(f"Archive validation failed: {errors[0]}")
+                            ctx.warning(f"Archive validation failed: {errors[0]}")
                         else:
-                            output.warning(
+                            ctx.warning(
                                 "Consolidated archive validation failed - source files NOT removed"
                             )
-                        output.info(
+                        ctx.info(
                             "Please review the consolidated archive "
                             "before manually removing sources"
                         )
-                        output.end_operation(success=True)
                         return
-                    output.success("Archive readability verified")
+                    ctx.success("Archive readability verified")
                 except Exception as e:
-                    output.warning(f"Archive readability check failed: {e}")
-                    output.info("Skipping source file removal due to verification issues")
-                    output.end_operation(success=True)
+                    ctx.warning(f"Archive readability check failed: {e}")
+                    ctx.info("Skipping source file removal due to verification issues")
                     return
 
                 # Determine which files to remove (exclude output file)
@@ -2604,7 +2356,7 @@ def consolidate(
                             files_to_remove.append(source_path)
 
                 if not files_to_remove:
-                    output.info("No source files to remove (output file is the only file)")
+                    ctx.info("No source files to remove (output file is the only file)")
                 else:
                     # Determine if we should proceed with removal
                     # Auto-confirm if --yes or --json is provided
@@ -2612,17 +2364,17 @@ def consolidate(
 
                     if not should_remove:
                         # Show confirmation prompt
-                        output.info(
+                        ctx.info(
                             f"\nThe following {len(files_to_remove)} "
                             f"source file(s) will be removed:"
                         )
                         for file_path in files_to_remove:
-                            output.info(f"  • {file_path}")
-                        output.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
+                            ctx.info(f"  • {file_path}")
+                        ctx.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
 
                         should_remove = typer.confirm("\nRemove source files?")
                         if not should_remove:
-                            output.info("Source file removal cancelled - files kept")
+                            ctx.info("Source file removal cancelled - files kept")
 
                     if should_remove:
                         # Proceed with removal
@@ -2646,7 +2398,7 @@ def consolidate(
 
                         # Report results
                         if removed_count > 0:
-                            output.success(
+                            ctx.success(
                                 f"Removed {removed_count} source file(s) - "
                                 f"Space freed: {format_bytes(freed_space)}"
                             )
@@ -2660,7 +2412,7 @@ def consolidate(
 
                             # Add cleanup data to JSON events for scripting
                             if json_output:
-                                output._json_events.append(
+                                ctx.output._json_events.append(
                                     {
                                         "event": "cleanup",
                                         **cleanup_data,
@@ -2668,51 +2420,45 @@ def consolidate(
                                 )
 
                         if failed_removals:
-                            output.warning(f"Failed to remove {len(failed_removals)} file(s):")
+                            ctx.warning(f"Failed to remove {len(failed_removals)} file(s):")
                             for failure in failed_removals[:3]:
-                                output.info(f"  • {failure}")
+                                ctx.info(f"  • {failure}")
                             if len(failed_removals) > 3:
-                                output.info(f"  ... and {len(failed_removals) - 3} more")
+                                ctx.info(f"  ... and {len(failed_removals) - 3} more")
 
             except Exception as e:
-                output.warning(f"Source file cleanup failed: {e}")
-                output.info("Consolidation succeeded but source files were NOT removed")
+                ctx.warning(f"Source file cleanup failed: {e}")
+                ctx.info("Consolidation succeeded but source files were NOT removed")
 
         # If in JSON mode and we have cleanup data, attach it to the top-level payload
-        if json_output and "output" in locals() and cleanup_data is not None:
+        if json_output and cleanup_data is not None:
             # Merge status with cleanup summary for top-level convenience
             output_payload = {
                 "status": "ok",
                 "success": True,
                 **cleanup_data,
             }
-            output.set_json_payload(output_payload)
-        output.end_operation(success=True)
+            ctx.output.set_json_payload(output_payload)
 
+    except typer.Exit:
+        raise
     except ValueError as e:
-        output.show_error_panel(
-            title="Validation Error",
-            message=str(e),
-            exit_code=1,
-        )
+        ctx.fail_and_exit("Validation Error", str(e))
     except FileNotFoundError as e:
-        output.show_error_panel(
-            title="File Not Found",
-            message=str(e),
-            exit_code=1,
-        )
+        ctx.fail_and_exit("File Not Found", str(e))
     except Exception as e:
-        output.show_error_panel(
-            title="Consolidation Failed",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Consolidation Failed",
+            str(e),
             suggestion="Check archive files and try again",
-            exit_code=1,
         )
 
 
 @utilities_app.command(name="verify-integrity")
 @app.command(name="verify-integrity", hidden=True)
+@with_context(requires_db=True, has_progress=True, operation_name="verify-integrity")
 def verify_integrity_cmd(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -2737,62 +2483,33 @@ def verify_integrity_cmd(
         $ gmailarchiver verify-integrity --verbose
         $ gmailarchiver verify-integrity --json
     """
-    from gmailarchiver.db_manager import DBManager
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("verify-integrity", "Checking database integrity")
-
-    db_path = Path(state_db)
-
-    # Check if database exists
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion=(
-                "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
-            ),
-            exit_code=1,
-        )
-        return
+    assert ctx.db is not None, "Database should be initialized by @with_context"
 
     issues = None
     try:
-        # Initialize DBManager without schema validation to avoid errors
-        db = DBManager(str(db_path), validate_schema=False)
-
-        with output.progress_context("Running integrity checks", total=5) as progress:
+        with ctx.output.progress_context("Running integrity checks", total=5) as progress:
             task = progress.add_task("Integrity checks", total=5) if progress else None
-            issues = db.verify_database_integrity()
+            issues = ctx.db.verify_database_integrity()
             if progress and task:
                 progress.update(task, completed=5)
 
-        db.close()
-
+    except typer.Exit:
+        raise
     except FileNotFoundError as e:
-        output.show_error_panel(
-            title="File Not Found",
-            message=str(e),
-            exit_code=1,
-        )
-        return
+        ctx.fail_and_exit("File Not Found", str(e))
     except Exception as e:
-        output.show_error_panel(
-            title="Integrity Check Failed",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Integrity Check Failed",
+            str(e),
             suggestion="Check that the database file is not corrupted",
-            exit_code=1,
         )
-        return
 
     if issues is None:
-        # An earlier error handler should already have exited via OutputManager.error
+        # An earlier error handler should already have exited
         return
 
     if not issues:
-        output.success("Database integrity verified - no issues found")
-        output.end_operation(success=True)
+        ctx.success("Database integrity verified - no issues found")
         raise typer.Exit(0)
 
     # Build report data for failures
@@ -2806,29 +2523,30 @@ def verify_integrity_cmd(
         for i, issue in enumerate(issues, 1):
             report_data[f"Issue {i}"] = issue
 
-    output.show_report("Database Integrity Results", report_data)
+    ctx.show_report("Database Integrity Results", report_data)
 
     # Show all issues as warnings
     if not verbose:
-        output.warning(f"Found {len(issues)} integrity issue(s):")
+        ctx.warning(f"Found {len(issues)} integrity issue(s):")
         for issue in issues:
-            output.info(f"  • {issue}")
+            ctx.info(f"  • {issue}")
 
     # Suggest next steps
-    output.suggest_next_steps(
+    ctx.suggest_next_steps(
         [
             "Fix issues: gmailarchiver repair --no-dry-run",
             "Review issues in detail: gmailarchiver verify-integrity --verbose",
         ]
     )
 
-    output.end_operation(success=False)
     raise typer.Exit(1)
 
 
 @utilities_app.command()
 @app.command(hidden=True)
+@with_context(requires_db=True, has_progress=True, operation_name="repair")
 def repair(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -2860,56 +2578,36 @@ def repair(
         $ gmailarchiver repair --state-db /path/to/archive_state.db
         $ gmailarchiver repair --json
     """
-    from gmailarchiver.db_manager import DBManager
-    from gmailarchiver.migration import MigrationManager
-    from gmailarchiver.output import OutputManager
+    assert ctx.db is not None, "Database should be initialized by @with_context"
 
-    output = OutputManager(json_mode=json_output)
-    operation_name = "repair (dry-run)" if dry_run else "repair"
-    output.start_operation(operation_name, "Repairing database")
+    from gmailarchiver.migration import MigrationManager
 
     db_path = Path(state_db)
 
-    # Check if database exists
-    if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion=(
-                "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
-            ),
-            exit_code=1,
-        )
-        return
-
     # Get confirmation for non-dry-run
     if not dry_run:
-        output.warning("⚠ WARNING: This will modify the database")
+        ctx.warning("⚠ WARNING: This will modify the database")
         confirm = typer.confirm("Continue with database repair?", default=False)
         if not confirm:
-            output.info("Repair cancelled")
-            output.end_operation(success=True)
+            ctx.info("Repair cancelled")
             raise typer.Exit(0)
 
     try:
-        # Initialize DBManager without schema validation
-        db = DBManager(str(db_path), validate_schema=False)
-
-        with output.progress_context("Running repair operations", total=2) as progress:
+        with ctx.output.progress_context("Running repair operations", total=2) as progress:
             # Phase 1: Fix FTS sync issues
             task = progress.add_task("Phase 1: FTS synchronization", total=2) if progress else None
-            output.info("Phase 1: Checking FTS synchronization...")
-            repairs = db.repair_database(dry_run=dry_run)
+            ctx.info("Phase 1: Checking FTS synchronization...")
+            repairs = ctx.db.repair_database(dry_run=dry_run)
             if progress and task:
                 progress.update(task, completed=1)
 
             # Phase 2: Backfill invalid offsets if requested
             if backfill:
-                output.info("Phase 2: Checking for invalid offsets...")
-                invalid_msgs = db.get_messages_with_invalid_offsets()
+                ctx.info("Phase 2: Checking for invalid offsets...")
+                invalid_msgs = ctx.db.get_messages_with_invalid_offsets()
 
                 if invalid_msgs:
-                    output.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
+                    ctx.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
 
                     if not dry_run:
                         # Use MigrationManager logic to scan mbox and backfill
@@ -2920,31 +2618,23 @@ def repair(
                     else:
                         repairs["invalid_offsets_would_fix"] = len(invalid_msgs)
                 else:
-                    output.success("No invalid offsets found")
+                    ctx.success("No invalid offsets found")
 
             if progress and task:
                 progress.update(task, completed=2)
 
-        db.close()
-
         # Display results
-        _display_repair_results(output, repairs, dry_run)
+        _display_repair_results(ctx.output, repairs, dry_run)
 
-        total_repairs = sum(repairs.values())
-        output.end_operation(success=True if total_repairs >= 0 else False)
-
+    except typer.Exit:
+        raise
     except FileNotFoundError as e:
-        output.show_error_panel(
-            title="File Not Found",
-            message=str(e),
-            exit_code=1,
-        )
+        ctx.fail_and_exit("File Not Found", str(e))
     except Exception as e:
-        output.show_error_panel(
-            title="Repair Failed",
-            message=str(e),
+        ctx.fail_and_exit(
+            "Repair Failed",
+            str(e),
             suggestion="Check the database file and try again",
-            exit_code=1,
         )
 
 
@@ -2991,7 +2681,9 @@ def _display_repair_results(output: OutputManager, repairs: dict[str, int], dry_
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="check")
 def check(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -3020,24 +2712,16 @@ def check(
     """
     from gmailarchiver.db_manager import DBManager
     from gmailarchiver.migration import MigrationManager
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("check", "Running all health checks")
 
     db_path = Path(state_db)
 
     # Check if database exists
     if not db_path.exists():
-        output.show_error_panel(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion=(
-                "Run 'gmailarchiver archive' to create a database, or specify path with --state-db"
-            ),
-            exit_code=1,
+        ctx.fail_and_exit(
+            "Database Not Found",
+            f"Database not found: {state_db}",
+            suggestion="Run 'gmailarchiver archive' to create one, or use --state-db",
         )
-        return
 
     # Detect schema version
     manager = MigrationManager(db_path)
@@ -3045,15 +2729,11 @@ def check(
     manager._close()
 
     if schema_version == "none":
-        output.show_error_panel(
-            title="Invalid Database",
-            message="Database is empty or invalid",
-            suggestion=(
-                "Create a new database with 'gmailarchiver archive' or 'gmailarchiver import'"
-            ),
-            exit_code=1,
+        ctx.fail_and_exit(
+            "Invalid Database",
+            "Database is empty or invalid",
+            suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
         )
-        return
 
     # Initialize results dictionary
     check_results: dict[str, Any] = {
@@ -3064,7 +2744,7 @@ def check(
     }
 
     # ==================== CHECK 1: Database Integrity ====================
-    output.info("1. Checking database integrity...")
+    ctx.info("1. Checking database integrity...")
     try:
         db = DBManager(str(db_path), validate_schema=False)
         issues = db.verify_database_integrity()
@@ -3073,17 +2753,17 @@ def check(
         if not issues:
             check_results["database_integrity"]["passed"] = True
             if verbose:
-                output.success("  ✓ Database integrity: OK")
+                ctx.success("  ✓ Database integrity: OK")
         else:
             check_results["database_integrity"]["issues"] = issues
             if verbose:
-                output.warning(f"  ✗ Database integrity: {len(issues)} issue(s)")
+                ctx.warning(f"  ✗ Database integrity: {len(issues)} issue(s)")
                 for issue in issues[:5]:  # Show first 5 in verbose
-                    output.info(f"    • {issue}")
+                    ctx.info(f"    • {issue}")
     except Exception as e:
         check_results["database_integrity"]["issues"] = [str(e)]
         if verbose:
-            output.warning(f"  ✗ Database integrity check failed: {e}")
+            ctx.warning(f"  ✗ Database integrity check failed: {e}")
 
     # ==================== CHECK 2: FTS Synchronization ====================
     # FTS sync is part of database integrity check above
@@ -3096,15 +2776,15 @@ def check(
     if not fts_issues:
         check_results["fts_synchronization"]["passed"] = True
         if verbose:
-            output.success("  ✓ FTS synchronization: OK")
+            ctx.success("  ✓ FTS synchronization: OK")
     else:
         check_results["fts_synchronization"]["issues"] = fts_issues
         if verbose:
-            output.warning(f"  ✗ FTS synchronization: {len(fts_issues)} issue(s)")
+            ctx.warning(f"  ✗ FTS synchronization: {len(fts_issues)} issue(s)")
 
     # ==================== CHECK 3: Database Consistency ====================
     # Only run if there are mbox files referenced in database
-    output.info("2. Checking database consistency...")
+    ctx.info("2. Checking database consistency...")
     try:
         db = DBManager(str(db_path), validate_schema=False)
         cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
@@ -3128,30 +2808,30 @@ def check(
 
                 if verbose:
                     if report.passed:
-                        output.success("  ✓ Database consistency: OK")
+                        ctx.success("  ✓ Database consistency: OK")
                     else:
-                        output.warning(f"  ✗ Database consistency: {len(report.errors)} issue(s)")
+                        ctx.warning(f"  ✗ Database consistency: {len(report.errors)} issue(s)")
             else:
                 # Archive file doesn't exist, skip consistency check
                 if verbose:
-                    output.info("  ⊘ Database consistency: Skipped (archive file not found)")
+                    ctx.info("  ⊘ Database consistency: Skipped (archive file not found)")
                 check_results["database_consistency"]["checked"] = False
                 check_results["database_consistency"]["passed"] = True  # Don't fail if file missing
         else:
             # No archive files in database, skip check
             if verbose:
-                output.info("  ⊘ Database consistency: Skipped (no archives in database)")
+                ctx.info("  ⊘ Database consistency: Skipped (no archives in database)")
             check_results["database_consistency"]["checked"] = False
             check_results["database_consistency"]["passed"] = True  # Don't fail if no archives
 
     except Exception as e:
         check_results["database_consistency"]["issues"] = [str(e)]
         if verbose:
-            output.warning(f"  ✗ Database consistency check failed: {e}")
+            ctx.warning(f"  ✗ Database consistency check failed: {e}")
 
     # ==================== CHECK 4: Offset Accuracy ====================
     # Only for v1.1 databases
-    output.info("3. Checking offset accuracy...")
+    ctx.info("3. Checking offset accuracy...")
     if schema_version == "1.1":
         try:
             # Get first archive file for offset verification
@@ -3171,36 +2851,36 @@ def check(
                 if result.accuracy_percentage == 100.0:
                     check_results["offset_accuracy"]["passed"] = True
                     if verbose:
-                        output.success(
+                        ctx.success(
                             f"  ✓ Offset accuracy: 100% ({result.total_checked:,} checked)"
                         )
                 else:
                     check_results["offset_accuracy"]["passed"] = False
                     if verbose:
-                        output.warning(
+                        ctx.warning(
                             f"  ✗ Offset accuracy: {result.accuracy_percentage:.1f}% "
                             f"({result.successful_reads:,}/{result.total_checked:,})"
                         )
             else:
                 # No archive files or file doesn't exist
                 if verbose:
-                    output.info("  ⊘ Offset accuracy: Skipped (no accessible archives)")
+                    ctx.info("  ⊘ Offset accuracy: Skipped (no accessible archives)")
                 check_results["offset_accuracy"]["checked"] = False
                 check_results["offset_accuracy"]["passed"] = True  # Don't fail if no files
 
         except Exception as e:
             check_results["offset_accuracy"]["issues"] = [str(e)]
             if verbose:
-                output.warning(f"  ✗ Offset accuracy check failed: {e}")
+                ctx.warning(f"  ✗ Offset accuracy check failed: {e}")
     else:
         # v1.0 schema doesn't have offsets
         if verbose:
-            output.info("  ⊘ Offset accuracy: Skipped (v1.0 schema)")
+            ctx.info("  ⊘ Offset accuracy: Skipped (v1.0 schema)")
         check_results["offset_accuracy"]["checked"] = False
         check_results["offset_accuracy"]["passed"] = True  # Don't fail for v1.0
 
     # ==================== SUMMARY ====================
-    output.info("")  # Blank line
+    ctx.info("")  # Blank line
 
     # Determine overall status
     all_passed = (
@@ -3270,11 +2950,11 @@ def check(
     # Overall status
     report_data["Overall"] = "✓ HEALTHY" if all_passed else "✗ ISSUES FOUND"
 
-    output.show_report("Health Check Summary", report_data)
+    ctx.show_report("Health Check Summary", report_data)
 
     # ==================== AUTO-REPAIR ====================
     if not all_passed and auto_repair:
-        output.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
+        ctx.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
 
         try:
             db = DBManager(str(db_path), validate_schema=False)
@@ -3284,53 +2964,50 @@ def check(
             # Show repair results
             total_repairs = sum(repairs.values())
             if total_repairs > 0:
-                output.success(f"Performed {total_repairs} repair(s)")
+                ctx.success(f"Performed {total_repairs} repair(s)")
 
                 # Re-run checks to verify repairs
-                output.info("\nRe-checking after repairs...")
+                ctx.info("\nRe-checking after repairs...")
 
                 db = DBManager(str(db_path), validate_schema=False)
                 post_repair_issues = db.verify_database_integrity()
                 db.close()
 
                 if not post_repair_issues:
-                    output.success("All issues resolved!")
-                    output.end_operation(success=True)
+                    ctx.success("All issues resolved!")
                     raise typer.Exit(0)
                 else:
-                    output.warning(f"{len(post_repair_issues)} issue(s) remain after repair")
-                    output.suggest_next_steps(
+                    ctx.warning(f"{len(post_repair_issues)} issue(s) remain after repair")
+                    ctx.suggest_next_steps(
                         [
                             "Some issues may require manual intervention",
                             "Check remaining issues: gmailarchiver verify-integrity --verbose",
                         ]
                     )
-                    output.end_operation(success=False, summary="Repair incomplete")
                     raise typer.Exit(2)  # Exit code 2 = repair failed
             else:
-                output.warning("No automatic repairs available for these issues")
-                output.suggest_next_steps(
+                ctx.warning("No automatic repairs available for these issues")
+                ctx.suggest_next_steps(
                     [
                         "Manual intervention may be required",
                         "Check details: gmailarchiver verify-integrity --verbose",
                     ]
                 )
-                output.end_operation(success=False)
                 raise typer.Exit(2)
 
+        except typer.Exit:
+            raise
         except Exception as e:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Auto-Repair Failed",
                 message=str(e),
                 suggestion="Run 'gmailarchiver repair --no-dry-run' manually to fix issues",
                 exit_code=2,
             )
-            return
 
     # ==================== EXIT ====================
     if all_passed:
-        output.success("All checks passed - database is healthy!")
-        output.end_operation(success=True)
+        ctx.success("All checks passed - database is healthy!")
         raise typer.Exit(0)
     else:
         # Show suggestions for failed checks
@@ -3347,8 +3024,7 @@ def check(
         if not auto_repair:
             suggestions.append("Auto-fix issues: gmailarchiver check --auto-repair")
 
-        output.suggest_next_steps(suggestions)
-        output.end_operation(success=False)
+        ctx.suggest_next_steps(suggestions)
         raise typer.Exit(1)
 
 
@@ -3359,7 +3035,9 @@ app.add_typer(schedule_app, name="schedule")
 
 
 @schedule_app.command("list")
+@with_context(operation_name="schedule-list")
 def schedule_list(
+    ctx: CommandContext,
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     enabled_only: bool = typer.Option(False, "--enabled-only", help="Show only enabled schedules"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -3374,21 +3052,15 @@ def schedule_list(
         $ gmailarchiver schedule list --enabled-only
         $ gmailarchiver schedule list --json
     """
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.scheduler import Scheduler
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("schedule-list", "Listing schedules")
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
-            exit_code=1,
         )
-        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
@@ -3396,13 +3068,12 @@ def schedule_list(
 
         if not schedules:
             msg = "No enabled schedules found" if enabled_only else "No schedules configured"
-            output.warning(msg)
-            output.suggest_next_steps(
+            ctx.warning(msg)
+            ctx.suggest_next_steps(
                 [
                     "Add a schedule: gmailarchiver schedule add check --daily --time 02:00",
                 ]
             )
-            output.end_operation(success=True)
             return
 
         # Build table rows
@@ -3433,26 +3104,28 @@ def schedule_list(
                 ]
             )
 
-        output.show_table(f"Scheduled Tasks ({len(schedules)} total)", headers, rows)
+        ctx.show_table(f"Scheduled Tasks ({len(schedules)} total)", headers, rows)
 
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "Add schedule: gmailarchiver schedule add <command> --daily --time HH:MM",
                 "Remove schedule: gmailarchiver schedule remove <id>",
             ]
         )
-        output.end_operation(success=True)
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Failed to List Schedules",
             message=str(e),
-            exit_code=1,
         )
 
 
 @schedule_app.command("add")
+@with_context(operation_name="schedule-add")
 def schedule_add(
+    ctx: CommandContext,
     command: str = typer.Argument(..., help="Command to run (e.g., 'check', 'archive 3y')"),
     daily: bool = typer.Option(False, "--daily", help="Run daily"),
     weekly: bool = typer.Option(False, "--weekly", help="Run weekly"),
@@ -3479,31 +3152,23 @@ def schedule_add(
         $ gmailarchiver schedule add verify-integrity --monthly --day 1 --time 04:00
         $ gmailarchiver schedule add check --daily --time 02:00 --no-install
     """
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.platform_scheduler import UnsupportedPlatformError, get_platform_scheduler
     from gmailarchiver.scheduler import Scheduler, ScheduleValidationError
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("schedule-add", f"Adding schedule: {command}")
 
     # Validate frequency
     frequency_count = sum([daily, weekly, monthly])
     if frequency_count == 0:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="No Frequency Specified",
             message="A schedule frequency must be specified",
             suggestion="Use --daily, --weekly, or --monthly",
-            exit_code=1,
         )
-        return
     elif frequency_count > 1:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Multiple Frequencies Specified",
             message="Only one frequency can be specified at a time",
             suggestion="Use only one of: --daily, --weekly, --monthly",
-            exit_code=1,
         )
-        return
 
     # Determine frequency
     if daily:
@@ -3513,13 +3178,11 @@ def schedule_add(
     elif weekly:
         frequency = "weekly"
         if not day:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Day Required",
                 message="Weekly schedules require --day to specify which day of the week",
                 suggestion="Use --day with day name (e.g., Sunday, Monday, ...)",
-                exit_code=1,
             )
-            return
         # Parse day name to day_of_week (0=Sunday)
         day_names = {
             "sunday": 0,
@@ -3539,37 +3202,31 @@ def schedule_add(
         }
         day_lower = day.lower()
         if day_lower not in day_names:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Invalid Day Name",
                 message=f"'{day}' is not a valid day name",
                 suggestion="Use: Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday",
-                exit_code=1,
             )
-            return
         day_of_week = day_names[day_lower]
         day_of_month = None
     else:  # monthly
         frequency = "monthly"
         if not day:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Day Required",
                 message="Monthly schedules require --day to specify which day of the month",
                 suggestion="Use --day with day of month (1-31)",
-                exit_code=1,
             )
-            return
         try:
             day_of_month = int(day)
             if not (1 <= day_of_month <= 31):
                 raise ValueError("Day must be 1-31")
         except ValueError:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Invalid Day of Month",
                 message=f"'{day}' is not a valid day of month",
                 suggestion="Use a number between 1 and 31",
-                exit_code=1,
             )
-            return
         day_of_week = None
 
     db_path = Path(state_db)
@@ -3587,34 +3244,32 @@ def schedule_add(
             schedule = scheduler.get_schedule(schedule_id)
 
         if not schedule:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Schedule Creation Failed",
                 message="Failed to retrieve created schedule",
-                exit_code=1,
             )
-            return
 
-        output.success(f"Schedule created with ID: {schedule_id}")
+        ctx.success(f"Schedule created with ID: {schedule_id}")
 
         # Install on system scheduler if requested
         if install:
             assert schedule is not None, "Schedule should not be None"
             try:
                 platform_scheduler = get_platform_scheduler()
-                output.info("Installing on system scheduler...")
+                ctx.info("Installing on system scheduler...")
                 platform_scheduler.install(schedule)
-                output.success("Schedule installed on system scheduler")
+                ctx.success("Schedule installed on system scheduler")
             except UnsupportedPlatformError as e:
-                output.warning(str(e))
-                output.suggest_next_steps(
+                ctx.warning(str(e))
+                ctx.suggest_next_steps(
                     [
                         "Manually configure your system scheduler (cron, Task Scheduler, etc.)",
                         f"Run: gmailarchiver {command}",
                     ]
                 )
             except Exception as e:
-                output.warning(f"Failed to install on system scheduler: {e}")
-                output.info("Schedule saved in database but not installed on system")
+                ctx.warning(f"Failed to install on system scheduler: {e}")
+                ctx.info("Schedule saved in database but not installed on system")
 
         # Show schedule details
         report_data = {
@@ -3629,33 +3284,33 @@ def schedule_add(
         if day_of_month is not None:
             report_data["Day"] = str(day_of_month)
 
-        output.show_report("Schedule Details", report_data)
+        ctx.show_report("Schedule Details", report_data)
 
-        output.suggest_next_steps(
+        ctx.suggest_next_steps(
             [
                 "View schedules: gmailarchiver schedule list",
                 "Remove schedule: gmailarchiver schedule remove " + str(schedule_id),
             ]
         )
 
-        output.end_operation(success=True)
-
+    except typer.Exit:
+        raise
     except ScheduleValidationError as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Validation Error",
             message=str(e),
-            exit_code=1,
         )
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Failed to Add Schedule",
             message=str(e),
-            exit_code=1,
         )
 
 
 @schedule_app.command("remove")
+@with_context(operation_name="schedule-remove")
 def schedule_remove(
+    ctx: CommandContext,
     schedule_id: int = typer.Argument(..., help="Schedule ID to remove"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     uninstall: bool = typer.Option(
@@ -3672,77 +3327,70 @@ def schedule_remove(
         $ gmailarchiver schedule remove 1
         $ gmailarchiver schedule remove 2 --no-uninstall
     """
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.platform_scheduler import UnsupportedPlatformError, get_platform_scheduler
     from gmailarchiver.scheduler import Scheduler
 
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("schedule-remove", f"Removing schedule ID: {schedule_id}")
-
     db_path = Path(state_db)
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
-            exit_code=1,
         )
-        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
             # Get schedule before removing
             schedule = scheduler.get_schedule(schedule_id)
             if not schedule:
-                output.show_error_panel(
+                ctx.fail_and_exit(
                     title="Schedule Not Found",
                     message=f"Schedule with ID {schedule_id} does not exist",
                     suggestion="List schedules: gmailarchiver schedule list",
-                    exit_code=1,
                 )
-                return
 
             # Uninstall from system scheduler if requested
             if uninstall:
                 assert schedule is not None, "Schedule should not be None"
                 try:
                     platform_scheduler = get_platform_scheduler()
-                    output.info("Uninstalling from system scheduler...")
+                    ctx.info("Uninstalling from system scheduler...")
                     platform_scheduler.uninstall(schedule)
-                    output.success("Schedule uninstalled from system scheduler")
+                    ctx.success("Schedule uninstalled from system scheduler")
                 except UnsupportedPlatformError as e:
-                    output.warning(str(e))
+                    ctx.warning(str(e))
                 except Exception as e:
-                    output.warning(f"Failed to uninstall from system scheduler: {e}")
+                    ctx.warning(f"Failed to uninstall from system scheduler: {e}")
 
             # Remove from database
             success = scheduler.remove_schedule(schedule_id)
 
         if success:
-            output.success(f"Schedule {schedule_id} removed successfully")
-            output.suggest_next_steps(
+            ctx.success(f"Schedule {schedule_id} removed successfully")
+            ctx.suggest_next_steps(
                 [
                     "View remaining schedules: gmailarchiver schedule list",
                 ]
             )
-            output.end_operation(success=True)
         else:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Failed to Remove Schedule",
                 message=f"Failed to remove schedule {schedule_id}",
-                exit_code=1,
             )
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Failed to Remove Schedule",
             message=str(e),
-            exit_code=1,
         )
 
 
 @schedule_app.command("enable")
+@with_context(operation_name="schedule-enable")
 def schedule_enable(
+    ctx: CommandContext,
     schedule_id: int = typer.Argument(..., help="Schedule ID to enable"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -3753,52 +3401,47 @@ def schedule_enable(
     Examples:
         $ gmailarchiver schedule enable 1
     """
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.scheduler import Scheduler
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("schedule-enable", f"Enabling schedule ID: {schedule_id}")
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
-            exit_code=1,
         )
-        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
             success = scheduler.enable_schedule(schedule_id)
 
         if success:
-            output.success(f"Schedule {schedule_id} enabled")
-            output.suggest_next_steps(
+            ctx.success(f"Schedule {schedule_id} enabled")
+            ctx.suggest_next_steps(
                 [
                     "View schedules: gmailarchiver schedule list",
                 ]
             )
-            output.end_operation(success=True)
         else:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Schedule Not Found",
                 message=f"Schedule with ID {schedule_id} does not exist",
                 suggestion="List schedules: gmailarchiver schedule list",
-                exit_code=1,
             )
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Failed to Enable Schedule",
             message=str(e),
-            exit_code=1,
         )
 
 
 @schedule_app.command("disable")
+@with_context(operation_name="schedule-disable")
 def schedule_disable(
+    ctx: CommandContext,
     schedule_id: int = typer.Argument(..., help="Schedule ID to disable"),
     state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -3809,53 +3452,48 @@ def schedule_disable(
     Examples:
         $ gmailarchiver schedule disable 1
     """
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.scheduler import Scheduler
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("schedule-disable", f"Disabling schedule ID: {schedule_id}")
 
     db_path = Path(state_db)
     if not db_path.exists():
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Database Not Found",
             message=f"Database not found: {state_db}",
             suggestion="Run 'gmailarchiver archive' to create a database",
-            exit_code=1,
         )
-        return
 
     try:
         with Scheduler(str(db_path)) as scheduler:
             success = scheduler.disable_schedule(schedule_id)
 
         if success:
-            output.success(f"Schedule {schedule_id} disabled")
-            output.suggest_next_steps(
+            ctx.success(f"Schedule {schedule_id} disabled")
+            ctx.suggest_next_steps(
                 [
                     "View schedules: gmailarchiver schedule list",
                     "Re-enable: gmailarchiver schedule enable " + str(schedule_id),
                 ]
             )
-            output.end_operation(success=True)
         else:
-            output.show_error_panel(
+            ctx.fail_and_exit(
                 title="Schedule Not Found",
                 message=f"Schedule with ID {schedule_id} does not exist",
                 suggestion="List schedules: gmailarchiver schedule list",
-                exit_code=1,
             )
 
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Failed to Disable Schedule",
             message=str(e),
-            exit_code=1,
         )
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="compress")
 def compress(
+    ctx: CommandContext,
     files: list[str] = typer.Argument(..., help="Mbox file paths or glob patterns to compress"),
     format: str = typer.Option(
         "zstd", "--format", "-f", help="Compression format: gzip, lzma, or zstd"
@@ -3902,11 +3540,7 @@ def compress(
     import glob
 
     from gmailarchiver.compressor import ArchiveCompressor
-    from gmailarchiver.output import OutputManager
     from gmailarchiver.utils import format_bytes
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("compress", f"Compressing archives with {format} compression")
 
     # Expand glob patterns
     expanded_files = []
@@ -3919,24 +3553,22 @@ def compress(
             expanded_files.append(pattern)
 
     if not expanded_files:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="No Files Specified",
             message="No mbox files found to compress",
             suggestion="Provide mbox file paths or glob patterns",
-            exit_code=1,
         )
-        return
 
-    output.info(f"Found {len(expanded_files)} file(s) to compress")
+    ctx.info(f"Found {len(expanded_files)} file(s) to compress")
 
     if dry_run:
-        output.info("[bold yellow]DRY RUN MODE - No actual compression will occur[/bold yellow]")
+        ctx.info("[bold yellow]DRY RUN MODE - No actual compression will occur[/bold yellow]")
 
     try:
         compressor = ArchiveCompressor(state_db)
 
         # Compress files with progress tracking
-        with output.progress_context(
+        with ctx.output.progress_context(
             f"Compressing {len(expanded_files)} file(s)", total=len(expanded_files)
         ) as progress:
             task = progress.add_task("Compress", total=len(expanded_files)) if progress else None
@@ -3964,17 +3596,17 @@ def compress(
                 "Estimated Compression Ratio": f"{result.estimated_compression_ratio:.2f}x",
                 "Execution Time": f"{result.execution_time_ms:.1f} ms",
             }
-            output.show_report("Compression Preview (Dry Run)", report_data)
+            ctx.show_report("Compression Preview (Dry Run)", report_data)
 
             if result.files_skipped > 0:
-                output.info("\nSkipped files (already compressed):")
+                ctx.info("\nSkipped files (already compressed):")
                 for file_result in result.file_results:
                     if file_result.skipped:
                         file_name = Path(file_result.source_file).name
-                        output.info(f"  • {file_name}: {file_result.skip_reason}")
+                        ctx.info(f"  • {file_name}: {file_result.skip_reason}")
 
             files_str = " ".join(files)
-            output.suggest_next_steps(
+            ctx.suggest_next_steps(
                 [
                     f"Run without --dry-run to compress: "
                     f"gmailarchiver compress {files_str} --format {format}",
@@ -3993,17 +3625,17 @@ def compress(
                 "Compression Ratio": f"{result.compression_ratio:.2f}x",
                 "Execution Time": f"{result.execution_time_ms:.1f} ms",
             }
-            output.show_report("Compression Summary", report_data)
+            ctx.show_report("Compression Summary", report_data)
 
             if result.files_skipped > 0:
-                output.info("\nSkipped files (already compressed):")
+                ctx.info("\nSkipped files (already compressed):")
                 for file_result in result.file_results:
                     if file_result.skipped:
                         file_name = Path(file_result.source_file).name
-                        output.info(f"  • {file_name}: {file_result.skip_reason}")
+                        ctx.info(f"  • {file_name}: {file_result.skip_reason}")
 
             if result.files_compressed > 0:
-                output.success(
+                ctx.success(
                     f"Successfully compressed {result.files_compressed} file(s), "
                     f"saved {format_bytes(result.space_saved)}"
                 )
@@ -4021,33 +3653,32 @@ def compress(
                         ),
                     )
 
-                output.suggest_next_steps(next_steps)
+                ctx.suggest_next_steps(next_steps)
 
-        output.end_operation(success=True)
-
+    except typer.Exit:
+        raise
     except ValueError as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Compression Failed",
             message=str(e),
-            exit_code=1,
         )
     except FileNotFoundError as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="File Not Found",
             message=str(e),
             suggestion="Check the file path or glob pattern",
-            exit_code=1,
         )
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Unexpected Error",
             message=str(e),
-            exit_code=1,
         )
 
 
 @app.command()
+@with_context(has_progress=True, operation_name="doctor")
 def doctor(
+    ctx: CommandContext,
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
@@ -4071,19 +3702,15 @@ def doctor(
         $ gmailarchiver doctor --json
     """
     from gmailarchiver.doctor import CheckSeverity, Doctor
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("doctor", "Running system diagnostics")
 
     # Initialize doctor
-    doctor = Doctor(state_db, validate_schema=False, auto_create=False)
+    doctor_instance = Doctor(state_db, validate_schema=False, auto_create=False)
 
     # Run diagnostics
-    with output.progress_context("Running diagnostic checks", total=12) as progress:
+    with ctx.output.progress_context("Running diagnostic checks", total=12) as progress:
         task = progress.add_task("Checking...", total=12) if progress else None
 
-        report = doctor.run_diagnostics()
+        report = doctor_instance.run_diagnostics()
 
         if progress and task:
             progress.update(task, completed=12)
@@ -4110,46 +3737,47 @@ def doctor(
 
             rows.append([check.name, status, message])
 
-        output.show_table("Diagnostic Results", headers, rows)
+        ctx.show_table("Diagnostic Results", headers, rows)
 
         # Show summary
         if report.overall_status == CheckSeverity.OK:
-            output.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
+            ctx.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
         elif report.overall_status == CheckSeverity.WARNING:
-            output.warning(
+            ctx.warning(
                 f"Found {report.warnings} warning(s), {report.errors} error(s), "
                 f"{report.checks_passed} passed"
             )
         else:  # ERROR
-            output.error(
+            ctx.error(
                 f"Found {report.errors} error(s), {report.warnings} warning(s), "
-                f"{report.checks_passed} passed",
-                exit_code=0,  # Don't exit, continue to show suggestions
+                f"{report.checks_passed} passed"
             )
 
         # Show fixable issues
         if report.fixable_issues:
-            output.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
+            ctx.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
             for issue in report.fixable_issues:
-                output.info(f"  • {issue}")
+                ctx.info(f"  • {issue}")
 
             if not fix:
-                output.suggest_next_steps(
+                ctx.suggest_next_steps(
                     ["Run with --fix to auto-repair: gmailarchiver doctor --fix"]
                 )
 
     # Run auto-fix if requested
     if fix and report.fixable_issues:
-        output.info("\nRunning auto-fix...")
+        ctx.info("\nRunning auto-fix...")
 
-        with output.progress_context("Fixing issues", total=len(report.fixable_issues)) as progress:
+        with ctx.output.progress_context(
+            "Fixing issues", total=len(report.fixable_issues)
+        ) as progress:
             task = (
                 progress.add_task("Fixing...", total=len(report.fixable_issues))
                 if progress
                 else None
             )
 
-            fix_results = doctor.run_auto_fix()
+            fix_results = doctor_instance.run_auto_fix()
 
             if progress and task:
                 progress.update(task, completed=len(report.fixable_issues))
@@ -4163,29 +3791,29 @@ def doctor(
                 status = "[green]✓ FIXED[/green]" if fix_result.success else "[red]✗ FAILED[/red]"
                 fix_rows.append([fix_result.check_name, status, fix_result.message])
 
-            output.show_table("Auto-Fix Results", headers, fix_rows)
+            ctx.show_table("Auto-Fix Results", headers, fix_rows)
 
         # Show success/failure summary
         fixed_count = sum(1 for r in fix_results if r.success)
         failed_count = len(fix_results) - fixed_count
 
         if fixed_count > 0 and failed_count == 0:
-            output.success(f"Successfully fixed {fixed_count} issue(s)")
-            output.suggest_next_steps(
+            ctx.success(f"Successfully fixed {fixed_count} issue(s)")
+            ctx.suggest_next_steps(
                 [
                     "Verify fixes: gmailarchiver doctor",
                     "Check database: gmailarchiver verify-integrity",
                 ]
             )
         elif fixed_count > 0:
-            output.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
+            ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
         else:
-            output.error(f"Failed to fix {failed_count} issue(s)", exit_code=0)
+            ctx.error(f"Failed to fix {failed_count} issue(s)")
 
     # JSON output mode
     if json_output:
         report_dict = report.to_dict()
-        output.show_report("Doctor Report", report_dict)
+        ctx.show_report("Doctor Report", report_dict)
 
         if fix and report.fixable_issues:
             fix_dict = {
@@ -4200,31 +3828,28 @@ def doctor(
                     for r in fix_results
                 ],
             }
-            output.show_report("Fix Results", fix_dict)
-
-    output.end_operation(success=True)
+            ctx.show_report("Fix Results", fix_dict)
 
 
 @utilities_app.command()
 @app.command(hidden=True)
+@with_context(operation_name="auth-reset")
 def auth_reset(
+    ctx: CommandContext,
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
-    from gmailarchiver.output import OutputManager
-
-    output = OutputManager(json_mode=json_output)
-    output.start_operation("auth-reset", "Resetting authentication")
-
+    """Clear OAuth token and re-authenticate."""
     authenticator = GmailAuthenticator()
     authenticator.revoke()
 
-    output.success("Authentication token deleted")
-    output.info("Run any command to re-authenticate")
-    output.end_operation(success=True)
+    ctx.success("Authentication token deleted")
+    ctx.info("Run any command to re-authenticate")
 
 
 @utilities_app.command(name="backfill-gmail-ids")
+@with_context(requires_gmail=True, has_progress=True, operation_name="backfill-gmail-ids")
 def backfill_gmail_ids_cmd(
+    ctx: CommandContext,
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without updating"),
     limit: int = typer.Option(0, "--limit", help="Maximum messages to process (0 = all)"),
     offset: int = typer.Option(0, "--offset", help="Skip first N messages (for resuming)"),
@@ -4260,30 +3885,19 @@ def backfill_gmail_ids_cmd(
         $ gmailarchiver utilities backfill-gmail-ids --offset 5000
     """
     import re
-    import sys
 
     from gmailarchiver.db_manager import DBManager
-    from gmailarchiver.output import OutputManager
-
-    # Use live mode for TTY (consistent with archive command)
-    use_live_mode = not json_output and sys.stdout.isatty()
-    output = OutputManager(json_mode=json_output, live_mode=use_live_mode)
-    operation_mode = "backfill-gmail-ids (dry-run)" if dry_run else "backfill-gmail-ids"
-    output.start_operation(operation_mode, "Backfilling real Gmail IDs")
 
     # Pattern to detect synthetic gmail_ids (start with 000...)
     synthetic_id_pattern = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
 
     try:
-        # 1. Authenticate with Gmail
-        output.info("Authenticating with Gmail...")
-        authenticator = GmailAuthenticator(credentials_file=credentials)
-        creds = authenticator.authenticate()
-        client = GmailClient(creds)
-        output.success("Authenticated")
+        # Gmail client is already authenticated via @with_context
+        assert ctx.gmail is not None, "Gmail client should be initialized"
+        client = ctx.gmail
 
         # 2. Find messages needing Gmail ID lookup
-        output.info("Scanning database for messages needing backfill...")
+        ctx.info("Scanning database for messages needing backfill...")
         with DBManager(state_db, validate_schema=False, auto_create=False) as db:
             cursor = db.conn.execute(
                 "SELECT gmail_id, rfc_message_id FROM messages"
@@ -4306,15 +3920,14 @@ def backfill_gmail_ids_cmd(
             else:
                 real_messages_count += 1
 
-        output.info(f"Total messages in database: {len(all_messages):,}")
-        output.info(f"Messages with real Gmail IDs: {real_messages_count:,}")
-        output.info(f"Messages with NULL gmail_id: {null_gmail_id_count:,}")
-        output.info(f"Messages with synthetic IDs: {synthetic_gmail_id_count:,}")
-        output.info(f"Total needing backfill: {len(messages_needing_backfill):,}")
+        ctx.info(f"Total messages in database: {len(all_messages):,}")
+        ctx.info(f"Messages with real Gmail IDs: {real_messages_count:,}")
+        ctx.info(f"Messages with NULL gmail_id: {null_gmail_id_count:,}")
+        ctx.info(f"Messages with synthetic IDs: {synthetic_gmail_id_count:,}")
+        ctx.info(f"Total needing backfill: {len(messages_needing_backfill):,}")
 
         if not messages_needing_backfill:
-            output.success("No messages need backfill!")
-            output.end_operation(success=True)
+            ctx.success("No messages need backfill!")
             return
 
         # Apply offset and limit
@@ -4323,20 +3936,20 @@ def backfill_gmail_ids_cmd(
             messages_to_process = messages_to_process[:limit]
 
         if offset > 0:
-            output.info(f"Skipping first {offset} messages (--offset)")
+            ctx.info(f"Skipping first {offset} messages (--offset)")
         if limit > 0:
-            output.info(f"Processing up to {limit} messages (--limit)")
+            ctx.info(f"Processing up to {limit} messages (--limit)")
 
         total_to_process = len(messages_to_process)
-        output.info(f"\nProcessing {total_to_process:,} messages in batches of {batch_size}...")
+        ctx.info(f"\nProcessing {total_to_process:,} messages in batches of {batch_size}...")
 
         # Estimate time (batch processing is faster: ~1 batch per 1.5 seconds)
         num_batches = (total_to_process + batch_size - 1) // batch_size
         est_seconds = num_batches * 1.5  # ~1.5s per batch (API call + delay)
-        output.info(f"Estimated time: {est_seconds/60:.1f} minutes")
+        ctx.info(f"Estimated time: {est_seconds/60:.1f} minutes")
 
         if dry_run:
-            output.warning("[DRY RUN] No changes will be made")
+            ctx.warning("[DRY RUN] No changes will be made")
 
         # 3. Process messages in batches using batch API
         found = 0
@@ -4354,11 +3967,11 @@ def backfill_gmail_ids_cmd(
             # Only update every 10 messages or at completion for clean output
             if processed - last_progress_update[0] >= 10 or processed == total:
                 pct = 100 * processed // total if total > 0 else 0
-                output.info(f"  Progress: {processed:,}/{total:,} ({pct}%)")
+                ctx.info(f"  Progress: {processed:,}/{total:,} ({pct}%)")
                 last_progress_update[0] = processed
 
         # Use the batch method for efficient lookups
-        output.info("\nLooking up Gmail IDs...")
+        ctx.info("\nLooking up Gmail IDs...")
         results = client.search_by_rfc_message_ids_batch(
             rfc_ids_to_lookup,
             progress_callback=progress_callback,
@@ -4375,20 +3988,20 @@ def backfill_gmail_ids_cmd(
                 not_found += 1
 
         # 4. Update database
-        output.info("\nResults:")
-        output.info(f"  Found in Gmail: {found:,}")
-        output.info(f"  Not in Gmail (deleted): {not_found:,}")
+        ctx.info("\nResults:")
+        ctx.info(f"  Found in Gmail: {found:,}")
+        ctx.info(f"  Not in Gmail (deleted): {not_found:,}")
 
         if dry_run:
-            output.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
+            ctx.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
             if updates[:5]:
-                output.info("Sample updates:")
+                ctx.info("Sample updates:")
                 for new_id, rfc_id in updates[:5]:
                     status = new_id[:16] + "..." if new_id else "NULL"
                     rfc_display = rfc_id[:40] + "..." if len(rfc_id) > 40 else rfc_id
-                    output.info(f"  {rfc_display} -> {status}")
+                    ctx.info(f"  {rfc_display} -> {status}")
         else:
-            output.info(f"\nUpdating database with {len(updates):,} changes...")
+            ctx.info(f"\nUpdating database with {len(updates):,} changes...")
             with DBManager(state_db, validate_schema=False, auto_create=False) as db:
                 for new_gmail_id, rfc_message_id in updates:
                     db.conn.execute(
@@ -4396,23 +4009,22 @@ def backfill_gmail_ids_cmd(
                         (new_gmail_id, rfc_message_id),
                     )
                 db.conn.commit()
-            output.success("Database updated!")
+            ctx.success("Database updated!")
 
         # Summary
         remaining = len(messages_needing_backfill) - len(messages_to_process) - offset
         if remaining > 0:
-            output.info(f"\nRemaining messages to process: {remaining:,}")
+            ctx.info(f"\nRemaining messages to process: {remaining:,}")
             next_offset = offset + len(messages_to_process)
-            output.info(f"Resume with: --offset {next_offset}")
+            ctx.info(f"Resume with: --offset {next_offset}")
 
-        output.end_operation(success=True)
-
+    except typer.Exit:
+        raise
     except Exception as e:
-        output.show_error_panel(
+        ctx.fail_and_exit(
             title="Backfill Failed",
             message=str(e),
             suggestion="Check your internet connection and Gmail authentication",
-            exit_code=1,
         )
 
 

@@ -13,6 +13,9 @@
 - [Core Components](#core-components)
   - [DBManager - Centralized Database Operations](#dbmanager---centralized-database-operations)
   - [HybridStorage - Transactional Coordinator](#hybridstorage---transactional-coordinator)
+- [Command Infrastructure](#command-infrastructure)
+  - [CommandContext - Unified Command Context](#commandcontext---unified-command-context)
+  - [@with_context Decorator](#with_context-decorator)
 - [Data Architecture](#data-architecture)
 - [Technology Stack](#technology-stack)
 - [Security Architecture](#security-architecture)
@@ -929,6 +932,306 @@ class HybridStorage:
 - ✅ Staging area prevents partial writes
 - ✅ Clear error messages for debugging
 - ✅ Prevents database/mbox divergence
+
+---
+
+## Command Infrastructure
+
+**Component:** `src/gmailarchiver/command_context.py` (v1.5.0+)
+
+**Purpose:** Standardize CLI command structure across all 34 commands, eliminating boilerplate and ensuring consistent user experience.
+
+### Problem Statement
+
+Before v1.5.0, the CLI had significant inconsistencies:
+- ~428 lines of repeated boilerplate across commands
+- 3 different OutputManager initialization patterns
+- 2 incompatible progress tracking patterns (live context vs progress_context)
+- Inconsistent error handling (3 different patterns)
+- Missing JSON support in some commands
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "CLI Layer"
+        APP[Typer App]
+        CMD1[archive command]
+        CMD2[validate command]
+        CMD3[import command]
+        CMDN[... 31 more commands]
+    end
+
+    subgraph "Command Infrastructure"
+        DEC["@with_context decorator"]
+        CTX[CommandContext]
+        OP[OperationHandle]
+    end
+
+    subgraph "Output System"
+        OM[OutputManager]
+        LIVE[Rich Live Display]
+        JSON[JSON Output]
+        STATIC[Static Output]
+    end
+
+    subgraph "Data Layer"
+        DB[DBManager]
+        GMAIL[GmailClient]
+    end
+
+    APP --> CMD1
+    APP --> CMD2
+    APP --> CMD3
+    APP --> CMDN
+
+    CMD1 --> DEC
+    CMD2 --> DEC
+    CMD3 --> DEC
+    CMDN --> DEC
+
+    DEC --> CTX
+    CTX --> OM
+    CTX --> OP
+    CTX --> DB
+    CTX --> GMAIL
+
+    OM --> LIVE
+    OM --> JSON
+    OM --> STATIC
+```
+
+### CommandContext - Unified Command Context
+
+`CommandContext` is a dataclass that provides a unified interface for all command operations:
+
+```
+CommandContext
+├── output: OutputManager          # Unified output system
+├── operation: OperationHandle?    # Current operation (if progress tracking)
+├── db: DBManager?                 # Database (if requires_db=True)
+├── gmail: GmailClient?            # Gmail client (if requires_gmail=True)
+├── json_mode: bool                # JSON output enabled
+├── dry_run: bool                  # Dry-run mode enabled
+│
+├── info(message: str)             # Informational message
+├── warning(message: str)          # Warning message
+├── success(message: str)          # Success message
+├── error(message: str)            # Error message (non-fatal)
+│
+├── start_operation(name, desc)    # Begin tracked operation
+├── end_operation()                # End current operation
+├── set_progress_total(n: int)     # Set progress bar total
+├── advance_progress(n: int)       # Advance progress
+│
+├── show_report(title, data)       # Display structured data
+├── show_table(title, rows, cols)  # Display tabular data
+│
+└── fail_and_exit(title, msg, suggestion?)  # Fatal error with panel
+```
+
+**Key Design Decisions:**
+- Uses Python `dataclasses` (consistent with existing codebase patterns)
+- Delegates to OutputManager for all output operations
+- Provides convenience methods that handle output mode detection automatically
+
+### @with_context Decorator
+
+The `@with_context` decorator handles all command boilerplate:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `requires_db` | bool | False | Initialize DBManager and inject as ctx.db |
+| `requires_gmail` | bool | False | Initialize GmailClient and inject as ctx.gmail |
+| `requires_schema` | str? | None | Minimum schema version required (e.g., "1.2") |
+| `has_progress` | bool | False | Enable progress tracking via OperationHandle |
+| `operation_name` | str? | None | Default operation name for progress tracking |
+
+### Decorator Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Typer
+    participant Decorator as @with_context
+    participant Context as CommandContext
+    participant Command
+    participant OutputManager
+
+    User->>Typer: gmailarchiver validate archive.mbox
+    Typer->>Decorator: Call decorated function
+    Decorator->>Decorator: Detect TTY mode
+    Decorator->>OutputManager: Initialize (json_mode, live_mode)
+    Decorator->>Context: Create CommandContext
+
+    alt requires_db=True
+        Decorator->>Context: Attach DBManager
+    end
+
+    alt requires_gmail=True
+        Decorator->>Context: Attach GmailClient
+    end
+
+    Decorator->>Command: Execute with ctx parameter
+    Command->>Context: ctx.info("Starting validation...")
+    Context->>OutputManager: Route to appropriate output
+
+    alt has_progress=True
+        Command->>Context: ctx.start_operation("validate")
+        Context->>OutputManager: Create OperationHandle
+        Command->>Context: ctx.advance_progress(1)
+        Command->>Context: ctx.end_operation()
+    end
+
+    alt Error occurs
+        Command->>Context: ctx.fail_and_exit("Error", "Details")
+        Context->>OutputManager: Show error panel
+        Context->>Typer: raise typer.Exit(1)
+    end
+
+    Command->>Context: ctx.success("Validation complete")
+    Decorator->>Decorator: Cleanup resources
+```
+
+### Command Categories
+
+Commands are categorized by their resource requirements:
+
+```mermaid
+graph LR
+    subgraph "Simple Commands"
+        A1[auth-reset]
+        A2[version]
+        A3[db-info]
+    end
+
+    subgraph "Database Commands"
+        B1[status]
+        B2[verify-integrity]
+        B3[repair]
+        B4[check]
+    end
+
+    subgraph "Progress Commands"
+        C1[archive]
+        C2[import]
+        C3[consolidate]
+        C4[validate]
+        C5[backfill-gmail-ids]
+    end
+
+    subgraph "Gmail Commands"
+        D1[archive]
+        D2[retry-delete]
+        D3[backfill-gmail-ids]
+    end
+
+    A1 --> |"requires_db=False"| CTX[CommandContext]
+    B1 --> |"requires_db=True"| CTX
+    C1 --> |"has_progress=True"| CTX
+    D1 --> |"requires_gmail=True"| CTX
+```
+
+### Error Handling Strategy
+
+All commands follow a unified error handling pattern:
+
+```mermaid
+flowchart TD
+    A[Command executes] --> B{Error type?}
+
+    B -->|User error| C[ctx.fail_and_exit]
+    C --> D[Show error panel with suggestion]
+    D --> E[Exit code 1]
+
+    B -->|Validation error| F[ctx.error + continue]
+    F --> G[Collect all errors]
+    G --> H[Show summary at end]
+
+    B -->|Unexpected exception| I[Decorator catches]
+    I --> J[Log full traceback]
+    J --> K[Show user-friendly message]
+    K --> E
+
+    B -->|Keyboard interrupt| L[Graceful shutdown]
+    L --> M[Save progress if possible]
+    M --> N[Exit code 130]
+```
+
+### Output Mode Selection
+
+Output mode is automatically determined based on context:
+
+```mermaid
+flowchart TD
+    A[Command starts] --> B{--json flag?}
+    B -->|Yes| C[json_mode=True]
+    B -->|No| D{stdout.isatty()?}
+    D -->|Yes| E[live_mode=True]
+    D -->|No| F[live_mode=False]
+
+    C --> G[JSON output only]
+    E --> H[Rich Live display with progress bars]
+    F --> I[Static text output, no animations]
+
+    G --> J[Structured data at end]
+    H --> K[Real-time updates]
+    I --> L[Line-by-line progress]
+```
+
+### Usage Examples
+
+**Simple Command (no DB, no progress):**
+```python
+@app.command()
+@with_context()
+def auth_reset(ctx: CommandContext) -> None:
+    """Clear OAuth token and re-authenticate."""
+    token_path = get_token_path()
+    if token_path.exists():
+        token_path.unlink()
+        ctx.success("OAuth token cleared")
+    else:
+        ctx.info("No token to clear")
+```
+
+**Database Command:**
+```python
+@utilities_app.command(name="db-info")
+@with_context(requires_db=True)
+def db_info(ctx: CommandContext) -> None:
+    """Show database statistics."""
+    stats = ctx.db.get_statistics()
+    ctx.show_report("Database Statistics", stats)
+```
+
+**Progress Command:**
+```python
+@app.command()
+@with_context(requires_db=True, has_progress=True)
+def validate(ctx: CommandContext, archive_file: str) -> None:
+    """Validate archive integrity."""
+    if not Path(archive_file).exists():
+        ctx.fail_and_exit("File Not Found", f"Archive not found: {archive_file}")
+
+    with ctx.operation("Validating archive"):
+        ctx.set_progress_total(4)
+        # ... validation steps ...
+        ctx.advance_progress(1)
+
+    ctx.success("Validation complete")
+```
+
+### Benefits
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Boilerplate lines | ~428 | ~50 |
+| OutputManager patterns | 3 | 1 |
+| Progress tracking patterns | 2 | 1 |
+| Error handling patterns | 3 | 1 |
+| JSON support coverage | 32/34 | 34/34 |
+| New command template | ~40 lines | ~10 lines |
 
 ---
 
