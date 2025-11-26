@@ -1,5 +1,6 @@
-# Gmail Archiver
+<img width="805" height="629" alt="GMailArchiver-logo" src="https://github.com/user-attachments/assets/cc41a36d-ca9e-46bb-a30a-727821e4427d" />
 
+# GMailArchiver
 [![PyPI version](https://img.shields.io/pypi/v/gmail-archiver-cli.svg)](https://pypi.org/project/gmail-archiver-cli/)
 [![Version](https://img.shields.io/github/v/release/tumma72/GMailArchiver)](https://github.com/tumma72/GMailArchiver/releases)
 [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
