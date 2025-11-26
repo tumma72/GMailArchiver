@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & Discussions
+    url: https://github.com/tumma72/GMailArchiver/discussions
+    about: Ask questions and discuss features before opening an issue
+  - name: Documentation
+    url: https://github.com/tumma72/GMailArchiver/blob/main/README.md
+    about: Read the documentation for usage instructions

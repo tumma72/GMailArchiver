@@ -485,63 +485,125 @@ A task is **DONE** when all phases are complete:
 
 ---
 
-## Automation Hooks
+## Automation
 
-### Future CLI Commands
+The development workflow is automated through Claude Code features and Git hooks.
 
-```bash
-# Context phase automation
-gmailarchiver-dev context [--layer LAYER]
-# - Reads relevant docs
-# - Runs tests
-# - Reports status
+### Claude Code Slash Commands
 
-# Design phase automation
-gmailarchiver-dev design --check
-# - Validates ARCHITECTURE.md syntax
-# - Checks for SOLID violations
-# - Reports layer dependencies
+Located in `.claude/commands/`, these commands guide each phase:
 
-# Verify phase automation
-gmailarchiver-dev verify
-# - Runs ruff, mypy, pytest
-# - Checks coverage
-# - Reports pass/fail
+| Command | Phase | Description |
+|---------|-------|-------------|
+| `/context [layer]` | 1 | Establish context, read docs, check test health |
+| `/design <task>` | 2 | Architecture-first design, SOLID check |
+| `/test <behavior>` | 3 | TDD Red - write failing tests |
+| `/code <module>` | 4 | TDD Green - implement minimal code |
+| `/verify` | 5 | Run all quality gates |
+| `/review` | 6 | Code review, documentation update |
+| `/feature <task>` | All | Full 6-phase orchestration |
+| `/gap-analysis <layer>` | - | Compare ARCHITECTURE.md vs README.md |
+| `/gh-issue <type>` | - | Create GitHub issue with proper template |
+| `/gh-pr <title>` | - | Create PR with workflow checklist |
 
-# Full workflow
-gmailarchiver-dev workflow --task "Add feature X"
-# - Guides through all phases
-# - Spawns sub-agents as needed
-# - Tracks progress
+**Usage:**
+```
+/feature Add message export functionality
+/context data
+/verify
 ```
 
-### Git Hooks (Future)
+Commands use `@` notation for composition (single source of truth):
+- `/feature` includes all 6 phase commands
+- `/test` includes `/gap-analysis`
+- `/context` includes `/gap-analysis`
+- `/gh-pr` includes `/verify`
 
-**Pre-commit:**
-- Run `ruff check` and `ruff format`
-- Run `mypy`
-- Verify test coverage didn't decrease
+### Claude Code Skills
 
-**Pre-push:**
-- Run full test suite
-- Verify README.md was updated if code changed
-- Validate CHANGELOG.md has entry for changes
+Located in `.claude/skills/`, these provide context-aware guidance. Claude loads them automatically based on trigger keywords in their descriptions:
 
-### CI/CD Integration (Future)
+| Skill | Triggers On | Source Documentation |
+|-------|-------------|---------------------|
+| `coding-standards` | style, format, lint, ruff, mypy, type hint | `docs/CODING.md` |
+| `testing-guidelines` | test, pytest, fixture, mock, coverage | `docs/TESTING.md` |
+| `tdd-workflow` | TDD, red-green, failing test, implement | `docs/PROCESS.md` |
+| `gmailarchiver-patterns` | architecture, layer, pattern, SOLID | `docs/ARCHITECTURE.md` |
+| `database-operations` | database, DBManager, schema, transaction | `src/gmailarchiver/data/ARCHITECTURE.md` |
+
+Skills point to authoritative documentation (single source of truth) rather than duplicating content.
+
+### Claude Code Agents
+
+Located in `.claude/agents/`, specialized agents for different tasks:
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| `architect` | Design decisions, SOLID validation | Read, Grep, Glob |
+| `coder` | Implementation, TDD green phase | Read, Write, Edit, Bash, Glob, Grep |
+| `tester` | TDD red phase, behavioral tests | Read, Write, Edit, Bash, Glob, Grep |
+| `reviewer` | Code review, documentation | Read, Grep, Glob |
+| `product-owner` | Requirements, acceptance criteria | Read, Grep, Glob, WebFetch |
+
+### Pre-commit Hooks
+
+Configured in `.pre-commit-config.yaml`, runs automatically on `git commit`:
 
 ```yaml
-# .github/workflows/process.yml
-phases:
-  verify:
-    - ruff check .
-    - ruff format --check .
-    - mypy gmailarchiver
-    - pytest --cov --cov-fail-under=90
+# Local hooks (use project's uv environment)
+- ruff-check: uv run ruff check --fix
+- ruff-format: uv run ruff format
+- mypy: uv run mypy src/gmailarchiver
 
-  review:
-    - check-readme-updated
-    - check-changelog-entry
+# Standard hooks
+- trailing-whitespace, end-of-file-fixer, check-yaml, etc.
+
+# Commit message validation
+- commitizen: Enforces conventional commits
 ```
+
+**Installation:**
+```bash
+uv run pre-commit install
+uv run pre-commit install --hook-type commit-msg
+```
+
+### GitHub Integration
+
+**Issue Templates** (`.github/ISSUE_TEMPLATE/`):
+- `bug_report.yml` - Bug reports with reproduction steps
+- `feature_request.yml` - Feature requests with acceptance criteria
+- `task.yml` - Development tasks with 6-phase checklist
+
+**PR Template** (`.github/PULL_REQUEST_TEMPLATE.md`):
+- 6-phase workflow checklist
+- Quality gates checklist
+- Affected layers checklist
+
+**CI Workflow** (`.github/workflows/tests.yml`):
+- Lint job: `uv run ruff check .`
+- Type check job: `uv run mypy src/gmailarchiver`
+- Test job: `uv run pytest --cov-fail-under=90`
+- Runs on PR and push to main
+
+### Claude Code Hooks
+
+Configured in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "command": "uv run ruff check $FILE --fix && uv run ruff format $FILE"
+      }
+    ]
+  }
+}
+```
+
+Automatically formats code after Claude writes or edits files.
 
 ---
 

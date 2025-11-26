@@ -1,0 +1,111 @@
+name: Development Task
+description: Track a development task through the 6-phase workflow
+title: "[Task]: "
+labels: ["task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to track development work that follows our 6-phase workflow.
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Task Type
+      options:
+        - Feature Implementation
+        - Bug Fix
+        - Refactoring
+        - Documentation
+        - Testing
+        - Infrastructure / DevOps
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Primary Layer
+      description: Which layer is primarily affected?
+      options:
+        - cli
+        - core
+        - data
+        - connectors
+        - shared
+        - Multiple layers
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Task Description
+      description: What needs to be done?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: How do we know this task is complete?
+      value: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+        - [ ] Criterion 3
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: 6-Phase Workflow Checklist
+      description: Track progress through the development phases
+      value: |
+        ### Phase Checklist (from PROCESS.md)
+
+        - [ ] **Phase 1: Context**
+          - [ ] Read docs/ARCHITECTURE.md
+          - [ ] Read layer ARCHITECTURE.md
+          - [ ] Read layer README.md
+          - [ ] Run tests, verify health
+
+        - [ ] **Phase 2: Design**
+          - [ ] Map request to layer(s)
+          - [ ] Check SOLID implications
+          - [ ] Update ARCHITECTURE.md if needed
+          - [ ] Plan implementation approach
+
+        - [ ] **Phase 3: Test (Red)**
+          - [ ] Gap analysis: ARCH vs README
+          - [ ] Write failing tests
+          - [ ] Verify tests fail
+
+        - [ ] **Phase 4: Code (Green)**
+          - [ ] Implement minimal code
+          - [ ] Make tests pass
+          - [ ] Refactor if needed
+
+        - [ ] **Phase 5: Verify**
+          - [ ] `uv run ruff check .` passes
+          - [ ] `uv run mypy src/gmailarchiver` passes
+          - [ ] All tests pass
+          - [ ] Coverage met (95%+)
+
+        - [ ] **Phase 6: Review**
+          - [ ] Code reviewed
+          - [ ] README.md updated
+          - [ ] CHANGELOG.md updated
+          - [ ] Committed with conventional format
+    validations:
+      required: false
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Does this task depend on other issues?
+      placeholder: "Depends on #123"
+    validations:
+      required: false

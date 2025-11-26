@@ -1,0 +1,20 @@
+# CODEOWNERS for GMailArchiver
+# These owners will be requested for review when someone opens a PR
+
+# Default owners for everything
+* @tumma72
+
+# Architecture and design decisions
+docs/ARCHITECTURE.md @tumma72
+**/ARCHITECTURE.md @tumma72
+docs/PROCESS.md @tumma72
+
+# Core data layer (critical for data integrity)
+src/gmailarchiver/data/ @tumma72
+
+# CI/CD and automation
+.github/ @tumma72
+.pre-commit-config.yaml @tumma72
+
+# Claude Code configuration
+.claude/ @tumma72

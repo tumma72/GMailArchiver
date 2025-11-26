@@ -1,0 +1,53 @@
+# Pre-commit hooks for GMailArchiver
+# Install: uv tool install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg
+
+repos:
+  # Local hooks using project's uv environment (faster, consistent versions)
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff linting
+        entry: uv run ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: ruff-format
+        name: Ruff formatting
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        pass_filenames: true
+
+      - id: mypy
+        name: MyPy type checking
+        entry: uv run mypy src/gmailarchiver
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
+
+  # General hooks (fast, fine to use from repo)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^.*\.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # Conventional commits (commit message format)
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.1.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+# Install both pre-commit and commit-msg hooks
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]

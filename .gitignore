@@ -59,7 +59,7 @@ Thumbs.db
 htmlcov/
 coverage.xml
 
-# Claude Code
-.claude/
+# Claude Code (track project config, ignore local settings)
+.claude/settings.local.json
 *.egg
 src/gmailarchiver/_version.py

@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file_path=$(echo \"$TOOL_INPUT\" | grep -o '\"file_path\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' | sed 's/.*\"\\([^\"]*\\)\"$/\\1/'); if [ -n \"$file_path\" ] && echo \"$file_path\" | grep -qE '\\.py$'; then cd /Users/atomasini/Development/GMailArchiver && uv run ruff check \"$file_path\" --fix-only 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
