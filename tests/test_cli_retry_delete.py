@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.state import ArchiveState
+from gmailarchiver.data.state import ArchiveState
 
 runner = CliRunner()
 

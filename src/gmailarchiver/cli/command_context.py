@@ -1,0 +1,521 @@
+"""Command infrastructure for unified CLI command structure.
+
+Provides:
+- CommandContext: Unified context dataclass for all commands
+- @with_context: Decorator that handles command boilerplate
+
+This module standardizes CLI command structure, eliminating boilerplate
+and ensuring consistent user experience across all 34 commands.
+
+Example:
+    @app.command()
+    @with_context(requires_db=True, has_progress=True)
+    def validate(ctx: CommandContext, archive_file: str) -> None:
+        if not Path(archive_file).exists():
+            ctx.fail_and_exit("File Not Found", f"Archive not found: {archive_file}")
+
+        with ctx.operation("Validating archive"):
+            ctx.set_progress_total(4)
+            # ... validation steps ...
+            ctx.advance_progress(1)
+
+        ctx.success("Validation complete")
+"""
+
+import functools
+import inspect
+import logging
+import sys
+import traceback
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, NoReturn, ParamSpec, TypeVar
+
+import typer
+
+from gmailarchiver.connectors.auth import GmailAuthenticator
+from gmailarchiver.connectors.gmail_client import GmailClient
+from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.schema_manager import (
+    SchemaManager,
+    SchemaVersion,
+    SchemaVersionError,
+)
+
+from .output import OperationHandle, OutputManager
+
+logger = logging.getLogger(__name__)
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+@dataclass
+class CommandContext:
+    """Unified context for all CLI commands.
+
+    Provides a consistent interface for:
+    - Output (info, warning, success, error messages)
+    - Progress tracking (operations, progress bars)
+    - Data access (database, Gmail client)
+    - Error handling (fail_and_exit with suggestions)
+
+    Attributes:
+        output: OutputManager instance for all output operations
+        operation_handle: Current operation handle (if has_progress=True)
+        db: DBManager instance (if requires_db=True)
+        gmail: GmailClient instance (if requires_gmail=True)
+        json_mode: Whether JSON output is enabled
+        dry_run: Whether dry-run mode is enabled
+        state_db_path: Path to the state database
+    """
+
+    output: OutputManager
+    operation_handle: OperationHandle | None = None
+    db: DBManager | None = None
+    gmail: GmailClient | None = None
+    json_mode: bool = False
+    dry_run: bool = False
+    state_db_path: str = "archive_state.db"
+    _operation_name: str | None = field(default=None, repr=False)
+    _live_context: Any = field(default=None, repr=False)
+
+    # ==================== OUTPUT METHODS ====================
+
+    def info(self, message: str) -> None:
+        """Show informational message.
+
+        Args:
+            message: Info message to display
+        """
+        self.output.info(message)
+
+    def warning(self, message: str) -> None:
+        """Show warning message.
+
+        Args:
+            message: Warning message to display
+        """
+        self.output.warning(message)
+
+    def success(self, message: str) -> None:
+        """Show success message.
+
+        Args:
+            message: Success message to display
+        """
+        self.output.success(message)
+
+    def error(self, message: str) -> None:
+        """Show non-fatal error message.
+
+        For fatal errors that should exit, use fail_and_exit().
+
+        Args:
+            message: Error message to display
+        """
+        self.output.error(message, exit_code=0)
+
+    # ==================== PROGRESS METHODS ====================
+
+    @contextmanager
+    def operation(
+        self, description: str, total: int | None = None
+    ) -> Generator[OperationHandle | _StaticOperationHandle]:
+        """Context manager for tracked operations with progress.
+
+        Use this to wrap long-running operations that benefit from
+        progress tracking.
+
+        Args:
+            description: Description of the operation
+            total: Total number of items (if known)
+
+        Yields:
+            OperationHandle for progress updates
+
+        Example:
+            with ctx.operation("Processing files", total=100) as op:
+                for i, file in enumerate(files):
+                    process(file)
+                    ctx.advance_progress(1)
+        """
+        if self._live_context is not None:
+            # Use live output handler
+            handle = self._live_context.start_operation(description, total=total)
+            self.operation_handle = handle
+            try:
+                yield handle
+            finally:
+                self.operation_handle = None
+        else:
+            # Fallback to static output
+            self.output.start_operation(self._operation_name or "operation", description)
+            with self.output.progress_context(description, total=total) as progress:
+                # Create a simple handle wrapper
+                handle = _StaticOperationHandle(self.output, progress, description, total)
+                self.operation_handle = handle
+                try:
+                    yield handle
+                finally:
+                    self.operation_handle = None
+
+    def set_progress_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking.
+
+        Call this when the total becomes known after starting an operation.
+
+        Args:
+            total: Total number of items to process
+            description: Optional new description for progress bar
+        """
+        if self.operation_handle is not None:
+            self.operation_handle.set_total(total, description)
+
+    def advance_progress(self, n: int = 1) -> None:
+        """Advance progress counter.
+
+        Args:
+            n: Number of units to advance (default: 1)
+        """
+        if self.operation_handle is not None:
+            self.operation_handle.update_progress(n)
+
+    def log_progress(self, message: str, level: str = "INFO") -> None:
+        """Log a message within the current operation.
+
+        Args:
+            message: Message to log
+            level: Log level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        if self.operation_handle is not None:
+            self.operation_handle.log(message, level)
+        else:
+            # Fallback to output
+            if level == "WARNING":
+                self.warning(message)
+            elif level == "ERROR":
+                self.error(message)
+            elif level == "SUCCESS":
+                self.success(message)
+            else:
+                self.info(message)
+
+    # ==================== DISPLAY METHODS ====================
+
+    def show_report(
+        self,
+        title: str,
+        data: dict[str, Any] | Sequence[dict[str, Any]],
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        """Display a report table or summary.
+
+        Args:
+            title: Report title
+            data: Data to display (dict for key-value, list for table)
+            summary: Optional summary data shown below table
+        """
+        self.output.show_report(title, data, summary)
+
+    def show_table(
+        self,
+        title: str,
+        headers: Sequence[str],
+        rows: Sequence[Sequence[Any]],
+    ) -> None:
+        """Display tabular data.
+
+        Args:
+            title: Table title
+            headers: Column headers
+            rows: Table rows
+        """
+        self.output.show_table(title, headers, rows)
+
+    def suggest_next_steps(self, suggestions: Sequence[str]) -> None:
+        """Show actionable next steps.
+
+        Args:
+            suggestions: List of suggested commands or actions
+        """
+        self.output.suggest_next_steps(suggestions)
+
+    # ==================== ERROR HANDLING ====================
+
+    def fail_and_exit(
+        self,
+        title: str,
+        message: str,
+        suggestion: str | None = None,
+        details: Sequence[str] | None = None,
+        exit_code: int = 1,
+    ) -> NoReturn:
+        """Show error panel and exit.
+
+        Use this for fatal errors that should stop execution.
+
+        Args:
+            title: Error panel title
+            message: Main error message
+            suggestion: Optional suggested fix
+            details: Optional list of detail lines
+            exit_code: Exit code (default: 1)
+
+        Raises:
+            typer.Exit: Always raises to exit the command
+        """
+        self.output.show_error_panel(
+            title=title,
+            message=message,
+            suggestion=suggestion,
+            details=details,
+            exit_code=0,  # Don't let OutputManager exit
+        )
+        raise typer.Exit(exit_code)
+
+
+class _StaticOperationHandle:
+    """Simple operation handle for static output mode."""
+
+    def __init__(
+        self,
+        output: OutputManager,
+        progress: Any,
+        description: str,
+        total: int | None,
+    ) -> None:
+        self._output = output
+        self._progress = progress
+        self._description = description
+        self._total = total
+        self._task_id: Any = None
+        if progress and total:
+            self._task_id = progress.add_task(description, total=total)
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log a message."""
+        if level == "WARNING":
+            self._output.warning(message)
+        elif level == "ERROR":
+            self._output.error(message, exit_code=0)
+        elif level == "SUCCESS":
+            self._output.success(message)
+        else:
+            self._output.info(message)
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance progress."""
+        if self._progress and self._task_id is not None:
+            self._progress.update(self._task_id, advance=advance, refresh=True)
+
+    def set_status(self, status: str) -> None:
+        """Update status text."""
+        if self._progress and self._task_id is not None:
+            self._progress.update(self._task_id, description=status, refresh=True)
+
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking."""
+        self._total = total
+        if self._progress:
+            if self._task_id is None:
+                self._task_id = self._progress.add_task(
+                    description or self._description, total=total
+                )
+            else:
+                self._progress.update(
+                    self._task_id,
+                    total=total,
+                    description=description or self._description,
+                    refresh=True,
+                )
+
+    def succeed(self, message: str) -> None:
+        """Mark operation as successful."""
+        self._output.success(message)
+
+    def fail(self, message: str) -> None:
+        """Mark operation as failed."""
+        self._output.error(message, exit_code=0)
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry."""
+        self.log(final_message, level)
+
+
+def with_context(
+    requires_db: bool = False,
+    requires_gmail: bool = False,
+    requires_schema: str | None = None,
+    has_progress: bool = False,
+    operation_name: str | None = None,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator that provides CommandContext to commands.
+
+    Handles all common boilerplate:
+    - TTY detection for output mode selection
+    - OutputManager initialization
+    - DBManager initialization (if requires_db=True)
+    - GmailClient initialization (if requires_gmail=True)
+    - Schema version checking (if requires_schema is set)
+    - Exception handling with user-friendly messages
+    - Resource cleanup
+
+    Args:
+        requires_db: Initialize DBManager and inject as ctx.db
+        requires_gmail: Initialize GmailClient and inject as ctx.gmail
+        requires_schema: Minimum schema version required (e.g., "1.2")
+        has_progress: Enable progress tracking via live output
+        operation_name: Default operation name for progress tracking
+
+    Returns:
+        Decorator function
+
+    Example:
+        @app.command()
+        @with_context(requires_db=True, has_progress=True)
+        def validate(ctx: CommandContext, archive_file: str) -> None:
+            ...
+    """
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        # Get the original function's signature and remove 'ctx' parameter
+        # This is necessary because Typer introspects the function signature
+        # to determine CLI parameters, and we inject 'ctx' programmatically
+        sig = inspect.signature(func)
+        params = list(sig.parameters.values())
+        param_names = {p.name for p in params}
+        new_params = [p for p in params if p.name != "ctx"]
+        new_sig = sig.replace(parameters=new_params)
+
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            # Extract common options from kwargs with explicit types
+            # Pop these values as we handle them in the decorator
+            json_output: bool = bool(kwargs.pop("json_output", False))
+            dry_run: bool = bool(kwargs.pop("dry_run", False))
+            state_db: str = str(kwargs.pop("state_db", "archive_state.db"))
+            credentials: str | None = kwargs.pop("credentials", None)  # type: ignore[assignment]
+
+            # Re-add options that the function expects in its signature
+            if "json_output" in param_names:
+                kwargs["json_output"] = json_output
+            if "dry_run" in param_names:
+                kwargs["dry_run"] = dry_run
+            if "state_db" in param_names:
+                kwargs["state_db"] = state_db
+            if "credentials" in param_names:
+                kwargs["credentials"] = credentials
+
+            # Detect TTY mode for output
+            use_live_mode = has_progress and not json_output and sys.stdout.isatty()
+
+            # Initialize OutputManager
+            output = OutputManager(
+                json_mode=json_output,
+                live_mode=use_live_mode,
+            )
+
+            # Create context
+            ctx = CommandContext(
+                output=output,
+                json_mode=json_output,
+                dry_run=dry_run,
+                state_db_path=str(state_db),
+                _operation_name=operation_name or func.__name__,
+            )
+
+            db: DBManager | None = None
+            gmail: GmailClient | None = None
+
+            try:
+                # Initialize database if required
+                if requires_db:
+                    db_path = Path(state_db)
+                    if not db_path.exists():
+                        ctx.fail_and_exit(
+                            "Database Not Found",
+                            f"State database not found: {state_db}",
+                            suggestion="Run 'gmailarchiver archive' or 'import' first",
+                        )
+                    # Use SchemaManager for version checking
+                    schema_mgr = SchemaManager(db_path)
+
+                    # Check schema version if required
+                    if requires_schema:
+                        required_version = SchemaVersion.from_string(requires_schema)
+                        try:
+                            schema_mgr.require_version(required_version)
+                        except SchemaVersionError as e:
+                            ctx.fail_and_exit(
+                                "Schema Version Mismatch",
+                                str(e),
+                                suggestion=e.suggestion,
+                            )
+
+                    # Initialize DBManager (skip validation since SchemaManager already checked)
+                    db = DBManager(str(db_path), validate_schema=False)
+                    ctx.db = db
+
+                # Initialize Gmail client if required
+                if requires_gmail:
+                    try:
+                        authenticator = GmailAuthenticator(credentials_file=credentials)
+                        creds = authenticator.authenticate()
+                        gmail = GmailClient(creds)
+                        ctx.gmail = gmail
+                    except Exception as e:
+                        ctx.fail_and_exit(
+                            "Authentication Failed",
+                            f"Failed to authenticate with Gmail: {e}",
+                            suggestion="Run 'gmailarchiver auth-reset' and try again",
+                        )
+
+                # Set up live context if using progress
+                if use_live_mode:
+                    with output.live_layout_context() as live_ctx:
+                        ctx._live_context = live_ctx
+                        return func(ctx, *args, **kwargs)  # type: ignore[arg-type]
+                else:
+                    return func(ctx, *args, **kwargs)  # type: ignore[arg-type]
+
+            except typer.Exit:
+                # Re-raise typer exits (from fail_and_exit)
+                raise
+            except KeyboardInterrupt:
+                ctx.warning("\nOperation cancelled by user")
+                raise typer.Exit(130)
+            except Exception as e:
+                # Log full traceback for debugging
+                logger.exception("Unexpected error in command")
+                ctx.fail_and_exit(
+                    "Unexpected Error",
+                    str(e),
+                    suggestion="Check the logs for more details or report this issue",
+                    details=[traceback.format_exc().split("\n")[-2]],
+                )
+            finally:
+                # Flush JSON output if in JSON mode
+                if json_output:
+                    output.end_operation(success=True)
+
+                # Cleanup resources
+                if db is not None:
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+
+        # Apply the new signature (without ctx) to the wrapper
+        # This prevents Typer from seeing 'ctx' as a CLI parameter
+        wrapper.__signature__ = new_sig  # type: ignore[attr-defined]
+
+        # Also remove 'ctx' from annotations so Typer doesn't try to parse it
+        if hasattr(wrapper, "__annotations__"):
+            wrapper.__annotations__ = {k: v for k, v in func.__annotations__.items() if k != "ctx"}
+
+        return wrapper
+
+    return decorator

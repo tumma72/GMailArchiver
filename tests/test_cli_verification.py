@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.migration import MigrationManager
+from gmailarchiver.data.migration import MigrationManager
 
 
 @pytest.fixture
@@ -133,10 +133,10 @@ class TestVerifyOffsetsCommand:
         assert result.exit_code == 0
         assert "verified successfully" in result.stdout.lower()
 
-    @patch("gmailarchiver.validator.ArchiveValidator.verify_offsets")
+    @patch("gmailarchiver.core.validator.ArchiveValidator.verify_offsets")
     def test_verify_offsets_corrupted_offsets(self, mock_verify, runner, v1_1_database, test_mbox):
         """Test verify-offsets with corrupted offsets (exit 1)."""
-        from gmailarchiver.validator import OffsetVerificationResult
+        from gmailarchiver.core.validator import OffsetVerificationResult
 
         # Mock corrupted offset result
         mock_verify.return_value = OffsetVerificationResult(
@@ -195,12 +195,12 @@ class TestVerifyConsistencyCommand:
         assert result.exit_code == 0
         assert "passed" in result.stdout.lower() or "success" in result.stdout.lower()
 
-    @patch("gmailarchiver.validator.ArchiveValidator.verify_consistency")
+    @patch("gmailarchiver.core.validator.ArchiveValidator.verify_consistency")
     def test_verify_consistency_with_orphaned_records(
         self, mock_verify, runner, v1_1_database, test_mbox
     ):
         """Test verify-consistency with orphaned records (exit 1, shows details)."""
-        from gmailarchiver.validator import ConsistencyReport
+        from gmailarchiver.core.validator import ConsistencyReport
 
         # Mock consistency issues
         mock_verify.return_value = ConsistencyReport(

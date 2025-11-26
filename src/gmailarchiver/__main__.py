@@ -8,17 +8,17 @@ from typing import Any
 import typer
 
 from ._version import __version__
-from .archiver import GmailArchiver
-from .auth import GmailAuthenticator
-from .command_context import CommandContext, with_context
-from .deduplicator import MessageDeduplicator
-from .gmail_client import GmailClient
-from .migration import MigrationManager
-from .output import OutputManager
-from .schema_manager import SchemaCapability, SchemaManager, SchemaVersion
-from .state import ArchiveState
-from .utils import format_bytes
-from .validator import ArchiveValidator
+from .cli.command_context import CommandContext, with_context
+from .cli.output import OutputManager
+from .connectors.auth import GmailAuthenticator
+from .connectors.gmail_client import GmailClient
+from .core.archiver import GmailArchiver
+from .core.deduplicator import MessageDeduplicator
+from .core.validator import ArchiveValidator
+from .data.migration import MigrationManager
+from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
+from .data.state import ArchiveState
+from .shared.utils import format_bytes
 
 
 def version_callback(value: bool) -> None:
@@ -494,9 +494,7 @@ def retry_delete_cmd(
                 f"This will permanently delete {len(message_ids)} messages. "
                 "This action CANNOT be undone!"
             )
-            ctx.info(
-                "Deleted messages will be gone forever - not in trash and not recoverable.\n"
-            )
+            ctx.info("Deleted messages will be gone forever - not in trash and not recoverable.\n")
 
             confirmation = typer.prompt(f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm")
             if confirmation != f"DELETE {len(message_ids)} MESSAGES":
@@ -628,7 +626,7 @@ def cleanup(
         # Force cleanup without confirmation
         $ gmailarchiver cleanup --all --force
     """
-    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.data.db_manager import DBManager
 
     # Check if database exists
     db_path = Path(state_db)
@@ -793,9 +791,7 @@ def migrate(
     try:
         # Check if migration is needed
         if not schema_mgr.needs_migration():
-            ctx.success(
-                f"Database is already at version {current_version.value} (up to date)"
-            )
+            ctx.success(f"Database is already at version {current_version.value} (up to date)")
             return
 
         if current_version == SchemaVersion.NONE:
@@ -839,9 +835,7 @@ def migrate(
             ctx.success(f"Backup created: {backup_path}")
 
             # Run migration using SchemaManager
-            schema_mgr.auto_migrate_if_needed(
-                progress_callback=lambda msg: ctx.info(msg)
-            )
+            schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
             if progress and task:
                 progress.update(task, advance=1, refresh=True)
 
@@ -1287,7 +1281,7 @@ def dedupe(
 
                 # Auto-verify if requested (only for non-dry-run)
                 if auto_verify:
-                    from gmailarchiver.db_manager import DBManager
+                    from gmailarchiver.data.db_manager import DBManager
 
                     ctx.info("\nRunning verification...")
                     try:
@@ -1544,7 +1538,7 @@ def search(
     import time
     from datetime import datetime
 
-    from .search import SearchEngine
+    from .core.search import SearchEngine
 
     # Validate flags
     if extract and not output_dir:
@@ -1615,11 +1609,11 @@ def search(
 
     # Execute search
     try:
-        from gmailarchiver._output_search import (
+        from gmailarchiver.cli._output_search import (
             display_search_results_json,
             display_search_results_rich,
         )
-        from gmailarchiver.output import SearchResultEntry
+        from gmailarchiver.cli.output import SearchResultEntry
 
         start_time = time.perf_counter()
 
@@ -1726,11 +1720,9 @@ def search(
                 return
 
             # Extract selected messages
-            from gmailarchiver.extractor import MessageExtractor
+            from gmailarchiver.core.extractor import MessageExtractor
 
-            ctx.info(
-                f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}..."
-            )
+            ctx.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
 
             with MessageExtractor(state_db) as extractor:
                 with ctx.output.progress_context(
@@ -1767,7 +1759,7 @@ def search(
 
         # Extract messages if requested
         if extract:
-            from gmailarchiver.extractor import MessageExtractor
+            from gmailarchiver.core.extractor import MessageExtractor
 
             assert output_dir is not None, "Output directory required for extraction"
             ctx.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
@@ -1843,7 +1835,7 @@ def extract(
         $ gmailarchiver extract abc123 --archive archive.mbox.zst
         $ gmailarchiver extract abc123 --json
     """
-    from gmailarchiver.extractor import ExtractorError, MessageExtractor
+    from gmailarchiver.core.extractor import ExtractorError, MessageExtractor
 
     try:
         with MessageExtractor(state_db) as extractor:
@@ -1927,7 +1919,8 @@ def import_cmd(
     import glob
     import time
 
-    from gmailarchiver.importer import ArchiveImporter
+    from gmailarchiver.core.importer import ArchiveImporter
+
     db_path = Path(state_db)
 
     # Handle database schema using centralized SchemaManager
@@ -1959,9 +1952,7 @@ def import_cmd(
                 f"auto-migrating to v{SchemaManager.CURRENT_VERSION.value}..."
             )
             try:
-                schema_mgr.auto_migrate_if_needed(
-                    progress_callback=lambda msg: ctx.info(msg)
-                )
+                schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
                 ctx.success("Migration completed successfully")
             except Exception as e:
                 ctx.fail_and_exit(
@@ -2014,9 +2005,7 @@ def import_cmd(
     # Track overall progress
     messages_processed = 0
 
-    with ctx.output.progress_context(
-        "Importing messages", total=total_messages
-    ) as progress:
+    with ctx.output.progress_context("Importing messages", total=total_messages) as progress:
         task = progress.add_task("Import", total=total_messages) if progress else None
         current_task_pos = 0
 
@@ -2117,7 +2106,7 @@ def import_cmd(
 
     # Auto-verify if requested
     if auto_verify and total_failed == 0:
-        from gmailarchiver.db_manager import DBManager
+        from gmailarchiver.data.db_manager import DBManager
 
         ctx.info("\nRunning verification...")
         try:
@@ -2181,7 +2170,7 @@ def consolidate(
     """
     import glob
 
-    from gmailarchiver.consolidator import ArchiveConsolidator
+    from gmailarchiver.core.consolidator import ArchiveConsolidator
     # ArchiveValidator is imported at module level for proper mocking in tests
 
     # 1. Expand glob patterns
@@ -2279,7 +2268,7 @@ def consolidate(
 
         # Auto-verify if requested
         if auto_verify:
-            from gmailarchiver.db_manager import DBManager
+            from gmailarchiver.data.db_manager import DBManager
 
             ctx.info("\nRunning verification...")
             try:
@@ -2597,7 +2586,7 @@ def repair(
     """
     assert ctx.db is not None, "Database should be initialized by @with_context"
 
-    from gmailarchiver.migration import MigrationManager
+    from gmailarchiver.data.migration import MigrationManager
 
     db_path = Path(state_db)
 
@@ -2727,7 +2716,8 @@ def check(
         $ gmailarchiver check --verbose
         $ gmailarchiver check --json
     """
-    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.data.db_manager import DBManager
+
     db_path = Path(state_db)
 
     # Check if database exists
@@ -2865,9 +2855,7 @@ def check(
                 if result.accuracy_percentage == 100.0:
                     check_results["offset_accuracy"]["passed"] = True
                     if verbose:
-                        ctx.success(
-                            f"  ✓ Offset accuracy: 100% ({result.total_checked:,} checked)"
-                        )
+                        ctx.success(f"  ✓ Offset accuracy: 100% ({result.total_checked:,} checked)")
                 else:
                     check_results["offset_accuracy"]["passed"] = False
                     if verbose:
@@ -3066,7 +3054,7 @@ def schedule_list(
         $ gmailarchiver schedule list --enabled-only
         $ gmailarchiver schedule list --json
     """
-    from gmailarchiver.scheduler import Scheduler
+    from gmailarchiver.connectors.scheduler import Scheduler
 
     db_path = Path(state_db)
     if not db_path.exists():
@@ -3166,8 +3154,11 @@ def schedule_add(
         $ gmailarchiver schedule add verify-integrity --monthly --day 1 --time 04:00
         $ gmailarchiver schedule add check --daily --time 02:00 --no-install
     """
-    from gmailarchiver.platform_scheduler import UnsupportedPlatformError, get_platform_scheduler
-    from gmailarchiver.scheduler import Scheduler, ScheduleValidationError
+    from gmailarchiver.connectors.platform_scheduler import (
+        UnsupportedPlatformError,
+        get_platform_scheduler,
+    )
+    from gmailarchiver.connectors.scheduler import Scheduler, ScheduleValidationError
 
     # Validate frequency
     frequency_count = sum([daily, weekly, monthly])
@@ -3341,8 +3332,11 @@ def schedule_remove(
         $ gmailarchiver schedule remove 1
         $ gmailarchiver schedule remove 2 --no-uninstall
     """
-    from gmailarchiver.platform_scheduler import UnsupportedPlatformError, get_platform_scheduler
-    from gmailarchiver.scheduler import Scheduler
+    from gmailarchiver.connectors.platform_scheduler import (
+        UnsupportedPlatformError,
+        get_platform_scheduler,
+    )
+    from gmailarchiver.connectors.scheduler import Scheduler
 
     db_path = Path(state_db)
     if not db_path.exists():
@@ -3415,7 +3409,7 @@ def schedule_enable(
     Examples:
         $ gmailarchiver schedule enable 1
     """
-    from gmailarchiver.scheduler import Scheduler
+    from gmailarchiver.connectors.scheduler import Scheduler
 
     db_path = Path(state_db)
     if not db_path.exists():
@@ -3466,7 +3460,7 @@ def schedule_disable(
     Examples:
         $ gmailarchiver schedule disable 1
     """
-    from gmailarchiver.scheduler import Scheduler
+    from gmailarchiver.connectors.scheduler import Scheduler
 
     db_path = Path(state_db)
     if not db_path.exists():
@@ -3553,8 +3547,8 @@ def compress(
     """
     import glob
 
-    from gmailarchiver.compressor import ArchiveCompressor
-    from gmailarchiver.utils import format_bytes
+    from gmailarchiver.core.compressor import ArchiveCompressor
+    from gmailarchiver.shared.utils import format_bytes
 
     # Expand glob patterns
     expanded_files = []
@@ -3715,7 +3709,7 @@ def doctor(
         $ gmailarchiver doctor --fix
         $ gmailarchiver doctor --json
     """
-    from gmailarchiver.doctor import CheckSeverity, Doctor
+    from gmailarchiver.core.doctor import CheckSeverity, Doctor
 
     # Initialize doctor
     doctor_instance = Doctor(state_db, validate_schema=False, auto_create=False)
@@ -3900,7 +3894,7 @@ def backfill_gmail_ids_cmd(
     """
     import re
 
-    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.data.db_manager import DBManager
 
     # Pattern to detect synthetic gmail_ids (start with 000...)
     synthetic_id_pattern = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
@@ -3913,9 +3907,7 @@ def backfill_gmail_ids_cmd(
         # 2. Find messages needing Gmail ID lookup
         ctx.info("Scanning database for messages needing backfill...")
         with DBManager(state_db, validate_schema=False, auto_create=False) as db:
-            cursor = db.conn.execute(
-                "SELECT gmail_id, rfc_message_id FROM messages"
-            )
+            cursor = db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
             all_messages = cursor.fetchall()
 
         # Messages needing backfill: NULL gmail_id OR synthetic pattern
@@ -3960,7 +3952,7 @@ def backfill_gmail_ids_cmd(
         # Estimate time (batch processing is faster: ~1 batch per 1.5 seconds)
         num_batches = (total_to_process + batch_size - 1) // batch_size
         est_seconds = num_batches * 1.5  # ~1.5s per batch (API call + delay)
-        ctx.info(f"Estimated time: {est_seconds/60:.1f} minutes")
+        ctx.info(f"Estimated time: {est_seconds / 60:.1f} minutes")
 
         if dry_run:
             ctx.warning("[DRY RUN] No changes will be made")

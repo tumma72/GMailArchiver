@@ -18,7 +18,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 # Import from gmailarchiver
-from gmailarchiver.output import LogBuffer, SessionLogger
+from gmailarchiver.cli.output import LogBuffer, SessionLogger
 
 
 def create_live_display(log_buffer: LogBuffer, progress: Progress, task_id: int) -> Layout:

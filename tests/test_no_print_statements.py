@@ -8,10 +8,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from gmailarchiver.archiver import GmailArchiver
-from gmailarchiver.auth import GmailAuthenticator
-from gmailarchiver.output import OutputManager
-from gmailarchiver.validator import ArchiveValidator
+from gmailarchiver.cli.output import OutputManager
+from gmailarchiver.connectors.auth import GmailAuthenticator
+from gmailarchiver.core.archiver import GmailArchiver
+from gmailarchiver.core.validator import ArchiveValidator
 
 
 class TestNoPrintStatements:
@@ -41,7 +41,7 @@ class TestNoPrintStatements:
             creds_file.write_text(json.dumps(creds_data))
 
             # Mock the OAuth flow
-            with patch("gmailarchiver.auth.InstalledAppFlow") as MockFlow:
+            with patch("gmailarchiver.connectors.auth.InstalledAppFlow") as MockFlow:
                 mock_flow = Mock()
                 mock_cred = Mock()
                 mock_cred.valid = True

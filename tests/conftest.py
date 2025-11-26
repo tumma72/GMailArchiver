@@ -76,7 +76,7 @@ sqlite3.connect = _managed_connect  # type: ignore[assignment]
 
 import pytest  # noqa: E402
 
-from gmailarchiver.db_manager import DBManager  # noqa: E402
+from gmailarchiver.data.db_manager import DBManager  # noqa: E402
 
 # ============================================================================
 # Base Fixtures: Temporary Resources

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gmailarchiver.output import SessionLogger
+from gmailarchiver.cli.output import SessionLogger
 
 
 class TestSessionLoggerInitialization:
@@ -17,7 +17,7 @@ class TestSessionLoggerInitialization:
     def test_init_default_path(self) -> None:
         """Test initialization with default XDG-compliant path."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("gmailarchiver.output.SessionLogger._get_default_log_dir") as mock_dir:
+            with patch("gmailarchiver.cli.output.SessionLogger._get_default_log_dir") as mock_dir:
                 mock_dir.return_value = Path(tmpdir)
 
                 logger = SessionLogger()
@@ -513,7 +513,7 @@ class TestSessionLoggerIntegration:
 
     def test_integration_with_log_buffer(self) -> None:
         """Test SessionLogger and LogBuffer receive same log entries."""
-        from gmailarchiver.output import LogBuffer
+        from gmailarchiver.cli.output import LogBuffer
 
         with tempfile.TemporaryDirectory() as tmpdir:
             buffer = LogBuffer(max_visible=5)
@@ -544,7 +544,7 @@ class TestSessionLoggerIntegration:
 
     def test_session_logger_gets_debug_logs(self) -> None:
         """Test that SessionLogger receives DEBUG logs that LogBuffer might filter."""
-        from gmailarchiver.output import LogBuffer
+        from gmailarchiver.cli.output import LogBuffer
 
         with tempfile.TemporaryDirectory() as tmpdir:
             buffer = LogBuffer(max_visible=5)

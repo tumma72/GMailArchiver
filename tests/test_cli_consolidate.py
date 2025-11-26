@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.migration import MigrationManager
+from gmailarchiver.data.migration import MigrationManager
 
 
 @pytest.fixture
