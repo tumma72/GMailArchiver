@@ -311,6 +311,78 @@ class GmailClient:
             count += len(chunk)
         return count
 
+    def search_by_rfc_message_id(self, rfc_message_id: str) -> str | None:
+        """
+        Search for a Gmail message by its RFC Message-ID header.
+
+        Args:
+            rfc_message_id: RFC 2822 Message-ID (with or without angle brackets)
+
+        Returns:
+            Gmail message ID if found, None if not found
+        """
+        # Strip angle brackets if present
+        clean_id = rfc_message_id.strip("<>")
+        if not clean_id:
+            return None
+
+        query = f"rfc822msgid:{clean_id}"
+
+        try:
+            response = self._execute_with_retry(
+                self.service.users()
+                .messages()
+                .list(userId=self.user_id, q=query, maxResults=1)
+            )
+
+            if "messages" in response and response["messages"]:
+                return response["messages"][0]["id"]  # type: ignore[no-any-return]
+            return None
+
+        except HttpError as error:
+            if error.resp.status == 404:
+                return None
+            raise
+
+    def search_by_rfc_message_ids_batch(
+        self,
+        rfc_message_ids: list[str],
+        progress_callback: Callable[[int, int], None] | None = None,
+        batch_size: int = 50,
+        batch_delay: float = 1.2,
+    ) -> dict[str, str | None]:
+        """
+        Search for Gmail message IDs by RFC Message-IDs in batches.
+
+        Uses individual list requests (not batch API) because Gmail's batch API
+        doesn't support the messages.list endpoint well.
+
+        Args:
+            rfc_message_ids: List of RFC 2822 Message-IDs (with or without angle brackets)
+            progress_callback: Optional callback(processed, total) for progress
+            batch_size: Messages per batch (default 50 for rate limit safety)
+            batch_delay: Delay between batches in seconds (default 1.2s)
+
+        Returns:
+            Dict mapping rfc_message_id -> gmail_id (or None if not found)
+        """
+        result: dict[str, str | None] = {}
+        total = len(rfc_message_ids)
+
+        for i, chunk in enumerate(chunk_list(rfc_message_ids, batch_size)):
+            for rfc_id in chunk:
+                gmail_id = self.search_by_rfc_message_id(rfc_id)
+                result[rfc_id] = gmail_id
+
+            if progress_callback:
+                progress_callback(len(result), total)
+
+            # Delay between batches to respect rate limits
+            if i < (total - 1) // batch_size:  # Don't delay after last batch
+                time.sleep(batch_delay)
+
+        return result
+
     def _execute_with_retry(self, request: Any) -> Any:
         """
         Execute a request with exponential backoff for rate limits.

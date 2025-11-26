@@ -2,11 +2,14 @@
 
 Imports existing mbox files into v1.1 database with accurate byte offset tracking
 for O(1) message access. Supports all compression formats (gzip, lzma, zstd).
+
+v1.4.0: Added Gmail ID lookup during import for instant deduplication.
 """
 
 import email
 import gzip
 import hashlib
+import logging
 import lzma
 import mailbox
 import time
@@ -14,9 +17,14 @@ from dataclasses import dataclass, field
 from glob import glob
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from gmailarchiver.db_manager import DBManager
+
+if TYPE_CHECKING:
+    from gmailarchiver.gmail_client import GmailClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -28,6 +36,8 @@ class ImportResult:
     messages_skipped: int
     messages_failed: int
     execution_time_ms: float
+    gmail_ids_found: int = 0  # Messages with real Gmail IDs (still in Gmail)
+    gmail_ids_not_found: int = 0  # Messages deleted from Gmail (NULL gmail_id)
     errors: list[str] = field(default_factory=list)
 
 
@@ -39,20 +49,31 @@ class MultiImportResult:
     total_messages_imported: int
     total_messages_skipped: int
     total_messages_failed: int
+    total_gmail_ids_found: int = 0
+    total_gmail_ids_not_found: int = 0
     file_results: list[ImportResult] = field(default_factory=list)
 
 
 class ArchiveImporter:
     """Import mbox archives into v1.1 database with offset tracking."""
 
-    def __init__(self, state_db_path: str) -> None:
+    def __init__(
+        self,
+        state_db_path: str,
+        gmail_client: GmailClient | None = None,
+    ) -> None:
         """
         Initialize importer with database path.
 
         Args:
             state_db_path: Path to SQLite database file
+            gmail_client: Optional GmailClient for looking up real Gmail IDs.
+                          If provided, imports will search Gmail for each message
+                          by RFC Message-ID to get the real Gmail ID.
+                          Messages not found in Gmail get NULL gmail_id.
         """
         self.state_db_path = state_db_path
+        self.gmail_client = gmail_client
 
     def _get_compression_format(self, archive_path: Path) -> str | None:
         """
@@ -200,6 +221,7 @@ class ArchiveImporter:
         offset: int,
         length: int,
         account_id: str,
+        gmail_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Extract all v1.1 metadata from email message.
@@ -210,6 +232,7 @@ class ArchiveImporter:
             offset: Byte offset in mbox
             length: Message length in bytes
             account_id: Account identifier
+            gmail_id: Real Gmail ID if known (from API lookup), or None
 
         Returns:
             Dictionary of metadata fields matching DBManager.record_archived_message signature
@@ -217,10 +240,8 @@ class ArchiveImporter:
         message_bytes = msg.as_bytes()
         rfc_message_id = self._extract_rfc_message_id(msg)
 
-        # Generate gmail_id as hash of Message-ID + Date
-        gmail_id = hashlib.sha256(f"{rfc_message_id}{msg.get('Date', '')}".encode()).hexdigest()[
-            :16
-        ]
+        # Use provided gmail_id or None (no synthetic IDs)
+        # NULL gmail_id means message was deleted from Gmail or lookup was skipped
 
         return {
             "gmail_id": gmail_id,
@@ -336,6 +357,24 @@ class ArchiveImporter:
                                 file_size = mbox_path.stat().st_size
                                 length = file_size - offset
 
+                            # Look up real Gmail ID if gmail_client is available
+                            gmail_id: str | None = None
+                            if self.gmail_client is not None:
+                                try:
+                                    gmail_id = self.gmail_client.search_by_rfc_message_id(
+                                        rfc_message_id
+                                    )
+                                    if gmail_id:
+                                        result.gmail_ids_found += 1
+                                    else:
+                                        result.gmail_ids_not_found += 1
+                                except Exception as e:
+                                    # Log but continue - message deleted from Gmail is fine
+                                    logger.debug(
+                                        f"Gmail ID lookup failed for {rfc_message_id}: {e}"
+                                    )
+                                    result.gmail_ids_not_found += 1
+
                             # Extract all metadata
                             metadata = self._extract_metadata(
                                 msg,
@@ -343,6 +382,7 @@ class ArchiveImporter:
                                 offset,
                                 length,
                                 account_id,
+                                gmail_id=gmail_id,
                             )
 
                             # Insert into database using DBManager or direct
@@ -464,6 +504,8 @@ class ArchiveImporter:
                 result.total_messages_imported += file_result.messages_imported
                 result.total_messages_skipped += file_result.messages_skipped
                 result.total_messages_failed += file_result.messages_failed
+                result.total_gmail_ids_found += file_result.gmail_ids_found
+                result.total_gmail_ids_not_found += file_result.gmail_ids_not_found
 
             except Exception as e:
                 # Record failure for this file

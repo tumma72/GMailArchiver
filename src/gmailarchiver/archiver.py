@@ -208,6 +208,8 @@ class GmailArchiver:
             return {"messages_found": 0, "messages_archived": 0, "skipped": 0, "archive_file": None}
 
         # Filter out already-archived messages if incremental
+        # Uses instant set difference - O(n) with no API calls
+        # Only checks non-NULL gmail_ids (NULL = deleted from Gmail = can't be duplicate)
         message_ids = [msg["id"] for msg in message_list]
         if incremental:
             # DBManager will auto-create v1.1 database if it doesn't exist
@@ -215,8 +217,10 @@ class GmailArchiver:
             db_path = Path(self.state_db_path)
             try:
                 db = DBManager(str(db_path), validate_schema=False, auto_create=True)
-                # Get all gmail_ids from messages table
-                cursor = db.conn.execute("SELECT gmail_id FROM messages")
+                # Get only non-NULL gmail_ids (NULL means message deleted from Gmail)
+                cursor = db.conn.execute(
+                    "SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL"
+                )
                 archived_ids = {row[0] for row in cursor.fetchall()}
                 db.close()
             except Exception:
@@ -233,49 +237,11 @@ class GmailArchiver:
                     operation=operation,
                 )
 
-        # Phase 2: Pre-filter by RFC Message-ID
-        # This catches imported messages (which have fake gmail_ids)
-        # Uses batch size of 100 and minimal delays for fast metadata-only requests
-        if message_ids and incremental:
-            try:
-                db = DBManager(str(db_path), validate_schema=False, auto_create=True)
-                known_rfc_ids = db.get_all_rfc_message_ids()
-                db.close()
-            except Exception:
-                known_rfc_ids = set()
-
-            if known_rfc_ids:
-                self._log(
-                    f"Checking {len(message_ids):,} messages against "
-                    f"{len(known_rfc_ids):,} known Message-IDs...",
-                    operation=operation,
-                )
-
-                def filter_progress(processed: int, total: int) -> None:
-                    if operation:
-                        pct = (processed / total * 100) if total > 0 else 0
-                        operation.log(
-                            f"Checking duplicates... {processed:,}/{total:,} ({pct:.0f}%)",
-                            "INFO",
-                        )
-
-                gmail_to_rfc = self.client.get_message_ids_batch(
-                    message_ids,
-                    progress_callback=filter_progress if operation else None,
-                    batch_size=100,  # 10x faster than default
-                )
-
-                original_count = len(message_ids)
-                message_ids = [
-                    mid for mid in message_ids if gmail_to_rfc.get(mid, "") not in known_rfc_ids
-                ]
-                rfc_duplicates = original_count - len(message_ids)
-
-                if rfc_duplicates > 0:
-                    self._log(
-                        f"Skipping {rfc_duplicates:,} duplicates (by Message-ID)",
-                        operation=operation,
-                    )
+        # Note: Phase 2 (RFC Message-ID checking) has been removed in v1.4.0
+        # With proper Gmail ID capture during import:
+        # - Messages with real Gmail IDs are caught by the filter above
+        # - Messages with NULL gmail_id were deleted from Gmail, so cannot be duplicates
+        # This provides instant O(n) deduplication with zero API calls
 
         if not message_ids:
             self._log("All messages already archived", operation=operation)

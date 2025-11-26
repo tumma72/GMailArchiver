@@ -492,7 +492,9 @@ class TestMetadataExtraction:
         ) = row
 
         # Verify all required fields are present
-        assert gmail_id is not None
+        # Note: gmail_id is NULL when importing without GmailClient (offline mode)
+        # This is correct behavior - only real Gmail IDs are stored, not synthetic ones
+        assert gmail_id is None  # No GmailClient = no Gmail ID lookup
         assert rfc_message_id == "<msg3@example.com>"
         assert subject == "Test Message 3"
         assert from_addr == "charlie@example.com"
@@ -1414,7 +1416,8 @@ class TestDBManagerIntegration:
 
             # Verify each message has proper metadata
             for msg_data in messages:
-                assert msg_data["gmail_id"] is not None
+                # Note: gmail_id is NULL when importing without GmailClient (offline mode)
+                # This is correct - only real Gmail IDs are stored, not synthetic ones
                 assert msg_data["rfc_message_id"] is not None
                 assert msg_data["mbox_offset"] >= 0
                 assert msg_data["mbox_length"] > 0

@@ -2087,6 +2087,16 @@ def import_cmd(
     archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
     account_id: str = typer.Option("default", help="Account identifier"),
     skip_duplicates: bool = typer.Option(True, help="Skip duplicate messages"),
+    skip_gmail_lookup: bool = typer.Option(
+        False,
+        "--skip-gmail-lookup",
+        help="Skip Gmail ID lookup (faster, but no instant deduplication)",
+    ),
+    credentials: str | None = typer.Option(
+        None,
+        "--credentials",
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)",
+    ),
     auto_verify: bool = typer.Option(False, "--auto-verify", help="Run verification after import"),
     state_db: str = typer.Option("archive_state.db", help="State database path"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
@@ -2097,6 +2107,9 @@ def import_cmd(
     Parses mbox files, extracts metadata with accurate byte offset tracking,
     and populates the v1.1 database for fast message access and searching.
 
+    By default, imports look up real Gmail IDs for each message to enable instant
+    deduplication during future archiving. Use --skip-gmail-lookup for offline imports.
+
     Examples:
         $ gmailarchiver import archive_2024.mbox
         $ gmailarchiver import archive_*.mbox.gz --skip-duplicates
@@ -2104,6 +2117,7 @@ def import_cmd(
         $ gmailarchiver import "archives/*.mbox.zst" --account-id gmail_work
         $ gmailarchiver import old_archive.mbox --state-db /path/to/archive_state.db
         $ gmailarchiver import archive.mbox --json
+        $ gmailarchiver import archive.mbox --skip-gmail-lookup  # Offline mode
     """
     import glob
     import time
@@ -2181,8 +2195,22 @@ def import_cmd(
 
     output.info(f"Found {len(files)} file(s) to import")
 
+    # Set up Gmail client for Gmail ID lookup (unless skipped)
+    gmail_client = None
+    if not skip_gmail_lookup:
+        output.info("Setting up Gmail ID lookup (use --skip-gmail-lookup for offline mode)")
+        try:
+            authenticator = GmailAuthenticator(credentials_file=credentials)
+            creds = authenticator.authenticate()
+            gmail_client = GmailClient(creds)
+            output.success("Gmail authentication successful")
+        except Exception as e:
+            output.warning(f"Gmail authentication failed: {e}")
+            output.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
+            gmail_client = None
+
     # Import each file with progress
-    importer = ArchiveImporter(state_db)
+    importer = ArchiveImporter(state_db, gmail_client=gmail_client)
     results = []
     start_time = time.perf_counter()
 
@@ -4146,6 +4174,185 @@ def auth_reset(
     output.success("Authentication token deleted")
     output.info("Run any command to re-authenticate")
     output.end_operation(success=True)
+
+
+@utilities_app.command(name="backfill-gmail-ids")
+def backfill_gmail_ids_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without updating"),
+    limit: int = typer.Option(0, "--limit", help="Maximum messages to process (0 = all)"),
+    offset: int = typer.Option(0, "--offset", help="Skip first N messages (for resuming)"),
+    state_db: str = typer.Option("archive_state.db", "--state-db", help="State database path"),
+    credentials: str | None = typer.Option(
+        None,
+        "--credentials",
+        help="Custom OAuth2 credentials file (optional, uses bundled by default)",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
+) -> None:
+    """
+    Backfill real Gmail IDs for imported messages.
+
+    This command fixes databases with synthetic gmail_ids from older imports
+    by looking up each message's RFC Message-ID in Gmail to find its real Gmail ID.
+
+    Messages deleted from Gmail will have their gmail_id set to NULL, which is
+    correct - they cannot be duplicates of current Gmail messages.
+
+    This is a ONE-TIME operation. After running, future imports will automatically
+    capture real Gmail IDs, enabling instant deduplication.
+
+    Examples:
+        Preview what would be updated:
+        $ gmailarchiver utilities backfill-gmail-ids --dry-run
+
+        Process all messages with synthetic IDs:
+        $ gmailarchiver utilities backfill-gmail-ids
+
+        Resume from offset (if interrupted):
+        $ gmailarchiver utilities backfill-gmail-ids --offset 5000
+    """
+    import re
+
+    from gmailarchiver.db_manager import DBManager
+    from gmailarchiver.output import OutputManager
+
+    output = OutputManager(json_mode=json_output)
+    output.start_operation("backfill-gmail-ids", "Backfilling real Gmail IDs")
+
+    # Pattern to detect synthetic gmail_ids (start with 000...)
+    SYNTHETIC_ID_PATTERN = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
+
+    try:
+        # 1. Authenticate with Gmail
+        output.info("Authenticating with Gmail...")
+        authenticator = GmailAuthenticator(credentials_file=credentials)
+        creds = authenticator.authenticate()
+        client = GmailClient(creds)
+        output.success("Authenticated")
+
+        # 2. Find messages with synthetic gmail_ids
+        output.info("Scanning database for synthetic gmail_ids...")
+        with DBManager(state_db, validate_schema=False, auto_create=False) as db:
+            cursor = db.conn.execute(
+                "SELECT gmail_id, rfc_message_id FROM messages WHERE gmail_id IS NOT NULL"
+            )
+            all_messages = cursor.fetchall()
+
+        synthetic_messages = [
+            (gid, rfc) for gid, rfc in all_messages if SYNTHETIC_ID_PATTERN.match(gid or "")
+        ]
+        real_messages = len(all_messages) - len(synthetic_messages)
+
+        output.info(f"Total messages in database: {len(all_messages):,}")
+        output.info(f"Messages with real Gmail IDs: {real_messages:,}")
+        output.info(f"Messages with synthetic IDs: {len(synthetic_messages):,}")
+
+        if not synthetic_messages:
+            output.success("No messages need backfill!")
+            output.end_operation(success=True)
+            return
+
+        # Apply offset and limit
+        messages_to_process = synthetic_messages[offset:]
+        if limit > 0:
+            messages_to_process = messages_to_process[:limit]
+
+        if offset > 0:
+            output.info(f"Skipping first {offset} messages (--offset)")
+        if limit > 0:
+            output.info(f"Processing up to {limit} messages (--limit)")
+
+        output.info(f"\nProcessing {len(messages_to_process):,} messages...")
+
+        # Estimate time
+        est_seconds = len(messages_to_process) * 0.5  # ~2 requests/second
+        output.info(f"Estimated time: {est_seconds/60:.1f} minutes")
+
+        if dry_run:
+            output.warning("[DRY RUN] No changes will be made")
+
+        # 3. Process messages
+        found = 0
+        not_found = 0
+        errors = 0
+        updates: list[tuple[str | None, str]] = []  # (new_gmail_id, old_gmail_id)
+
+        with output.progress_context(
+            "Looking up Gmail IDs...", total=len(messages_to_process)
+        ) as progress:
+            task = None
+            if progress:
+                task = progress.add_task(
+                    "Looking up", total=len(messages_to_process)
+                )
+
+            for i, (old_gmail_id, rfc_message_id) in enumerate(messages_to_process):
+                try:
+                    real_gmail_id = client.search_by_rfc_message_id(rfc_message_id)
+
+                    if real_gmail_id:
+                        found += 1
+                        updates.append((real_gmail_id, old_gmail_id))
+                    else:
+                        not_found += 1
+                        updates.append((None, old_gmail_id))  # Set to NULL
+
+                except Exception as e:
+                    errors += 1
+                    if "429" in str(e) or "rate" in str(e).lower():
+                        output.warning(f"Rate limited at message {i}, waiting 60s...")
+                        import time
+
+                        time.sleep(60)
+
+                if progress and task:
+                    progress.update(task, advance=1)
+
+                # Rate limiting: ~2 requests per second
+                import time
+
+                time.sleep(0.5)
+
+        # 4. Update database
+        output.info("\nResults:")
+        output.info(f"  Found in Gmail: {found:,}")
+        output.info(f"  Not in Gmail (deleted): {not_found:,}")
+        output.info(f"  Errors: {errors:,}")
+
+        if dry_run:
+            output.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
+            if updates[:5]:
+                output.info("Sample updates:")
+                for new_id, old_id in updates[:5]:
+                    status = new_id if new_id else "NULL"
+                    output.info(f"  {old_id[:16]}... -> {status}")
+        else:
+            output.info(f"\nUpdating database with {len(updates):,} changes...")
+            with DBManager(state_db, validate_schema=False, auto_create=False) as db:
+                for new_gmail_id, old_gmail_id in updates:
+                    db.conn.execute(
+                        "UPDATE messages SET gmail_id = ? WHERE gmail_id = ?",
+                        (new_gmail_id, old_gmail_id),
+                    )
+                db.conn.commit()
+            output.success("Database updated!")
+
+        # Summary
+        remaining = len(synthetic_messages) - len(messages_to_process) - offset
+        if remaining > 0:
+            output.info(f"\nRemaining messages to process: {remaining:,}")
+            next_offset = offset + len(messages_to_process)
+            output.info(f"Resume with: --offset {next_offset}")
+
+        output.end_operation(success=True)
+
+    except Exception as e:
+        output.show_error_panel(
+            title="Backfill Failed",
+            message=str(e),
+            suggestion="Check your internet connection and Gmail authentication",
+            exit_code=1,
+        )
 
 
 if __name__ == "__main__":
