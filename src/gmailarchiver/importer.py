@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any
 from gmailarchiver.db_manager import DBManager
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gmailarchiver.gmail_client import GmailClient
 
 logger = logging.getLogger(__name__)
@@ -262,8 +264,38 @@ class ArchiveImporter:
             "account_id": account_id,
         }
 
+    def count_messages(self, archive_path: str | Path) -> int:
+        """
+        Count messages in an mbox archive without importing.
+
+        Args:
+            archive_path: Path to mbox archive file
+
+        Returns:
+            Number of messages in the archive
+        """
+        archive_path = Path(archive_path)
+        if not archive_path.exists():
+            return 0
+
+        mbox_path, is_temp = self._decompress_to_temp(archive_path)
+        try:
+            mbox = mailbox.mbox(str(mbox_path))
+            try:
+                count = len(mbox)
+            finally:
+                mbox.close()
+            return count
+        finally:
+            if is_temp and mbox_path.exists():
+                mbox_path.unlink()
+
     def import_archive(
-        self, archive_path: str | Path, account_id: str = "default", skip_duplicates: bool = True
+        self,
+        archive_path: str | Path,
+        account_id: str = "default",
+        skip_duplicates: bool = True,
+        progress_callback: "Callable[[int, int, str], None] | None" = None,
     ) -> ImportResult:
         """
         Import single mbox archive into database.
@@ -275,6 +307,7 @@ class ArchiveImporter:
             archive_path: Path to mbox archive file
             account_id: Account identifier (default: 'default')
             skip_duplicates: Skip messages that already exist (default: True)
+            progress_callback: Optional callback(current, total, status) for progress updates
 
         Returns:
             ImportResult with statistics and errors
@@ -322,8 +355,12 @@ class ArchiveImporter:
                     # Also track IDs seen in this import session (for intra-file duplicates)
                     session_ids = set()
 
+                    # Get total message count for progress
+                    all_keys = list(mbox.keys())
+                    total_messages = len(all_keys)
+
                     # Process each message with offset tracking
-                    for key in mbox.keys():
+                    for msg_index, key in enumerate(all_keys):
                         try:
                             # Get file position from mbox library
                             # The _toc dict maps key to (offset, length) tuple
@@ -341,15 +378,16 @@ class ArchiveImporter:
                                 rfc_message_id in existing_ids or rfc_message_id in session_ids
                             ):
                                 result.messages_skipped += 1
+                                if progress_callback:
+                                    progress_callback(
+                                        msg_index + 1, total_messages, "Skipped duplicate"
+                                    )
                                 continue
 
                             # Calculate next message position to determine length
-                            keys_list = list(mbox.keys())
-                            key_index = keys_list.index(key)
-
-                            if key_index < len(keys_list) - 1:
+                            if msg_index < total_messages - 1:
                                 # Not the last message - length is distance to next message
-                                next_key = keys_list[key_index + 1]
+                                next_key = all_keys[msg_index + 1]
                                 next_offset = mbox._toc[next_key][0]  # type: ignore[attr-defined]
                                 length = next_offset - offset
                             else:
@@ -360,6 +398,10 @@ class ArchiveImporter:
                             # Look up real Gmail ID if gmail_client is available
                             gmail_id: str | None = None
                             if self.gmail_client is not None:
+                                if progress_callback:
+                                    progress_callback(
+                                        msg_index + 1, total_messages, "Looking up Gmail ID..."
+                                    )
                                 try:
                                     gmail_id = self.gmail_client.search_by_rfc_message_id(
                                         rfc_message_id
@@ -436,18 +478,33 @@ class ArchiveImporter:
                                     )
                                     session_ids.add(rfc_message_id)
                                     result.messages_imported += 1
+
+                                # Report progress after successful import
+                                if progress_callback:
+                                    gmail_status = (
+                                        f"Gmail ID: {gmail_id[:8]}..."
+                                        if gmail_id
+                                        else "No Gmail ID"
+                                    )
+                                    progress_callback(
+                                        msg_index + 1, total_messages, f"Imported ({gmail_status})"
+                                    )
                             except Exception as db_err:
                                 # Database constraint violation (e.g., unique constraint)
                                 result.messages_failed += 1
                                 error_msg = f"Message {key}: Database error: {str(db_err)}"
                                 result.errors.append(error_msg)
                                 db.rollback()  # Rollback this message only
+                                if progress_callback:
+                                    progress_callback(msg_index + 1, total_messages, "DB error")
                                 continue
 
                         except Exception as e:
                             result.messages_failed += 1
                             error_msg = f"Message {key}: {str(e)}"
                             result.errors.append(error_msg)
+                            if progress_callback:
+                                progress_callback(msg_index + 1, total_messages, "Error")
                             continue
 
                     # Record a single archive run for this import operation

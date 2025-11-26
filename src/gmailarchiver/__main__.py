@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import typer
@@ -2214,21 +2215,56 @@ def import_cmd(
     results = []
     start_time = time.perf_counter()
 
-    with output.progress_context(f"Importing {len(files)} file(s)", total=len(files)) as progress:
-        task = progress.add_task("Import", total=len(files)) if progress else None
+    # Count total messages across all files for progress
+    output.info("Counting messages...")
+    total_messages = 0
+    file_message_counts = []
+    for file_path in files:
+        count = importer.count_messages(file_path)
+        file_message_counts.append(count)
+        total_messages += count
+    output.info(f"Total: {total_messages:,} messages to import")
 
-        for file_path in files:
+    # Track overall progress
+    messages_processed = 0
+
+    with output.progress_context(
+        "Importing messages", total=total_messages
+    ) as progress:
+        task = progress.add_task("Import", total=total_messages) if progress else None
+        current_task_pos = 0
+
+        for file_idx, file_path in enumerate(files):
+            file_name = Path(file_path).name
+            output.info(f"\nImporting {file_name} ({file_message_counts[file_idx]:,} messages)...")
+
+            def make_progress_callback(
+                base_pos: int,
+            ) -> Callable[[int, int, str], None]:
+                def callback(current: int, total: int, status: str) -> None:
+                    nonlocal messages_processed
+                    messages_processed = base_pos + current
+                    if progress and task:
+                        progress.update(
+                            task,
+                            completed=messages_processed,
+                            description=f"{status} [{current}/{total}]",
+                        )
+
+                return callback
+
             try:
                 result = importer.import_archive(
-                    file_path, account_id=account_id, skip_duplicates=skip_duplicates
+                    file_path,
+                    account_id=account_id,
+                    skip_duplicates=skip_duplicates,
+                    progress_callback=make_progress_callback(current_task_pos),
                 )
                 results.append(result)
-                if progress and task:
-                    progress.update(task, advance=1)
+                current_task_pos += file_message_counts[file_idx]
             except Exception as e:
                 output.error(f"Error importing {file_path}: {e}")
-                if progress and task:
-                    progress.update(task, advance=1)
+                current_task_pos += file_message_counts[file_idx]
 
     total_time = time.perf_counter() - start_time
 
