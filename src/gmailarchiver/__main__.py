@@ -834,7 +834,7 @@ def migrate(
 
             backup_path = manager.create_backup()
             if progress and task:
-                progress.update(task, advance=1)
+                progress.update(task, advance=1, refresh=True)
 
             ctx.success(f"Backup created: {backup_path}")
 
@@ -843,7 +843,7 @@ def migrate(
                 progress_callback=lambda msg: ctx.info(msg)
             )
             if progress and task:
-                progress.update(task, advance=1)
+                progress.update(task, advance=1, refresh=True)
 
             # Validate migration using SchemaManager
             schema_mgr.invalidate_cache()
@@ -854,7 +854,7 @@ def migrate(
                     f"got {final_version.value}"
                 )
             if progress and task:
-                progress.update(task, advance=1)
+                progress.update(task, advance=1, refresh=True)
 
         # Build report data
         report_data = {
@@ -2035,6 +2035,7 @@ def import_cmd(
                             task,
                             completed=messages_processed,
                             description=f"{status} [{current}/{total}]",
+                            refresh=True,  # Force immediate display refresh
                         )
 
                 return callback

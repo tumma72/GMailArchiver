@@ -310,12 +310,12 @@ class _StaticOperationHandle:
     def update_progress(self, advance: int = 1) -> None:
         """Advance progress."""
         if self._progress and self._task_id is not None:
-            self._progress.update(self._task_id, advance=advance)
+            self._progress.update(self._task_id, advance=advance, refresh=True)
 
     def set_status(self, status: str) -> None:
         """Update status text."""
         if self._progress and self._task_id is not None:
-            self._progress.update(self._task_id, description=status)
+            self._progress.update(self._task_id, description=status, refresh=True)
 
     def set_total(self, total: int, description: str | None = None) -> None:
         """Set total for progress tracking."""
@@ -330,6 +330,7 @@ class _StaticOperationHandle:
                     self._task_id,
                     total=total,
                     description=description or self._description,
+                    refresh=True,
                 )
 
     def succeed(self, message: str) -> None:

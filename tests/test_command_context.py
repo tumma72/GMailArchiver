@@ -196,7 +196,7 @@ class TestStaticOperationHandle:
         handle = _StaticOperationHandle(output, progress, "test", 100)
         handle.update_progress(5)
 
-        progress.update.assert_called_once_with("task_id", advance=5)
+        progress.update.assert_called_once_with("task_id", advance=5, refresh=True)
 
     def test_set_status(self) -> None:
         """set_status() should update task description."""
@@ -207,7 +207,7 @@ class TestStaticOperationHandle:
         handle = _StaticOperationHandle(output, progress, "test", 100)
         handle.set_status("new status")
 
-        progress.update.assert_called_with("task_id", description="new status")
+        progress.update.assert_called_with("task_id", description="new status", refresh=True)
 
     def test_set_total_creates_task(self) -> None:
         """set_total() should create task if none exists."""
