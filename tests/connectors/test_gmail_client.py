@@ -966,9 +966,7 @@ class TestSearchByRfcMessageIdsBatch:
                 return {"messages": [{"id": "gmail1"}]}
             return {}
 
-        mock_service.users().messages().list().execute.side_effect = (
-            mock_execute_side_effect
-        )
+        mock_service.users().messages().list().execute.side_effect = mock_execute_side_effect
 
         client = GmailClient(mock_creds)
 

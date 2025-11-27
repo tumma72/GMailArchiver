@@ -215,7 +215,7 @@ git push origin v1.0.2
 **Archive Management (v1.1.0+):**
 - `import` - Import existing mbox files into database
 - `consolidate` - Merge multiple archives into one
-- `dedupe` / `dedupe-report` - Find and remove duplicate messages
+- `dedupe` - Find and remove duplicate messages (use `--dry-run` for preview)
 - `search` - Search archived messages (metadata + full-text)
 
 **Database Operations (v1.1.0+):**
@@ -223,8 +223,7 @@ git push origin v1.0.2
 - `verify-consistency` - Deep consistency check (database ↔ mbox)
 - `verify-offsets` - Validate mbox offset accuracy
 - `repair` - Fix database issues (with `--backfill` for migration repairs)
-- `db-info` - Show database statistics
-- `status` - Show archiving statistics
+- `status` - Show archiving statistics, schema version, database size (use `--verbose` for more detail)
 
 **Schema Management (v1.1.0+):**
 - `migrate` - Upgrade database schema (v1.0 → v1.1)
@@ -404,7 +403,7 @@ The bundled credentials are "installed application" type (per Google's model):
 **retry-delete Command**:
 If archiving succeeds but deletion fails with 403 error:
 1. Run: `gmailarchiver auth-reset`
-2. Run: `gmailarchiver retry-delete <archive_file> [--permanent]`
+2. Run: `gmailarchiver utilities retry-delete <archive_file> [--permanent]`
 3. The command retrieves message IDs from database and retries deletion
 
 ## Common Debugging Scenarios
@@ -431,7 +430,7 @@ If archiving succeeds but deletion fails with 403 error:
 ### "403 Insufficient Permission" error during deletion
 - Cause: User authenticated with old OAuth scope (missing deletion permission)
 - Solution: Re-authenticate with `gmailarchiver auth-reset`, then retry
-- Alternative: Use `gmailarchiver retry-delete <archive_file>` to retry deletion for already-archived messages
+- Alternative: Use `gmailarchiver utilities retry-delete <archive_file>` to retry deletion for already-archived messages
 
 ## Dependencies
 

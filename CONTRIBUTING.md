@@ -161,11 +161,12 @@ src/gmailarchiver/
   - **Core**: `archive`, `validate`, `status`, `auth-reset`
   - **Search**: `search`
   - **Import**: `import`
-  - **Deduplication**: `dedupe-report`, `dedupe`
+  - **Deduplication**: `dedupe` (use `--dry-run` for preview)
   - **Consolidation**: `consolidate`
-  - **Database**: `migrate`, `db-info`, `rollback`
+  - **Database**: `migrate`, `rollback`, `status` (includes db info)
   - **Verification**: `verify-offsets`, `verify-consistency`, `verify-integrity`
-  - **Repair**: `repair`, `retry-delete`
+  - **Repair**: `repair`
+  - **Utilities**: `retry-delete` (under `util` subcommand)
 - Handles user interaction and Rich console output
 - Orchestrates the archiving workflow
 

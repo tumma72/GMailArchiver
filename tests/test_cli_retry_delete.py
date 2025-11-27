@@ -44,9 +44,7 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch(
-                "gmailarchiver.cli.command_context.GmailAuthenticator"
-            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
             patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
@@ -75,7 +73,7 @@ class TestRetryDeleteCommand:
 
             # Run command (trash, not permanent) - provide 'y' for confirmation
             result = runner.invoke(
-                app, ["retry-delete", archive_file, "--state-db", db_path], input="y\n"
+                app, ["utilities", "retry-delete", archive_file, "--state-db", db_path], input="y\n"
             )
 
             assert result.exit_code == 0
@@ -95,7 +93,7 @@ class TestRetryDeleteCommand:
             MockState.return_value.__exit__.return_value = None
 
             result = runner.invoke(
-                app, ["retry-delete", "nonexistent_archive.mbox", "--state-db", db_path]
+                app, ["utilities", "retry-delete", "nonexistent_archive.mbox", "--state-db", db_path]
             )
 
             assert result.exit_code == 1
@@ -107,9 +105,7 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch(
-                "gmailarchiver.cli.command_context.GmailAuthenticator"
-            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
         ):
             # Mock ArchiveState
             mock_state = Mock()
@@ -126,7 +122,7 @@ class TestRetryDeleteCommand:
             mock_auth.validate_scopes.return_value = False  # Missing deletion scope
             MockAuth.return_value = mock_auth
 
-            result = runner.invoke(app, ["retry-delete", archive_file, "--state-db", db_path])
+            result = runner.invoke(app, ["utilities", "retry-delete", archive_file, "--state-db", db_path])
 
             assert result.exit_code == 1
             assert "Missing deletion permission" in result.stdout
@@ -138,9 +134,7 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch(
-                "gmailarchiver.cli.command_context.GmailAuthenticator"
-            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
             patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
@@ -170,7 +164,7 @@ class TestRetryDeleteCommand:
             # Provide correct confirmation
             result = runner.invoke(
                 app,
-                ["retry-delete", archive_file, "--permanent", "--state-db", db_path],
+                ["utilities", "retry-delete", archive_file, "--permanent", "--state-db", db_path],
                 input="DELETE 5 MESSAGES\n",
             )
 
@@ -186,9 +180,7 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch(
-                "gmailarchiver.cli.command_context.GmailAuthenticator"
-            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
         ):
             # Mock ArchiveState
             mock_state = Mock()
@@ -208,7 +200,7 @@ class TestRetryDeleteCommand:
             # Provide wrong confirmation
             result = runner.invoke(
                 app,
-                ["retry-delete", archive_file, "--permanent", "--state-db", db_path],
+                ["utilities", "retry-delete", archive_file, "--permanent", "--state-db", db_path],
                 input="wrong confirmation\n",
             )
 
@@ -221,9 +213,7 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch(
-                "gmailarchiver.cli.command_context.GmailAuthenticator"
-            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
             patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
@@ -252,7 +242,7 @@ class TestRetryDeleteCommand:
 
             # Run without --permanent flag (provide 'y' for trash confirmation)
             result = runner.invoke(
-                app, ["retry-delete", archive_file, "--state-db", db_path], input="y\n"
+                app, ["utilities", "retry-delete", archive_file, "--state-db", db_path], input="y\n"
             )
 
             assert result.exit_code == 0
@@ -275,9 +265,7 @@ class TestRetryDeleteIntegration:
 
             with (
                 patch("gmailarchiver.__main__.ArchiveState") as MockState,
-                patch(
-                    "gmailarchiver.cli.command_context.GmailAuthenticator"
-                ) as MockAuth,
+                patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
                 patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
                 patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
             ):
@@ -300,7 +288,7 @@ class TestRetryDeleteIntegration:
                 MockArchiver.return_value = mock_archiver
 
                 result = runner.invoke(
-                    app, ["retry-delete", archive_file, "--state-db", str(tmpdir)], input="y\n"
+                    app, ["utilities", "retry-delete", archive_file, "--state-db", str(tmpdir)], input="y\n"
                 )
 
                 assert result.exit_code == 0

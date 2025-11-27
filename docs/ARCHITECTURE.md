@@ -658,7 +658,6 @@ graph LR
         B1[status]
         B2[verify-integrity]
         B3[repair]
-        B4[db-info]
     end
 
     subgraph "Progress Commands"

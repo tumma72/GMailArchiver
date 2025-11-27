@@ -209,8 +209,9 @@ class TestConsolidateCleanup:
         assert output.exists(), "Output file should exist"
         assert not src1.exists(), "Source file 1 should be removed"
         assert not src2.exists(), "Source file 2 should be removed"
-        assert "Removed 2 source files" in result.stdout or "removed 2" in result.stdout.lower()
-        assert "Space freed" in result.stdout or "space freed" in result.stdout.lower()
+        # New task_sequence UI pattern: "Removed N file(s), freed X"
+        assert "Removed 2 file(s)" in result.stdout or "removed 2" in result.stdout.lower()
+        assert "freed" in result.stdout.lower()
 
     def test_consolidate_remove_sources_without_yes_prompts(self, temp_dir, state_db):
         """Test --remove-sources without --yes shows confirmation prompt."""
@@ -404,7 +405,8 @@ class TestConsolidateCleanup:
 
         # Verify space reporting
         assert result.exit_code == 0
-        assert "Space freed" in result.stdout or "space freed" in result.stdout.lower()
+        # Output format is "Removed X file(s), freed Y KB"
+        assert "freed" in result.stdout.lower()
         # Should mention size in human-readable format (KB, MB, etc.)
         assert any(unit in result.stdout for unit in ["KB", "MB", "GB", "bytes", "B"])
 

@@ -346,8 +346,8 @@ def archive(
     ]
 
     if not trash and not delete:
-        next_steps.append(f"Move to trash: gmailarchiver retry-delete {output}")
-        next_steps.append(f"Permanently delete: gmailarchiver retry-delete {output} --permanent")
+        next_steps.append(f"Move to trash: gmailarchiver utilities retry-delete {output}")
+        next_steps.append(f"Permanently delete: gmailarchiver utilities retry-delete {output} --permanent")
 
     ctx.suggest_next_steps(next_steps)
 
@@ -389,30 +389,39 @@ def validate(
             ),
         )
 
-    # Get expected message IDs from state database for this specific archive
-    try:
-        with ArchiveState(state_db) as state:
-            expected_ids = state.get_archived_message_ids_for_file(archive_file)
-    except Exception as e:
-        ctx.fail_and_exit(
-            title="Database Error",
-            message=f"Failed to read database: {e}",
-            suggestion="Check database file permissions and integrity",
-        )
+    # Run validation with task sequence pattern
+    expected_ids: set[str] = set()
+    results: dict[str, Any] = {}
 
-    # Run validation with progress tracking
-    validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+    with ctx.ui.task_sequence() as seq:
+        # Task 1: Load database information
+        with seq.task("Loading database information") as t:
+            try:
+                with ArchiveState(state_db) as state:
+                    expected_ids = state.get_archived_message_ids_for_file(archive_file)
+                t.complete(f"Found {len(expected_ids):,} messages")
+            except Exception as e:
+                t.fail("Database error", reason=str(e))
+                ctx.fail_and_exit(
+                    title="Database Error",
+                    message=f"Failed to read database: {e}",
+                    suggestion="Check database file permissions and integrity",
+                )
 
-    ctx.info(f"Validating {len(expected_ids):,} expected messages...")
+        # Task 2: Run validation checks
+        with seq.task("Running validation checks") as t:
+            validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+            results = validator.validate_comprehensive(expected_ids)
 
-    with ctx.output.progress_context("Running validation checks", total=4) as progress:
-        task = progress.add_task("Validation", total=4) if progress else None
-
-        # Run comprehensive validation
-        results = validator.validate_comprehensive(expected_ids)
-
-        if progress and task:
-            progress.update(task, completed=4)
+            if results["passed"]:
+                t.complete("All checks passed")
+            else:
+                failed_checks = [
+                    k.replace("_check", "").replace("_", " ")
+                    for k, v in results.items()
+                    if k.endswith("_check") and not v
+                ]
+                t.complete(f"Failed: {', '.join(failed_checks)}")
 
     # Show validation report using OutputManager method
     ctx.output.show_validation_report(results, title="Archive Validation")
@@ -448,7 +457,6 @@ def validate(
 
 
 @utilities_app.command("retry-delete")
-@app.command("retry-delete", hidden=True)
 @with_context(operation_name="retry-delete")
 def retry_delete_cmd(
     ctx: CommandContext,
@@ -473,10 +481,10 @@ def retry_delete_cmd(
 
     Examples:
         Trash messages (recoverable for 30 days):
-        $ gmailarchiver retry-delete archive_20251114.mbox
+        $ gmailarchiver utilities retry-delete archive_20251114.mbox
 
         Permanent deletion (IRREVERSIBLE):
-        $ gmailarchiver retry-delete archive_20251114.mbox --permanent
+        $ gmailarchiver utilities retry-delete archive_20251114.mbox --permanent
     """
     try:
         # 1. Get archived message IDs from database
@@ -554,13 +562,18 @@ def status(
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show more detail"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
     Show archiving status and statistics.
 
+    Displays database size, schema version, message counts, and recent archive runs.
+    Use --verbose for more detail about each statistic.
+
     Examples:
         $ gmailarchiver status
+        $ gmailarchiver status --verbose
         $ gmailarchiver status --json
     """
     # Check if database exists
@@ -575,39 +588,85 @@ def status(
         )
         raise typer.Exit(0)
 
-    with ArchiveState(state_db) as state:
-        # Overall stats
-        total_archived = state.get_archived_count()
+    # Detect schema version
+    manager = MigrationManager(db_path)
+    try:
+        version = manager.detect_schema_version()
+        db_size = db_path.stat().st_size
 
-        # Recent runs
-        recent_runs = state.get_archive_runs(limit=10)
+        with ArchiveState(state_db, validate_path=False) as state:
+            # Overall stats
+            total_archived = state.get_archived_count()
 
-        # Build report data
-        report_data = {
-            "Total Messages Archived": f"{total_archived:,}",
-            "Recent Archive Runs": len(recent_runs),
-        }
+            # Recent runs - show more in verbose mode
+            run_limit = 10 if verbose else 5
+            recent_runs = state.get_archive_runs(limit=run_limit)
 
-        ctx.show_report("Archive Status", report_data)
+            # Get unique archive files from runs
+            archive_files = set(
+                run["archive_file"] for run in recent_runs if run.get("archive_file")
+            )
 
-        # Display recent runs table
-        if recent_runs:
-            headers = ["Run ID", "Timestamp", "Query", "Messages", "Archive File"]
-            rows: list[list[str]] = []
-            for run in recent_runs:
-                rows.append(
-                    [
-                        str(run["run_id"]),
-                        run["timestamp"][:19],  # Truncate timestamp
-                        run["query"],
-                        str(run["messages_archived"]),
-                        run["archive_file"],
-                    ]
-                )
+            # Build report data - always show schema version and db size
+            report_data: dict[str, str] = {
+                "Schema Version": version,
+                "Database Size": format_bytes(db_size),
+                "Total Messages": f"{total_archived:,}",
+                "Archive Files": str(len(archive_files)),
+            }
 
-            ctx.show_table("Recent Archive Runs", headers, rows)
-        else:
-            ctx.warning("No archive runs found")
+            # Add verbose details (more detail about same info)
+            if verbose and archive_files:
+                sorted_files = sorted(archive_files)
+                if sorted_files:
+                    report_data["Archive Files"] = (
+                        f"{len(archive_files)} (recent: {sorted_files[-1][:25]}...)"
+                    )
+
+            ctx.show_report("Archive Status", report_data)
+
+            # Display recent runs table
+            if recent_runs:
+                # Include query column in verbose mode
+                if verbose:
+                    headers = ["Run ID", "Timestamp", "Query", "Messages", "Archive File"]
+                    rows: list[list[str]] = []
+                    for run in recent_runs:
+                        rows.append(
+                            [
+                                str(run["run_id"]),
+                                run["timestamp"][:19],
+                                run["query"][:30] if run["query"] else "",
+                                str(run["messages_archived"]),
+                                run["archive_file"],
+                            ]
+                        )
+                else:
+                    headers = ["Run ID", "Timestamp", "Messages", "Archive File"]
+                    rows = []
+                    for run in recent_runs:
+                        rows.append(
+                            [
+                                str(run["run_id"]),
+                                run["timestamp"][:19],
+                                str(run["messages_archived"]),
+                                run["archive_file"],
+                            ]
+                        )
+
+                table_title = f"Recent Archive Runs (Last {run_limit})"
+                ctx.show_table(table_title, headers, rows)
+            else:
+                ctx.warning("No archive runs found")
+
+    except Exception as e:
+        ctx.fail_and_exit(
+            title="Status Error",
+            message=f"Error reading database: {e}",
+            suggestion="Check database file integrity or run 'gmailarchiver doctor'",
+        )
+    finally:
+        manager._close()
 
 
 @app.command()
@@ -899,92 +958,6 @@ def migrate(
             manager._close()
 
 
-@utilities_app.command(name="db-info")
-@app.command(name="db-info", hidden=True)
-@with_context(operation_name="db-info")
-def db_info(
-    ctx: CommandContext,
-    state_db: str = typer.Option(
-        "archive_state.db", "--state-db", help="Path to state database file"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
-) -> None:
-    """
-    Display database information and statistics.
-
-    Shows schema version, message count, database size, and recent archive runs.
-
-    Examples:
-        $ gmailarchiver db-info
-        $ gmailarchiver db-info --state-db /path/to/archive_state.db
-        $ gmailarchiver db-info --json
-    """
-    db_path = Path(state_db)
-
-    # Check if database exists
-    if not db_path.exists():
-        ctx.warning(f"Database not found: {state_db}")
-        ctx.suggest_next_steps(
-            [
-                "Create database: gmailarchiver archive 3y",
-                "Import archive: gmailarchiver import archive.mbox",
-            ]
-        )
-        return
-
-    # Detect schema version
-    manager = MigrationManager(db_path)
-    try:
-        version = manager.detect_schema_version()
-
-        # Show database file size
-        db_size = db_path.stat().st_size
-
-        # Get message count and recent runs
-        with ArchiveState(db_path=str(db_path), validate_path=False) as state:
-            total_messages = state.get_archived_count()
-
-            # Show recent archive runs
-            recent_runs = state.get_archive_runs(limit=5)
-
-            # Build report data
-            report_data = {
-                "Schema Version": version,
-                "Database Size": format_bytes(db_size),
-                "Total Messages": f"{total_messages:,}",
-                "Recent Archive Runs": len(recent_runs),
-            }
-
-            ctx.show_report("Database Information", report_data)
-
-            # Display recent runs table
-            if recent_runs:
-                headers = ["Run ID", "Timestamp", "Messages", "Archive File"]
-                rows: list[list[str]] = []
-                for run in recent_runs:
-                    rows.append(
-                        [
-                            str(run["run_id"]),
-                            run["timestamp"][:19],  # Truncate timestamp
-                            str(run["messages_archived"]),
-                            run["archive_file"],
-                        ]
-                    )
-
-                ctx.show_table("Recent Archive Runs (Last 5)", headers, rows)
-            else:
-                ctx.warning("No archive runs found")
-
-    except Exception as e:
-        ctx.fail_and_exit(
-            title="Database Error",
-            message=f"Error reading database: {e}",
-            suggestion="Check database file integrity",
-        )
-    finally:
-        manager._close()
-
-
 @utilities_app.command()
 @app.command(hidden=True)
 @with_context(operation_name="rollback")
@@ -1089,93 +1062,6 @@ def rollback(
         )
 
 
-@utilities_app.command(name="dedupe-report")
-@app.command(name="dedupe-report", hidden=True)
-@with_context(has_progress=True, operation_name="dedupe-report")
-def dedupe_report(
-    ctx: CommandContext,
-    state_db: str = typer.Option(
-        "archive_state.db", "--state-db", help="Path to state database file"
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
-) -> None:
-    """
-    Show deduplication analysis without making changes.
-
-    Analyzes the archive database for duplicate messages (same RFC Message-ID)
-    and displays statistics about potential space savings.
-
-    Example:
-        $ gmailarchiver dedupe-report
-        $ gmailarchiver dedupe-report --state-db /path/to/archive_state.db
-        $ gmailarchiver dedupe-report --json
-    """
-    db_path = Path(state_db)
-
-    # Check if database exists
-    if not db_path.exists():
-        ctx.fail_and_exit(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion="Run 'gmailarchiver import' or specify database path with --state-db",
-        )
-
-    try:
-        # Initialize deduplicator (validates v1.1 schema)
-        with MessageDeduplicator(str(db_path)) as dedup:
-            with ctx.output.progress_context("Analyzing duplicates", total=None):
-                # Find duplicates
-                duplicates = dedup.find_duplicates()
-
-                # Generate report
-                report = dedup.generate_report(duplicates)
-
-            # Display results
-            if report.duplicate_message_ids == 0:
-                ctx.success("No duplicate messages found!")
-                return
-
-            # Build report data
-            report_data = {
-                "Total Messages": f"{report.total_messages:,}",
-                "Duplicate Message-IDs": report.duplicate_message_ids,
-                "Total Duplicate Messages": report.total_duplicate_messages,
-                "Messages to Remove": report.messages_to_remove,
-                "Space Recoverable": format_bytes(report.space_recoverable),
-            }
-
-            ctx.show_report("Deduplication Analysis", report_data)
-
-            # Show breakdown by archive file
-            if report.breakdown_by_archive:
-                ctx.info("\nBreakdown by archive file:")
-                for archive_file, stats in sorted(report.breakdown_by_archive.items()):
-                    ctx.info(
-                        f"  • {archive_file}: {stats['messages_to_remove']} duplicates, "
-                        f"{format_bytes(stats['space_recoverable'])} recoverable"
-                    )
-
-            ctx.suggest_next_steps(
-                [
-                    "Remove duplicates (dry run): gmailarchiver dedupe --dry-run",
-                    "Remove duplicates: gmailarchiver dedupe --strategy newest --no-dry-run",
-                ]
-            )
-
-    except ValueError as e:
-        ctx.fail_and_exit(
-            title="Schema Error",
-            message=str(e),
-            suggestion="Run 'gmailarchiver migrate' to upgrade your database",
-        )
-    except Exception as e:
-        ctx.fail_and_exit(
-            title="Analysis Failed",
-            message=f"Deduplication analysis failed: {e}",
-            suggestion="Check database integrity and try again",
-        )
-
-
 @utilities_app.command()
 @app.command(hidden=True)
 @with_context(requires_db=True, operation_name="dedupe")
@@ -1227,106 +1113,134 @@ def dedupe(
     try:
         # Initialize deduplicator (validates v1.1 schema)
         with MessageDeduplicator(str(db_path)) as dedup:
-            with ctx.output.progress_context("Finding duplicates", total=None):
-                # Find duplicates
-                duplicates = dedup.find_duplicates()
+            with ctx.ui.task_sequence() as seq:
+                # Task 1: Find duplicates
+                with seq.task("Finding duplicates") as t:
+                    duplicates = dedup.find_duplicates()
+                    if not duplicates:
+                        t.complete("No duplicates found")
+                        ctx.success("No duplicate messages found!")
+                        return
+                    t.complete(f"Found {len(duplicates):,} duplicate message IDs")
 
-            # Check if there are duplicates
-            if not duplicates:
-                ctx.success("No duplicate messages found!")
-                return
+                # Task 2: Analyze duplicates
+                with seq.task("Analyzing duplicates") as t:
+                    report = dedup.generate_report(duplicates)
+                    t.complete(
+                        f"{report.messages_to_remove:,} messages to remove, "
+                        f"{format_bytes(report.space_recoverable)} recoverable"
+                    )
 
-            # Show what will be done
-            report = dedup.generate_report(duplicates)
+                report_data = {
+                    "Strategy": strategy,
+                    "Duplicate Message-IDs": report.duplicate_message_ids,
+                    "Messages to Remove": report.messages_to_remove,
+                    "Space to Save": format_bytes(report.space_recoverable),
+                }
 
-            report_data = {
-                "Strategy": strategy,
-                "Duplicate Message-IDs": report.duplicate_message_ids,
-                "Messages to Remove": report.messages_to_remove,
-                "Space to Save": format_bytes(report.space_recoverable),
-            }
+                if dry_run:
+                    ctx.warning("DRY RUN - No changes will be made")
 
-            if dry_run:
-                ctx.warning("DRY RUN - No changes will be made")
+                    # Task 3: Preview deduplication (dry run)
+                    with seq.task("Previewing deduplication") as t:
+                        result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
+                        t.complete(
+                            f"Would remove {result.messages_removed:,} messages, "
+                            f"keep {result.messages_kept:,} messages"
+                        )
 
-                with ctx.output.progress_context("Analyzing duplicates", total=None):
-                    # Show preview of what would be removed
-                    result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
+                    report_data["Would Remove"] = f"{result.messages_removed:,} messages"
+                    report_data["Would Keep"] = f"{result.messages_kept:,} messages"
+                    report_data["Would Save"] = format_bytes(result.space_saved)
 
-                report_data["Would Remove"] = f"{result.messages_removed:,} messages"
-                report_data["Would Keep"] = f"{result.messages_kept:,} messages"
-                report_data["Would Save"] = format_bytes(result.space_saved)
+                    ctx.show_report("Deduplication Preview (Dry Run)", report_data)
 
-                ctx.show_report("Deduplication Preview (Dry Run)", report_data)
+                    ctx.suggest_next_steps(
+                        [
+                            (
+                                f"Apply changes: gmailarchiver dedupe "
+                                f"--strategy {strategy} --no-dry-run"
+                            ),
+                        ]
+                    )
 
-                ctx.suggest_next_steps(
-                    [
-                        f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run",
-                    ]
-                )
+                else:
+                    # Confirm before proceeding
+                    ctx.warning(
+                        "⚠ WARNING: This will permanently remove duplicate messages "
+                        "from the database"
+                    )
+                    ctx.info("The mbox files themselves will not be modified.")
 
-            else:
-                # Confirm before proceeding
-                ctx.warning(
-                    "⚠ WARNING: This will permanently remove duplicate messages from the database"
-                )
-                ctx.info("The mbox files themselves will not be modified.")
+                    if not typer.confirm(
+                        f"Remove {report.messages_to_remove:,} duplicate messages "
+                        f"using '{strategy}' strategy?"
+                    ):
+                        ctx.info("Cancelled")
+                        return
 
-                if not typer.confirm(
-                    f"Remove {report.messages_to_remove:,} duplicate messages "
-                    f"using '{strategy}' strategy?"
-                ):
-                    ctx.info("Cancelled")
-                    return
+                    # Task 3: Perform deduplication
+                    with seq.task("Removing duplicates") as t:
+                        result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
+                        t.complete(
+                            f"Removed {result.messages_removed:,} messages, "
+                            f"kept {result.messages_kept:,} messages"
+                        )
 
-                # Perform deduplication
-                with ctx.output.progress_context("Removing duplicates", total=None):
-                    result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
+                    report_data["Removed"] = f"{result.messages_removed:,} messages"
+                    report_data["Kept"] = f"{result.messages_kept:,} messages"
+                    report_data["Space Saved"] = format_bytes(result.space_saved)
 
-                report_data["Removed"] = f"{result.messages_removed:,} messages"
-                report_data["Kept"] = f"{result.messages_kept:,} messages"
-                report_data["Space Saved"] = format_bytes(result.space_saved)
+                    ctx.show_report("Deduplication Results", report_data)
+                    ctx.success("Deduplication completed!")
 
-                ctx.show_report("Deduplication Results", report_data)
-                ctx.success("Deduplication completed!")
+                    ctx.suggest_next_steps(
+                        [
+                            "Verify database: gmailarchiver verify-integrity",
+                            (
+                                "Consolidate archives: "
+                                "gmailarchiver consolidate archive*.mbox -o merged.mbox"
+                            ),
+                        ]
+                    )
 
-                ctx.suggest_next_steps(
-                    [
-                        "Verify database: gmailarchiver verify-integrity",
-                        (
-                            "Consolidate archives: "
-                            "gmailarchiver consolidate archive*.mbox -o merged.mbox"
-                        ),
-                    ]
-                )
+                    # Auto-verify if requested (only for non-dry-run)
+                    if auto_verify:
+                        from gmailarchiver.data.db_manager import DBManager
 
-                # Auto-verify if requested (only for non-dry-run)
-                if auto_verify:
-                    from gmailarchiver.data.db_manager import DBManager
+                        ctx.info("\nRunning verification...")
 
-                    ctx.info("\nRunning verification...")
-                    try:
-                        db = DBManager(str(db_path), validate_schema=False)
-                        issues = db.verify_database_integrity()
-                        db.close()
+                        with seq.task("Verifying database integrity") as t:
+                            try:
+                                db = DBManager(str(db_path), validate_schema=False)
+                                issues = db.verify_database_integrity()
+                                db.close()
 
-                        if not issues:
-                            ctx.success("Verification complete - no issues found")
-                        else:
-                            ctx.warning(f"Verification found {len(issues)} issue(s):")
-                            for issue in issues[:5]:  # Show first 5 issues
-                                ctx.info(f"  • {issue}")
-                            if len(issues) > 5:
-                                ctx.info(f"  ... and {len(issues) - 5} more issues")
+                                if not issues:
+                                    t.complete("No issues found")
+                                else:
+                                    t.complete(f"Found {len(issues)} issue(s)")
+                                    ctx.warning(f"Verification found {len(issues)} issue(s):")
+                                    for issue in issues[:5]:  # Show first 5 issues
+                                        ctx.info(f"  • {issue}")
+                                    if len(issues) > 5:
+                                        ctx.info(f"  ... and {len(issues) - 5} more issues")
 
-                            ctx.suggest_next_steps(
-                                [
-                                    "Fix issues automatically: gmailarchiver check --auto-repair",
-                                    "View all issues: gmailarchiver verify-integrity --verbose",
-                                ]
-                            )
-                    except Exception as e:
-                        ctx.warning(f"Verification failed: {e}")
+                                    ctx.suggest_next_steps(
+                                        [
+                                            (
+                                                "Fix issues automatically: "
+                                                "gmailarchiver check --auto-repair"
+                                            ),
+                                            (
+                                                "View all issues: "
+                                                "gmailarchiver verify-integrity --verbose"
+                                            ),
+                                        ]
+                                    )
+                            except Exception as e:
+                                t.fail("Verification failed", reason=str(e))
+                                ctx.warning(f"Verification failed: {e}")
 
     except ValueError as e:
         ctx.fail_and_exit(
@@ -1374,12 +1288,18 @@ def verify_offsets_cmd(
     # Create validator and run verification
     try:
         validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+        result = None
 
-        with ctx.output.progress_context("Verifying offsets", total=1) as progress:
-            task = progress.add_task("Offset verification", total=1) if progress else None
-            result = validator.verify_offsets()
-            if progress and task:
-                progress.update(task, completed=1)
+        with ctx.ui.task_sequence() as seq:
+            with seq.task("Verifying offsets") as t:
+                result = validator.verify_offsets()
+
+                if result.skipped:
+                    t.complete("Skipped (v1.0 schema)")
+                elif result.accuracy_percentage == 100.0:
+                    t.complete(f"All {result.total_checked} offsets verified")
+                else:
+                    t.complete(f"Found {result.failed_reads} issue(s)")
 
         # Handle skipped (v1.0 schema)
         if result.skipped:
@@ -1468,11 +1388,19 @@ def verify_consistency_cmd(
     try:
         validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
 
-        with ctx.output.progress_context("Running consistency checks", total=5) as progress:
-            task = progress.add_task("Consistency checks", total=5) if progress else None
-            report = validator.verify_consistency()
-            if progress and task:
-                progress.update(task, completed=5)
+        with ctx.ui.task_sequence() as seq:
+            with seq.task("Running consistency checks") as t:
+                report = validator.verify_consistency()
+
+                if report.passed:
+                    t.complete("All checks passed")
+                else:
+                    total_issues = (
+                        report.orphaned_records
+                        + report.missing_records
+                        + report.duplicate_gmail_ids
+                    )
+                    t.complete(f"Found {total_issues} issue(s)")
 
         # Build report data
         report_data = {
@@ -2240,20 +2168,218 @@ def consolidate(
     consolidator = ArchiveConsolidator(state_db)
 
     try:
-        with ctx.output.progress_context("Consolidating archives", total=None):
-            # Convert file paths to list[str | Path] for type compatibility
-            source_paths: list[str | Path] = [Path(f) for f in all_files]
+        with ctx.ui.task_sequence() as seq:
+            # Task 1: Consolidate archives
+            with seq.task("Consolidating archives") as t:
+                # Convert file paths to list[str | Path] for type compatibility
+                source_paths: list[str | Path] = [Path(f) for f in all_files]
 
-            result = consolidator.consolidate(
-                source_archives=source_paths,
-                output_archive=output_file,
-                sort_by_date=sort,
-                deduplicate=dedupe,
-                dedupe_strategy=dedupe_strategy,
-                compress=compress,
-            )
+                result = consolidator.consolidate(
+                    source_archives=source_paths,
+                    output_archive=output_file,
+                    sort_by_date=sort,
+                    deduplicate=dedupe,
+                    dedupe_strategy=dedupe_strategy,
+                    compress=compress,
+                )
+                t.complete(
+                    f"Consolidated {result.messages_consolidated:,} messages from "
+                    f"{len(result.source_files)} archive(s)"
+                )
 
-        # 6. Build report data
+            # Task 2: Auto-verify if requested (within task_sequence)
+            if auto_verify:
+                from gmailarchiver.data.db_manager import DBManager
+
+                with seq.task("Verifying database integrity") as t:
+                    try:
+                        db = DBManager(str(state_db), validate_schema=False)
+                        issues = db.verify_database_integrity()
+                        db.close()
+
+                        if not issues:
+                            t.complete("No issues found")
+                        else:
+                            t.complete(f"Found {len(issues)} issue(s)")
+                            ctx.warning(f"Verification found {len(issues)} issue(s):")
+                            for issue in issues[:5]:
+                                ctx.info(f"  • {issue}")
+                            if len(issues) > 5:
+                                ctx.info(f"  ... and {len(issues) - 5} more issues")
+
+                            ctx.suggest_next_steps(
+                                [
+                                    (
+                                        "Fix issues automatically: "
+                                        "gmailarchiver check --auto-repair"
+                                    ),
+                                    (
+                                        "View all issues: "
+                                        "gmailarchiver verify-integrity --verbose"
+                                    ),
+                                ]
+                            )
+                    except Exception as e:  # pragma: no cover - defensive
+                        t.fail("Verification failed", reason=str(e))
+                        ctx.warning(f"Verification failed: {e}")
+
+            # Task 3: Validate consolidated archive before removing sources
+            cleanup_data: dict[str, Any] | None = None
+            if remove_sources:
+                try:
+                    with seq.task("Validating consolidated archive") as t:
+                        output_path = Path(result.output_file)
+                        if not output_path.exists():
+                            t.fail("Archive does not exist")
+                            ctx.error(
+                                "Consolidated archive does not exist - source files NOT removed"
+                            )
+                            raise typer.Exit(1)
+
+                        try:
+                            # Verify we can read the output file (basic safety check)
+                            output_size = output_path.stat().st_size
+                            if output_size == 0:
+                                t.fail("Archive is empty")
+                                ctx.warning(
+                                    "Consolidated archive appears to be empty "
+                                    "- skipping source file removal"
+                                )
+                                raise typer.Exit(1)
+                        except typer.Exit:
+                            raise
+                        except OSError as e:
+                            t.fail("Cannot access archive", reason=str(e))
+                            ctx.warning(f"Cannot access consolidated archive: {e}")
+                            ctx.info("Skipping source file removal due to access issues")
+                            raise typer.Exit(1)
+
+                        try:
+                            # Use ArchiveValidator to verify archive can be read
+                            validator = ArchiveValidator(str(output_path))
+                            # Simple check: verify archive is readable and has content
+                            is_valid = validator.validate_all()
+                            if not is_valid:
+                                # Try to get error details
+                                errors = validator.errors
+                                error_msg = errors[0] if errors else "Unknown error"
+                                t.fail("Validation failed", reason=error_msg)
+                                ctx.warning(f"Archive validation failed: {error_msg}")
+                                ctx.info(
+                                    "Please review the consolidated archive "
+                                    "before manually removing sources"
+                                )
+                                raise typer.Exit(1)
+                            t.complete(f"Archive valid ({format_bytes(output_size)})")
+                        except typer.Exit:
+                            raise
+                        except Exception as e:
+                            t.fail("Validation error", reason=str(e))
+                            ctx.warning(f"Archive readability check failed: {e}")
+                            ctx.info("Skipping source file removal due to verification issues")
+                            raise typer.Exit(1)
+
+                    # Determine which files to remove (exclude output file)
+                    output_path_resolved = Path(output_file).resolve()
+                    files_to_remove = []
+                    total_size = 0
+
+                    for source_file in all_files:
+                        source_path = Path(source_file).resolve()
+                        # Never remove the output file
+                        if source_path != output_path_resolved:
+                            if source_path.exists():
+                                total_size += source_path.stat().st_size
+                                files_to_remove.append(source_path)
+
+                    if not files_to_remove:
+                        ctx.info("No source files to remove (output file is the only file)")
+                    else:
+                        # Determine if we should proceed with removal
+                        # Auto-confirm if --yes or --json is provided
+                        should_remove = yes or json_output
+
+                        if not should_remove:
+                            # Show confirmation prompt
+                            ctx.info(
+                                f"\nThe following {len(files_to_remove)} "
+                                f"source file(s) will be removed:"
+                            )
+                            for file_path in files_to_remove:
+                                ctx.info(f"  • {file_path}")
+                            ctx.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
+
+                            should_remove = typer.confirm("\nRemove source files?")
+                            if not should_remove:
+                                ctx.info("Source file removal cancelled - files kept")
+
+                        if should_remove:
+                            # Task 4: Remove source files
+                            with seq.task(
+                                "Removing source files", total=len(files_to_remove)
+                            ) as t:
+                                removed_count = 0
+                                freed_space = 0
+                                failed_removals = []
+
+                                for file_path in files_to_remove:
+                                    try:
+                                        file_size = file_path.stat().st_size
+                                        file_path.unlink()
+                                        removed_count += 1
+                                        freed_space += file_size
+                                        t.advance()
+                                    except FileNotFoundError:
+                                        # File already deleted - that's OK
+                                        t.advance()
+                                    except PermissionError as e:
+                                        failed_removals.append(f"{file_path}: {e}")
+                                        t.advance()
+                                    except Exception as e:
+                                        failed_removals.append(f"{file_path}: {e}")
+                                        t.advance()
+
+                                # Complete task
+                                if removed_count > 0:
+                                    t.complete(
+                                        f"Removed {removed_count} file(s), "
+                                        f"freed {format_bytes(freed_space)}"
+                                    )
+                                else:
+                                    t.fail("No files removed")
+
+                                # Record cleanup data for JSON top-level summary
+                                cleanup_data = {
+                                    "removed_files": removed_count,
+                                    "space_freed_bytes": freed_space,
+                                    "failed_removals": len(failed_removals),
+                                }
+
+                                # Add cleanup data to JSON events for scripting
+                                if json_output:
+                                    ctx.output._json_events.append(
+                                        {
+                                            "event": "cleanup",
+                                            **cleanup_data,
+                                        }
+                                    )
+
+                            if failed_removals:
+                                ctx.warning(
+                                    f"Failed to remove {len(failed_removals)} file(s):"
+                                )
+                                for failure in failed_removals[:3]:
+                                    ctx.info(f"  • {failure}")
+                                if len(failed_removals) > 3:
+                                    ctx.info(f"  ... and {len(failed_removals) - 3} more")
+
+                except typer.Exit:
+                    raise
+                except Exception as e:
+                    ctx.warning(f"Source file cleanup failed: {e}")
+                    ctx.info("Consolidation succeeded but source files were NOT removed")
+
+        # 6. Build report data (after task_sequence)
         report_data = {
             "Source Archives": len(result.source_files),
             "Total Messages": result.total_messages,
@@ -2279,176 +2405,6 @@ def consolidate(
                 "Search messages: gmailarchiver search <query>",
             ]
         )
-
-        # Auto-verify if requested
-        if auto_verify:
-            from gmailarchiver.data.db_manager import DBManager
-
-            ctx.info("\nRunning verification...")
-            try:
-                db = DBManager(str(state_db), validate_schema=False)
-                issues = db.verify_database_integrity()
-                db.close()
-
-                if not issues:
-                    ctx.success("Verification passed - no issues found")
-                else:
-                    ctx.warning(f"Verification found {len(issues)} issue(s):")
-                    for issue in issues[:5]:
-                        ctx.info(f"  • {issue}")
-                    if len(issues) > 5:
-                        ctx.info(f"  ... and {len(issues) - 5} more issues")
-
-                    ctx.suggest_next_steps(
-                        [
-                            "Fix issues automatically: gmailarchiver check --auto-repair",
-                            "View all issues: gmailarchiver verify-integrity --verbose",
-                        ]
-                    )
-            except Exception as e:  # pragma: no cover - defensive
-                ctx.warning(f"Verification failed: {e}")
-
-        # 8. Validate consolidated archive before removing sources
-        cleanup_data: dict[str, Any] | None = None
-        if remove_sources:
-            try:
-                # First: Basic safety checks - ensure consolidated output exists and is readable
-                ctx.info("\nValidating consolidated archive...")
-                output_path = Path(result.output_file)
-                if not output_path.exists():
-                    ctx.error("Consolidated archive does not exist - source files NOT removed")
-                    return
-
-                try:
-                    # Verify we can read the output file (basic safety check)
-                    output_size = output_path.stat().st_size
-                    if output_size == 0:
-                        ctx.warning(
-                            "Consolidated archive appears to be empty "
-                            "- skipping source file removal"
-                        )
-                        return
-                except OSError as e:
-                    ctx.warning(f"Cannot access consolidated archive: {e}")
-                    ctx.info("Skipping source file removal due to access issues")
-                    return
-
-                ctx.info(f"Safety check passed (output: {format_bytes(output_size)})")
-
-                # Second: Verify archive is readable and non-empty via validation
-                ctx.info("Verifying archive readability...")
-                try:
-                    # Use ArchiveValidator to verify archive can be read
-                    validator = ArchiveValidator(str(output_path))
-                    # Simple check: verify archive is readable and has content
-                    is_valid = validator.validate_all()
-                    if not is_valid:
-                        # Try to get error details
-                        errors = validator.errors
-                        if errors:
-                            ctx.warning(f"Archive validation failed: {errors[0]}")
-                        else:
-                            ctx.warning(
-                                "Consolidated archive validation failed - source files NOT removed"
-                            )
-                        ctx.info(
-                            "Please review the consolidated archive "
-                            "before manually removing sources"
-                        )
-                        return
-                    ctx.success("Archive readability verified")
-                except Exception as e:
-                    ctx.warning(f"Archive readability check failed: {e}")
-                    ctx.info("Skipping source file removal due to verification issues")
-                    return
-
-                # Determine which files to remove (exclude output file)
-                output_path_resolved = Path(output_file).resolve()
-                files_to_remove = []
-                total_size = 0
-
-                for source_file in all_files:
-                    source_path = Path(source_file).resolve()
-                    # Never remove the output file
-                    if source_path != output_path_resolved:
-                        if source_path.exists():
-                            total_size += source_path.stat().st_size
-                            files_to_remove.append(source_path)
-
-                if not files_to_remove:
-                    ctx.info("No source files to remove (output file is the only file)")
-                else:
-                    # Determine if we should proceed with removal
-                    # Auto-confirm if --yes or --json is provided
-                    should_remove = yes or json_output
-
-                    if not should_remove:
-                        # Show confirmation prompt
-                        ctx.info(
-                            f"\nThe following {len(files_to_remove)} "
-                            f"source file(s) will be removed:"
-                        )
-                        for file_path in files_to_remove:
-                            ctx.info(f"  • {file_path}")
-                        ctx.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
-
-                        should_remove = typer.confirm("\nRemove source files?")
-                        if not should_remove:
-                            ctx.info("Source file removal cancelled - files kept")
-
-                    if should_remove:
-                        # Proceed with removal
-                        removed_count = 0
-                        freed_space = 0
-                        failed_removals = []
-
-                        for file_path in files_to_remove:
-                            try:
-                                file_size = file_path.stat().st_size
-                                file_path.unlink()
-                                removed_count += 1
-                                freed_space += file_size
-                            except FileNotFoundError:
-                                # File already deleted - that's OK
-                                pass
-                            except PermissionError as e:
-                                failed_removals.append(f"{file_path}: {e}")
-                            except Exception as e:
-                                failed_removals.append(f"{file_path}: {e}")
-
-                        # Report results
-                        if removed_count > 0:
-                            ctx.success(
-                                f"Removed {removed_count} source file(s) - "
-                                f"Space freed: {format_bytes(freed_space)}"
-                            )
-
-                            # Record cleanup data for JSON top-level summary
-                            cleanup_data = {
-                                "removed_files": removed_count,
-                                "space_freed_bytes": freed_space,
-                                "failed_removals": len(failed_removals),
-                            }
-
-                            # Add cleanup data to JSON events for scripting
-                            if json_output:
-                                ctx.output._json_events.append(
-                                    {
-                                        "event": "cleanup",
-                                        **cleanup_data,
-                                    }
-                                )
-
-                        if failed_removals:
-                            ctx.warning(f"Failed to remove {len(failed_removals)} file(s):")
-                            for failure in failed_removals[:3]:
-                                ctx.info(f"  • {failure}")
-                            if len(failed_removals) > 3:
-                                ctx.info(f"  ... and {len(failed_removals) - 3} more")
-
-            except Exception as e:
-                ctx.warning(f"Source file cleanup failed: {e}")
-                ctx.info("Consolidation succeeded but source files were NOT removed")
 
         # If in JSON mode and we have cleanup data, attach it to the top-level payload
         if json_output and cleanup_data is not None:
@@ -2505,13 +2461,18 @@ def verify_integrity_cmd(
     """
     assert ctx.db is not None, "Database should be initialized by @with_context"
 
-    issues = None
+    issues: list[str] = []
+
     try:
-        with ctx.output.progress_context("Running integrity checks", total=5) as progress:
-            task = progress.add_task("Integrity checks", total=5) if progress else None
-            issues = ctx.db.verify_database_integrity()
-            if progress and task:
-                progress.update(task, completed=5)
+        with ctx.ui.task_sequence() as seq:
+            # Task: Run integrity checks
+            with seq.task("Running integrity checks") as t:
+                issues = ctx.db.verify_database_integrity()
+
+                if not issues:
+                    t.complete("No issues found")
+                else:
+                    t.complete(f"Found {len(issues)} issue(s)")
 
     except typer.Exit:
         raise
@@ -2523,10 +2484,6 @@ def verify_integrity_cmd(
             str(e),
             suggestion="Check that the database file is not corrupted",
         )
-
-    if issues is None:
-        # An earlier error handler should already have exited
-        return
 
     if not issues:
         ctx.success("Database integrity verified - no issues found")
@@ -2714,13 +2671,16 @@ def check(
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
-    Run all health checks in one command.
+    Run internal database health checks.
 
-    Performs comprehensive database health checks:
+    Performs comprehensive INTERNAL database validation:
     - Database integrity (orphaned/missing FTS records, invalid offsets, duplicates)
-    - Database consistency (database ↔ mbox sync)
+    - Database consistency (database ↔ mbox synchronization)
     - Offset accuracy (v1.1 schema only)
-    - FTS synchronization
+    - FTS index synchronization
+
+    This command focuses on internal data health. For external environment
+    checks (Python version, OAuth tokens, disk space), use 'gmailarchiver doctor'.
 
     With --auto-repair, automatically fixes issues and re-checks.
 
@@ -2761,142 +2721,118 @@ def check(
         "fts_synchronization": {"passed": False, "issues": []},
     }
 
-    # ==================== CHECK 1: Database Integrity ====================
-    ctx.info("1. Checking database integrity...")
-    try:
-        db = DBManager(str(db_path), validate_schema=False)
-        issues = db.verify_database_integrity()
-        db.close()
+    with ctx.ui.task_sequence() as seq:
+        # ==================== CHECK 1: Database Integrity ====================
+        with seq.task("Checking database integrity") as t:
+            try:
+                db = DBManager(str(db_path), validate_schema=False)
+                issues = db.verify_database_integrity()
+                db.close()
 
-        if not issues:
-            check_results["database_integrity"]["passed"] = True
-            if verbose:
-                ctx.success("  ✓ Database integrity: OK")
-        else:
-            check_results["database_integrity"]["issues"] = issues
-            if verbose:
-                ctx.warning(f"  ✗ Database integrity: {len(issues)} issue(s)")
-                for issue in issues[:5]:  # Show first 5 in verbose
-                    ctx.info(f"    • {issue}")
-    except Exception as e:
-        check_results["database_integrity"]["issues"] = [str(e)]
-        if verbose:
-            ctx.warning(f"  ✗ Database integrity check failed: {e}")
-
-    # ==================== CHECK 2: FTS Synchronization ====================
-    # FTS sync is part of database integrity check above
-    # Extract FTS-specific issues from the integrity issues
-    fts_issues = [
-        issue
-        for issue in check_results["database_integrity"]["issues"]
-        if "FTS" in issue or "fts" in issue.lower()
-    ]
-    if not fts_issues:
-        check_results["fts_synchronization"]["passed"] = True
-        if verbose:
-            ctx.success("  ✓ FTS synchronization: OK")
-    else:
-        check_results["fts_synchronization"]["issues"] = fts_issues
-        if verbose:
-            ctx.warning(f"  ✗ FTS synchronization: {len(fts_issues)} issue(s)")
-
-    # ==================== CHECK 3: Database Consistency ====================
-    # Only run if there are mbox files referenced in database
-    ctx.info("2. Checking database consistency...")
-    try:
-        db = DBManager(str(db_path), validate_schema=False)
-        cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
-        has_archives = cursor.fetchone() is not None
-        db.close()
-
-        if has_archives:
-            # Get first archive file for consistency check
-            db = DBManager(str(db_path), validate_schema=False)
-            cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
-            archive_file = cursor.fetchone()[0]
-            db.close()
-
-            # Check if archive file exists
-            if Path(archive_file).exists():
-                validator = ArchiveValidator(archive_file, state_db)
-                report = validator.verify_consistency()
-                check_results["database_consistency"]["checked"] = True
-                check_results["database_consistency"]["report"] = report
-                check_results["database_consistency"]["passed"] = report.passed
-
-                if verbose:
-                    if report.passed:
-                        ctx.success("  ✓ Database consistency: OK")
-                    else:
-                        ctx.warning(f"  ✗ Database consistency: {len(report.errors)} issue(s)")
-            else:
-                # Archive file doesn't exist, skip consistency check
-                if verbose:
-                    ctx.info("  ⊘ Database consistency: Skipped (archive file not found)")
-                check_results["database_consistency"]["checked"] = False
-                check_results["database_consistency"]["passed"] = True  # Don't fail if file missing
-        else:
-            # No archive files in database, skip check
-            if verbose:
-                ctx.info("  ⊘ Database consistency: Skipped (no archives in database)")
-            check_results["database_consistency"]["checked"] = False
-            check_results["database_consistency"]["passed"] = True  # Don't fail if no archives
-
-    except Exception as e:
-        check_results["database_consistency"]["issues"] = [str(e)]
-        if verbose:
-            ctx.warning(f"  ✗ Database consistency check failed: {e}")
-
-    # ==================== CHECK 4: Offset Accuracy ====================
-    # Only for databases with MBOX_OFFSETS capability (v1.1+)
-    ctx.info("3. Checking offset accuracy...")
-    if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
-        try:
-            # Get first archive file for offset verification
-            db = DBManager(str(db_path), validate_schema=False)
-            cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
-            row = cursor.fetchone()
-            db.close()
-
-            if row and Path(row[0]).exists():
-                archive_file = row[0]
-                validator = ArchiveValidator(archive_file, state_db)
-                result = validator.verify_offsets()
-
-                check_results["offset_accuracy"]["checked"] = True
-                check_results["offset_accuracy"]["result"] = result
-
-                if result.accuracy_percentage == 100.0:
-                    check_results["offset_accuracy"]["passed"] = True
-                    if verbose:
-                        ctx.success(f"  ✓ Offset accuracy: 100% ({result.total_checked:,} checked)")
+                if not issues:
+                    check_results["database_integrity"]["passed"] = True
+                    t.complete("OK")
                 else:
-                    check_results["offset_accuracy"]["passed"] = False
+                    check_results["database_integrity"]["issues"] = issues
+                    t.complete(f"{len(issues)} issue(s)")
                     if verbose:
-                        ctx.warning(
-                            f"  ✗ Offset accuracy: {result.accuracy_percentage:.1f}% "
-                            f"({result.successful_reads:,}/{result.total_checked:,})"
-                        )
-            else:
-                # No archive files or file doesn't exist
-                if verbose:
-                    ctx.info("  ⊘ Offset accuracy: Skipped (no accessible archives)")
-                check_results["offset_accuracy"]["checked"] = False
-                check_results["offset_accuracy"]["passed"] = True  # Don't fail if no files
+                        for issue in issues[:5]:
+                            ctx.info(f"    • {issue}")
+            except Exception as e:
+                check_results["database_integrity"]["issues"] = [str(e)]
+                t.fail("Check failed", reason=str(e))
 
-        except Exception as e:
-            check_results["offset_accuracy"]["issues"] = [str(e)]
-            if verbose:
-                ctx.warning(f"  ✗ Offset accuracy check failed: {e}")
-    else:
-        # v1.0 schema doesn't have offsets
-        if verbose:
-            ctx.info("  ⊘ Offset accuracy: Skipped (v1.0 schema)")
-        check_results["offset_accuracy"]["checked"] = False
-        check_results["offset_accuracy"]["passed"] = True  # Don't fail for v1.0
+        # Extract FTS-specific issues from integrity issues
+        fts_issues = [
+            issue
+            for issue in check_results["database_integrity"]["issues"]
+            if "FTS" in issue or "fts" in issue.lower()
+        ]
+        check_results["fts_synchronization"]["passed"] = not fts_issues
+        check_results["fts_synchronization"]["issues"] = fts_issues
+
+        # ==================== CHECK 2: Database Consistency ====================
+        with seq.task("Checking database consistency") as t:
+            try:
+                db = DBManager(str(db_path), validate_schema=False)
+                cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+                has_archives = cursor.fetchone() is not None
+                db.close()
+
+                if has_archives:
+                    db = DBManager(str(db_path), validate_schema=False)
+                    cursor = db.conn.execute(
+                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+                    )
+                    archive_file = cursor.fetchone()[0]
+                    db.close()
+
+                    if Path(archive_file).exists():
+                        validator = ArchiveValidator(archive_file, state_db)
+                        report = validator.verify_consistency()
+                        check_results["database_consistency"]["checked"] = True
+                        check_results["database_consistency"]["report"] = report
+                        check_results["database_consistency"]["passed"] = report.passed
+
+                        if report.passed:
+                            t.complete("OK")
+                        else:
+                            t.complete(f"{len(report.errors)} issue(s)")
+                    else:
+                        check_results["database_consistency"]["checked"] = False
+                        check_results["database_consistency"]["passed"] = True
+                        t.complete("Skipped (archive file not found)")
+                else:
+                    check_results["database_consistency"]["checked"] = False
+                    check_results["database_consistency"]["passed"] = True
+                    t.complete("Skipped (no archives in database)")
+
+            except Exception as e:
+                check_results["database_consistency"]["issues"] = [str(e)]
+                t.fail("Check failed", reason=str(e))
+
+        # ==================== CHECK 3: Offset Accuracy ====================
+        with seq.task("Checking offset accuracy") as t:
+            if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
+                try:
+                    db = DBManager(str(db_path), validate_schema=False)
+                    cursor = db.conn.execute(
+                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+                    )
+                    row = cursor.fetchone()
+                    db.close()
+
+                    if row and Path(row[0]).exists():
+                        archive_file = row[0]
+                        validator = ArchiveValidator(archive_file, state_db)
+                        result = validator.verify_offsets()
+
+                        check_results["offset_accuracy"]["checked"] = True
+                        check_results["offset_accuracy"]["result"] = result
+
+                        if result.accuracy_percentage == 100.0:
+                            check_results["offset_accuracy"]["passed"] = True
+                            t.complete(f"100% ({result.total_checked:,} checked)")
+                        else:
+                            check_results["offset_accuracy"]["passed"] = False
+                            t.complete(
+                                f"{result.accuracy_percentage:.1f}% "
+                                f"({result.successful_reads:,}/{result.total_checked:,})"
+                            )
+                    else:
+                        check_results["offset_accuracy"]["checked"] = False
+                        check_results["offset_accuracy"]["passed"] = True
+                        t.complete("Skipped (no accessible archives)")
+
+                except Exception as e:
+                    check_results["offset_accuracy"]["issues"] = [str(e)]
+                    t.fail("Check failed", reason=str(e))
+            else:
+                check_results["offset_accuracy"]["checked"] = False
+                check_results["offset_accuracy"]["passed"] = True
+                t.complete("Skipped (v1.0 schema)")
 
     # ==================== SUMMARY ====================
-    ctx.info("")  # Blank line
 
     # Determine overall status
     all_passed = (
@@ -3705,22 +3641,30 @@ def doctor(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
     fix: bool = typer.Option(False, "--fix", help="Automatically fix issues where possible"),
+    include_check: bool = typer.Option(
+        False, "--check", help="Also run internal database checks (same as 'gmailarchiver check')"
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
-    """Run system diagnostics and health checks.
+    """Run EXTERNAL system and environment diagnostics.
 
-    Performs comprehensive checks:
-    - Database schema and integrity
+    Performs comprehensive EXTERNAL environment checks:
     - Python version and dependencies
-    - OAuth token validity
-    - Disk space and permissions
+    - OAuth token validity and scopes
+    - Disk space and write permissions
     - Stale lock files
+    - Database file accessibility
+
+    This command focuses on external/environment issues. For internal database
+    health (integrity, consistency, offsets), use 'gmailarchiver check' or
+    add --check to include those checks.
 
     Use --fix to automatically repair fixable issues.
 
     Examples:
-        $ gmailarchiver doctor
-        $ gmailarchiver doctor --fix
+        $ gmailarchiver doctor              # External checks only
+        $ gmailarchiver doctor --check      # External + internal checks
+        $ gmailarchiver doctor --fix        # Auto-fix issues
         $ gmailarchiver doctor --json
     """
     from gmailarchiver.core.doctor import CheckSeverity, Doctor
@@ -3729,13 +3673,14 @@ def doctor(
     doctor_instance = Doctor(state_db, validate_schema=False, auto_create=False)
 
     # Run diagnostics
-    with ctx.output.progress_context("Running diagnostic checks", total=12) as progress:
-        task = progress.add_task("Checking...", total=12) if progress else None
+    with ctx.ui.task_sequence() as seq:
+        with seq.task("Running diagnostic checks") as t:
+            report = doctor_instance.run_diagnostics()
 
-        report = doctor_instance.run_diagnostics()
-
-        if progress and task:
-            progress.update(task, completed=12)
+            if report.overall_status == CheckSeverity.OK:
+                t.complete(f"{report.checks_passed}/{len(report.checks)} passed")
+            else:
+                t.complete(f"{report.errors} error(s), {report.warnings} warning(s)")
 
     # Show results in Rich format
     if not json_output:
@@ -3788,21 +3733,16 @@ def doctor(
 
     # Run auto-fix if requested
     if fix and report.fixable_issues:
-        ctx.info("\nRunning auto-fix...")
+        with ctx.ui.task_sequence() as seq:
+            with seq.task("Running auto-fix", total=len(report.fixable_issues)) as t:
+                fix_results = doctor_instance.run_auto_fix()
+                fixed_count = sum(1 for r in fix_results if r.success)
+                failed_count = len(fix_results) - fixed_count
 
-        with ctx.output.progress_context(
-            "Fixing issues", total=len(report.fixable_issues)
-        ) as progress:
-            task = (
-                progress.add_task("Fixing...", total=len(report.fixable_issues))
-                if progress
-                else None
-            )
-
-            fix_results = doctor_instance.run_auto_fix()
-
-            if progress and task:
-                progress.update(task, completed=len(report.fixable_issues))
+                if failed_count == 0:
+                    t.complete(f"Fixed {fixed_count} issue(s)")
+                else:
+                    t.complete(f"Fixed {fixed_count}, failed {failed_count}")
 
         # Show fix results
         if not json_output:
@@ -3815,10 +3755,7 @@ def doctor(
 
             ctx.show_table("Auto-Fix Results", headers, fix_rows)
 
-        # Show success/failure summary
-        fixed_count = sum(1 for r in fix_results if r.success)
-        failed_count = len(fix_results) - fixed_count
-
+        # Show success/failure summary (fixed_count and failed_count computed above)
         if fixed_count > 0 and failed_count == 0:
             ctx.success(f"Successfully fixed {fixed_count} issue(s)")
             ctx.suggest_next_steps(
@@ -3831,6 +3768,45 @@ def doctor(
             ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
         else:
             ctx.error(f"Failed to fix {failed_count} issue(s)")
+
+    # Run internal database checks if --check flag is used
+    if include_check:
+        ctx.info("\n── Internal Database Checks ──")
+        db_path = Path(state_db)
+        if db_path.exists():
+            from gmailarchiver.data.db_manager import DBManager
+
+            with ctx.ui.task_sequence() as seq:
+                with seq.task("Running internal checks") as t:
+                    try:
+                        db = DBManager(str(db_path), validate_schema=False)
+                        issues = db.verify_database_integrity()
+                        db.close()
+
+                        if not issues:
+                            t.complete("All internal checks passed")
+                        else:
+                            t.complete(f"{len(issues)} issue(s) found")
+                            for issue in issues[:5]:
+                                ctx.info(f"  • {issue}")
+                            if len(issues) > 5:
+                                ctx.info(f"  ... and {len(issues) - 5} more")
+                    except Exception as e:
+                        t.fail("Check failed", reason=str(e))
+
+            ctx.suggest_next_steps(
+                ["Run full internal checks: gmailarchiver check --verbose"]
+            )
+        else:
+            ctx.warning("Database not found, skipping internal checks")
+    elif not json_output:
+        # Suggest running check for full internal validation
+        ctx.suggest_next_steps(
+            [
+                "Run internal database checks: gmailarchiver check",
+                "Full health check: gmailarchiver doctor --check",
+            ]
+        )
 
     # JSON output mode
     if json_output:

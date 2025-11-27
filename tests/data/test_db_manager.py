@@ -1388,9 +1388,7 @@ class TestDBManagerExceptionHandling:
     low-level SQLite errors into DBManagerError.
     """
 
-    def test_delete_message_raises_db_manager_error_on_failure(
-        self, v11_db: str
-    ) -> None:
+    def test_delete_message_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
         """Test delete_message wraps exceptions in DBManagerError.
 
         Covers lines 598-599: Exception handler in delete_message.
@@ -1400,9 +1398,7 @@ class TestDBManagerExceptionHandling:
         with DBManager(v11_db) as db:
             # Mock conn.execute to raise an error
             with patch.object(db, "conn") as mock_conn:
-                mock_conn.execute.side_effect = sqlite3.OperationalError(
-                    "database is locked"
-                )
+                mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
 
                 with pytest.raises(DBManagerError) as exc_info:
                     db.delete_message("msg123")
@@ -1410,9 +1406,7 @@ class TestDBManagerExceptionHandling:
                 assert "Failed to delete message msg123" in str(exc_info.value)
                 assert "database is locked" in str(exc_info.value)
 
-    def test_remove_duplicate_records_raises_db_manager_error_on_failure(
-        self, v11_db: str
-    ) -> None:
+    def test_remove_duplicate_records_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
         """Test remove_duplicate_records wraps exceptions in DBManagerError.
 
         Covers lines 644-645: Exception handler in remove_duplicate_records.
@@ -1430,9 +1424,7 @@ class TestDBManagerExceptionHandling:
 
                 assert "Failed to remove duplicate records" in str(exc_info.value)
 
-    def test_update_archive_location_raises_db_manager_error_on_failure(
-        self, v11_db: str
-    ) -> None:
+    def test_update_archive_location_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
         """Test update_archive_location wraps exceptions in DBManagerError.
 
         Covers lines 681-682: Exception handler in update_archive_location.
@@ -1442,9 +1434,7 @@ class TestDBManagerExceptionHandling:
         with DBManager(v11_db) as db:
             # Mock conn.execute to raise an error
             with patch.object(db, "conn") as mock_conn:
-                mock_conn.execute.side_effect = sqlite3.IntegrityError(
-                    "constraint violation"
-                )
+                mock_conn.execute.side_effect = sqlite3.IntegrityError("constraint violation")
 
                 with pytest.raises(DBManagerError) as exc_info:
                     db.update_archive_location("msg123", "new.mbox", 1000, 500)
@@ -1463,16 +1453,16 @@ class TestDBManagerExceptionHandling:
         with DBManager(v11_db) as db:
             # Mock conn.executemany to raise an error
             with patch.object(db, "conn") as mock_conn:
-                mock_conn.executemany.side_effect = sqlite3.DatabaseError(
-                    "no such table: messages"
-                )
+                mock_conn.executemany.side_effect = sqlite3.DatabaseError("no such table: messages")
 
-                updates = [{
-                    "gmail_id": "msg1",
-                    "archive_file": "new.mbox",
-                    "mbox_offset": 0,
-                    "mbox_length": 100,
-                }]
+                updates = [
+                    {
+                        "gmail_id": "msg1",
+                        "archive_file": "new.mbox",
+                        "mbox_offset": 0,
+                        "mbox_length": 100,
+                    }
+                ]
                 with pytest.raises(DBManagerError) as exc_info:
                     db.bulk_update_archive_locations(updates)
 

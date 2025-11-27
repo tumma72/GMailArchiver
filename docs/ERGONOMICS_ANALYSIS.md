@@ -49,8 +49,7 @@ These do one thing well:
 
 **Search & Query**:
 - `search`: Query database (metadata + FTS5)
-- `status`: Show statistics
-- `db-info`: Database information
+- `status`: Show statistics (includes schema version and database size)
 
 **Validation** (All manual, no automation):
 - `verify-integrity`: Check database health

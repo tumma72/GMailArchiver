@@ -406,9 +406,8 @@ Update these commands to use `OutputManager`:
 ### Phase 3: Remaining Commands (Week 3)
 - [ ] `archive` - Gmail archiving
 - [ ] `search` - Message search
-- [ ] `status` - Show statistics
-- [ ] `db-info` - Database information
-- [ ] `dedupe` / `dedupe-report` - Deduplication
+- [ ] `status` - Show statistics (includes schema version and database size)
+- [ ] `dedupe` - Deduplication (use `--dry-run` for preview)
 - [ ] `migrate` - Schema migration
 - [ ] `rollback` - Rollback migration
 

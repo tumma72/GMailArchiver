@@ -411,9 +411,7 @@ class TaskSequenceImpl:
             self._live.__exit__(exc_type, exc_val, exc_tb)
 
     @contextmanager
-    def task(
-        self, description: str, total: int | None = None
-    ) -> Generator[TaskHandleImpl]:
+    def task(self, description: str, total: int | None = None) -> Generator[TaskHandleImpl]:
         """Create a task within the sequence."""
         # Create task state
         state = TaskState(
@@ -471,9 +469,7 @@ class TaskSequenceImpl:
             # Update animation frame (throttled)
             now = time.time()
             if now - self._last_refresh >= 0.1:  # 10 fps max
-                self._animation_frame = (self._animation_frame + 1) % len(
-                    SPINNER_FRAMES
-                )
+                self._animation_frame = (self._animation_frame + 1) % len(SPINNER_FRAMES)
                 self._last_refresh = now
 
             self._live.update(self._render())

@@ -152,12 +152,11 @@ def verify_integrity(
 #### Priority 2: Data Operations ✅ COMPLETE
 - [x] `import` - Archive import with progress
 - [x] `consolidate` - Archive consolidation
-- [x] `dedupe` / `dedupe-report` - Deduplication
+- [x] `dedupe` - Deduplication
 
 #### Priority 3: Remaining Commands ✅ COMPLETE
 - [x] `search` - Message search
-- [x] `status` - Statistics
-- [x] `db-info` - Database info
+- [x] `status` - Statistics (includes schema version and database info)
 - [x] `migrate` - Schema migration
 - [x] `archive` - Gmail archiving (most complex, already has some Rich)
 
@@ -170,7 +169,7 @@ def verify_integrity(
 - [x] 95%+ coverage maintained
 
 **Completion Summary**:
-- **Total commands migrated**: 13 (verify-integrity, verify-consistency, verify-offsets, repair, import, consolidate, dedupe, dedupe-report, search, status, db-info, migrate, archive)
+- **Total commands migrated**: 11 (verify-integrity, verify-consistency, verify-offsets, repair, import, consolidate, dedupe, search, status, migrate, archive)
 - **Time to complete**: 5 days (as planned)
 - **Test coverage**: 96% maintained (650+ tests passing)
 - **Impact**: CRITICAL - Foundation established for all UX improvements
@@ -556,12 +555,12 @@ gmailarchiver import archives/*.mbox.gz
   - Update tests
 
 - **Day 3-4**: Migrate data operations
-  - import, consolidate, dedupe/dedupe-report
+  - import, consolidate, dedupe
   - Add progress bars
   - Next-steps suggestions
 
 - **Day 5**: Migrate remaining commands
-  - search, status, db-info, migrate, archive
+  - search, status, migrate, archive
   - Ensure consistency
 
 ### Week 2: Core Workflows

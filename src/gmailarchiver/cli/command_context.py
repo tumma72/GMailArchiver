@@ -208,8 +208,7 @@ class CommandContext:
                                 "Your current authorization doesn't include "
                                 "permission to delete messages",
                                 details=[
-                                    "This was likely caused by using an older "
-                                    "version of the app",
+                                    "This was likely caused by using an older version of the app",
                                 ],
                                 suggestion="Run 'gmailarchiver auth-reset' then retry",
                             )

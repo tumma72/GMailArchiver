@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--verbose` flag to `status` command**: Shows more detail including full query column and 10 archive runs (default 5)
+- **`--check` flag to `doctor` command**: Also runs internal database checks (same as `gmailarchiver check`)
+- **UI/UX Guidelines**: New Section 2 in docs/UI_UX_CLI.md documenting `--verbose` semantics
+  - Core principle: `--verbose` shows MORE DETAIL about SAME info, NOT different info
+  - Pattern: Without verbose shows summary counts; with verbose shows detailed breakdowns
+
+### Changed
+- **`status` command**: Now includes database schema version, database size, and archive files count (previously in separate `db-info` command)
+- **`doctor` vs `check` separation clarified**: `doctor` = external/environment checks, `check` = internal/database health
+- **`retry-delete` command**: Moved to utilities subcommand only (`gmailarchiver utilities retry-delete`)
+
 ### Fixed
 - **Bug #2 (GitHub)**: Progress bars not updating during import and verify-integrity commands
   - **Issue**: Progress bar counter showed total but never incremented (time indicator worked correctly)
@@ -15,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Impact**: Progress bars now update correctly during all operations
 
 ### Removed
+- **`dedupe-report` command**: Consolidated into `dedupe --dry-run` (same functionality)
+- **`db-info` command**: Merged into `status` command with database info
+- **`retry-delete` from main commands**: Now utilities-only (still accessible via `gmailarchiver utilities retry-delete`)
 - Dead code in `OutputManager.task_complete()` that referenced unused `_live` and `_progress` attributes
 - Unused `make_status_panel()` function that was never called
 

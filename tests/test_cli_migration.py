@@ -212,58 +212,68 @@ class TestMigrateCommand:
         assert "Migration completed successfully" in result.stdout
 
 
-class TestDbInfoCommand:
-    """Test 'gmailarchiver db-info' command."""
+class TestStatusCommand:
+    """Test 'gmailarchiver status' command with database information."""
 
-    def test_db_info_v1_0_database(self, runner, v1_0_database, tmp_path, monkeypatch):
-        """Test db-info with v1.0 database."""
+    def test_status_v1_0_database(self, runner, v1_0_database, tmp_path, monkeypatch):
+        """Test status with v1.0 database shows schema version."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
+        result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
         assert "1.0" in result.stdout
         assert "2" in result.stdout  # Message count
         assert "archive1.mbox" in result.stdout
 
-    def test_db_info_v1_1_database(self, runner, v1_1_database, tmp_path, monkeypatch):
-        """Test db-info with v1.1 database."""
+    def test_status_v1_1_database(self, runner, v1_1_database, tmp_path, monkeypatch):
+        """Test status with v1.1 database shows schema version."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["db-info", "--state-db", str(v1_1_database)])
+        result = runner.invoke(app, ["status", "--state-db", str(v1_1_database)])
 
         assert result.exit_code == 0
         assert "1.1" in result.stdout
         assert "1" in result.stdout  # Message count
 
-    def test_db_info_empty_database(self, runner, tmp_path, monkeypatch):
-        """Test db-info with empty database."""
+    def test_status_empty_database(self, runner, tmp_path, monkeypatch):
+        """Test status with non-existent database."""
         monkeypatch.chdir(tmp_path)
         empty_db = tmp_path / "empty.db"
 
-        result = runner.invoke(app, ["db-info", "--state-db", str(empty_db)])
+        result = runner.invoke(app, ["status", "--state-db", str(empty_db)])
 
         assert result.exit_code == 0
-        assert "none" in result.stdout.lower() or "not found" in result.stdout.lower()
+        assert "no archive" in result.stdout.lower() or "not found" in result.stdout.lower()
 
-    def test_db_info_shows_recent_runs(self, runner, v1_0_database, tmp_path, monkeypatch):
-        """Test db-info displays recent archive runs."""
+    def test_status_shows_recent_runs(self, runner, v1_0_database, tmp_path, monkeypatch):
+        """Test status displays recent archive runs."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
+        result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
         assert "Recent Archive Runs" in result.stdout or "Archive Runs" in result.stdout
 
-    def test_db_info_shows_database_size(self, runner, v1_0_database, tmp_path, monkeypatch):
-        """Test db-info displays database file size."""
+    def test_status_shows_database_size(self, runner, v1_0_database, tmp_path, monkeypatch):
+        """Test status displays database file size."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["db-info", "--state-db", str(v1_0_database)])
+        result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
 
         assert result.exit_code == 0
         # Should show size in bytes/KB/MB
         assert "bytes" in result.stdout.lower() or "KB" in result.stdout or "MB" in result.stdout
+
+    def test_status_verbose_shows_more_detail(self, runner, v1_0_database, tmp_path, monkeypatch):
+        """Test status --verbose shows additional details."""
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["status", "--verbose", "--state-db", str(v1_0_database)])
+
+        assert result.exit_code == 0
+        # Verbose mode should include Query column
+        assert "Query" in result.stdout or "Last 10" in result.stdout
 
 
 class TestRollbackCommand:

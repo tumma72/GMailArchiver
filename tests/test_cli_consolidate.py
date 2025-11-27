@@ -595,8 +595,12 @@ class TestConsolidateCommand:
         assert result.exit_code == 0
         # Should show verification running
         assert "verif" in result.stdout.lower()
-        # Should show verification passed
-        assert "passed" in result.stdout.lower() or "ok" in result.stdout.lower()
+        # Should show verification passed (new format: "No issues found")
+        assert (
+            "passed" in result.stdout.lower()
+            or "ok" in result.stdout.lower()
+            or "no issues" in result.stdout.lower()
+        )
 
     def test_consolidate_with_auto_verify_without_flag(
         self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch

@@ -1968,11 +1968,7 @@ class TestValidatorExceptionHandling:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create a compressed mbox
-            mbox_content = (
-                b"From test@example.com Mon Jan 1 00:00:00 2024\n"
-                b"Subject: Test\n\n"
-                b"Body\n"
-            )
+            mbox_content = b"From test@example.com Mon Jan 1 00:00:00 2024\nSubject: Test\n\nBody\n"
             archive_path = Path(tmpdir) / "test.mbox.gz"
             with gzip.open(archive_path, "wb") as f:
                 f.write(mbox_content)

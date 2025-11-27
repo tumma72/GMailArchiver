@@ -2,7 +2,7 @@
 
 This document defines the visual language, interaction patterns, and composable components for Gmail Archiver's command-line interface. All commands MUST follow these guidelines to ensure a consistent, professional user experience.
 
-**Status**: Iteration 3 - Authentication Standardization
+**Status**: Iteration 4 - Comprehensive Task Migration
 
 ---
 
@@ -22,9 +22,58 @@ Colors have text fallbacks. Symbols accompany colors. No meaning is conveyed thr
 
 ---
 
-## 2. Visual Language
+## 2. Verbosity & Detail Levels
 
-### 2.1 Symbols & Semantics
+### 2.1 The `--verbose` Flag Semantic
+
+**Core Principle**: `--verbose` shows MORE DETAIL about the SAME information, NOT different information.
+
+| Without `--verbose` | With `--verbose` |
+|---------------------|------------------|
+| `✓ Imported 4,269 messages` | `✓ Imported 4,269 messages (12.3 MB, 45.2 msg/sec)` |
+| `Found 15 duplicates` | `Found 15 duplicates across 3 archives` |
+| `Database healthy` | `Database healthy (last vacuum: 2d ago, size: 12.4 MB)` |
+
+**WRONG usage of `--verbose`**:
+- Adding completely different categories of information
+- Showing database stats when the command is about archive files
+- Revealing internal implementation details
+
+**RIGHT usage of `--verbose`**:
+- Adding timing information (duration, throughput)
+- Showing counts broken down by category
+- Including file sizes and paths
+- Displaying intermediate steps
+
+### 2.2 Standard vs Verbose Output
+
+Commands should include ALL essential information in standard output. Use `--verbose` only for:
+- **Performance metrics**: timing, throughput, memory usage
+- **Breakdown details**: counts by category, per-file statistics
+- **Diagnostic context**: timestamps, paths, intermediate states
+
+**Example: `status` command**
+```
+# Standard output (always shown):
+Archive Statistics
+  Total messages:    4,269
+  Archive files:     3
+  Database size:     12.4 MB
+  Schema version:    1.1
+
+# With --verbose (adds detail, same categories):
+Archive Statistics
+  Total messages:    4,269 (across 3 archives)
+  Archive files:     3 (newest: 2d ago, oldest: 45d ago)
+  Database size:     12.4 MB (last vacuum: 3d ago)
+  Schema version:    1.1 (migrated from 1.0 on 2025-01-15)
+```
+
+---
+
+## 3. Visual Language
+
+### 3.1 Symbols & Semantics
 
 | Symbol | Color | Meaning | Usage |
 |--------|-------|---------|-------|
@@ -35,7 +84,7 @@ Colors have text fallbacks. Symbols accompany colors. No meaning is conveyed thr
 | `○` | dim | Pending | Not yet started |
 | `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | cyan | Running | Animated spinner (braille pattern) |
 
-### 2.2 Color Semantics
+### 3.2 Color Semantics
 
 | Color | Rich Markup | Semantic Meaning |
 |-------|-------------|------------------|
@@ -46,7 +95,7 @@ Colors have text fallbacks. Symbols accompany colors. No meaning is conveyed thr
 | Blue | `[blue]` | Operations, headers |
 | Dim | `[dim]` | Secondary info, metadata |
 
-### 2.3 Typography
+### 3.3 Typography
 
 | Style | Rich Markup | Usage |
 |-------|-------------|-------|
@@ -56,9 +105,9 @@ Colors have text fallbacks. Symbols accompany colors. No meaning is conveyed thr
 
 ---
 
-## 3. Message Types
+## 4. Message Types
 
-### 3.1 Info Messages
+### 4.1 Info Messages
 Plain text, no symbol. Used for status updates and contextual information.
 
 ```
@@ -68,7 +117,7 @@ Found 1,234 messages matching query
 
 **API**: `ctx.info("message")`
 
-### 3.2 Success Messages
+### 4.2 Success Messages
 Green checkmark symbol. Used for completed operations.
 
 ```
@@ -78,7 +127,7 @@ Green checkmark symbol. Used for completed operations.
 
 **API**: `ctx.success("message")`
 
-### 3.3 Warning Messages
+### 4.3 Warning Messages
 Yellow warning symbol. Used for non-fatal issues.
 
 ```
@@ -88,7 +137,7 @@ Yellow warning symbol. Used for non-fatal issues.
 
 **API**: `ctx.warning("message")`
 
-### 3.4 Error Messages
+### 4.4 Error Messages
 Red text with optional suggestion. Used for errors that don't require a panel.
 
 ```
@@ -100,37 +149,37 @@ Suggestion: Check the file path and try again
 
 ---
 
-## 4. Panel Components
+## 5. Panel Components
 
 *[Placeholder - Iteration 2]*
 
-### 4.1 Error Panel
+### 5.1 Error Panel
 When: Fatal errors requiring user attention.
 
-### 4.2 Validation Panel
+### 5.2 Validation Panel
 When: Multi-check validation results.
 
-### 4.3 When to Use Panels
+### 5.3 When to Use Panels
 - **USE**: Final results, errors requiring attention, multi-item summaries
 - **DON'T USE**: Progress updates, simple confirmations, inline status
 
 ---
 
-## 5. Tables & Reports
+## 6. Tables & Reports
 
 *[Placeholder - Iteration 3]*
 
-### 5.1 Key-Value Report
+### 6.1 Key-Value Report
 For summary data with labels and values.
 
-### 5.2 Tabular Data
+### 6.2 Tabular Data
 For multi-row data with headers.
 
 ---
 
-## 6. Progress & Tasks
+## 7. Progress & Tasks
 
-### 6.1 Spinner (Indeterminate Progress)
+### 7.1 Spinner (Indeterminate Progress)
 Used when total is unknown. Animated braille pattern spinner.
 
 ```
@@ -138,14 +187,14 @@ Used when total is unknown. Animated braille pattern spinner.
 ⠸ Authenticating with Gmail...
 ```
 
-### 6.2 Progress Bar (Determinate Progress)
+### 7.2 Progress Bar (Determinate Progress)
 Used when total is known. Shows percentage, count, and ETA.
 
 ```
 ⠹ Importing messages [████████░░░░] 67% • 1,234/2,000 • 2m remaining
 ```
 
-### 6.3 Task Sequence (Issue #4 Pattern)
+### 7.3 Task Sequence (Issue #4 Pattern)
 Used for multi-step operations. Each task shows spinner while running, then checkmark/X when complete.
 
 **Running State:**
@@ -189,7 +238,7 @@ with ctx.ui.task_sequence() as seq:
 - `t.set_status(text)` - Update task description (e.g., for live counters)
 - `t.log(message, level)` - Log a message within the task
 
-### 6.4 Log Window (Streaming Tasks)
+### 7.4 Log Window (Streaming Tasks)
 For operations with streaming output, use `show_logs=True` to display a scrolling log window below the tasks.
 
 **Archive Command Example:**
@@ -235,7 +284,7 @@ with ctx.ui.task_sequence(show_logs=True) as seq:
 | ERROR | ✗ | red |
 | SUCCESS | ✓ | green |
 
-### 6.5 Authentication (Spinner Pattern)
+### 7.5 Authentication (Spinner Pattern)
 Gmail authentication uses the spinner pattern for consistent UI across all commands.
 
 **Running State:**
@@ -285,13 +334,13 @@ def authenticate_gmail(
 
 ---
 
-## 7. Suggestions & Next Steps
+## 8. Suggestions & Next Steps
 
 *[Placeholder - Iteration 2]*
 
 ---
 
-## 8. JSON Mode
+## 9. JSON Mode
 
 All output MUST have a JSON equivalent for automation. When `--json` flag is used:
 
@@ -312,37 +361,37 @@ All output MUST have a JSON equivalent for automation. When `--json` flag is use
 
 ---
 
-## 9. Accessibility
+## 10. Accessibility
 
-### 9.1 Color Independence
+### 10.1 Color Independence
 - **NEVER** convey meaning through color alone
 - **ALWAYS** pair colors with symbols (✓/✗/⚠)
 - Text labels accompany all status indicators
 
-### 9.2 Non-TTY Environments
+### 10.2 Non-TTY Environments
 - Graceful degradation when no terminal detected
 - Plain text fallback without Rich formatting
 - JSON mode (`--json`) for piping and automation
 
-### 9.3 Screen Reader Considerations
+### 10.3 Screen Reader Considerations
 - Meaningful text descriptions (not just symbols)
 - Avoid ASCII art that doesn't linearize well
 - Progress updates at reasonable intervals (not every item)
 
 ---
 
-## 10. Error Recovery Patterns
+## 11. Error Recovery Patterns
 
 *[Placeholder - Iteration 4]*
 
-### 10.1 Retryable Errors
-### 10.2 Partial Success
-### 10.3 Rollback Scenarios
-### 10.4 Graceful Interruption (Ctrl+C)
+### 11.1 Retryable Errors
+### 11.2 Partial Success
+### 11.3 Rollback Scenarios
+### 11.4 Graceful Interruption (Ctrl+C)
 
 ---
 
-## 11. Component Composition Rules
+## 12. Component Composition Rules
 
 - **One live context at a time**: No nested progress bars or task sequences
 - **Task sequences contain tasks**: Not other sequences (flat structure)
@@ -366,7 +415,14 @@ All output MUST have a JSON equivalent for automation. When `--json` flag is use
 | `archive` | ✓ Iteration 2 | task_sequence + show_logs + authenticate_gmail |
 | `retry-delete` | ✓ Iteration 3 | authenticate_gmail(validate_deletion_scope) |
 | `backfill-gmail-ids` | ✓ Iteration 3 | @with_context(requires_gmail=True) |
-| `validate` | Pending | task_sequence |
+| `validate` | ✓ Iteration 4 | task_sequence |
+| `consolidate` | ✓ Iteration 4 | task_sequence (multi-task: consolidate, verify, remove) |
+| `dedupe` | ✓ Iteration 4 | task_sequence |
+| `verify-integrity` | ✓ Iteration 4 | task_sequence |
+| `verify-consistency` | ✓ Iteration 4 | task_sequence |
+| `verify-offsets` | ✓ Iteration 4 | task_sequence |
+| `check` | ✓ Iteration 4 | task_sequence (multi-task: integrity, consistency, offset) |
+| `doctor` | ✓ Iteration 4 | task_sequence (diagnostic + auto-fix) |
 | (other commands) | Pending | See implementation plan |
 
 ### A.3 Authentication Pattern Usage

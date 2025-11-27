@@ -181,48 +181,6 @@ def create_v1_1_db_no_duplicates(tmp_path: Path) -> Path:
     return db_path
 
 
-class TestDedupeReportCommand:
-    """Test 'gmailarchiver dedupe-report' command."""
-
-    def test_dedupe_report_with_duplicates(self, runner, tmp_path):
-        """Test dedupe-report shows table when duplicates found."""
-        db_path = create_v1_1_db_with_duplicates(tmp_path)
-
-        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
-
-        assert result.exit_code == 0
-        # Should show statistics
-        assert "6" in result.stdout  # Total messages
-        assert "2" in result.stdout  # Duplicate Message-IDs found
-        assert "3" in result.stdout  # Total duplicates (instances beyond first)
-
-        # Should show breakdown by archive file
-        assert "archive1.mbox" in result.stdout
-        assert "archive2.mbox" in result.stdout
-
-        # Should show space recoverable
-        assert "KB" in result.stdout or "MB" in result.stdout or "bytes" in result.stdout.lower()
-
-    def test_dedupe_report_no_duplicates(self, runner, tmp_path):
-        """Test dedupe-report shows message when no duplicates."""
-        db_path = create_v1_1_db_no_duplicates(tmp_path)
-
-        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
-
-        assert result.exit_code == 0
-        assert "No duplicate" in result.stdout or "no duplicate" in result.stdout
-
-    def test_dedupe_report_v1_0_database_error(self, runner, tmp_path):
-        """Test dedupe-report shows error for v1.0 database."""
-        db_path = create_v1_0_database(tmp_path)
-
-        result = runner.invoke(app, ["dedupe-report", "--state-db", str(db_path)])
-
-        assert result.exit_code == 1
-        assert "v1.1" in result.stdout or "1.1" in result.stdout
-        assert "migrate" in result.stdout.lower() or "migration" in result.stdout.lower()
-
-
 class TestDedupeCommand:
     """Test 'gmailarchiver dedupe' command."""
 
