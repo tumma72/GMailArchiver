@@ -93,7 +93,8 @@ class TestRetryDeleteCommand:
             MockState.return_value.__exit__.return_value = None
 
             result = runner.invoke(
-                app, ["utilities", "retry-delete", "nonexistent_archive.mbox", "--state-db", db_path]
+                app,
+                ["utilities", "retry-delete", "nonexistent_archive.mbox", "--state-db", db_path],
             )
 
             assert result.exit_code == 1
@@ -122,7 +123,9 @@ class TestRetryDeleteCommand:
             mock_auth.validate_scopes.return_value = False  # Missing deletion scope
             MockAuth.return_value = mock_auth
 
-            result = runner.invoke(app, ["utilities", "retry-delete", archive_file, "--state-db", db_path])
+            result = runner.invoke(
+                app, ["utilities", "retry-delete", archive_file, "--state-db", db_path]
+            )
 
             assert result.exit_code == 1
             assert "Missing deletion permission" in result.stdout
@@ -288,7 +291,9 @@ class TestRetryDeleteIntegration:
                 MockArchiver.return_value = mock_archiver
 
                 result = runner.invoke(
-                    app, ["utilities", "retry-delete", archive_file, "--state-db", str(tmpdir)], input="y\n"
+                    app,
+                    ["utilities", "retry-delete", archive_file, "--state-db", str(tmpdir)],
+                    input="y\n",
                 )
 
                 assert result.exit_code == 0

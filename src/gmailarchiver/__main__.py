@@ -178,9 +178,7 @@ def archive(
 
         # Task 3: Archive messages (only if messages to archive and no error)
         if messages_to_archive and not archive_error and not dry_run:
-            with seq.task(
-                "Archiving messages", total=len(messages_to_archive)
-            ) as task:
+            with seq.task("Archiving messages", total=len(messages_to_archive)) as task:
                 try:
                     result = archiver.archive_messages(
                         message_ids=messages_to_archive,
@@ -297,9 +295,7 @@ def archive(
             ctx.warning(f"This will permanently delete {archived_count} messages.")
             ctx.warning("This action CANNOT be undone!")
 
-            confirmation = typer.prompt(
-                f"\nType 'DELETE {archived_count} MESSAGES' to confirm"
-            )
+            confirmation = typer.prompt(f"\nType 'DELETE {archived_count} MESSAGES' to confirm")
 
             if confirmation != f"DELETE {archived_count} MESSAGES":
                 ctx.info("Deletion cancelled")
@@ -347,7 +343,9 @@ def archive(
 
     if not trash and not delete:
         next_steps.append(f"Move to trash: gmailarchiver utilities retry-delete {output}")
-        next_steps.append(f"Permanently delete: gmailarchiver utilities retry-delete {output} --permanent")
+        next_steps.append(
+            f"Permanently delete: gmailarchiver utilities retry-delete {output} --permanent"
+        )
 
     ctx.suggest_next_steps(next_steps)
 
@@ -1954,6 +1952,7 @@ def import_cmd(
             last_reported = 0
 
             for file_idx, file_path in enumerate(files):
+
                 def make_progress_callback(
                     base_pos: int,
                     task: Any,
@@ -2209,14 +2208,8 @@ def consolidate(
 
                             ctx.suggest_next_steps(
                                 [
-                                    (
-                                        "Fix issues automatically: "
-                                        "gmailarchiver check --auto-repair"
-                                    ),
-                                    (
-                                        "View all issues: "
-                                        "gmailarchiver verify-integrity --verbose"
-                                    ),
+                                    ("Fix issues automatically: gmailarchiver check --auto-repair"),
+                                    ("View all issues: gmailarchiver verify-integrity --verbose"),
                                 ]
                             )
                     except Exception as e:  # pragma: no cover - defensive
@@ -2315,9 +2308,7 @@ def consolidate(
 
                         if should_remove:
                             # Task 4: Remove source files
-                            with seq.task(
-                                "Removing source files", total=len(files_to_remove)
-                            ) as t:
+                            with seq.task("Removing source files", total=len(files_to_remove)) as t:
                                 removed_count = 0
                                 freed_space = 0
                                 failed_removals = []
@@ -2365,9 +2356,7 @@ def consolidate(
                                     )
 
                             if failed_removals:
-                                ctx.warning(
-                                    f"Failed to remove {len(failed_removals)} file(s):"
-                                )
+                                ctx.warning(f"Failed to remove {len(failed_removals)} file(s):")
                                 for failure in failed_removals[:3]:
                                     ctx.info(f"  • {failure}")
                                 if len(failed_removals) > 3:
@@ -2761,9 +2750,7 @@ def check(
 
                 if has_archives:
                     db = DBManager(str(db_path), validate_schema=False)
-                    cursor = db.conn.execute(
-                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
-                    )
+                    cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
                     archive_file = cursor.fetchone()[0]
                     db.close()
 
@@ -2796,9 +2783,7 @@ def check(
             if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
                 try:
                     db = DBManager(str(db_path), validate_schema=False)
-                    cursor = db.conn.execute(
-                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
-                    )
+                    cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
                     row = cursor.fetchone()
                     db.close()
 
@@ -3794,9 +3779,7 @@ def doctor(
                     except Exception as e:
                         t.fail("Check failed", reason=str(e))
 
-            ctx.suggest_next_steps(
-                ["Run full internal checks: gmailarchiver check --verbose"]
-            )
+            ctx.suggest_next_steps(["Run full internal checks: gmailarchiver check --verbose"])
         else:
             ctx.warning("Database not found, skipping internal checks")
     elif not json_output:
