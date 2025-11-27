@@ -1,5 +1,7 @@
 ---
+name: gh-issue
 description: "Create a GitHub issue with proper labels and formatting"
+argument_hint: "Issue description or type"
 ---
 
 # Create GitHub Issue

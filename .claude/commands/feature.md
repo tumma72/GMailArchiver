@@ -1,5 +1,7 @@
 ---
+name: feature
 description: "Guide through complete 6-phase development workflow"
+argument_hint: "Feature, fix, or change to implement"
 ---
 
 # Feature Workflow - Full 6-Phase Orchestration
@@ -30,7 +32,7 @@ Use TodoWrite to track progress through the phases.
 
 ### Phase 1: Context
 
-@.claude/commands/context.md
+@.claude/commands/create-context.md
 
 ---
 

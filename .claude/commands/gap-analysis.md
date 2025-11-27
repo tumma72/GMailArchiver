@@ -1,10 +1,12 @@
 ---
+name: gap-analysis
 description: "Compare ARCHITECTURE.md (ideal) vs README.md (actual) for a layer"
+argument_hint: "Layer name: cli, core, data, connectors, or shared"
 ---
 
 # Gap Analysis - Architecture vs Implementation
 
-Compare declarative (ideal) and documentative (actual) artifacts to identify work to be done.
+Ultrathink: Compare declarative (ideal) and documentative (actual) artifacts to identify work to be done.
 
 ## Arguments
 
@@ -22,6 +24,8 @@ From `docs/PROCESS.md`:
 The **gap** between declarative and documentative artifacts defines work to be done.
 
 ## Analysis Steps
+
+Delegate this work to the @agent-architect
 
 ### 1. Read Layer Documents
 

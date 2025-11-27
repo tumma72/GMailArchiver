@@ -1,16 +1,20 @@
 ---
+name: code
 description: "Phase 4: Implement minimal code to pass tests (TDD Green)"
+argument_hint: "Module or feature name to implement"
 ---
 
 # Code Phase - TDD Green
 
-Execute Phase 4 (Code) of the development workflow defined in `docs/PROCESS.md`.
+Think Harder: Execute Phase 4 (Code) of the development workflow defined in `docs/PROCESS.md`.
 
 ## Arguments
 
 - `$ARGUMENTS` - Module or feature name to implement
 
 ## Required Steps
+
+Delegate this code work to the @agent-coder
 
 ### 1. Review Failing Tests
 

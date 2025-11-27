@@ -1,12 +1,15 @@
 ---
+name: review
 description: "Phase 6: Code review and documentation update"
 ---
 
 # Review Phase - Documentation & Commit
 
-Execute Phase 6 (Review) of the development workflow defined in `docs/PROCESS.md`.
+Think Harder: Execute Phase 6 (Review) of the development workflow defined in `docs/PROCESS.md`.
 
 ## Required Steps
+
+Delegate this work to the @agent-reviewer
 
 ### 1. Code Review Checklist
 

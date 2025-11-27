@@ -1,5 +1,7 @@
 ---
+name: gh-pr
 description: "Create a pull request with 6-phase workflow checklist"
+argument_hint: "PR title or related issue number"
 ---
 
 # Create Pull Request

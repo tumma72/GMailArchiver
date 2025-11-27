@@ -1,16 +1,20 @@
 ---
+name: design
 description: "Phase 2: Architecture-first design before implementation"
+argument_hint: "Feature, fix, or change to design"
 ---
 
 # Design Phase - Architecture First
 
-Execute Phase 2 (Design) of the development workflow defined in `docs/PROCESS.md`.
+Ultrathink: Execute Phase 2 (Design) of the development workflow defined in `docs/PROCESS.md`.
 
 ## Arguments
 
 - `$ARGUMENTS` - Description of the feature, fix, or change to design
 
 ## Required Steps
+
+Delegate this work to the @agent-architect
 
 ### 1. Analyze Request Against Architecture
 

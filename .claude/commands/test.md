@@ -1,16 +1,20 @@
 ---
+name: test
 description: "Phase 3: Write failing tests first (TDD Red)"
+argument_hint: "Behavior description or expected outcome"
 ---
 
 # Test Phase - TDD Red
 
-Execute Phase 3 (Test) of the development workflow defined in `docs/PROCESS.md`.
+Think Hard: Execute Phase 3 (Test) of the development workflow defined in `docs/PROCESS.md`.
 
 ## Arguments
 
 - `$ARGUMENTS` - Description of the behavior to test
 
 ## Required Steps
+
+Delegate this work to the @agent-tester
 
 ### 1. Gap Analysis
 

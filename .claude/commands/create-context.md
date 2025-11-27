@@ -1,5 +1,7 @@
 ---
+name: create-context
 description: "Phase 1: Establish context for development work"
+argument_hint: "Optional layer name: cli, core, data, connectors, or shared"
 ---
 
 # Context Phase - Exploration

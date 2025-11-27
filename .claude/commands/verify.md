@@ -1,10 +1,11 @@
 ---
+name: verify
 description: "Phase 5: Run all quality gates"
 ---
 
 # Verify Phase - Quality Gates
 
-Execute Phase 5 (Verify) of the development workflow defined in `docs/PROCESS.md`.
+Think Harder: Execute Phase 5 (Verify) of the development workflow defined in `docs/PROCESS.md`.
 
 ## Quality Gate Checks
 
