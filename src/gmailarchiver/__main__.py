@@ -137,43 +137,88 @@ def archive(
     gmail_client = GmailClient(creds)
     archiver = GmailArchiver(gmail_client, output=out)
 
-    # Phase 2: Archiving (inside task sequence for progress tracking)
+    # Phase 2: Discovery and Archiving (multi-task sequence)
+    message_list: list[dict[str, str]] = []
+    messages_to_archive: list[str] = []
+    skipped_count: int = 0
     result: dict[str, Any] | None = None
     archive_error: Exception | None = None
+    scan_count: int = 0  # Track messages scanned during listing
 
     with ctx.ui.task_sequence(show_logs=True) as seq:
-        with seq.task(f"Archiving messages older than {age_threshold}") as operation:
+        # Task 1: Scan messages from Gmail
+        with seq.task("Scanning messages from Gmail") as task:
             try:
-                result = archiver.archive(
-                    age_threshold=age_threshold,
-                    output_file=output,
-                    compress=compress,
-                    incremental=incremental,
-                    dry_run=dry_run,
-                    operation=operation,
+                # Progress callback to update counter during scanning
+                def scan_progress(count: int, page: int) -> None:
+                    nonlocal scan_count
+                    scan_count = count
+                    task.set_status(f"Scanning messages from Gmail... {count:,} found")
+
+                _query, message_list = archiver.list_messages_for_archive(
+                    age_threshold, progress_callback=scan_progress
                 )
 
-                # Handle results based on mode
-                if dry_run:
-                    operation.succeed(f"Would archive {result['messages_to_archive']} messages")
-                elif result["messages_archived"] > 0:
-                    operation.succeed(f"Archived {result['messages_archived']} messages")
+                if message_list:
+                    task.complete(f"Found {len(message_list):,} messages")
                 else:
-                    operation.log("No messages to archive", "WARNING")
-                    operation.complete("No messages found")
-
-            except KeyboardInterrupt:
-                # Ctrl+C - the archiver should have handled saving progress
-                operation.log("Archive interrupted by user", "WARNING")
-                operation.complete("Interrupted")
-                # Result should already be set by archiver with interrupted=True
-                # If not, we'll handle it below
+                    task.complete("No messages found matching criteria")
 
             except Exception as e:
-                operation.fail(f"Archive operation failed: {e}")
+                task.fail(f"Scan failed: {e}")
                 archive_error = e
 
-    # Phase 3: Handle archive errors (outside live context)
+        # Task 2: Filter already archived (only if messages found and no error)
+        if message_list and not archive_error:
+            with seq.task("Checking for already archived") as task:
+                try:
+                    all_ids = [msg["id"] for msg in message_list]
+                    messages_to_archive, skipped_count = archiver.filter_already_archived(
+                        all_ids, incremental=incremental
+                    )
+
+                    if skipped_count > 0:
+                        task.complete(
+                            f"Identified {len(messages_to_archive):,} to archive "
+                            f"({skipped_count:,} already archived)"
+                        )
+                    else:
+                        task.complete(f"Identified {len(messages_to_archive):,} to archive")
+
+                except Exception as e:
+                    task.fail(f"Filter failed: {e}")
+                    archive_error = e
+
+        # Task 3: Archive messages (only if messages to archive and no error)
+        if messages_to_archive and not archive_error and not dry_run:
+            with seq.task(
+                "Archiving messages", total=len(messages_to_archive)
+            ) as task:
+                try:
+                    result = archiver.archive_messages(
+                        message_ids=messages_to_archive,
+                        output_file=output,
+                        compress=compress,
+                        operation=task,
+                    )
+
+                    if result.get("interrupted"):
+                        task.complete(f"Interrupted after {result['archived_count']:,} messages")
+                    elif result["archived_count"] > 0:
+                        task.complete(f"Archived {result['archived_count']:,} messages")
+                    else:
+                        task.complete("No messages archived")
+
+                except KeyboardInterrupt:
+                    task.log("Archive interrupted by user", "WARNING")
+                    task.complete("Interrupted")
+                    result = {"interrupted": True, "archived_count": 0}
+
+                except Exception as e:
+                    task.fail(f"Archive failed: {e}")
+                    archive_error = e
+
+    # Handle errors (outside live context)
     if archive_error:
         ctx.fail_and_exit(
             title="Archive Failed",
@@ -181,27 +226,22 @@ def archive(
             suggestion="Check your network connection and Gmail API access",
         )
 
-    # Phase 4: Handle results (outside live context)
-    if result is None:
-        ctx.fail_and_exit(
-            title="Archive Failed",
-            message="No result returned from archive operation",
-        )
-
     # Handle dry run result
     if dry_run:
         ctx.warning("DRY RUN completed - no changes made")
         report_data = {
-            "Messages Found": result.get("messages_to_archive", 0),
+            "Messages Found": len(message_list),
+            "Messages to Archive": len(messages_to_archive),
+            "Already Archived": skipped_count,
             "Output File": output,
             "Mode": "Dry Run (no changes made)",
         }
         ctx.show_report("Archive Preview", report_data)
         return
 
-    # Handle zero messages case
-    if result["messages_archived"] == 0:
-        ctx.warning("No messages to archive")
+    # Handle no messages case (after dry run check)
+    if not message_list:
+        ctx.warning("No messages found matching criteria")
         ctx.suggest_next_steps(
             [
                 "Check your age threshold",
@@ -210,12 +250,22 @@ def archive(
         )
         return
 
+    if not messages_to_archive:
+        ctx.warning("All messages already archived")
+        ctx.suggest_next_steps(
+            [
+                "Run 'gmailarchiver status' to see archive statistics",
+                "Use --no-incremental to re-archive messages",
+            ]
+        )
+        return
+
     # Handle interrupted archive (Ctrl+C)
-    if result.get("interrupted", False):
+    if result and result.get("interrupted", False):
         actual_file = result.get("actual_file", output)
         ctx.warning("Archive was interrupted (Ctrl+C)")
         ctx.info(f"Partial archive saved: {actual_file}")
-        ctx.info(f"Progress: {result['messages_archived']} messages archived")
+        ctx.info(f"Progress: {result['archived_count']} messages archived")
         ctx.suggest_next_steps(
             [
                 f"Resume: gmailarchiver archive {age_threshold}",
@@ -227,8 +277,8 @@ def archive(
     # Phase 5: Validation (outside live context for clean output)
     ctx.info("Validating archive...")
 
-    # Get the actual file that was written (may differ from output if interrupted)
-    actual_file = result.get("actual_file", output)
+    # Get the actual file that was written
+    actual_file = result.get("actual_file", output) if result else output
 
     # Get the actual message IDs that were archived
     with ArchiveState() as state:
@@ -249,20 +299,22 @@ def archive(
 
     ctx.success("Archive validation passed")
 
+    # Get archived count from result
+    archived_count = result.get("archived_count", 0) if result else 0
+
     # Phase 6: Deletion (if requested)
-    if trash or delete:
+    if (trash or delete) and archived_count > 0:
         if delete:
             # Permanent deletion requires explicit confirmation
             ctx.warning("WARNING: PERMANENT DELETION")
-            msg_count = result["messages_archived"]
-            ctx.warning(f"This will permanently delete {msg_count} messages.")
+            ctx.warning(f"This will permanently delete {archived_count} messages.")
             ctx.warning("This action CANNOT be undone!")
 
             confirmation = typer.prompt(
-                f"\nType 'DELETE {result['messages_archived']} MESSAGES' to confirm"
+                f"\nType 'DELETE {archived_count} MESSAGES' to confirm"
             )
 
-            if confirmation != f"DELETE {result['messages_archived']} MESSAGES":
+            if confirmation != f"DELETE {archived_count} MESSAGES":
                 ctx.info("Deletion cancelled")
                 return
 
@@ -274,7 +326,7 @@ def archive(
         elif trash:
             # Move to trash with confirmation
             if not typer.confirm(
-                f"\nMove {result['messages_archived']} messages to trash? (30-day recovery period)"
+                f"\nMove {archived_count} messages to trash? (30-day recovery period)"
             ):
                 ctx.info("Cancelled")
                 return
@@ -285,7 +337,7 @@ def archive(
 
     # Phase 7: Final report
     report_data = {
-        "Messages Archived": result["messages_archived"],
+        "Messages Archived": archived_count,
         "Archive File": output,
         "Incremental Mode": "Yes" if incremental else "No",
     }

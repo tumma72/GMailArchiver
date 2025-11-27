@@ -7,6 +7,7 @@ import mailbox
 import shutil
 import signal
 import threading
+from collections.abc import Callable
 from compression import zstd
 from email import policy
 from pathlib import Path
@@ -111,6 +112,163 @@ class GmailArchiver:
         if self._original_sigint_handler is not None:
             signal.signal(signal.SIGINT, self._original_sigint_handler)
             self._original_sigint_handler = None
+
+    # =========================================================================
+    # Phase-based API (v1.4.3+)
+    # These methods allow command to control UI for each phase separately
+    # =========================================================================
+
+    def list_messages_for_archive(
+        self,
+        age_threshold: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> tuple[str, list[dict[str, str]]]:
+        """List messages from Gmail matching age threshold.
+
+        Phase 1 of archive operation. Lists messages from Gmail API without
+        any database filtering or archiving.
+
+        Args:
+            age_threshold: Age expression (e.g., '3y', '6m') or ISO date
+            progress_callback: Optional callback(count, page) for progress updates
+
+        Returns:
+            Tuple of (gmail_query, message_list) where message_list contains
+            dicts with 'id' and 'threadId' keys
+
+        Raises:
+            InvalidInputError: If age_threshold format is invalid
+        """
+        # Validate age threshold
+        age_threshold = validate_age_expression(age_threshold)
+
+        # Parse to date and build query
+        cutoff_date = parse_age(age_threshold)
+        query = f"before:{datetime_to_gmail_query(cutoff_date)}"
+
+        # List messages from Gmail API with progress callback
+        message_list = self.client.list_messages(query, progress_callback=progress_callback)
+
+        return query, message_list
+
+    def filter_already_archived(
+        self,
+        message_ids: list[str],
+        incremental: bool = True,
+    ) -> tuple[list[str], int]:
+        """Filter out already-archived messages.
+
+        Phase 2 of archive operation. Checks database for existing messages
+        and returns filtered list.
+
+        Args:
+            message_ids: List of Gmail message IDs to filter
+            incremental: If True, filter out already archived (default: True)
+
+        Returns:
+            Tuple of (filtered_message_ids, skipped_count)
+        """
+        if not incremental:
+            return message_ids, 0
+
+        # Check database for existing messages
+        db_path = Path(self.state_db_path)
+        try:
+            db = DBManager(str(db_path), validate_schema=False, auto_create=True)
+            # Get only non-NULL gmail_ids (NULL means message deleted from Gmail)
+            cursor = db.conn.execute("SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL")
+            archived_ids = {row[0] for row in cursor.fetchall()}
+            db.close()
+        except Exception:
+            # If query fails, database might be empty or table doesn't exist yet
+            archived_ids = set()
+
+        # Filter out already-archived
+        filtered_ids = [mid for mid in message_ids if mid not in archived_ids]
+        skipped_count = len(message_ids) - len(filtered_ids)
+
+        return filtered_ids, skipped_count
+
+    def archive_messages(
+        self,
+        message_ids: list[str],
+        output_file: str,
+        compress: str | None = None,
+        operation: OperationHandle | None = None,
+    ) -> dict[str, Any]:
+        """Archive a list of messages to mbox file.
+
+        Phase 3 of archive operation. Archives the messages with progress
+        tracking and log streaming.
+
+        Args:
+            message_ids: List of Gmail message IDs to archive
+            output_file: Output mbox file path
+            compress: Compression format ('gzip', 'lzma', 'zstd', None)
+            operation: Optional operation handle for live progress/logging
+
+        Returns:
+            Dict with 'archived_count', 'failed_count', 'interrupted', 'actual_file'
+        """
+        import uuid
+
+        if not message_ids:
+            return {
+                "archived_count": 0,
+                "failed_count": 0,
+                "interrupted": False,
+                "actual_file": output_file,
+            }
+
+        # Validate compression format
+        compress = validate_compression_format(compress)
+
+        # Initialize storage managers
+        self.db_manager = DBManager(
+            str(self.state_db_path), validate_schema=False, auto_create=True
+        )
+        self.hybrid_storage = HybridStorage(self.db_manager)
+
+        # Create session
+        session_id = str(uuid.uuid4())
+        query = f"archive_messages({len(message_ids)} messages)"
+        self.db_manager.create_session(
+            session_id=session_id,
+            target_file=output_file,
+            query=query,
+            message_ids=message_ids,
+            compression=compress,
+        )
+
+        try:
+            # Archive messages
+            result = self._archive_messages(
+                message_ids,
+                output_file,
+                compress,
+                operation,
+                session_id=session_id,
+            )
+
+            # Clean up
+            self.db_manager.close()
+
+            return {
+                "archived_count": result.get("archived", 0),
+                "failed_count": result.get("failed", 0),
+                "interrupted": result.get("interrupted", False),
+                "actual_file": result.get("actual_file", output_file),
+            }
+
+        except Exception:
+            # Clean up on error
+            if self.db_manager:
+                self.db_manager.close()
+            raise
+
+    # =========================================================================
+    # Original API (preserved for backward compatibility)
+    # =========================================================================
 
     def archive(
         self,
