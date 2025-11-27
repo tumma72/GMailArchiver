@@ -548,7 +548,6 @@ def with_context(
             )
 
             db: DBManager | None = None
-            gmail: GmailClient | None = None
 
             try:
                 # Initialize database if required
@@ -579,19 +578,9 @@ def with_context(
                     db = DBManager(str(db_path), validate_schema=False)
                     ctx.db = db
 
-                # Initialize Gmail client if required
+                # Initialize Gmail client if required (uses spinner UI)
                 if requires_gmail:
-                    try:
-                        authenticator = GmailAuthenticator(credentials_file=credentials)
-                        creds = authenticator.authenticate()
-                        gmail = GmailClient(creds)
-                        ctx.gmail = gmail
-                    except Exception as e:
-                        ctx.fail_and_exit(
-                            "Authentication Failed",
-                            f"Failed to authenticate with Gmail: {e}",
-                            suggestion="Run 'gmailarchiver auth-reset' and try again",
-                        )
+                    ctx.authenticate_gmail(credentials=credentials)
 
                 # Set up live context if using progress
                 if use_live_mode:

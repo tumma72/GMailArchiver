@@ -387,6 +387,8 @@ class TestWithContextDecorator:
             patch("gmailarchiver.cli.command_context.GmailClient") as MockGmail,
         ):
             mock_output = MagicMock(spec=OutputManager)
+            # Add console attribute for UIBuilder (used by authenticate_gmail)
+            mock_output.console = MagicMock()
             MockOutput.return_value = mock_output
             mock_auth = MagicMock()
             MockAuth.return_value = mock_auth
@@ -410,6 +412,8 @@ class TestWithContextDecorator:
             patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
         ):
             mock_output = MagicMock(spec=OutputManager)
+            # Add console attribute for UIBuilder (used by authenticate_gmail)
+            mock_output.console = MagicMock()
             MockOutput.return_value = mock_output
             MockAuth.return_value.authenticate.side_effect = Exception("Auth failed")
 

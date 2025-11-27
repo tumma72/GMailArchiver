@@ -2,7 +2,7 @@
 
 This document defines the visual language, interaction patterns, and composable components for Gmail Archiver's command-line interface. All commands MUST follow these guidelines to ensure a consistent, professional user experience.
 
-**Status**: Iteration 2 - Log Window Support (Streaming Tasks)
+**Status**: Iteration 3 - Authentication Standardization
 
 ---
 
@@ -235,6 +235,54 @@ with ctx.ui.task_sequence(show_logs=True) as seq:
 | ERROR | ✗ | red |
 | SUCCESS | ✓ | green |
 
+### 6.5 Authentication (Spinner Pattern)
+Gmail authentication uses the spinner pattern for consistent UI across all commands.
+
+**Running State:**
+```
+⠹ Authenticating with Gmail...
+```
+
+**Completed (Success):**
+```
+✓ Authenticating with Gmail: Connected
+```
+
+**Completed (Failure):**
+```
+✗ Authenticating with Gmail: Authentication failed
+```
+
+**API:**
+```python
+# Required authentication (exits on failure)
+gmail = ctx.authenticate_gmail(credentials=credentials)
+
+# Optional authentication (returns None on failure)
+gmail = ctx.authenticate_gmail(required=False)
+if gmail is None:
+    ctx.warning("Continuing without Gmail access")
+
+# With deletion permission validation
+gmail = ctx.authenticate_gmail(validate_deletion_scope=True)
+```
+
+**Method Signature:**
+```python
+def authenticate_gmail(
+    self,
+    credentials: str | None = None,      # Custom OAuth2 credentials file
+    required: bool = True,                # Exit on failure if True
+    validate_deletion_scope: bool = False # Check deletion permission
+) -> GmailClient | None
+```
+
+**Implementation Notes:**
+- Uses `ctx.ui.spinner()` internally for consistent UI
+- Automatically sets `ctx.gmail` on success
+- Handles all error cases with proper error panels
+- Supports both `@with_context(requires_gmail=True)` and manual calls
+
 ---
 
 ## 7. Suggestions & Next Steps
@@ -315,6 +363,17 @@ All output MUST have a JSON equivalent for automation. When `--json` flag is use
 | Command | Status | Pattern |
 |---------|--------|---------|
 | `import` | ✓ Iteration 1 | task_sequence |
-| `archive` | ✓ Iteration 2 | task_sequence + show_logs |
+| `archive` | ✓ Iteration 2 | task_sequence + show_logs + authenticate_gmail |
+| `retry-delete` | ✓ Iteration 3 | authenticate_gmail(validate_deletion_scope) |
+| `backfill-gmail-ids` | ✓ Iteration 3 | @with_context(requires_gmail=True) |
 | `validate` | Pending | task_sequence |
 | (other commands) | Pending | See implementation plan |
+
+### A.3 Authentication Pattern Usage
+
+| Method | Use Case |
+|--------|----------|
+| `ctx.authenticate_gmail()` | Required auth, exits on failure |
+| `ctx.authenticate_gmail(required=False)` | Optional auth (e.g., import command) |
+| `ctx.authenticate_gmail(validate_deletion_scope=True)` | Auth + deletion permission check |
+| `@with_context(requires_gmail=True)` | Decorator-level auth for entire command |
