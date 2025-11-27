@@ -150,6 +150,94 @@ class CommandContext:
             )
         return self._ui_builder
 
+    # ==================== AUTHENTICATION ====================
+
+    def authenticate_gmail(
+        self,
+        credentials: str | None = None,
+        required: bool = True,
+        validate_deletion_scope: bool = False,
+    ) -> GmailClient | None:
+        """Authenticate with Gmail using consistent UI pattern.
+
+        Handles the full authentication flow with proper spinner UI:
+        - Shows spinner while authenticating
+        - Shows success/failure result
+        - Optionally validates deletion permissions
+        - Optionally exits on failure
+
+        Args:
+            credentials: Optional custom OAuth2 credentials file path.
+                        If None (default), uses bundled app credentials.
+            required: If True (default), calls fail_and_exit on auth failure.
+                     If False, returns None on failure.
+            validate_deletion_scope: If True, validates that credentials have
+                                    deletion permission (https://mail.google.com/).
+                                    Used by delete/trash operations.
+
+        Returns:
+            GmailClient instance on success, None on failure (if required=False)
+
+        Raises:
+            typer.Exit: If required=True and authentication/validation fails
+
+        Example:
+            # Required auth (exits on failure)
+            gmail = ctx.authenticate_gmail()
+
+            # Optional auth (returns None on failure)
+            gmail = ctx.authenticate_gmail(required=False)
+            if gmail is None:
+                ctx.warning("Continuing without Gmail access")
+
+            # Auth with deletion permission validation
+            gmail = ctx.authenticate_gmail(validate_deletion_scope=True)
+        """
+        with self.ui.spinner("Authenticating with Gmail") as task:
+            try:
+                authenticator = GmailAuthenticator(credentials_file=credentials)
+                creds = authenticator.authenticate()
+
+                # Validate deletion scope if requested
+                if validate_deletion_scope:
+                    if not authenticator.validate_scopes(["https://mail.google.com/"]):
+                        task.fail("Missing deletion permission")
+                        if required:
+                            self.fail_and_exit(
+                                "Missing deletion permission",
+                                "Your current authorization doesn't include "
+                                "permission to delete messages",
+                                details=[
+                                    "This was likely caused by using an older "
+                                    "version of the app",
+                                ],
+                                suggestion="Run 'gmailarchiver auth-reset' then retry",
+                            )
+                        return None
+
+                gmail = GmailClient(creds)
+                self.gmail = gmail
+                task.complete("Connected")
+                return gmail
+            except FileNotFoundError as e:
+                task.fail("Credentials not found")
+                if required:
+                    self.fail_and_exit(
+                        "Credentials Not Found",
+                        str(e),
+                        suggestion="Reinstall the application or provide --credentials",
+                    )
+                return None
+            except Exception as e:
+                task.fail("Authentication failed")
+                if required:
+                    self.fail_and_exit(
+                        "Authentication Failed",
+                        f"Failed to authenticate with Gmail: {e}",
+                        suggestion="Run 'gmailarchiver auth-reset' and try again",
+                    )
+                return None
+
     # ==================== PROGRESS METHODS ====================
 
     @contextmanager

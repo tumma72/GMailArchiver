@@ -11,7 +11,6 @@ from ._version import __version__
 from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
-from .connectors.gmail_client import GmailClient
 from .core.archiver import GmailArchiver
 from .core.deduplicator import MessageDeduplicator
 from .core.validator import ArchiveValidator
@@ -120,21 +119,9 @@ def archive(
             extension = ".mbox.zst"
         output = f"archive_{timestamp}{extension}"
 
-    # Phase 1: Authentication (outside live context for cleaner output)
-    try:
-        ctx.info("Authenticating with Gmail...")
-        authenticator = GmailAuthenticator(credentials_file=credentials)
-        creds = authenticator.authenticate()
-        ctx.success("Authentication successful")
-    except FileNotFoundError as e:
-        ctx.fail_and_exit(
-            title="Authentication Failed",
-            message=str(e),
-            suggestion="Check credentials file path or use bundled credentials",
-        )
-
-    # Initialize clients
-    gmail_client = GmailClient(creds)
+    # Phase 1: Authentication
+    gmail_client = ctx.authenticate_gmail(credentials=credentials)
+    assert gmail_client is not None  # required=True ensures this
     archiver = GmailArchiver(gmail_client, output=out)
 
     # Phase 2: Discovery and Archiving (multi-task sequence)
@@ -511,30 +498,14 @@ def retry_delete_cmd(
         ctx.info(f"Found {len(message_ids)} archived messages")
         ctx.info(f"Archive: {archive_file}\n")
 
-        # 2. Authenticate and validate scopes
-        authenticator = GmailAuthenticator(credentials_file=credentials)
-        ctx.info("Authenticating with Gmail...")
-        creds = authenticator.authenticate()
+        # Authenticate and validate deletion permissions
+        client = ctx.authenticate_gmail(
+            credentials=credentials,
+            validate_deletion_scope=True,
+        )
+        assert client is not None  # required=True ensures this
 
-        # 3. Validate deletion scope
-        ctx.info("Validating permissions...")
-        if not authenticator.validate_scopes(["https://mail.google.com/"]):
-            # Keep wording so tests still find 'Missing deletion permission' and 'auth-reset'
-            ctx.fail_and_exit(
-                title="Missing deletion permission",
-                message="Your current authorization doesn't include permission to delete messages",
-                details=[
-                    "This was likely caused by using an older version of the app",
-                ],
-                suggestion="Run 'gmailarchiver auth-reset' then retry this command",
-            )
-
-        ctx.success("Permissions validated")
-
-        # 4. Create Gmail client
-        client = GmailClient(creds)
-
-        # 5. Create archiver (for deletion functionality)
+        # Create archiver (for deletion functionality)
         archiver = GmailArchiver(client, state_db, output=ctx.output)
 
         # 6. Delete messages with appropriate confirmation
@@ -2026,16 +1997,9 @@ def import_cmd(
     # Set up Gmail client for Gmail ID lookup (unless skipped)
     gmail_client = None
     if not skip_gmail_lookup:
-        ctx.info("Setting up Gmail ID lookup (use --skip-gmail-lookup for offline mode)")
-        try:
-            authenticator = GmailAuthenticator(credentials_file=credentials)
-            creds = authenticator.authenticate()
-            gmail_client = GmailClient(creds)
-            ctx.success("Gmail authentication successful")
-        except Exception as e:
-            ctx.warning(f"Gmail authentication failed: {e}")
+        gmail_client = ctx.authenticate_gmail(credentials=credentials, required=False)
+        if gmail_client is None:
             ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
-            gmail_client = None
 
     # Import each file with progress
     importer = ArchiveImporter(state_db, gmail_client=gmail_client)

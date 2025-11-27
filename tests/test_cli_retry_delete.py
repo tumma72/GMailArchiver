@@ -44,8 +44,10 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
-            patch("gmailarchiver.__main__.GmailClient") as MockClient,
+            patch(
+                "gmailarchiver.cli.command_context.GmailAuthenticator"
+            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
             # Mock ArchiveState context manager
@@ -105,7 +107,9 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
+            patch(
+                "gmailarchiver.cli.command_context.GmailAuthenticator"
+            ) as MockAuth,
         ):
             # Mock ArchiveState
             mock_state = Mock()
@@ -134,8 +138,10 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
-            patch("gmailarchiver.__main__.GmailClient") as MockClient,
+            patch(
+                "gmailarchiver.cli.command_context.GmailAuthenticator"
+            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
             # Mock ArchiveState
@@ -180,7 +186,9 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
+            patch(
+                "gmailarchiver.cli.command_context.GmailAuthenticator"
+            ) as MockAuth,
         ):
             # Mock ArchiveState
             mock_state = Mock()
@@ -213,8 +221,10 @@ class TestRetryDeleteCommand:
 
         with (
             patch("gmailarchiver.__main__.ArchiveState") as MockState,
-            patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
-            patch("gmailarchiver.__main__.GmailClient") as MockClient,
+            patch(
+                "gmailarchiver.cli.command_context.GmailAuthenticator"
+            ) as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
             patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
         ):
             # Mock ArchiveState
@@ -265,8 +275,10 @@ class TestRetryDeleteIntegration:
 
             with (
                 patch("gmailarchiver.__main__.ArchiveState") as MockState,
-                patch("gmailarchiver.__main__.GmailAuthenticator") as MockAuth,
-                patch("gmailarchiver.__main__.GmailClient") as MockClient,
+                patch(
+                    "gmailarchiver.cli.command_context.GmailAuthenticator"
+                ) as MockAuth,
+                patch("gmailarchiver.cli.command_context.GmailClient") as MockClient,
                 patch("gmailarchiver.__main__.GmailArchiver") as MockArchiver,
             ):
                 # Mock ArchiveState
