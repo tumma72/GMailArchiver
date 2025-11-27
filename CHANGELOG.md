@@ -7,22 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2025-11-27
+
 ### Added
 - **`--verbose` flag to `status` command**: Shows more detail including full query column and 10 archive runs (default 5)
 - **`--check` flag to `doctor` command**: Also runs internal database checks (same as `gmailarchiver check`)
 - **UI/UX Guidelines**: New Section 2 in docs/UI_UX_CLI.md documenting `--verbose` semantics
   - Core principle: `--verbose` shows MORE DETAIL about SAME info, NOT different info
   - Pattern: Without verbose shows summary counts; with verbose shows detailed breakdowns
+- **docs/USAGE.md**: Complete command reference documentation (externalized from README)
 
 ### Changed
 - **`status` command**: Now includes database schema version, database size, and archive files count (previously in separate `db-info` command)
 - **`doctor` vs `check` separation clarified**: `doctor` = external/environment checks, `check` = internal/database health
 - **`retry-delete` command**: Moved to utilities subcommand only (`gmailarchiver utilities retry-delete`)
+- **README.md**: Streamlined with quick command reference table, full docs in USAGE.md
 
 ### Fixed
 - **Bug #2 (GitHub)**: Progress bars not updating during import and verify-integrity commands
   - **Issue**: Progress bar counter showed total but never incremented (time indicator worked correctly)
-  - **Root Cause**: `progress_context()` wrapped Rich's `Progress` object in an external `Live()` context, which disabled Progress's internal refresh mechanism. When `progress.update(refresh=True)` was called, it triggered Progress's internal live.refresh(), but since Progress wasn't managing its own Live context, the display didn't update.
+  - **Root Cause**: `progress_context()` wrapped Rich's `Progress` object in an external `Live()` context, which disabled Progress's internal refresh mechanism
   - **Solution**: Use `Progress` as its own context manager instead of wrapping in external `Live()`
   - **Impact**: Progress bars now update correctly during all operations
 
@@ -32,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`retry-delete` from main commands**: Now utilities-only (still accessible via `gmailarchiver utilities retry-delete`)
 - Dead code in `OutputManager.task_complete()` that referenced unused `_live` and `_progress` attributes
 - Unused `make_status_panel()` function that was never called
+
+### Quality
+- **Test coverage**: 94% (1388 tests passing)
+- Added 7 new tests for doctor CLI command with --check flag
 
 ## [1.3.2] - 2025-11-24
 
