@@ -2002,30 +2002,31 @@ def import_cmd(
         total_messages += count
     ctx.info(f"Total: {total_messages:,} messages to import")
 
-    # Track overall progress
+    # Track overall progress using live output handler (same pattern as archive command)
+    out = ctx.output
     messages_processed = 0
+    last_reported = 0
 
-    with ctx.output.progress_context("Importing messages", total=total_messages) as progress:
-        task = progress.add_task("Import", total=total_messages) if progress else None
+    with out._handler:
+        operation = out._handler.start_operation("Importing messages", total=total_messages)
         current_task_pos = 0
 
         for file_idx, file_path in enumerate(files):
             file_name = Path(file_path).name
-            ctx.info(f"\nImporting {file_name} ({file_message_counts[file_idx]:,} messages)...")
+            operation.set_status(f"Importing {file_name}")
 
             def make_progress_callback(
                 base_pos: int,
             ) -> Callable[[int, int, str], None]:
                 def callback(current: int, total: int, status: str) -> None:
-                    nonlocal messages_processed
+                    nonlocal messages_processed, last_reported
                     messages_processed = base_pos + current
-                    if progress and task:
-                        progress.update(
-                            task,
-                            completed=messages_processed,
-                            description=f"{status} [{current}/{total}]",
-                            refresh=True,  # Force immediate display refresh
-                        )
+                    # Advance progress by the delta since last report
+                    delta = messages_processed - last_reported
+                    if delta > 0:
+                        operation.update_progress(delta)
+                        last_reported = messages_processed
+                    operation.set_status(f"{status} [{current}/{total}]")
 
                 return callback
 
@@ -2039,8 +2040,11 @@ def import_cmd(
                 results.append(result)
                 current_task_pos += file_message_counts[file_idx]
             except Exception as e:
-                ctx.error(f"Error importing {file_path}: {e}")
+                operation.log(f"Error importing {file_path}: {e}", "ERROR")
                 current_task_pos += file_message_counts[file_idx]
+
+        # Mark operation as complete
+        operation.succeed(f"Imported {messages_processed:,} messages")
 
     total_time = time.perf_counter() - start_time
 
