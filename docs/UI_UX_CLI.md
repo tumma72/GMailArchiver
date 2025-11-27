@@ -186,7 +186,54 @@ with ctx.ui.task_sequence() as seq:
 - `t.fail(message, reason=None)` - Mark task as failed (shows ✗)
 - `t.advance(n=1)` - Advance progress counter (if total was set)
 - `t.set_total(total)` - Set total after task started (for late-bound totals)
+- `t.set_status(text)` - Update task description (e.g., for live counters)
 - `t.log(message, level)` - Log a message within the task
+
+### 6.4 Log Window (Streaming Tasks)
+For operations with streaming output, use `show_logs=True` to display a scrolling log window below the tasks.
+
+**Archive Command Example:**
+```
+✓ Scanning messages from Gmail: Found 15,000 messages
+✓ Checking for already archived: Identified 13,267 to archive (1,733 already archived)
+⠹ Archiving messages [████░░░░░░░░] 30% • 3,980/13,267
+──────────────────────────────────────────────────────
+✓ Archived: RE: Q4 Budget Review
+✓ Archived: Meeting Notes - Product Sync
+✓ Archived: Invoice #12345
+⚠ Skipped (duplicate): FW: Contract Update
+```
+
+**API:**
+```python
+with ctx.ui.task_sequence(show_logs=True) as seq:
+    # Task 1: Discovery (spinner with live counter)
+    with seq.task("Scanning messages from Gmail") as t:
+        def progress(count, page):
+            t.set_status(f"Scanning messages from Gmail... {count:,} found")
+        messages = client.list_messages(query, progress_callback=progress)
+        t.complete(f"Found {len(messages):,} messages")
+
+    # Task 2: Filtering (quick)
+    with seq.task("Checking for already archived") as t:
+        to_archive, skipped = filter_archived(messages)
+        t.complete(f"Identified {len(to_archive):,} to archive")
+
+    # Task 3: Archiving (progress bar + log window)
+    with seq.task("Archiving messages", total=len(to_archive)) as t:
+        for msg in archive(to_archive):
+            t.log(f"Archived: {msg.subject}", "SUCCESS")
+            t.advance()
+        t.complete(f"Archived {len(to_archive):,} messages")
+```
+
+**Log Symbols:**
+| Level | Symbol | Color |
+|-------|--------|-------|
+| INFO | ℹ | blue |
+| WARNING | ⚠ | yellow |
+| ERROR | ✗ | red |
+| SUCCESS | ✓ | green |
 
 ---
 
