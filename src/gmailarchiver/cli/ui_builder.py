@@ -20,6 +20,7 @@ Example usage:
 """
 
 import time
+from collections import deque
 from collections.abc import Generator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ from typing import Any, Protocol
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.rule import Rule
 from rich.text import Text
 
 # =============================================================================
@@ -58,6 +60,15 @@ class TaskState:
     end_time: float | None = None
 
 
+@dataclass
+class LogEntry:
+    """A single log entry with level, message, and timestamp."""
+
+    level: str
+    message: str
+    timestamp: float = field(default_factory=time.time)
+
+
 # =============================================================================
 # Protocols
 # =============================================================================
@@ -66,12 +77,18 @@ class TaskState:
 class TaskHandle(Protocol):
     """Handle for controlling a single task within a sequence.
 
+    This protocol is compatible with OperationHandle for backward
+    compatibility with existing code (e.g., archiver.py).
+
     Methods:
         complete: Mark task as successful (shows ✓)
         fail: Mark task as failed (shows ✗)
         advance: Advance progress counter (if total was set)
         set_total: Set total for late-bound progress
         log: Log a message within the task context
+        update_progress: Alias for advance (OperationHandle compat)
+        set_status: Update task description (OperationHandle compat)
+        succeed: Alias for complete (OperationHandle compat)
     """
 
     def complete(self, message: str) -> None:
@@ -99,11 +116,12 @@ class TaskHandle(Protocol):
         """
         ...
 
-    def set_total(self, total: int) -> None:
+    def set_total(self, total: int, description: str | None = None) -> None:
         """Set total for progress tracking (for late-bound totals).
 
         Args:
             total: Total number of items to process
+            description: Optional new description for the task
         """
         ...
 
@@ -112,7 +130,42 @@ class TaskHandle(Protocol):
 
         Args:
             message: Message to log
-            level: Log level (INFO, WARNING, ERROR)
+            level: Log level (INFO, WARNING, ERROR, SUCCESS)
+        """
+        ...
+
+    # OperationHandle compatibility methods
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance progress counter (OperationHandle compatibility).
+
+        Args:
+            advance: Number of units to advance (default: 1)
+        """
+        ...
+
+    def set_status(self, status: str) -> None:
+        """Update task description (OperationHandle compatibility).
+
+        Args:
+            status: New status text
+        """
+        ...
+
+    def succeed(self, message: str) -> None:
+        """Mark task as successful (OperationHandle compatibility).
+
+        Args:
+            message: Success message
+        """
+        ...
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry (OperationHandle compatibility).
+
+        Args:
+            final_message: The final message to display
+            level: The final severity level (default: SUCCESS)
         """
         ...
 
@@ -146,11 +199,18 @@ class UIBuilder(Protocol):
     Commands access this via ctx.ui to build declarative UI.
     """
 
-    def task_sequence(self, title: str | None = None) -> AbstractContextManager[TaskSequence]:
+    def task_sequence(
+        self,
+        title: str | None = None,
+        show_logs: bool = False,
+        max_logs: int = ...,
+    ) -> AbstractContextManager[TaskSequence]:
         """Create a task sequence for multi-step operations.
 
         Args:
             title: Optional title for the sequence
+            show_logs: If True, shows a scrolling log window below tasks
+            max_logs: Maximum number of visible log entries (default: 10)
 
         Returns:
             Context manager yielding a TaskSequence
@@ -178,13 +238,24 @@ class UIBuilder(Protocol):
 # Spinner animation frames (braille pattern)
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-# Status symbols
+# Status symbols for tasks
 SYMBOLS = {
     TaskStatus.PENDING: ("○", "dim"),
     TaskStatus.RUNNING: (SPINNER_FRAMES[0], "cyan"),  # Will be animated
     TaskStatus.SUCCESS: ("✓", "green"),
     TaskStatus.FAILED: ("✗", "red"),
 }
+
+# Log level symbols and colors (matching docs/UI_UX_CLI.md)
+LOG_SYMBOLS = {
+    "INFO": ("ℹ", "blue"),
+    "WARNING": ("⚠", "yellow"),
+    "ERROR": ("✗", "red"),
+    "SUCCESS": ("✓", "green"),
+}
+
+# Default max visible logs in the log window
+DEFAULT_MAX_LOGS = 10
 
 
 class TaskHandleImpl:
@@ -218,16 +289,60 @@ class TaskHandleImpl:
         self._state.completed += n
         self._sequence._refresh()
 
-    def set_total(self, total: int) -> None:
-        """Set total for progress tracking."""
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking.
+
+        Args:
+            total: Total number of items to process
+            description: Optional new description for the task
+        """
         self._state.total = total
+        if description:
+            self._state.description = description
         self._sequence._refresh()
 
     def log(self, message: str, level: str = "INFO") -> None:
         """Log a message within the task context."""
-        # For now, we just store logs in the sequence
-        # Future: could display in a log buffer below tasks
         self._sequence._log(message, level)
+
+    # OperationHandle compatibility methods (for archiver.py integration)
+
+    def update_progress(self, advance: int = 1) -> None:
+        """Advance progress counter (OperationHandle compatibility).
+
+        Args:
+            advance: Number of units to advance (default: 1)
+        """
+        self.advance(advance)
+
+    def set_status(self, status: str) -> None:
+        """Update task description (OperationHandle compatibility).
+
+        Args:
+            status: New status text (updates task description)
+        """
+        self._state.description = status
+        self._sequence._refresh()
+
+    def succeed(self, message: str) -> None:
+        """Mark task as successful (OperationHandle compatibility).
+
+        Args:
+            message: Success message
+        """
+        self.complete(message)
+
+    def complete_pending(self, final_message: str, level: str = "SUCCESS") -> None:
+        """Complete a pending log entry (OperationHandle compatibility).
+
+        In the task sequence context, this is equivalent to logging with
+        the specified level.
+
+        Args:
+            final_message: The final message to display
+            level: The final severity level (default: SUCCESS)
+        """
+        self.log(final_message, level)
 
 
 class TaskSequenceImpl:
@@ -236,6 +351,9 @@ class TaskSequenceImpl:
     This class owns a single Rich Live context and manages all task
     rendering within it. This solves the flickering bug by having
     a single point of refresh control.
+
+    Supports an optional log window that shows recent activity messages
+    below the task list (for operations like archive that stream updates).
     """
 
     def __init__(
@@ -243,12 +361,17 @@ class TaskSequenceImpl:
         console: Console | None,
         json_mode: bool = False,
         title: str | None = None,
+        show_logs: bool = False,
+        max_logs: int = DEFAULT_MAX_LOGS,
     ) -> None:
         self._console = console
         self._json_mode = json_mode
         self._title = title
+        self._show_logs = show_logs
+        self._max_logs = max_logs
         self._tasks: list[TaskState] = []
-        self._logs: list[tuple[str, str]] = []
+        self._logs: list[tuple[str, str]] = []  # All logs (for JSON mode)
+        self._visible_logs: deque[LogEntry] = deque(maxlen=max_logs)  # Ring buffer
         self._json_events: list[dict[str, Any]] = []
         self._live: Live | None = None
         self._animation_frame: int = 0
@@ -357,14 +480,36 @@ class TaskSequenceImpl:
             self._live.refresh()
 
     def _render(self) -> Group:
-        """Render all tasks to a Rich Group."""
-        lines: list[Text] = []
+        """Render all tasks and optional log window to a Rich Group."""
+        renderables: list[Text | Rule] = []
 
+        # Render tasks
         for task in self._tasks:
             line = self._render_task(task)
-            lines.append(line)
+            renderables.append(line)
 
-        return Group(*lines) if lines else Group(Text(""))
+        # Render log window if enabled and has logs
+        if self._show_logs and self._visible_logs:
+            # Add separator
+            renderables.append(Rule(style="dim"))
+
+            # Render visible logs
+            for entry in self._visible_logs:
+                log_line = self._render_log(entry)
+                renderables.append(log_line)
+
+        return Group(*renderables) if renderables else Group(Text(""))
+
+    def _render_log(self, entry: LogEntry) -> Text:
+        """Render a single log entry."""
+        text = Text()
+
+        # Get symbol and color for level
+        symbol, color = LOG_SYMBOLS.get(entry.level, ("?", "white"))
+        text.append(f"{symbol} ", style=color)
+        text.append(entry.message)
+
+        return text
 
     def _render_task(self, task: TaskState) -> Text:
         """Render a single task line."""
@@ -404,15 +549,23 @@ class TaskSequenceImpl:
         return text
 
     def _log(self, message: str, level: str) -> None:
-        """Store a log message."""
+        """Store a log message and optionally display it in the log window."""
+        timestamp = time.time()
         self._logs.append((level, message))
+
+        # Add to visible log buffer (ring buffer)
+        if self._show_logs:
+            self._visible_logs.append(LogEntry(level=level, message=message, timestamp=timestamp))
+            self._refresh()
+
+        # Emit JSON event
         if self._json_mode:
             self._json_events.append(
                 {
                     "event": "log",
                     "level": level,
                     "message": message,
-                    "timestamp": time.time(),
+                    "timestamp": timestamp,
                 }
             )
 
@@ -434,13 +587,24 @@ class UIBuilderImpl:
 
     @contextmanager
     def task_sequence(
-        self, title: str | None = None
+        self,
+        title: str | None = None,
+        show_logs: bool = False,
+        max_logs: int = DEFAULT_MAX_LOGS,
     ) -> Generator[TaskSequenceImpl]:
-        """Create a task sequence for multi-step operations."""
+        """Create a task sequence for multi-step operations.
+
+        Args:
+            title: Optional title for the sequence
+            show_logs: If True, shows a scrolling log window below tasks
+            max_logs: Maximum number of visible log entries (default: 10)
+        """
         seq = TaskSequenceImpl(
             console=self._console,
             json_mode=self._json_mode,
             title=title,
+            show_logs=show_logs,
+            max_logs=max_logs,
         )
         with seq:
             yield seq

@@ -6,8 +6,11 @@ import pytest
 from rich.console import Console
 
 from gmailarchiver.cli.ui_builder import (
+    DEFAULT_MAX_LOGS,
+    LOG_SYMBOLS,
     SPINNER_FRAMES,
     SYMBOLS,
+    LogEntry,
     TaskHandleImpl,
     TaskSequenceImpl,
     TaskState,
@@ -134,6 +137,69 @@ class TestTaskHandleImpl:
         self.handle.log("Test message", "WARNING")
 
         self.sequence._log.assert_called_once_with("Test message", "WARNING")
+
+    def test_set_total_with_description(self) -> None:
+        """set_total() can update description."""
+        self.handle.set_total(100, description="New description")
+
+        assert self.state.total == 100
+        assert self.state.description == "New description"
+        self.sequence._refresh.assert_called()
+
+    def test_set_total_without_description_preserves_original(self) -> None:
+        """set_total() without description preserves original."""
+        original_desc = self.state.description
+        self.handle.set_total(100)
+
+        assert self.state.total == 100
+        assert self.state.description == original_desc
+
+    # OperationHandle compatibility tests
+
+    def test_update_progress_delegates_to_advance(self) -> None:
+        """update_progress() delegates to advance()."""
+        initial = self.state.completed
+
+        self.handle.update_progress(5)
+
+        assert self.state.completed == initial + 5
+        self.sequence._refresh.assert_called()
+
+    def test_update_progress_default_is_one(self) -> None:
+        """update_progress() defaults to 1."""
+        initial = self.state.completed
+
+        self.handle.update_progress()
+
+        assert self.state.completed == initial + 1
+
+    def test_set_status_updates_description(self) -> None:
+        """set_status() updates task description."""
+        self.handle.set_status("Processing item 50/100")
+
+        assert self.state.description == "Processing item 50/100"
+        self.sequence._refresh.assert_called()
+
+    def test_succeed_delegates_to_complete(self) -> None:
+        """succeed() delegates to complete()."""
+        self.handle.succeed("Operation finished")
+
+        assert self.state.status == TaskStatus.SUCCESS
+        assert self.state.result_message == "Operation finished"
+        assert self.state.end_time is not None
+        self.sequence._refresh.assert_called()
+
+    def test_complete_pending_logs_message(self) -> None:
+        """complete_pending() delegates to log()."""
+        self.handle.complete_pending("Done processing")
+
+        self.sequence._log.assert_called_once_with("Done processing", "SUCCESS")
+
+    def test_complete_pending_with_custom_level(self) -> None:
+        """complete_pending() uses custom level."""
+        self.handle.complete_pending("Warning occurred", "WARNING")
+
+        self.sequence._log.assert_called_once_with("Warning occurred", "WARNING")
 
 
 class TestTaskSequenceImpl:
@@ -511,3 +577,235 @@ class TestSpinnerFrames:
             assert len(frame) == 1
             code_point = ord(frame)
             assert 0x2800 <= code_point <= 0x28FF
+
+
+class TestLogEntry:
+    """Tests for LogEntry dataclass."""
+
+    def test_log_entry_creation(self) -> None:
+        """LogEntry can be created with level and message."""
+        entry = LogEntry(level="INFO", message="Test message")
+
+        assert entry.level == "INFO"
+        assert entry.message == "Test message"
+        assert entry.timestamp > 0
+
+    def test_log_entry_with_timestamp(self) -> None:
+        """LogEntry can be created with explicit timestamp."""
+        entry = LogEntry(level="ERROR", message="Error!", timestamp=12345.0)
+
+        assert entry.timestamp == 12345.0
+
+
+class TestLogSymbols:
+    """Tests for log level symbols."""
+
+    def test_log_symbols_have_all_levels(self) -> None:
+        """LOG_SYMBOLS has entries for all standard levels."""
+        assert "INFO" in LOG_SYMBOLS
+        assert "WARNING" in LOG_SYMBOLS
+        assert "ERROR" in LOG_SYMBOLS
+        assert "SUCCESS" in LOG_SYMBOLS
+
+    def test_log_symbols_format(self) -> None:
+        """LOG_SYMBOLS entries are (symbol, color) tuples."""
+        for level, (symbol, color) in LOG_SYMBOLS.items():
+            assert len(symbol) == 1  # Single character
+            assert isinstance(color, str)
+
+
+class TestLogWindow:
+    """Tests for log window functionality."""
+
+    def test_show_logs_disabled_by_default(self) -> None:
+        """Log window is disabled by default."""
+        seq = TaskSequenceImpl(console=None, json_mode=True)
+        assert seq._show_logs is False
+
+    def test_show_logs_enabled(self) -> None:
+        """Log window can be enabled."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        assert seq._show_logs is True
+
+    def test_max_logs_default(self) -> None:
+        """Max logs has sensible default."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        assert seq._max_logs == DEFAULT_MAX_LOGS
+
+    def test_max_logs_custom(self) -> None:
+        """Max logs can be customized."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True, max_logs=5)
+        assert seq._max_logs == 5
+
+    def test_log_adds_to_visible_buffer_when_show_logs(self) -> None:
+        """Logs are added to visible buffer when show_logs=True."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+
+        seq._log("Test message", "INFO")
+
+        assert len(seq._visible_logs) == 1
+        assert seq._visible_logs[0].message == "Test message"
+        assert seq._visible_logs[0].level == "INFO"
+
+    def test_log_not_added_to_visible_buffer_when_show_logs_false(self) -> None:
+        """Logs are NOT added to visible buffer when show_logs=False."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=False)
+
+        seq._log("Test message", "INFO")
+
+        assert len(seq._visible_logs) == 0
+        # But still in all logs
+        assert len(seq._logs) == 1
+
+    def test_visible_logs_ring_buffer(self) -> None:
+        """Visible logs use ring buffer with max_logs limit."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True, max_logs=3)
+
+        # Add more logs than max
+        seq._log("Log 1", "INFO")
+        seq._log("Log 2", "INFO")
+        seq._log("Log 3", "INFO")
+        seq._log("Log 4", "INFO")
+        seq._log("Log 5", "INFO")
+
+        # Should only keep last 3
+        assert len(seq._visible_logs) == 3
+        assert seq._visible_logs[0].message == "Log 3"
+        assert seq._visible_logs[1].message == "Log 4"
+        assert seq._visible_logs[2].message == "Log 5"
+
+        # All logs still stored
+        assert len(seq._logs) == 5
+
+    def test_render_log_info(self) -> None:
+        """INFO log renders with info symbol."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        entry = LogEntry(level="INFO", message="Information message")
+
+        text = seq._render_log(entry)
+        text_str = str(text)
+
+        assert "ℹ" in text_str
+        assert "Information message" in text_str
+
+    def test_render_log_warning(self) -> None:
+        """WARNING log renders with warning symbol."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        entry = LogEntry(level="WARNING", message="Warning message")
+
+        text = seq._render_log(entry)
+        text_str = str(text)
+
+        assert "⚠" in text_str
+        assert "Warning message" in text_str
+
+    def test_render_log_error(self) -> None:
+        """ERROR log renders with error symbol."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        entry = LogEntry(level="ERROR", message="Error message")
+
+        text = seq._render_log(entry)
+        text_str = str(text)
+
+        assert "✗" in text_str
+        assert "Error message" in text_str
+
+    def test_render_log_success(self) -> None:
+        """SUCCESS log renders with success symbol."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        entry = LogEntry(level="SUCCESS", message="Success message")
+
+        text = seq._render_log(entry)
+        text_str = str(text)
+
+        assert "✓" in text_str
+        assert "Success message" in text_str
+
+    def test_render_includes_log_window(self) -> None:
+        """Render includes log window when show_logs=True and has logs."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
+        seq._tasks.append(
+            TaskState(description="Test task", status=TaskStatus.SUCCESS, result_message="Done")
+        )
+        seq._log("Log message 1", "INFO")
+        seq._log("Log message 2", "SUCCESS")
+
+        group = seq._render()
+
+        # Should have task + separator + 2 logs = 4 renderables
+        # (Group contains the renderables)
+        assert len(group.renderables) == 4
+
+    def test_render_no_log_window_when_disabled(self) -> None:
+        """Render excludes log window when show_logs=False."""
+        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=False)
+        seq._tasks.append(
+            TaskState(description="Test task", status=TaskStatus.SUCCESS, result_message="Done")
+        )
+        seq._logs.append(("INFO", "Log message"))
+
+        group = seq._render()
+
+        # Should only have task
+        assert len(group.renderables) == 1
+
+
+class TestLogWindowIntegration:
+    """Integration tests for log window with tasks."""
+
+    def test_task_log_appears_in_window(self) -> None:
+        """Logs from task.log() appear in log window."""
+        builder = UIBuilderImpl(console=None, json_mode=True)
+
+        with builder.task_sequence(show_logs=True) as seq:
+            with seq.task("Test task") as t:
+                t.log("Processing started", "INFO")
+                t.log("Item 1 processed", "SUCCESS")
+                t.complete("Done")
+
+        # Check logs in visible buffer
+        assert len(seq._visible_logs) == 2
+        assert seq._visible_logs[0].message == "Processing started"
+        assert seq._visible_logs[1].message == "Item 1 processed"
+
+    def test_full_workflow_with_logs(self) -> None:
+        """Full workflow with task sequence and logging."""
+        builder = UIBuilderImpl(console=None, json_mode=True)
+
+        with builder.task_sequence(show_logs=True, max_logs=5) as seq:
+            with seq.task("Phase 1: Listing") as t1:
+                t1.log("Searching for items...", "INFO")
+                t1.log("Found 100 items", "SUCCESS")
+                t1.complete("Listed 100 items")
+
+            with seq.task("Phase 2: Processing", total=100) as t2:
+                t2.log("Starting processing...", "INFO")
+                for i in range(100):
+                    t2.advance(1)
+                t2.log("Processed all items", "SUCCESS")
+                t2.complete("Processed 100 items")
+
+        # Verify tasks
+        assert len(seq._tasks) == 2
+        assert all(t.status == TaskStatus.SUCCESS for t in seq._tasks)
+
+        # Verify logs (last 5 due to max_logs)
+        assert len(seq._visible_logs) <= 5
+
+    def test_json_events_include_logs(self) -> None:
+        """JSON events include log entries."""
+        builder = UIBuilderImpl(console=None, json_mode=True)
+
+        with builder.task_sequence(show_logs=True) as seq:
+            with seq.task("Test") as t:
+                t.log("Log message", "INFO")
+                t.complete("Done")
+
+        events = seq.get_json_events()
+
+        # Should have: task_start, log, task_complete
+        assert len(events) == 3
+        log_event = events[1]
+        assert log_event["event"] == "log"
+        assert log_event["message"] == "Log message"
+        assert log_event["level"] == "INFO"

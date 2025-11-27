@@ -2,7 +2,7 @@
 
 This document defines the visual language, interaction patterns, and composable components for Gmail Archiver's command-line interface. All commands MUST follow these guidelines to ensure a consistent, professional user experience.
 
-**Status**: Iteration 1 - Foundation (Task Sequences)
+**Status**: Iteration 2 - Log Window Support (Streaming Tasks)
 
 ---
 
@@ -267,7 +267,7 @@ All output MUST have a JSON equivalent for automation. When `--json` flag is use
 
 | Command | Status | Pattern |
 |---------|--------|---------|
-| `import` | Iteration 1 | task_sequence |
+| `import` | ✓ Iteration 1 | task_sequence |
+| `archive` | ✓ Iteration 2 | task_sequence + show_logs |
 | `validate` | Pending | task_sequence |
-| `archive` | Pending | task_sequence + progress |
 | (other commands) | Pending | See implementation plan |

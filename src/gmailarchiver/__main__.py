@@ -137,43 +137,41 @@ def archive(
     gmail_client = GmailClient(creds)
     archiver = GmailArchiver(gmail_client, output=out)
 
-    # Phase 2: Archiving (inside live context for progress tracking)
+    # Phase 2: Archiving (inside task sequence for progress tracking)
     result: dict[str, Any] | None = None
     archive_error: Exception | None = None
 
-    with out._handler:
-        # Start operation and get handle for live progress
-        operation = out._handler.start_operation(
-            f"Archiving messages older than {age_threshold}", total=None
-        )
+    with ctx.ui.task_sequence(show_logs=True) as seq:
+        with seq.task(f"Archiving messages older than {age_threshold}") as operation:
+            try:
+                result = archiver.archive(
+                    age_threshold=age_threshold,
+                    output_file=output,
+                    compress=compress,
+                    incremental=incremental,
+                    dry_run=dry_run,
+                    operation=operation,
+                )
 
-        try:
-            result = archiver.archive(
-                age_threshold=age_threshold,
-                output_file=output,
-                compress=compress,
-                incremental=incremental,
-                dry_run=dry_run,
-                operation=operation,
-            )
+                # Handle results based on mode
+                if dry_run:
+                    operation.succeed(f"Would archive {result['messages_to_archive']} messages")
+                elif result["messages_archived"] > 0:
+                    operation.succeed(f"Archived {result['messages_archived']} messages")
+                else:
+                    operation.log("No messages to archive", "WARNING")
+                    operation.complete("No messages found")
 
-            # Handle results based on mode
-            if dry_run:
-                operation.succeed(f"Would archive {result['messages_to_archive']} messages")
-            elif result["messages_archived"] > 0:
-                operation.succeed(f"Archived {result['messages_archived']} messages")
-            else:
-                operation.log("No messages to archive", "WARNING")
+            except KeyboardInterrupt:
+                # Ctrl+C - the archiver should have handled saving progress
+                operation.log("Archive interrupted by user", "WARNING")
+                operation.complete("Interrupted")
+                # Result should already be set by archiver with interrupted=True
+                # If not, we'll handle it below
 
-        except KeyboardInterrupt:
-            # Ctrl+C - the archiver should have handled saving progress
-            operation.log("Archive interrupted by user", "WARNING")
-            # Result should already be set by archiver with interrupted=True
-            # If not, we'll handle it below
-
-        except Exception as e:
-            operation.fail(f"Archive operation failed: {e}")
-            archive_error = e
+            except Exception as e:
+                operation.fail(f"Archive operation failed: {e}")
+                archive_error = e
 
     # Phase 3: Handle archive errors (outside live context)
     if archive_error:
