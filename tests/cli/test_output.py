@@ -85,6 +85,85 @@ class TestProgressContext:
             task = progress.add_task("test", total=100)
             progress.update(task, advance=50)
 
+    def test_progress_context_update_reflects_completed_count(self) -> None:
+        """Test that progress.update() correctly updates the completed count.
+
+        Bug #2: Progress bars show total but counter never increments.
+        The completed count should be accessible after update() is called.
+        """
+        output = OutputManager()
+        with output.progress_context("Testing", total=100) as progress:
+            assert progress is not None
+            task = progress.add_task("test", total=100)
+
+            # Initial state: completed should be 0
+            task_obj = progress.tasks[0]
+            assert task_obj.completed == 0
+
+            # After update: completed should reflect the advance
+            progress.update(task, advance=25)
+            assert task_obj.completed == 25
+
+            # After multiple updates: completed should accumulate
+            progress.update(task, advance=25)
+            assert task_obj.completed == 50
+
+            progress.update(task, completed=75)
+            assert task_obj.completed == 75
+
+    def test_progress_context_uses_progress_own_live_display(self) -> None:
+        """Test that progress_context uses Progress's built-in live display.
+
+        Bug #2: When Progress is wrapped in an external Live() context,
+        calling progress.update(refresh=True) does not refresh the display
+        because Progress is not managing its own Live context.
+
+        The fix is to use Progress as its own context manager so its
+        internal refresh mechanism works correctly.
+        """
+        output = OutputManager()
+
+        # The Progress object should manage its own live display
+        # This test verifies the internal state is correct after updates
+        with output.progress_context("Testing", total=10) as progress:
+            assert progress is not None
+            task = progress.add_task("Import", total=10)
+
+            # Simulate the callback pattern used in import_cmd
+            for i in range(10):
+                progress.update(task, completed=i + 1, refresh=True)
+
+            # Final state should show all items completed
+            task_obj = progress.tasks[0]
+            assert task_obj.completed == 10
+            assert task_obj.total == 10
+
+    def test_progress_context_does_not_use_external_live_wrapper(self) -> None:
+        """Test that progress_context does NOT wrap Progress in external Live.
+
+        Bug #2 Root Cause: Wrapping Progress in Live(progress, ...) disables
+        Progress's internal refresh mechanism. When progress.update(refresh=True)
+        is called, it only triggers Progress's internal live.refresh(), but
+        since Progress isn't managing its own Live context (it's wrapped),
+        the display doesn't update.
+
+        This test verifies the fix: progress_context should NOT store a
+        separate _live reference that wraps the Progress object.
+        """
+        output = OutputManager()
+
+        with output.progress_context("Testing", total=10) as progress:
+            assert progress is not None
+
+            # After the fix, output._live should not exist or be None because
+            # Progress manages its own live display internally.
+            # The old buggy implementation stored a Live wrapper in self._live.
+            live_attr = getattr(output, "_live", None)
+            assert live_attr is None, (
+                "progress_context should not wrap Progress in external Live context. "
+                "Progress should manage its own live display for refresh=True to work."
+            )
+
 
 class TestTaskComplete:
     """Test task_complete method."""

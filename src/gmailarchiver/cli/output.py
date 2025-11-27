@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from collections import deque
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -1374,39 +1374,13 @@ class OutputManager:
             console=self.console,
         )
 
-        # Create panel showing completed tasks
-        def make_status_panel() -> Panel:
-            """Create panel showing completed task status."""
-            if not self._completed_tasks:
-                return Panel("", title="Status", border_style="dim")
-
-            table = Table.grid(padding=(0, 2))
-            table.add_column(style="green", no_wrap=True)
-            table.add_column()
-
-            for task in self._completed_tasks[-10:]:  # Show last 10 tasks
-                icon = "✓" if task.success else "✗"
-                style = "green" if task.success else "red"
-                elapsed_str = f" ({task.elapsed:.1f}s)" if task.elapsed else ""
-                table.add_row(
-                    f"[{style}]{icon}[/{style}]",
-                    f"{task.name}{elapsed_str}",
-                )
-
-            return Panel(table, title="Completed Tasks", border_style="dim")
-
-        # Use Live context to update both progress and status panel
-        with Live(progress, console=self.console, refresh_per_second=10, transient=False) as live:
-            # Store live context for task_complete to update panel
-            self._live: Live | None = live
-            self._progress: Progress | None = progress
-            self._make_status_panel: Callable[[], Panel] | None = make_status_panel
-
+        # Use Progress as its own context manager
+        # This allows Progress to manage its own Live display, ensuring that
+        # progress.update(refresh=True) works correctly to refresh the display.
+        # Bug #2 fix: Previously we wrapped Progress in an external Live() context,
+        # which disabled Progress's internal refresh mechanism.
+        with progress:
             yield progress
-
-            # Clear live context
-            self._live = None
-            self._progress = None
 
     @contextmanager
     def live_layout_context(
@@ -1460,12 +1434,6 @@ class OutputManager:
                     "elapsed": elapsed,
                 }
             )
-        elif not self.quiet:
-            # Update live display if in progress context
-            if hasattr(self, "_live") and self._live and hasattr(self, "_make_status_panel"):
-                # Regenerate status panel to show updated task list
-                if hasattr(self, "_progress") and self._progress:
-                    self._live.update(self._progress)
 
     def show_report(
         self,

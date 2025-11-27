@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Bug #2 (GitHub)**: Progress bars not updating during import and verify-integrity commands
+  - **Issue**: Progress bar counter showed total but never incremented (time indicator worked correctly)
+  - **Root Cause**: `progress_context()` wrapped Rich's `Progress` object in an external `Live()` context, which disabled Progress's internal refresh mechanism. When `progress.update(refresh=True)` was called, it triggered Progress's internal live.refresh(), but since Progress wasn't managing its own Live context, the display didn't update.
+  - **Solution**: Use `Progress` as its own context manager instead of wrapping in external `Live()`
+  - **Impact**: Progress bars now update correctly during all operations
+
+### Removed
+- Dead code in `OutputManager.task_complete()` that referenced unused `_live` and `_progress` attributes
+- Unused `make_status_panel()` function that was never called
+
 ## [1.3.2] - 2025-11-24
 
 ### Added
