@@ -45,6 +45,7 @@ from gmailarchiver.data.schema_manager import (
 )
 
 from .output import OperationHandle, OutputManager
+from .ui_builder import UIBuilder, UIBuilderImpl
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ class CommandContext:
     state_db_path: str = "archive_state.db"
     _operation_name: str | None = field(default=None, repr=False)
     _live_context: Any = field(default=None, repr=False)
+    _ui_builder: UIBuilder | None = field(default=None, repr=False)
 
     # ==================== OUTPUT METHODS ====================
 
@@ -117,6 +119,36 @@ class CommandContext:
             message: Error message to display
         """
         self.output.error(message, exit_code=0)
+
+    # ==================== UI BUILDER ====================
+
+    @property
+    def ui(self) -> UIBuilder:
+        """Access the fluent UI builder for task sequences and spinners.
+
+        Returns lazily-initialized UIBuilder for declarative UI construction.
+
+        Example:
+            with ctx.ui.task_sequence() as seq:
+                with seq.task("Counting messages") as t:
+                    count = count_messages(file)
+                    t.complete(f"Found {count:,} messages")
+
+                with seq.task("Importing messages", total=count) as t:
+                    for msg in messages:
+                        process(msg)
+                        t.advance()
+                    t.complete(f"Imported {count:,} messages")
+
+        Returns:
+            UIBuilder instance for fluent UI construction
+        """
+        if self._ui_builder is None:
+            self._ui_builder = UIBuilderImpl(
+                console=self.output.console,
+                json_mode=self.json_mode,
+            )
+        return self._ui_builder
 
     # ==================== PROGRESS METHODS ====================
 

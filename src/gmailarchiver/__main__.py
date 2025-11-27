@@ -1989,62 +1989,58 @@ def import_cmd(
 
     # Import each file with progress
     importer = ArchiveImporter(state_db, gmail_client=gmail_client)
-    results = []
+    results: list[Any] = []
     start_time = time.perf_counter()
 
-    # Count total messages across all files for progress
-    ctx.info("Counting messages...")
+    # Use fluent UI builder for task sequence
     total_messages = 0
-    file_message_counts = []
-    for file_path in files:
-        count = importer.count_messages(file_path)
-        file_message_counts.append(count)
-        total_messages += count
-    ctx.info(f"Total: {total_messages:,} messages to import")
-
-    # Track overall progress using live output handler (same pattern as archive command)
-    out = ctx.output
+    file_message_counts: list[int] = []
     messages_processed = 0
-    last_reported = 0
 
-    with out._handler:
-        operation = out._handler.start_operation("Importing messages", total=total_messages)
-        current_task_pos = 0
+    with ctx.ui.task_sequence() as seq:
+        # Task 1: Count messages across all files
+        with seq.task("Counting messages") as count_task:
+            for file_path in files:
+                count = importer.count_messages(file_path)
+                file_message_counts.append(count)
+                total_messages += count
+            count_task.complete(f"Found {total_messages:,} messages")
 
-        for file_idx, file_path in enumerate(files):
-            file_name = Path(file_path).name
-            operation.set_status(f"Importing {file_name}")
+        # Task 2: Import messages with progress tracking
+        with seq.task("Importing messages", total=total_messages) as import_task:
+            current_task_pos = 0
+            last_reported = 0
 
-            def make_progress_callback(
-                base_pos: int,
-            ) -> Callable[[int, int, str], None]:
-                def callback(current: int, total: int, status: str) -> None:
-                    nonlocal messages_processed, last_reported
-                    messages_processed = base_pos + current
-                    # Advance progress by the delta since last report
-                    delta = messages_processed - last_reported
-                    if delta > 0:
-                        operation.update_progress(delta)
-                        last_reported = messages_processed
-                    operation.set_status(f"{status} [{current}/{total}]")
+            for file_idx, file_path in enumerate(files):
+                def make_progress_callback(
+                    base_pos: int,
+                    task: Any,
+                ) -> Callable[[int, int, str], None]:
+                    def callback(current: int, total: int, status: str) -> None:
+                        nonlocal messages_processed, last_reported
+                        messages_processed = base_pos + current
+                        # Advance progress by the delta since last report
+                        delta = messages_processed - last_reported
+                        if delta > 0:
+                            task.advance(delta)
+                            last_reported = messages_processed
 
-                return callback
+                    return callback
 
-            try:
-                result = importer.import_archive(
-                    file_path,
-                    account_id=account_id,
-                    skip_duplicates=skip_duplicates,
-                    progress_callback=make_progress_callback(current_task_pos),
-                )
-                results.append(result)
-                current_task_pos += file_message_counts[file_idx]
-            except Exception as e:
-                operation.log(f"Error importing {file_path}: {e}", "ERROR")
-                current_task_pos += file_message_counts[file_idx]
+                try:
+                    result = importer.import_archive(
+                        file_path,
+                        account_id=account_id,
+                        skip_duplicates=skip_duplicates,
+                        progress_callback=make_progress_callback(current_task_pos, import_task),
+                    )
+                    results.append(result)
+                    current_task_pos += file_message_counts[file_idx]
+                except Exception as e:
+                    import_task.log(f"Error importing {file_path}: {e}", "ERROR")
+                    current_task_pos += file_message_counts[file_idx]
 
-        # Mark operation as complete
-        operation.succeed(f"Imported {messages_processed:,} messages")
+            import_task.complete(f"Imported {messages_processed:,} messages")
 
     total_time = time.perf_counter() - start_time
 
