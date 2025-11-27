@@ -386,3 +386,12 @@ class TestSanitizeFilename:
         result = sanitize_filename("... . . ...")
         # Dots and spaces replaced with underscores, then leading/trailing dots stripped
         assert "_" in result or result == ""
+
+    def test_only_dots_raises_error(self) -> None:
+        """Test that filename with only dots raises error after sanitization.
+
+        Dots are preserved by the regex but stripped by strip(". "), resulting
+        in empty filename which triggers the 'empty after sanitization' error.
+        """
+        with pytest.raises(InvalidInputError, match="Filename is empty after sanitization"):
+            sanitize_filename(".....")

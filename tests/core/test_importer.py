@@ -1710,3 +1710,171 @@ def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
         result = importer.import_archive(str(mbox_path))
 
         assert result.messages_imported == 1
+
+
+def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -> None:
+    """Test count_messages returns 0 for nonexistent file (line 279).
+
+    When the archive file doesn't exist, the method should return 0
+    without raising an exception.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nonexistent = Path(tmpdir) / "does_not_exist.mbox"
+
+        importer = ArchiveImporter(str(v1_1_db))
+        count = importer.count_messages(str(nonexistent))
+
+        assert count == 0
+
+
+def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
+    """Test import creates schema for new database and imports successfully.
+
+    When the database doesn't exist, it should be created with proper schema.
+    """
+    import email.message
+    import mailbox
+
+    # Database doesn't exist
+    db_path = tmp_path / "new.db"
+
+    # Create simple mbox
+    mbox_path = tmp_path / "test.mbox"
+    mbox = mailbox.mbox(str(mbox_path))
+
+    msg = email.message.EmailMessage()
+    msg["Message-ID"] = "<new@example.com>"
+    msg["Subject"] = "New Message"
+    msg["From"] = "sender@example.com"
+    msg.set_content("Content")
+    mbox.add(msg)
+    mbox.close()
+
+    # Import should work (auto-create schema)
+    importer = ArchiveImporter(str(db_path))
+    result = importer.import_archive(str(mbox_path), skip_duplicates=True)
+
+    # Should import successfully
+    assert result.messages_imported == 1
+    assert db_path.exists()
+
+
+class TestImporterExceptionHandling:
+    """Tests for exception handling paths in ArchiveImporter."""
+
+    def test_count_messages_compressed_archive_cleanup(self, v1_1_db: Path) -> None:
+        """Test count_messages cleans up temp files for compressed archives.
+
+        Covers line 291: Cleanup of temp file after decompression.
+        """
+        import gzip
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create compressed mbox
+            mbox_content = (
+                b"From test@example.com Mon Jan 1 00:00:00 2024\n"
+                b"Message-ID: <msg1@test.com>\n"
+                b"Subject: Test\n\n"
+                b"Body\n"
+            )
+            archive_path = Path(tmpdir) / "test.mbox.gz"
+            with gzip.open(archive_path, "wb") as f:
+                f.write(mbox_content)
+
+            importer = ArchiveImporter(str(v1_1_db))
+            count = importer.count_messages(str(archive_path))
+
+            # Should count the message
+            assert count == 1
+            # Temp file should be cleaned up
+            temp_files = list(Path(tmpdir).glob("tmp*.mbox"))
+            assert len(temp_files) == 0
+
+    def test_import_general_exception_records_error(self, v1_1_db: Path) -> None:
+        """Test import handles general exceptions during message processing.
+
+        Covers lines 502-508: Exception handling for general errors.
+        """
+        import email.message
+        import mailbox
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mbox
+            mbox_path = Path(tmpdir) / "test.mbox"
+            mbox_obj = mailbox.mbox(str(mbox_path))
+
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = "<test@example.com>"
+            msg["Subject"] = "Test"
+            msg["From"] = "sender@example.com"
+            msg.set_content("Content")
+            mbox_obj.add(msg)
+            mbox_obj.close()
+
+            importer = ArchiveImporter(str(v1_1_db))
+
+            # Mock _extract_rfc_message_id to raise exception
+            with patch.object(
+                importer,
+                "_extract_rfc_message_id",
+                side_effect=ValueError("Parse error"),
+            ):
+                result = importer.import_archive(str(mbox_path))
+
+                # Should have failure recorded
+                assert result.messages_failed > 0 or len(result.errors) > 0
+
+    def test_extract_body_multipart_exception(self, v1_1_db: Path) -> None:
+        """Test _extract_body_preview handles exceptions in multipart parts.
+
+        Covers lines 183-184: Exception handler when extracting body from
+        multipart message parts.
+        """
+        import email.message
+        from unittest.mock import MagicMock
+
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # Create a mock multipart message
+        msg = MagicMock(spec=email.message.Message)
+        msg.is_multipart.return_value = True
+
+        # Create a mock part that raises on get_payload
+        mock_part = MagicMock()
+        mock_part.get_content_type.return_value = "text/plain"
+        mock_part.get_payload.side_effect = Exception("Decode error")
+
+        msg.walk.return_value = [msg, mock_part]
+
+        # Should not raise, just return partial/empty result
+        result = importer._extract_body_preview(msg)
+
+        # Should return empty or partial body (graceful degradation)
+        assert isinstance(result, str)
+
+    def test_extract_body_non_multipart_exception(self, v1_1_db: Path) -> None:
+        """Test _extract_body_preview handles exceptions in simple messages.
+
+        Covers lines 190-191: Exception handler when extracting body from
+        simple (non-multipart) message.
+        """
+        import email.message
+        from unittest.mock import MagicMock
+
+        importer = ArchiveImporter(str(v1_1_db))
+
+        # Create a mock non-multipart message that raises on get_payload
+        msg = MagicMock(spec=email.message.Message)
+        msg.is_multipart.return_value = False
+        msg.get_payload.side_effect = Exception("Decode error")
+
+        # Should not raise, just return empty result
+        result = importer._extract_body_preview(msg)
+
+        # Should return empty body (graceful degradation)
+        assert result == ""

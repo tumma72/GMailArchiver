@@ -195,6 +195,14 @@ class TestHybridStorageInitialization:
         # Staging files should be cleaned up
         assert not test_file.exists()
 
+    def test_init_without_preload_rfc_ids(self, db_manager: DBManager) -> None:
+        """Test initialization with preload_rfc_ids=False."""
+        storage = HybridStorage(db_manager, preload_rfc_ids=False)
+
+        # Should initialize with empty set
+        assert storage._known_rfc_ids == set()
+        assert storage.db == db_manager
+
 
 # ============================================================================
 # Archive Message Tests

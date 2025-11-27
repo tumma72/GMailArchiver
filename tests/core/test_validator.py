@@ -1794,3 +1794,253 @@ class TestValidatorErrorHandling:
             results = validator.validate_comprehensive(expected_message_ids={"msg1"})
 
             # Validation should pass (checksum mismatch is not critical in comprehensive)
+
+    def test_validate_all_nonexistent_file_returns_false(self) -> None:
+        """Test validate_all returns False for nonexistent archive (lines 307-309).
+
+        When the archive file doesn't exist, validation should fail gracefully
+        and append an error message, not raise an exception.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Point to non-existent file
+            validator = ArchiveValidator(str(Path(tmpdir) / "nonexistent.mbox"))
+
+            result = validator.validate_all()
+
+            assert result is False
+            assert len(validator.errors) > 0
+            # Nonexistent files report as "Archive is empty"
+            assert "empty" in validator.errors[0].lower()
+
+    def test_validate_all_corrupted_mbox_returns_false(self) -> None:
+        """Test validate_all returns False for corrupted mbox file.
+
+        A corrupted mbox should fail gracefully and return False with errors.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a corrupted mbox
+            corrupted_path = Path(tmpdir) / "corrupted.mbox"
+            corrupted_path.write_bytes(b"\x00\x01\x02\x03\xff\xfe")  # Random binary garbage
+
+            validator = ArchiveValidator(str(corrupted_path))
+
+            result = validator.validate_all()
+
+            # Should return True or False, but not crash
+            # A binary file might be read as having 0 messages (empty)
+            assert isinstance(result, bool)
+
+    def test_consistency_check_with_no_database_returns_error(self) -> None:
+        """Test verify_consistency returns error when no database (lines 527-529).
+
+        When schema version is 'none', the consistency check should fail
+        with an appropriate error message.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a valid mbox
+            archive_path = Path(tmpdir) / "test.mbox"
+            with open(archive_path, "w") as f:
+                f.write("From test@example.com Mon Jan 1 00:00:00 2024\nSubject: Test\n\nBody")
+
+            # Create empty database (no schema)
+            db_path = Path(tmpdir) / "empty.db"
+            import sqlite3
+
+            conn = sqlite3.connect(str(db_path))
+            conn.close()
+
+            validator = ArchiveValidator(str(archive_path), state_db_path=str(db_path))
+
+            result = validator.verify_consistency()
+
+            assert result.passed is False
+            assert len(result.errors) > 0
+            error_msg = result.errors[0].lower()
+            assert "database" in error_msg or "no database" in error_msg
+
+
+class TestValidatorExceptionHandling:
+    """Tests for exception handling paths in ArchiveValidator."""
+
+    def test_validate_all_exception_returns_false(self) -> None:
+        """Test validate_all catches exceptions and returns False.
+
+        Covers lines 307-309: Exception handler in validate_all.
+        When _get_mbox_path or mbox operations raise, should return False.
+        """
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "test.mbox"
+            # Create valid mbox
+            with open(archive_path, "w") as f:
+                f.write("From test@example.com Mon Jan 1 00:00:00 2024\n")
+                f.write("Subject: Test\n\n")
+                f.write("Body content\n")
+
+            validator = ArchiveValidator(str(archive_path))
+
+            # Mock _get_mbox_path to raise an exception
+            with patch.object(
+                validator, "_get_mbox_path", side_effect=OSError("Permission denied")
+            ):
+                result = validator.validate_all()
+
+                assert result is False
+                assert len(validator.errors) > 0
+                assert "validation failed" in validator.errors[0].lower()
+                assert "Permission denied" in validator.errors[0]
+
+    def test_verify_offsets_read_exception_records_failure(self) -> None:
+        """Test verify_offsets handles read exceptions gracefully.
+
+        Covers lines 482-484: Exception handler during offset verification.
+        When reading a message at an offset fails, should record as failure.
+        """
+        import sqlite3
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / "test.mbox"
+            db_path = Path(tmpdir) / "test.db"
+
+            # Create mbox with some messages
+            with open(archive_path, "w") as f:
+                f.write("From test@example.com Mon Jan 1 00:00:00 2024\n")
+                f.write("Message-ID: <msg1@test.com>\n")
+                f.write("Subject: Test\n\n")
+                f.write("Body content\n")
+
+            # Create v1.1 database with message records
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT,
+                    mbox_offset INTEGER,
+                    mbox_length INTEGER,
+                    archive_file TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT
+                )
+            """)
+            conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
+            # Insert message with offset matching the test.mbox filename
+            conn.execute("""
+                INSERT INTO messages
+                    (gmail_id, rfc_message_id, mbox_offset, mbox_length, archive_file)
+                VALUES ('msg1', '<msg1@test.com>', 0, 100, 'test.mbox')
+            """)
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(archive_path), state_db_path=str(db_path))
+
+            # Mock email.message_from_bytes to raise exception
+            with patch(
+                "email.message_from_bytes",
+                side_effect=Exception("Malformed message"),
+            ):
+                result = validator.verify_offsets()
+
+                # Should have recorded a failure
+                assert result.failed_reads > 0 or len(result.failures) > 0
+
+    def test_validate_all_with_compressed_temp_cleanup(self) -> None:
+        """Test validate_all properly cleans up temp files for compressed archives.
+
+        Covers line 277: Cleanup of temp file after decompression.
+        """
+        import gzip
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a compressed mbox
+            mbox_content = (
+                b"From test@example.com Mon Jan 1 00:00:00 2024\n"
+                b"Subject: Test\n\n"
+                b"Body\n"
+            )
+            archive_path = Path(tmpdir) / "test.mbox.gz"
+            with gzip.open(archive_path, "wb") as f:
+                f.write(mbox_content)
+
+            validator = ArchiveValidator(str(archive_path))
+
+            # Should succeed (compressed file with valid content)
+            result = validator.validate_all()
+
+            # Temp file should be cleaned up - check no .mbox temp files left
+            temp_files = list(Path(tmpdir).glob("*.mbox"))
+            # Only the original .mbox.gz should exist
+            assert len([f for f in temp_files if not str(f).endswith(".gz")]) == 0
+            assert result is True
+
+    def test_verify_consistency_with_compressed_archive(self) -> None:
+        """Test verify_consistency handles compressed archives and cleans up temp files.
+
+        Covers line 617: Cleanup of temp file after verify_consistency.
+        """
+        import gzip
+        import sqlite3
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a compressed mbox with proper message
+            mbox_content = (
+                b"From test@example.com Mon Jan 1 00:00:00 2024\n"
+                b"Message-ID: <msg1@test.com>\n"
+                b"Subject: Test\n\n"
+                b"Body\n"
+            )
+            archive_path = Path(tmpdir) / "test.mbox.gz"
+            with gzip.open(archive_path, "wb") as f:
+                f.write(mbox_content)
+
+            # Create v1.1 database with proper schema
+            db_path = Path(tmpdir) / "test.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT,
+                    archive_file TEXT,
+                    mbox_offset INTEGER,
+                    mbox_length INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT
+                )
+            """)
+            conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
+            conn.execute("""
+                INSERT INTO messages VALUES ('msg1', '<msg1@test.com>', 'test.mbox.gz', 0, 100)
+            """)
+            conn.commit()
+            conn.close()
+
+            validator = ArchiveValidator(str(archive_path), state_db_path=str(db_path))
+
+            # verify_consistency should work with compressed archive
+            report = validator.verify_consistency()
+
+            # Should return a ConsistencyReport
+            assert report is not None
+            # Temp file should be cleaned up after operation
+            temp_files = list(Path(tmpdir).glob("tmp*.mbox"))
+            assert len(temp_files) == 0

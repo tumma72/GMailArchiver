@@ -1453,3 +1453,496 @@ class TestOutputManagerWithLiveMode:
 
             # Should use LiveOutputHandler
             assert isinstance(output._handler, LiveOutputHandler)
+
+
+# ============================================================================
+# Coverage Improvement Tests - LogBuffer.complete_pending()
+# ============================================================================
+
+
+class TestLogBufferCompletePending:
+    """Test LogBuffer.complete_pending() behavior."""
+
+    def test_complete_pending_with_pending_entry(self) -> None:
+        """Test completing a pending entry updates it in place."""
+        from gmailarchiver.cli.output import LogBuffer
+
+        buffer = LogBuffer()
+
+        # Add a pending entry (use level="PENDING" to mark as pending)
+        buffer.add("Processing...", "PENDING")
+
+        # Verify pending entry exists
+        assert buffer._pending_key == "Processing..."
+        assert "Processing..." in buffer._entry_map
+
+        # Complete the pending entry
+        buffer.complete_pending("Done!", "SUCCESS")
+
+        # Pending key should be cleared
+        assert buffer._pending_key is None
+
+        # Old key should be removed, new key should exist
+        assert "Processing..." not in buffer._entry_map
+        assert "Done!" in buffer._entry_map
+
+        # Entry should have updated level
+        entry = buffer._entry_map["Done!"]
+        assert entry.level == "SUCCESS"
+        assert entry.message == "Done!"
+
+    def test_complete_pending_without_pending_entry(self) -> None:
+        """Test complete_pending falls back to add() when no pending entry."""
+        from gmailarchiver.cli.output import LogBuffer
+
+        buffer = LogBuffer()
+
+        # No pending entry
+        assert buffer._pending_key is None
+
+        # Complete should just add as new entry
+        buffer.complete_pending("New message", "INFO")
+
+        # Should be added as regular entry
+        assert len(buffer._all_logs) == 1
+        assert buffer._all_logs[0].message == "New message"
+        assert buffer._all_logs[0].level == "INFO"
+
+
+# ============================================================================
+# Coverage Improvement Tests - LiveLayoutContext.get_progress_eta()
+# ============================================================================
+
+
+class TestLiveLayoutContextProgressETA:
+    """Test LiveLayoutContext.get_progress_eta() behavior."""
+
+    def test_get_progress_eta_not_started(self) -> None:
+        """Test ETA returns 'calculating...' when progress not started."""
+        from gmailarchiver.cli.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+            with context:
+                # No progress set
+                eta = context.get_progress_eta()
+                assert eta == "calculating..."
+
+    def test_get_progress_eta_zero_completed(self) -> None:
+        """Test ETA returns 'calculating...' when no progress made."""
+        from gmailarchiver.cli.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+            with context:
+                context.set_progress_total(100, "Testing")
+                # No progress yet
+                eta = context.get_progress_eta()
+                assert eta == "calculating..."
+
+    def test_get_progress_eta_seconds_remaining(self) -> None:
+        """Test ETA shows seconds when less than 60 seconds remain."""
+        from gmailarchiver.cli.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+            with context:
+                context.set_progress_total(100, "Testing")
+                # Simulate significant progress (90%) in a short time
+                context.progress_completed = 90
+                context.progress_start_time = time.time() - 9  # 9 seconds elapsed
+
+                # Rate = 90/9 = 10/sec, remaining = 10, ETA = 1 second
+                eta = context.get_progress_eta()
+                assert "s remaining" in eta
+                # Should NOT have minutes format like "Xm Ys" - just seconds
+                assert "m " not in eta  # No "Xm " pattern
+
+    def test_get_progress_eta_minutes_remaining(self) -> None:
+        """Test ETA shows minutes when 1-59 minutes remain."""
+        from gmailarchiver.cli.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+            with context:
+                context.set_progress_total(1000, "Testing")
+                # Simulate progress where we have ~5 minutes remaining
+                context.progress_completed = 100
+                context.progress_start_time = time.time() - 60  # 60 seconds elapsed
+
+                # Rate = 100/60 = 1.67/sec, remaining = 900, ETA = ~540s = 9m
+                eta = context.get_progress_eta()
+                assert "m" in eta and "remaining" in eta
+
+    def test_get_progress_eta_hours_remaining(self) -> None:
+        """Test ETA shows hours when more than 60 minutes remain."""
+        from gmailarchiver.cli.output import LiveLayoutContext
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            context = LiveLayoutContext(log_dir=Path(tmpdir))
+            with context:
+                context.set_progress_total(100000, "Testing")
+                # Simulate progress where we have hours remaining
+                context.progress_completed = 100
+                context.progress_start_time = time.time() - 60  # 60 seconds elapsed
+
+                # Rate = 100/60 = 1.67/sec, remaining = 99900, ETA = ~60000s = ~16h
+                eta = context.get_progress_eta()
+                assert "h" in eta and "m" in eta and "remaining" in eta
+
+
+# ============================================================================
+# Coverage Improvement Tests - OutputManager.show_error_panel()
+# ============================================================================
+
+
+class TestShowErrorPanel:
+    """Test OutputManager.show_error_panel() behavior."""
+
+    def test_show_error_panel_json_mode(self) -> None:
+        """Test show_error_panel records event in JSON mode."""
+        output = OutputManager(json_mode=True)
+
+        output.show_error_panel(
+            title="Test Error",
+            message="Something went wrong",
+            suggestion="Try again",
+            details=["Detail 1", "Detail 2"],
+            exit_code=0,  # Don't exit
+        )
+
+        # Should record JSON event
+        assert len(output._json_events) == 1
+        event = output._json_events[0]
+        assert event["event"] == "error_panel"
+        assert event["title"] == "Test Error"
+        assert event["message"] == "Something went wrong"
+        assert event["suggestion"] == "Try again"
+        assert event["details"] == ["Detail 1", "Detail 2"]
+
+    def test_show_error_panel_json_mode_with_exit(self) -> None:
+        """Test show_error_panel exits in JSON mode when exit_code > 0."""
+        output = OutputManager(json_mode=True)
+
+        with pytest.raises(SystemExit) as exc:
+            output.show_error_panel(
+                title="Fatal Error",
+                message="Cannot continue",
+                exit_code=1,
+            )
+        assert exc.value.code == 1
+
+    def test_show_error_panel_quiet_mode(self) -> None:
+        """Test show_error_panel is silent in quiet mode (no exit)."""
+        output = OutputManager(quiet=True)
+
+        # Should not raise, just return
+        output.show_error_panel(
+            title="Test Error",
+            message="Something went wrong",
+            exit_code=0,
+        )
+
+    def test_show_error_panel_quiet_mode_with_exit(self) -> None:
+        """Test show_error_panel exits in quiet mode when exit_code > 0."""
+        output = OutputManager(quiet=True)
+
+        with pytest.raises(SystemExit) as exc:
+            output.show_error_panel(
+                title="Fatal Error",
+                message="Cannot continue",
+                exit_code=1,
+            )
+        assert exc.value.code == 1
+
+    def test_show_error_panel_normal_mode(self) -> None:
+        """Test show_error_panel renders panel in normal mode."""
+        output = OutputManager()
+
+        with patch.object(output.console, "print"):
+            output.show_error_panel(
+                title="Test Error",
+                message="Something went wrong",
+                suggestion="Try again",
+                details=["Detail 1"],
+                exit_code=0,
+            )
+
+
+# ============================================================================
+# Coverage Improvement Tests - OutputManager.show_validation_report()
+# ============================================================================
+
+
+class TestShowValidationReport:
+    """Test OutputManager.show_validation_report() behavior."""
+
+    def test_show_validation_report_json_mode(self) -> None:
+        """Test show_validation_report records event in JSON mode."""
+        output = OutputManager(json_mode=True)
+
+        results = {
+            "count_check": True,
+            "database_check": True,
+            "integrity_check": False,
+            "spot_check": True,
+            "passed": False,
+            "errors": ["Integrity check failed"],
+        }
+
+        output.show_validation_report(results, title="Validation Results")
+
+        # Should record JSON event
+        assert len(output._json_events) == 1
+        event = output._json_events[0]
+        assert event["event"] == "validation_report"
+        assert event["title"] == "Validation Results"
+        assert event["results"] == results
+
+    def test_show_validation_report_quiet_mode(self) -> None:
+        """Test show_validation_report is silent in quiet mode."""
+        output = OutputManager(quiet=True)
+
+        results = {"count_check": True, "passed": True}
+
+        # Should not raise, just return
+        output.show_validation_report(results)
+
+    def test_show_validation_report_normal_mode_passed(self) -> None:
+        """Test show_validation_report renders green panel when passed."""
+        output = OutputManager()
+
+        results = {
+            "count_check": True,
+            "database_check": True,
+            "integrity_check": True,
+            "spot_check": True,
+            "passed": True,
+        }
+
+        with patch.object(output.console, "print"):
+            output.show_validation_report(results, title="Validation")
+
+    def test_show_validation_report_normal_mode_failed(self) -> None:
+        """Test show_validation_report renders red panel with errors."""
+        output = OutputManager()
+
+        results = {
+            "count_check": True,
+            "database_check": False,
+            "integrity_check": False,
+            "spot_check": True,
+            "passed": False,
+            "errors": ["Database mismatch", "Checksum failed"],
+        }
+
+        with patch.object(output.console, "print"):
+            output.show_validation_report(results, title="Validation Failed")
+
+
+# ============================================================================
+# Coverage Improvement Tests - CommandContext methods
+# ============================================================================
+
+
+class TestCommandContextOperationMethods:
+    """Test CommandContext operation tracking methods."""
+
+    def test_set_progress_total_with_operation_handle(self) -> None:
+        """Test set_progress_total delegates to operation_handle."""
+        from unittest.mock import MagicMock
+
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        # Mock operation handle
+        mock_handle = MagicMock()
+        ctx.operation_handle = mock_handle
+
+        ctx.set_progress_total(100, "Processing")
+
+        mock_handle.set_total.assert_called_once_with(100, "Processing")
+
+    def test_advance_progress_with_operation_handle(self) -> None:
+        """Test advance_progress delegates to operation_handle."""
+        from unittest.mock import MagicMock
+
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        # Mock operation handle
+        mock_handle = MagicMock()
+        ctx.operation_handle = mock_handle
+
+        ctx.advance_progress(5)
+
+        mock_handle.update_progress.assert_called_once_with(5)
+
+    def test_log_progress_with_operation_handle(self) -> None:
+        """Test log_progress delegates to operation_handle."""
+        from unittest.mock import MagicMock
+
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        # Mock operation handle
+        mock_handle = MagicMock()
+        ctx.operation_handle = mock_handle
+
+        ctx.log_progress("Test message", "WARNING")
+
+        mock_handle.log.assert_called_once_with("Test message", "WARNING")
+
+    def test_log_progress_fallback_warning(self) -> None:
+        """Test log_progress falls back to output.warning when no handle."""
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        # No operation handle
+        ctx.operation_handle = None
+
+        with patch.object(output, "warning") as mock_warning:
+            ctx.log_progress("Warning message", "WARNING")
+            mock_warning.assert_called_once_with("Warning message")
+
+    def test_log_progress_fallback_error(self) -> None:
+        """Test log_progress falls back to output.error when no handle."""
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        ctx.operation_handle = None
+
+        with patch.object(output, "error") as mock_error:
+            ctx.log_progress("Error message", "ERROR")
+            # error() is called with exit_code=0 to not exit on log messages
+            mock_error.assert_called_once_with("Error message", exit_code=0)
+
+    def test_log_progress_fallback_success(self) -> None:
+        """Test log_progress falls back to output.success when no handle."""
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        ctx.operation_handle = None
+
+        with patch.object(output, "success") as mock_success:
+            ctx.log_progress("Success message", "SUCCESS")
+            mock_success.assert_called_once_with("Success message")
+
+    def test_log_progress_fallback_info(self) -> None:
+        """Test log_progress falls back to output.info for INFO level."""
+        from gmailarchiver.cli.command_context import CommandContext
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        ctx.operation_handle = None
+
+        with patch.object(output, "info") as mock_info:
+            ctx.log_progress("Info message", "INFO")
+            mock_info.assert_called_once_with("Info message")
+
+
+# ============================================================================
+# Coverage Improvement Tests - _StaticOperationHandle
+# ============================================================================
+
+
+class TestStaticOperationHandleSetTotal:
+    """Test _StaticOperationHandle.set_total() behavior."""
+
+    def test_set_total_creates_task_when_none_exists(self) -> None:
+        """Test set_total creates new task when task_id is None."""
+        from gmailarchiver.cli.command_context import _StaticOperationHandle
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+
+        with output.progress_context("Testing", total=None) as progress:
+            if progress:
+                handle = _StaticOperationHandle(output, progress, "Initial", total=None)
+
+                # Initially no task
+                assert handle._task_id is None
+
+                # Set total creates task
+                handle.set_total(100, "New description")
+
+                assert handle._task_id is not None
+                assert handle._total == 100
+
+    def test_set_total_updates_existing_task(self) -> None:
+        """Test set_total updates existing task when task_id exists."""
+        from gmailarchiver.cli.command_context import _StaticOperationHandle
+        from gmailarchiver.cli.output import OutputManager
+
+        output = OutputManager()
+
+        with output.progress_context("Testing", total=50) as progress:
+            if progress:
+                handle = _StaticOperationHandle(output, progress, "Initial", total=50)
+
+                # Create initial task
+                handle.set_total(50, "Initial")
+                first_task_id = handle._task_id
+
+                # Update total on existing task
+                handle.set_total(100, "Updated")
+
+                # Same task should be updated
+                assert handle._task_id == first_task_id
+                assert handle._total == 100
+
+
+class TestStaticOperationHandleUncovered:
+    """Tests for StaticOperationHandle uncovered methods (output.py)."""
+
+    def test_set_total_is_noop(self) -> None:
+        """Test set_total is a no-op in static mode (line 234).
+
+        StaticOperationHandle.set_total does nothing (pass statement)
+        because progress isn't tracked in static output mode.
+        """
+        from gmailarchiver.cli.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        # Should not raise, just does nothing
+        handle.set_total(100, "New description")
+
+        # No state to verify since it's a no-op
+
+    def test_complete_pending_logs_message(self, capsys) -> None:
+        """Test complete_pending calls log (line 243).
+
+        StaticOperationHandle.complete_pending delegates to log method.
+        """
+        from gmailarchiver.cli.output import OutputManager, StaticOperationHandle
+
+        output = OutputManager()
+        handle = StaticOperationHandle(output)
+
+        # complete_pending should log the final message
+        handle.complete_pending("Operation completed successfully", "SUCCESS")
+
+        # The log call would output to console
+        # We verify it doesn't raise and completes

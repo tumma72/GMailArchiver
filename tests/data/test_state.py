@@ -416,3 +416,50 @@ class TestV11SchemaOperations:
         # Verify no data was committed
         with ArchiveState(temp_db, validate_path=False) as state:
             assert state.get_archived_count() == 0
+
+
+class TestStateEdgeCases:
+    """Test edge cases for ArchiveState."""
+
+    def test_validate_path_true_calls_validator(self, tmp_path, monkeypatch):
+        """Test that validate_path=True uses path validator (line 26).
+
+        When validate_path=True, the path is validated against traversal attacks.
+        """
+        # Change to tmp_path directory so path validation passes
+        monkeypatch.chdir(tmp_path)
+
+        db_path = tmp_path / "test.db"
+
+        # Should work without exception (valid path within CWD)
+        state = ArchiveState(str(db_path), validate_path=True)
+        state.close()
+
+        assert db_path.exists()
+
+    def test_schema_detection_v1_1_without_schema_version_table(self, tmp_path):
+        """Test schema detection returns '1.1' for messages table without schema_version.
+
+        This covers line 54: return '1.1' when messages table exists but no schema_version.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "v1_1_style.db"
+
+        # Create database with messages table but no schema_version table
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT
+            )
+        """
+        )
+        conn.commit()
+        conn.close()
+
+        state = ArchiveState(str(db_path), validate_path=False)
+        # The schema detection happens in __init__ -> _detect_schema_version
+        assert state._schema_version == "1.1"
+        state.close()

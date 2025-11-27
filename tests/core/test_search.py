@@ -495,3 +495,83 @@ class TestSearchPerformance:
         assert elapsed_ms < 100, f"Search took {elapsed_ms:.2f}ms (expected < 100ms)"
 
         engine.close()
+
+
+class TestSearchEdgeCases:
+    """Tests for search edge cases and error handling."""
+
+    def test_fts5_syntax_error_returns_empty_results(self, v11_db: str) -> None:
+        """Test that FTS5 syntax errors return empty results gracefully.
+
+        FTS5 has specific query syntax. Invalid queries should not raise
+        exceptions but return empty results instead.
+        """
+        engine = SearchEngine(v11_db)
+        try:
+            # Invalid FTS5 syntax: unbalanced quotes
+            results = engine.search_fulltext('"unclosed quote')
+            assert results.total_results == 0
+            assert results.results == []
+        finally:
+            engine.close()
+
+    def test_invalid_fts_fields_raises_error(self, v11_db: str) -> None:
+        """Test that invalid FTS field names raise ValueError."""
+        engine = SearchEngine(v11_db)
+        try:
+            with pytest.raises(ValueError, match="Invalid FTS5 field names"):
+                engine.search_fulltext("test", fields=["invalid_field", "another_bad"])
+        finally:
+            engine.close()
+
+    def test_missing_messages_table_raises_error(self, v11_db_factory) -> None:
+        """Test that missing messages table raises ValueError."""
+        # Create a database without messages table
+        db_path = v11_db_factory("no_messages.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP TABLE IF EXISTS messages")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(ValueError, match="missing 'messages' table"):
+            SearchEngine(db_path)
+
+
+class TestSearchHybridFilters:
+    """Tests for _search_hybrid via search() with various filter combinations."""
+
+    def test_search_with_to_filter(self, v11_db: str) -> None:
+        """Test search() with to: filter (covers lines 378-379)."""
+        engine = SearchEngine(v11_db)
+        try:
+            # Gmail-style query with to: filter + text for hybrid search
+            results = engine.search("test to:recipient@example.com")
+            # Should return results or empty depending on data
+            assert isinstance(results.total_results, int)
+        finally:
+            engine.close()
+
+    def test_search_with_before_filter(self, v11_db: str) -> None:
+        """Test search() with before: filter (covers lines 390-391)."""
+        engine = SearchEngine(v11_db)
+        try:
+            # Gmail-style query with before: filter + text for hybrid search
+            results = engine.search("test before:2030/01/01")
+            # Should return results or empty depending on data
+            assert isinstance(results.total_results, int)
+        finally:
+            engine.close()
+
+    def test_search_with_multiple_hybrid_filters(self, v11_db: str) -> None:
+        """Test search() with multiple filters for hybrid search."""
+        engine = SearchEngine(v11_db)
+        try:
+            # Gmail-style query with multiple filters + text for hybrid search
+            results = engine.search(
+                "test from:sender@example.com to:recipient@example.com "
+                "after:2020/01/01 before:2030/01/01"
+            )
+            # Should return results or empty depending on data
+            assert isinstance(results.total_results, int)
+        finally:
+            engine.close()

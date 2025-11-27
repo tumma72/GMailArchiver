@@ -1108,3 +1108,395 @@ class TestTransactionContextManager:
                 "SELECT COUNT(*) FROM messages WHERE gmail_id = ?", ("test_exc",)
             )
             assert cursor.fetchone()[0] == 0
+
+
+# ============================================================================
+# Session Management Tests (Coverage for lines 1120-1182)
+# ============================================================================
+
+
+class TestSessionManagement:
+    """Tests for archive session management methods."""
+
+    def test_get_session_returns_session_when_found(self, v11_db: str) -> None:
+        """Test get_session returns session dict when session exists."""
+        with DBManager(v11_db) as db:
+            # Create a session first
+            session_id = "test-session-123"
+            target_file = "archive.mbox"
+            query = "before:2024/01/01"
+            message_ids = ["msg1", "msg2", "msg3"]
+
+            db.create_session(
+                session_id=session_id,
+                target_file=target_file,
+                query=query,
+                message_ids=message_ids,
+                compression="gzip",
+                account_id="default",
+            )
+
+            # Get the session
+            session = db.get_session(session_id)
+
+            assert session is not None
+            assert session["session_id"] == session_id
+            assert session["target_file"] == target_file
+            assert session["query"] == query
+            assert session["message_ids"] == message_ids  # Should be deserialized from JSON
+            assert session["status"] == "in_progress"
+            assert session["total_count"] == 3
+            assert session["processed_count"] == 0
+
+    def test_get_session_returns_none_when_not_found(self, v11_db: str) -> None:
+        """Test get_session returns None when session doesn't exist."""
+        with DBManager(v11_db) as db:
+            session = db.get_session("nonexistent-session-id")
+            assert session is None
+
+    def test_get_session_by_file_returns_in_progress_session(self, v11_db: str) -> None:
+        """Test get_session_by_file returns the most recent in_progress session."""
+        with DBManager(v11_db) as db:
+            target_file = "archive.mbox"
+
+            # Create an in_progress session
+            db.create_session(
+                session_id="session-1",
+                target_file=target_file,
+                query="query1",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+
+            # Get the session by file
+            session = db.get_session_by_file(target_file)
+
+            assert session is not None
+            assert session["session_id"] == "session-1"
+            assert session["target_file"] == target_file
+            assert session["message_ids"] == ["msg1"]
+
+    def test_get_session_by_file_returns_none_when_no_in_progress(self, v11_db: str) -> None:
+        """Test get_session_by_file returns None when no in_progress session exists."""
+        with DBManager(v11_db) as db:
+            # Create and complete a session
+            db.create_session(
+                session_id="session-1",
+                target_file="archive.mbox",
+                query="query1",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+            db.complete_session("session-1")
+
+            # Now there's no in_progress session for this file
+            session = db.get_session_by_file("archive.mbox")
+            assert session is None
+
+    def test_get_session_by_file_returns_none_for_different_file(self, v11_db: str) -> None:
+        """Test get_session_by_file returns None for different target file."""
+        with DBManager(v11_db) as db:
+            # Create session for one file
+            db.create_session(
+                session_id="session-1",
+                target_file="archive1.mbox",
+                query="query1",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+
+            # Query for different file
+            session = db.get_session_by_file("archive2.mbox")
+            assert session is None
+
+    def test_get_all_partial_sessions_returns_all_in_progress(self, v11_db: str) -> None:
+        """Test get_all_partial_sessions returns all in_progress sessions."""
+        with DBManager(v11_db) as db:
+            # Create multiple in_progress sessions
+            for i in range(3):
+                db.create_session(
+                    session_id=f"session-{i}",
+                    target_file=f"archive{i}.mbox",
+                    query=f"query{i}",
+                    message_ids=[f"msg{i}a", f"msg{i}b"],
+                    compression="gzip",
+                    account_id="default",
+                )
+
+            # Get all partial sessions
+            sessions = db.get_all_partial_sessions()
+
+            assert len(sessions) == 3
+            session_ids = {s["session_id"] for s in sessions}
+            assert session_ids == {"session-0", "session-1", "session-2"}
+
+            # Verify message_ids are deserialized
+            for session in sessions:
+                assert isinstance(session["message_ids"], list)
+                assert len(session["message_ids"]) == 2
+
+    def test_get_all_partial_sessions_excludes_completed(self, v11_db: str) -> None:
+        """Test get_all_partial_sessions excludes completed sessions."""
+        with DBManager(v11_db) as db:
+            # Create sessions with different statuses
+            db.create_session(
+                session_id="session-in-progress",
+                target_file="archive1.mbox",
+                query="query1",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+            db.create_session(
+                session_id="session-completed",
+                target_file="archive2.mbox",
+                query="query2",
+                message_ids=["msg2"],
+                compression=None,
+                account_id="default",
+            )
+            db.complete_session("session-completed")
+
+            # Get all partial sessions
+            sessions = db.get_all_partial_sessions()
+
+            assert len(sessions) == 1
+            assert sessions[0]["session_id"] == "session-in-progress"
+
+    def test_get_all_partial_sessions_returns_empty_when_none(self, v11_db: str) -> None:
+        """Test get_all_partial_sessions returns empty list when no sessions exist."""
+        with DBManager(v11_db) as db:
+            sessions = db.get_all_partial_sessions()
+            assert sessions == []
+
+    def test_get_all_partial_sessions_ordered_by_started_at_desc(self, v11_db: str) -> None:
+        """Test get_all_partial_sessions returns sessions ordered by started_at DESC."""
+        import time
+
+        with DBManager(v11_db) as db:
+            # Create sessions with slight delay to ensure different timestamps
+            for i in range(3):
+                db.create_session(
+                    session_id=f"session-{i}",
+                    target_file=f"archive{i}.mbox",
+                    query=f"query{i}",
+                    message_ids=[f"msg{i}"],
+                    compression=None,
+                    account_id="default",
+                )
+                time.sleep(0.01)  # Small delay to ensure different timestamps
+
+            sessions = db.get_all_partial_sessions()
+
+            # Most recent should be first (session-2)
+            assert sessions[0]["session_id"] == "session-2"
+            assert sessions[-1]["session_id"] == "session-0"
+
+    def test_abort_session_changes_status_to_aborted(self, v11_db: str) -> None:
+        """Test abort_session marks session as aborted."""
+        with DBManager(v11_db) as db:
+            # Create a session
+            db.create_session(
+                session_id="session-to-abort",
+                target_file="archive.mbox",
+                query="query",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+
+            # Abort the session
+            db.abort_session("session-to-abort")
+
+            # Verify status changed
+            session = db.get_session("session-to-abort")
+            assert session is not None
+            assert session["status"] == "aborted"
+
+    def test_delete_session_removes_session(self, v11_db: str) -> None:
+        """Test delete_session removes session from database."""
+        with DBManager(v11_db) as db:
+            # Create a session
+            db.create_session(
+                session_id="session-to-delete",
+                target_file="archive.mbox",
+                query="query",
+                message_ids=["msg1"],
+                compression=None,
+                account_id="default",
+            )
+
+            # Delete the session
+            db.delete_session("session-to-delete")
+
+            # Verify session is gone
+            session = db.get_session("session-to-delete")
+            assert session is None
+
+    def test_delete_messages_for_file_removes_all_messages(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test delete_messages_for_file removes all messages for a file."""
+        with DBManager(v11_db) as db:
+            # Insert messages for target file
+            for i in range(3):
+                data = sample_message_data.copy()
+                data["gmail_id"] = f"msg{i}"
+                data["rfc_message_id"] = f"<msg{i}@example.com>"
+                data["archive_file"] = "target.mbox"
+                db.record_archived_message(**data)
+
+            # Insert message for different file
+            other_data = sample_message_data.copy()
+            other_data["gmail_id"] = "msg_other"
+            other_data["rfc_message_id"] = "<msg_other@example.com>"
+            other_data["archive_file"] = "other.mbox"
+            db.record_archived_message(**other_data)
+
+            # Delete messages for target file
+            deleted = db.delete_messages_for_file("target.mbox")
+
+            assert deleted == 3
+
+            # Verify messages are gone from target file
+            messages = db.get_all_messages_for_archive("target.mbox")
+            assert len(messages) == 0
+
+            # Verify other file's messages still exist
+            messages = db.get_all_messages_for_archive("other.mbox")
+            assert len(messages) == 1
+
+    def test_delete_messages_for_file_returns_zero_when_none(self, v11_db: str) -> None:
+        """Test delete_messages_for_file returns 0 when no messages exist."""
+        with DBManager(v11_db) as db:
+            deleted = db.delete_messages_for_file("nonexistent.mbox")
+            assert deleted == 0
+
+
+# ============================================================================
+# Exception Handling Tests
+# ============================================================================
+
+
+class TestDBManagerExceptionHandling:
+    """Tests for exception handling in DBManager methods.
+
+    These tests cover the exception wrapping paths that convert
+    low-level SQLite errors into DBManagerError.
+    """
+
+    def test_delete_message_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
+        """Test delete_message wraps exceptions in DBManagerError.
+
+        Covers lines 598-599: Exception handler in delete_message.
+        """
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with DBManager(v11_db) as db:
+            # Mock conn.execute to raise an error
+            with patch.object(db, "conn") as mock_conn:
+                mock_conn.execute.side_effect = sqlite3.OperationalError(
+                    "database is locked"
+                )
+
+                with pytest.raises(DBManagerError) as exc_info:
+                    db.delete_message("msg123")
+
+                assert "Failed to delete message msg123" in str(exc_info.value)
+                assert "database is locked" in str(exc_info.value)
+
+    def test_remove_duplicate_records_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
+        """Test remove_duplicate_records wraps exceptions in DBManagerError.
+
+        Covers lines 644-645: Exception handler in remove_duplicate_records.
+        """
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with DBManager(v11_db) as db:
+            # Mock conn.execute to raise an error during deletion
+            with patch.object(db, "conn") as mock_conn:
+                mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
+
+                duplicates = [("rfc123", ["msg1", "msg2"])]
+                with pytest.raises(DBManagerError) as exc_info:
+                    db.remove_duplicate_records(duplicates)
+
+                assert "Failed to remove duplicate records" in str(exc_info.value)
+
+    def test_update_archive_location_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
+        """Test update_archive_location wraps exceptions in DBManagerError.
+
+        Covers lines 681-682: Exception handler in update_archive_location.
+        """
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with DBManager(v11_db) as db:
+            # Mock conn.execute to raise an error
+            with patch.object(db, "conn") as mock_conn:
+                mock_conn.execute.side_effect = sqlite3.IntegrityError(
+                    "constraint violation"
+                )
+
+                with pytest.raises(DBManagerError) as exc_info:
+                    db.update_archive_location("msg123", "new.mbox", 1000, 500)
+
+                assert "Failed to update location for msg123" in str(exc_info.value)
+
+    def test_bulk_update_archive_locations_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
+        """Test bulk_update_archive_locations wraps exceptions in DBManagerError.
+
+        Covers lines 720-721: Exception handler in bulk_update_archive_locations.
+        """
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with DBManager(v11_db) as db:
+            # Mock conn.executemany to raise an error
+            with patch.object(db, "conn") as mock_conn:
+                mock_conn.executemany.side_effect = sqlite3.DatabaseError(
+                    "no such table: messages"
+                )
+
+                updates = [{
+                    "gmail_id": "msg1",
+                    "archive_file": "new.mbox",
+                    "mbox_offset": 0,
+                    "mbox_length": 100,
+                }]
+                with pytest.raises(DBManagerError) as exc_info:
+                    db.bulk_update_archive_locations(updates)
+
+                assert "Failed to bulk update locations" in str(exc_info.value)
+
+    def test_record_archived_message_wraps_non_integrity_exceptions(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test record_archived_message wraps non-IntegrityError exceptions.
+
+        Covers lines 436-437: Exception handler for non-IntegrityError.
+        IntegrityError is re-raised directly, other exceptions are wrapped.
+        """
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with DBManager(v11_db) as db:
+            # Mock conn.execute to raise a non-IntegrityError
+            with patch.object(db, "conn") as mock_conn:
+                mock_conn.execute.side_effect = sqlite3.OperationalError(
+                    "database disk image is malformed"
+                )
+
+                with pytest.raises(DBManagerError) as exc_info:
+                    db.record_archived_message(**sample_message_data)
+
+                assert "Failed to record message" in str(exc_info.value)
+                assert "malformed" in str(exc_info.value)

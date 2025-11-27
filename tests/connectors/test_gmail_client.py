@@ -631,3 +631,408 @@ class TestExecuteWithRetry:
         # This should complete successfully and return None
         result = client._execute_with_retry(mock_request)
         assert result is None
+
+
+class TestGetMessageIdsBatch:
+    """Tests for get_message_ids_batch method."""
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_get_message_ids_batch_success(self, mock_build: Mock, mock_time: Mock) -> None:
+        """Test successful batch retrieval of message IDs."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        captured_callbacks: dict[str, Any] = {}
+
+        def mock_add(request: Any, callback: Any, request_id: str) -> None:
+            captured_callbacks[request_id] = callback
+
+        def mock_execute() -> None:
+            # Simulate successful batch execution
+            for gid, callback in captured_callbacks.items():
+                callback(
+                    gid,
+                    {
+                        "id": gid,
+                        "payload": {
+                            "headers": [{"name": "Message-ID", "value": f"<{gid}@example.com>"}]
+                        },
+                    },
+                    None,
+                )
+
+        mock_batch = Mock()
+        mock_batch.add.side_effect = mock_add
+        mock_batch.execute.side_effect = mock_execute
+        mock_service.new_batch_http_request.return_value = mock_batch
+
+        client = GmailClient(mock_creds, batch_size=100)
+        gmail_ids = ["msg1", "msg2", "msg3"]
+
+        result = client.get_message_ids_batch(gmail_ids)
+
+        assert len(result) == 3
+        assert result["msg1"] == "<msg1@example.com>"
+        assert result["msg2"] == "<msg2@example.com>"
+        assert result["msg3"] == "<msg3@example.com>"
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_get_message_ids_batch_with_exception(self, mock_build: Mock, mock_time: Mock) -> None:
+        """Test batch retrieval handles exceptions gracefully."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        captured_callbacks: dict[str, Any] = {}
+
+        def mock_add(request: Any, callback: Any, request_id: str) -> None:
+            captured_callbacks[request_id] = callback
+
+        def mock_execute() -> None:
+            # First succeeds, second fails with exception
+            for gid, callback in captured_callbacks.items():
+                if gid == "msg1":
+                    callback(
+                        gid,
+                        {
+                            "id": gid,
+                            "payload": {
+                                "headers": [{"name": "Message-ID", "value": "<msg1@example.com>"}]
+                            },
+                        },
+                        None,
+                    )
+                else:
+                    callback(gid, None, Exception("Message not found"))
+
+        mock_batch = Mock()
+        mock_batch.add.side_effect = mock_add
+        mock_batch.execute.side_effect = mock_execute
+        mock_service.new_batch_http_request.return_value = mock_batch
+
+        client = GmailClient(mock_creds, batch_size=100)
+        gmail_ids = ["msg1", "msg2"]
+
+        result = client.get_message_ids_batch(gmail_ids)
+
+        assert len(result) == 2
+        assert result["msg1"] == "<msg1@example.com>"
+        assert result["msg2"] == ""  # Empty string for failed message
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_get_message_ids_batch_with_progress_callback(
+        self, mock_build: Mock, mock_time: Mock
+    ) -> None:
+        """Test progress callback is called during batch retrieval."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        captured_callbacks: dict[str, Any] = {}
+
+        def mock_add(request: Any, callback: Any, request_id: str) -> None:
+            captured_callbacks[request_id] = callback
+
+        def mock_execute() -> None:
+            for gid, callback in captured_callbacks.items():
+                callback(
+                    gid,
+                    {
+                        "id": gid,
+                        "payload": {
+                            "headers": [{"name": "Message-ID", "value": f"<{gid}@example.com>"}]
+                        },
+                    },
+                    None,
+                )
+
+        mock_batch = Mock()
+        mock_batch.add.side_effect = mock_add
+        mock_batch.execute.side_effect = mock_execute
+        mock_service.new_batch_http_request.return_value = mock_batch
+
+        progress_calls: list[tuple[int, int]] = []
+
+        def progress_callback(processed: int, total: int) -> None:
+            progress_calls.append((processed, total))
+
+        client = GmailClient(mock_creds, batch_size=100)
+        gmail_ids = ["msg1", "msg2"]
+
+        client.get_message_ids_batch(gmail_ids, progress_callback=progress_callback)
+
+        # Progress callback should be called
+        assert len(progress_calls) > 0
+        assert progress_calls[-1] == (2, 2)
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_get_message_ids_batch_missing_message_id_header(
+        self, mock_build: Mock, mock_time: Mock
+    ) -> None:
+        """Test handling of messages without Message-ID header."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        captured_callbacks: dict[str, Any] = {}
+
+        def mock_add(request: Any, callback: Any, request_id: str) -> None:
+            captured_callbacks[request_id] = callback
+
+        def mock_execute() -> None:
+            for gid, callback in captured_callbacks.items():
+                # Response without Message-ID header
+                callback(
+                    gid,
+                    {
+                        "id": gid,
+                        "payload": {"headers": [{"name": "Subject", "value": "Test Subject"}]},
+                    },
+                    None,
+                )
+
+        mock_batch = Mock()
+        mock_batch.add.side_effect = mock_add
+        mock_batch.execute.side_effect = mock_execute
+        mock_service.new_batch_http_request.return_value = mock_batch
+
+        client = GmailClient(mock_creds, batch_size=100)
+        gmail_ids = ["msg1"]
+
+        result = client.get_message_ids_batch(gmail_ids)
+
+        assert len(result) == 1
+        assert result["msg1"] == ""  # Empty string when no Message-ID header
+
+
+class TestListMessagesProgressCallback:
+    """Tests for list_messages with progress callback."""
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_list_messages_calls_progress_callback(self, mock_build: Mock) -> None:
+        """Test that list_messages calls progress_callback with count and page.
+
+        This covers line 83: progress_callback(len(messages), page_number)
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        # Multiple pages of results
+        mock_service.users().messages().list().execute.side_effect = [
+            {"messages": [{"id": "msg1"}], "nextPageToken": "token1"},
+            {"messages": [{"id": "msg2"}], "nextPageToken": None},
+        ]
+
+        client = GmailClient(mock_creds)
+        progress_calls: list[tuple[int, int]] = []
+
+        def progress_callback(count: int, page: int) -> None:
+            progress_calls.append((count, page))
+
+        client.list_messages("query", progress_callback=progress_callback)
+
+        # Should be called once per page
+        assert len(progress_calls) >= 1
+        # First call should have count=1 and page=1
+        assert progress_calls[0] == (1, 1)
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_list_messages_raises_non_404_error(self, mock_build: Mock) -> None:
+        """Test that list_messages re-raises non-404 HttpError.
+
+        This covers line 93: raise (non-404 HttpError)
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        # Create a 500 Internal Server Error
+        http_error = HttpError(
+            resp=Mock(status=500, reason="Server Error"),
+            content=b"Internal Server Error",
+        )
+        mock_service.users().messages().list().execute.side_effect = http_error
+
+        client = GmailClient(mock_creds, max_retries=1)
+
+        with pytest.raises(HttpError) as exc_info:
+            client.list_messages("query")
+
+        assert exc_info.value.resp.status == 500
+
+
+class TestSearchByRfcMessageId:
+    """Tests for search_by_rfc_message_id method."""
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_search_empty_message_id_returns_none(self, mock_build: Mock) -> None:
+        """Test that empty RFC message ID returns None.
+
+        This covers line 327: return None when clean_id is empty
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        client = GmailClient(mock_creds)
+
+        # Empty string after stripping angle brackets
+        result = client.search_by_rfc_message_id("")
+        assert result is None
+
+        # Only angle brackets
+        result = client.search_by_rfc_message_id("<>")
+        assert result is None
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_search_found_returns_gmail_id(self, mock_build: Mock) -> None:
+        """Test that successful search returns Gmail ID.
+
+        This covers line 337: return response["messages"][0]["id"]
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        mock_service.users().messages().list().execute.return_value = {
+            "messages": [{"id": "gmail123"}]
+        }
+
+        client = GmailClient(mock_creds)
+
+        result = client.search_by_rfc_message_id("<test@example.com>")
+        assert result == "gmail123"
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_search_not_found_returns_none(self, mock_build: Mock) -> None:
+        """Test that search with no results returns None."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        mock_service.users().messages().list().execute.return_value = {}
+
+        client = GmailClient(mock_creds)
+
+        result = client.search_by_rfc_message_id("<notfound@example.com>")
+        assert result is None
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_search_404_error_returns_none(self, mock_build: Mock) -> None:
+        """Test that 404 error returns None.
+
+        This covers lines 340-343: HttpError 404 handling
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        http_error = HttpError(
+            resp=Mock(status=404, reason="Not Found"),
+            content=b"Not Found",
+        )
+        mock_service.users().messages().list().execute.side_effect = http_error
+
+        client = GmailClient(mock_creds)
+
+        result = client.search_by_rfc_message_id("<test@example.com>")
+        assert result is None
+
+
+class TestSearchByRfcMessageIdsBatch:
+    """Tests for search_by_rfc_message_ids_batch method."""
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_batch_search_success(self, mock_build: Mock, mock_time: Mock) -> None:
+        """Test batch search returns correct mapping.
+
+        This covers lines 367-383: search_by_rfc_message_ids_batch method
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        # Mock search results: first found, second not found
+        def mock_execute_side_effect() -> dict[str, Any]:
+            call_count = mock_service.users().messages().list().execute.call_count
+            if call_count == 1:
+                return {"messages": [{"id": "gmail1"}]}
+            return {}
+
+        mock_service.users().messages().list().execute.side_effect = (
+            mock_execute_side_effect
+        )
+
+        client = GmailClient(mock_creds)
+
+        result = client.search_by_rfc_message_ids_batch(
+            ["<test1@example.com>", "<test2@example.com>"],
+            batch_size=10,
+            batch_delay=0.0,
+        )
+
+        assert "<test1@example.com>" in result
+        assert "<test2@example.com>" in result
+        assert result["<test1@example.com>"] == "gmail1"
+        assert result["<test2@example.com>"] is None
+
+    @patch("gmailarchiver.connectors.gmail_client.time")
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_batch_search_with_progress(self, mock_build: Mock, mock_time: Mock) -> None:
+        """Test batch search calls progress callback."""
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        mock_service.users().messages().list().execute.return_value = {}
+
+        client = GmailClient(mock_creds)
+        progress_calls: list[tuple[int, int]] = []
+
+        def progress_callback(processed: int, total: int) -> None:
+            progress_calls.append((processed, total))
+
+        client.search_by_rfc_message_ids_batch(
+            ["<a@x.com>", "<b@x.com>"],
+            progress_callback=progress_callback,
+            batch_size=10,
+            batch_delay=0.0,
+        )
+
+        # Should call progress for each message
+        assert len(progress_calls) == 2
+        assert progress_calls[0] == (1, 2)
+        assert progress_calls[1] == (2, 2)
+
+
+class TestExecuteWithRetryExhaustion:
+    """Tests for _execute_with_retry exhausting retries."""
+
+    @patch("gmailarchiver.connectors.gmail_client.build")
+    def test_zero_retries_raises_runtime_error(self, mock_build: Mock) -> None:
+        """Test that 0 max_retries raises RuntimeError immediately.
+
+        This covers line 416: raise RuntimeError after max retries
+        The loop is never entered when max_retries is 0.
+        """
+        mock_creds = Mock()
+        mock_service = Mock()
+        mock_build.return_value = mock_service
+
+        # Create a mock request (won't be called since loop never runs)
+        mock_request = Mock()
+
+        client = GmailClient(mock_creds, max_retries=0)
+
+        with pytest.raises(RuntimeError, match="Failed after 0 retries"):
+            client._execute_with_retry(mock_request)
+
+        # Verify execute was never called since loop never ran
+        mock_request.execute.assert_not_called()

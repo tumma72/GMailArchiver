@@ -316,3 +316,53 @@ def test_extract_with_special_characters_in_path(populated_db: Path, temp_dir: P
         extractor.extract_by_gmail_id("msg001", output_path=output_file)
 
     assert output_file.exists()
+
+
+def test_extract_from_zstd_compressed_archive(temp_db: Path, temp_dir: Path) -> None:
+    """Test extracting message from zstd-compressed archive.
+
+    This tests the zstd decompression path in _open_compressed_archive.
+    """
+    from compression import zstd
+
+    # Create a simple mbox content
+    msg_content = b"From test@example.com Mon Jan 1 00:00:00 2024\nSubject: Test\n\nBody"
+
+    # Compress to zstd
+    zst_path = temp_dir / "archive.mbox.zst"
+    with zstd.open(zst_path, "wb") as f:
+        f.write(msg_content)
+
+    # Add message to database
+    with DBManager(str(temp_db)) as db:
+        db.record_archived_message(
+            gmail_id="msg_zst",
+            rfc_message_id="<zst@example.com>",
+            archive_file=str(zst_path),
+            mbox_offset=0,
+            mbox_length=len(msg_content),
+            record_run=False,
+        )
+
+    # Extract
+    with MessageExtractor(temp_db) as extractor:
+        message_bytes = extractor.extract_by_gmail_id("msg_zst", output_path=None)
+        assert message_bytes == msg_content
+
+
+def test_extract_from_compressed_with_invalid_format_raises_error(
+    temp_db: Path, temp_dir: Path
+) -> None:
+    """Test that _extract_from_compressed raises error for invalid format.
+
+    This tests the defensive error handling when an invalid compression
+    format string is passed to the internal method.
+    """
+    # Create a test file
+    test_path = temp_dir / "archive.mbox"
+    test_path.write_bytes(b"test content")
+
+    with MessageExtractor(temp_db) as extractor:
+        with pytest.raises(ExtractorError, match="Unsupported compression format"):
+            # Call private method directly with invalid format
+            extractor._extract_from_compressed(test_path, "bz2", 0, 10)

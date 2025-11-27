@@ -129,6 +129,15 @@ class TestFormatBytes:
         """Test formatting gigabytes."""
         assert format_bytes(1073741824) == "1.0 GB"
 
+    def test_terabytes(self) -> None:
+        """Test formatting terabytes."""
+        assert format_bytes(1099511627776) == "1.0 TB"
+
+    def test_petabytes(self) -> None:
+        """Test formatting petabytes (values exceeding TB)."""
+        # 1.5 PB = 1.5 * 1024^5 bytes
+        assert format_bytes(1688849860263936) == "1.5 PB"
+
 
 class TestChunkList:
     """Tests for chunk_list function."""

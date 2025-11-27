@@ -768,3 +768,21 @@ def test_compressor_cleanup_on_verification_failure(temp_dir, state_db):
 
         # Critical assertion: corrupt file must NOT exist (was cleaned up)
         assert not dest_path.exists(), "Corrupt compressed file should have been deleted"
+
+
+def test_unsupported_compression_format_raises_error(temp_dir, state_db):
+    """Test that unsupported compression format raises ValueError.
+
+    The compress method validates the format before attempting compression.
+    """
+    mbox_path = temp_dir / "test.mbox"
+    create_test_mbox(mbox_path, message_count=3)
+    populate_db_from_mbox(state_db, mbox_path)
+
+    compressor = ArchiveCompressor(str(state_db))
+
+    # Try to compress with invalid format
+    with pytest.raises(ValueError, match="Unsupported compression format"):
+        compressor.compress(
+            files=[str(mbox_path)], format="invalid_format", in_place=False, dry_run=False
+        )

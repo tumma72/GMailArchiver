@@ -392,3 +392,78 @@ class TestSchemaManagerClassMethods:
         assert SchemaManager.version_from_string("1.0") == SchemaVersion.V1_0
         assert SchemaManager.version_from_string("1.1") == SchemaVersion.V1_1
         assert SchemaManager.version_from_string("1.2") == SchemaVersion.V1_2
+
+
+class TestSchemaVersionComparisons:
+    """Test SchemaVersion comparison operators with non-SchemaVersion types."""
+
+    def test_lt_with_non_schema_version_returns_not_implemented(self):
+        """Test __lt__ returns NotImplemented when compared with non-SchemaVersion."""
+        version = SchemaVersion.V1_1
+        # Comparing with a string should return NotImplemented
+        result = version.__lt__("1.1")
+        assert result is NotImplemented
+
+    def test_gt_with_non_schema_version_returns_not_implemented(self):
+        """Test __gt__ returns NotImplemented when compared with non-SchemaVersion."""
+        version = SchemaVersion.V1_1
+        # Comparing with an int should return NotImplemented
+        result = version.__gt__(1)
+        assert result is NotImplemented
+
+    def test_le_with_schema_versions(self):
+        """Test __le__ works correctly with SchemaVersion types."""
+        assert SchemaVersion.V1_0 <= SchemaVersion.V1_1
+        assert SchemaVersion.V1_1 <= SchemaVersion.V1_1
+        assert not SchemaVersion.V1_2 <= SchemaVersion.V1_0
+
+    def test_ge_with_schema_versions(self):
+        """Test __ge__ works correctly with SchemaVersion types."""
+        assert SchemaVersion.V1_1 >= SchemaVersion.V1_0
+        assert SchemaVersion.V1_1 >= SchemaVersion.V1_1
+        assert not SchemaVersion.V1_0 >= SchemaVersion.V1_2
+
+
+class TestSchemaManagerEdgeCases:
+    """Test edge cases and error handling in SchemaManager."""
+
+    def test_detect_version_sqlite_error_returns_unknown(self, tmp_path):
+        """Test that sqlite3.Error during detection returns UNKNOWN.
+
+        This covers lines 194-197: sqlite3.Error handling
+        """
+        # Create a file that's not a valid SQLite database
+        bad_db = tmp_path / "corrupt.db"
+        bad_db.write_bytes(b"\x00\x01\x02\x03\x04corrupted")
+
+        manager = SchemaManager(bad_db)
+        version = manager.detect_version()
+
+        # Should return UNKNOWN due to error (not NONE)
+        assert version == SchemaVersion.UNKNOWN
+
+    def test_has_capability_returns_false_for_invalid_version(self, tmp_path):
+        """Test has_capability returns False when version is invalid.
+
+        This covers line 250: return False when not version.is_valid
+        """
+        # Non-existent database returns NONE (invalid)
+        manager = SchemaManager(tmp_path / "nonexistent.db")
+
+        # Should return False for any capability check
+        assert manager.has_capability(SchemaCapability.BASIC_ARCHIVING) is False
+        assert manager.has_capability(SchemaCapability.FTS_SEARCH) is False
+
+    def test_require_version_raises_for_invalid_version(self, tmp_path):
+        """Test require_version raises for invalid schema version.
+
+        This covers lines 266-271: SchemaVersionError for invalid version
+        """
+        # Non-existent database has NONE version (invalid)
+        manager = SchemaManager(tmp_path / "nonexistent.db")
+
+        with pytest.raises(SchemaVersionError) as exc_info:
+            manager.require_version(SchemaVersion.V1_0)
+
+        assert exc_info.value.current_version == SchemaVersion.NONE
+        assert "Invalid database schema" in str(exc_info.value)

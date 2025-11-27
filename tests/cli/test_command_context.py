@@ -1,5 +1,6 @@
 """Tests for command_context module."""
 
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -539,3 +540,80 @@ class TestWithContextDecorator:
             test_cmd(name="custom")
 
         assert captured_kwargs == {"name": "custom"}
+
+
+# ============================================================================
+# Coverage Improvement Tests - CommandContext.operation() context manager
+# ============================================================================
+
+
+class TestCommandContextOperationContextManager:
+    """Test CommandContext.operation() context manager behavior."""
+
+    def test_operation_with_static_context(self) -> None:
+        """Test operation() uses static handler when no live context."""
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        # No live context
+        ctx._live_context = None
+
+        with ctx.operation("Processing", total=10) as handle:
+            # Should get a handle
+            assert handle is not None
+            # Context should have operation_handle set
+            assert ctx.operation_handle is handle
+
+        # After context exits, operation_handle should be cleared
+        assert ctx.operation_handle is None
+
+    def test_operation_with_live_context(self) -> None:
+        """Test operation() uses live handler when live context is set."""
+        from gmailarchiver.cli.output import LiveOutputHandler
+
+        output = OutputManager()
+        ctx = CommandContext(output=output, _operation_name="test")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a live output handler (which manages LiveLayoutContext)
+            live_handler = LiveOutputHandler(output, log_dir=Path(tmpdir))
+            with live_handler:
+                # The live handler creates a LiveLayoutContext internally
+                ctx._live_context = live_handler
+
+                with ctx.operation("Processing", total=10) as handle:
+                    # Should get a handle
+                    assert handle is not None
+                    assert ctx.operation_handle is handle
+
+                # After context exits, operation_handle should be cleared
+                assert ctx.operation_handle is None
+
+
+class TestStaticOperationHandleCompletePending:
+    """Test _StaticOperationHandle.complete_pending() behavior."""
+
+    def test_complete_pending_logs_message(self) -> None:
+        """Test complete_pending() calls log() with the message and level."""
+        output = OutputManager()
+
+        with output.progress_context("Testing", total=10) as progress:
+            if progress:
+                handle = _StaticOperationHandle(output, progress, "Initial", total=10)
+
+                # Use patch to verify log is called
+                with patch.object(handle, "log") as mock_log:
+                    handle.complete_pending("Done!", "SUCCESS")
+                    mock_log.assert_called_once_with("Done!", "SUCCESS")
+
+    def test_complete_pending_default_level(self) -> None:
+        """Test complete_pending() defaults to SUCCESS level."""
+        output = OutputManager()
+
+        with output.progress_context("Testing", total=10) as progress:
+            if progress:
+                handle = _StaticOperationHandle(output, progress, "Initial", total=10)
+
+                with patch.object(handle, "log") as mock_log:
+                    handle.complete_pending("Finished!")
+                    mock_log.assert_called_once_with("Finished!", "SUCCESS")
