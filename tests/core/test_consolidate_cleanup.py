@@ -345,7 +345,7 @@ class TestConsolidateCleanup:
         add_messages_to_db(state_db, str(src2), num_messages=3)
 
         # Mock validator to fail
-        with patch("gmailarchiver.__main__.ArchiveValidator") as mock_validator_class:
+        with patch("gmailarchiver.__main__.ValidatorFacade") as mock_validator_class:
             mock_validator = Mock()
             mock_validator.validate_all.return_value = False  # Validation fails
             mock_validator_class.return_value = mock_validator

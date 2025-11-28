@@ -13,8 +13,14 @@ from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
 from .core.archiver import ArchiverFacade
 from .core.archiver_legacy import GmailArchiver  # Keep for retry-delete command temporarily
-from .core.deduplicator import MessageDeduplicator
-from .core.validator_legacy import ArchiveValidator
+from .core.compressor.facade import ArchiveCompressor
+from .core.consolidator.facade import ArchiveConsolidator
+from .core.deduplicator.facade import DeduplicatorFacade
+from .core.doctor.facade import Doctor
+from .core.extractor.facade import MessageExtractor
+from .core.importer.facade import ImporterFacade
+from .core.search.facade import SearchFacade
+from .core.validator.facade import ValidatorFacade
 from .data.migration import MigrationManager
 from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
 from .data.state import ArchiveState
@@ -274,8 +280,8 @@ def archive(
     with ArchiveState() as state:
         archived_ids = state.get_archived_message_ids_for_file(actual_file)
 
-    # Validate using ArchiveValidator directly
-    validator = ArchiveValidator(actual_file, "archive_state.db", output=out)
+    # Validate using ValidatorFacade directly
+    validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
     validation_results = validator.validate_comprehensive(archived_ids)
 
     # Show validation report using new panel method
@@ -415,7 +421,7 @@ def validate(
 
         # Task 2: Run validation checks
         with seq.task("Running validation checks") as t:
-            validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+            validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
             results = validator.validate_comprehensive(expected_ids)
 
             if results["passed"]:
@@ -1117,7 +1123,7 @@ def dedupe(
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
-        with MessageDeduplicator(str(db_path)) as dedup:
+        with DeduplicatorFacade(str(db_path)) as dedup:
             with ctx.ui.task_sequence() as seq:
                 # Task 1: Find duplicates
                 with seq.task("Finding duplicates") as t:
@@ -1291,7 +1297,10 @@ def verify_offsets_cmd(
         )
 
     # Create validator and run verification
+    # Note: Using legacy ArchiveValidator as verify_offsets is not yet in facade
     try:
+        from .core.validator_legacy import ArchiveValidator
+
         validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
         result = None
 
@@ -1390,7 +1399,10 @@ def verify_consistency_cmd(
         )
 
     # Create validator and run consistency check
+    # Note: Using legacy ArchiveValidator as verify_consistency is not yet in facade
     try:
+        from .core.validator_legacy import ArchiveValidator
+
         validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
 
         with ctx.ui.task_sequence() as seq:
@@ -1492,8 +1504,6 @@ def search(
     import time
     from datetime import datetime
 
-    from .core.search import SearchEngine
-
     # Validate flags
     if extract and not output_dir:
         ctx.fail_and_exit(
@@ -1571,8 +1581,8 @@ def search(
 
         start_time = time.perf_counter()
 
-        with SearchEngine(state_db) as engine:
-            results = engine.search(query, limit=limit)
+        with SearchFacade(state_db) as search:
+            results = search.search(query, limit=limit)
 
         execution_time_ms = (time.perf_counter() - start_time) * 1000
 
@@ -1674,8 +1684,6 @@ def search(
                 return
 
             # Extract selected messages
-            from gmailarchiver.core.extractor import MessageExtractor
-
             ctx.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
 
             with MessageExtractor(state_db) as extractor:
@@ -1713,8 +1721,6 @@ def search(
 
         # Extract messages if requested
         if extract:
-            from gmailarchiver.core.extractor import MessageExtractor
-
             assert output_dir is not None, "Output directory required for extraction"
             ctx.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
 
@@ -1789,7 +1795,7 @@ def extract(
         $ gmailarchiver extract abc123 --archive archive.mbox.zst
         $ gmailarchiver extract abc123 --json
     """
-    from gmailarchiver.core.extractor import ExtractorError, MessageExtractor
+    from gmailarchiver.core.extractor._extractor import ExtractorError
 
     try:
         with MessageExtractor(state_db) as extractor:
@@ -1873,8 +1879,6 @@ def import_cmd(
     import glob
     import time
 
-    from gmailarchiver.core.importer_legacy import ArchiveImporter
-
     db_path = Path(state_db)
 
     # Handle database schema using centralized SchemaManager
@@ -1935,7 +1939,7 @@ def import_cmd(
             ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
 
     # Import each file with progress
-    importer = ArchiveImporter(state_db, gmail_client=gmail_client)
+    importer = ImporterFacade(state_db, gmail_client=gmail_client)
     results: list[Any] = []
     start_time = time.perf_counter()
 
@@ -2118,8 +2122,7 @@ def consolidate(
     """
     import glob
 
-    from gmailarchiver.core.consolidator import ArchiveConsolidator
-    # ArchiveValidator is imported at module level for proper mocking in tests
+    # ArchiveConsolidator and ValidatorFacade are imported at module level
 
     # 1. Expand glob patterns
     all_files = []
@@ -2255,8 +2258,8 @@ def consolidate(
                             raise typer.Exit(1)
 
                         try:
-                            # Use ArchiveValidator to verify archive can be read
-                            validator = ArchiveValidator(str(output_path))
+                            # Use ValidatorFacade to verify archive can be read
+                            validator = ValidatorFacade(str(output_path))
                             # Simple check: verify archive is readable and has content
                             is_valid = validator.validate_all()
                             if not is_valid:
@@ -2762,6 +2765,8 @@ def check(
                     db.close()
 
                     if Path(archive_file).exists():
+                        from .core.validator_legacy import ArchiveValidator
+
                         validator = ArchiveValidator(archive_file, state_db)
                         report = validator.verify_consistency()
                         check_results["database_consistency"]["checked"] = True
@@ -2795,6 +2800,8 @@ def check(
                     db.close()
 
                     if row and Path(row[0]).exists():
+                        from .core.validator_legacy import ArchiveValidator
+
                         archive_file = row[0]
                         validator = ArchiveValidator(archive_file, state_db)
                         result = validator.verify_offsets()
@@ -3489,8 +3496,9 @@ def compress(
     """
     import glob
 
-    from gmailarchiver.core.compressor import ArchiveCompressor
     from gmailarchiver.shared.utils import format_bytes
+
+    # ArchiveCompressor is imported at module level
 
     # Expand glob patterns
     expanded_files = []
@@ -3659,7 +3667,7 @@ def doctor(
         $ gmailarchiver doctor --fix        # Auto-fix issues
         $ gmailarchiver doctor --json
     """
-    from gmailarchiver.core.doctor import CheckSeverity, Doctor
+    from gmailarchiver.core.doctor._diagnostics import CheckSeverity
 
     # Initialize doctor
     doctor_instance = Doctor(state_db, validate_schema=False, auto_create=False)
