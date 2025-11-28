@@ -7,15 +7,23 @@ Provides validation of mbox archives with support for:
 - Offset verification for v1.1 schemas
 """
 
-from gmailarchiver.core.validator._checksum import ChecksumValidator
-from gmailarchiver.core.validator._counter import MessageCounter
-from gmailarchiver.core.validator._decompressor import Decompressor
-from gmailarchiver.core.validator.facade import ValidatorFacade
+from ..validator_legacy import (
+    ArchiveValidator,
+    ConsistencyReport,
+    OffsetVerificationResult,
+)
+from ._checksum import ChecksumValidator
+from ._counter import MessageCounter
+from ._decompressor import Decompressor
+from .facade import ValidatorFacade
 
-# Re-export for backward compatibility (will use legacy temporarily)
+# Re-export for backward compatibility
 __all__ = [
+    "ValidatorFacade",
+    "ArchiveValidator",
+    "ConsistencyReport",
+    "OffsetVerificationResult",
     "Decompressor",
     "MessageCounter",
     "ChecksumValidator",
-    "ValidatorFacade",
 ]
