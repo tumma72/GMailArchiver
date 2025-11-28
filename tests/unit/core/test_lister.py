@@ -4,9 +4,11 @@ This module contains fast, isolated unit tests with no I/O or external
 dependencies. All external components (GmailClient, validation) are mocked.
 """
 
-import pytest
 from datetime import datetime
 from unittest.mock import Mock, patch
+
+import pytest
+
 from gmailarchiver.core.archiver._lister import MessageLister
 from gmailarchiver.shared.input_validator import InvalidInputError
 

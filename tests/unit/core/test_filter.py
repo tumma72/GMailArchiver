@@ -4,8 +4,10 @@ This module contains fast, isolated unit tests with no I/O or external
 dependencies. DBManager is mocked to avoid database access.
 """
 
+from unittest.mock import Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+
 from gmailarchiver.core.archiver._filter import MessageFilter
 
 

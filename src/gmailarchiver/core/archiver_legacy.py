@@ -3,7 +3,6 @@
 import email
 import gzip
 import lzma
-import mailbox
 import shutil
 import signal
 import threading
@@ -13,19 +12,10 @@ from email import policy
 from pathlib import Path
 from typing import Any
 
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
-
 from gmailarchiver.cli.output import OperationHandle
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
-from gmailarchiver.data.state import ArchiveState
 from gmailarchiver.shared.input_validator import (
     validate_age_expression,
     validate_compression_format,
