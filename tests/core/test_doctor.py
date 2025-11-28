@@ -263,7 +263,7 @@ def test_check_oauth_token_missing() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         fake_token_path = Path(tmpdir) / "nonexistent_token.json"
 
-        token_patch = "gmailarchiver.core.doctor._get_default_token_path"
+        token_patch = "gmailarchiver.core.doctor._diagnostics._get_default_token_path"
         with patch(token_patch, return_value=fake_token_path):
             doctor = Doctor(":memory:")
             result = doctor.check_oauth_token()
@@ -290,7 +290,7 @@ def test_check_oauth_token_valid() -> None:
             )
         )
 
-        with patch("gmailarchiver.core.doctor._get_default_token_path", return_value=token_path):
+        with patch("gmailarchiver.core.doctor._diagnostics._get_default_token_path", return_value=token_path):
             with patch("gmailarchiver.connectors.auth.Credentials") as mock_creds:
                 mock_creds_instance = Mock()
                 mock_creds_instance.valid = True
@@ -321,7 +321,7 @@ def test_check_oauth_token_expired() -> None:
             )
         )
 
-        with patch("gmailarchiver.core.doctor._get_default_token_path", return_value=token_path):
+        with patch("gmailarchiver.core.doctor._diagnostics._get_default_token_path", return_value=token_path):
             with patch("gmailarchiver.connectors.auth.Credentials") as mock_creds:
                 mock_creds_instance = Mock()
                 mock_creds_instance.valid = False
