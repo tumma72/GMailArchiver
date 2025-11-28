@@ -10,7 +10,7 @@ from compression import zstd
 from pathlib import Path
 from unittest.mock import patch
 
-from gmailarchiver.core.validator import ArchiveValidator
+from gmailarchiver.core.validator_legacy import ArchiveValidator
 
 
 class TestArchiveValidatorInit:

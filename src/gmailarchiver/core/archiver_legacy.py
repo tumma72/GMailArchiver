@@ -22,7 +22,7 @@ from gmailarchiver.shared.input_validator import (
 )
 from gmailarchiver.shared.utils import datetime_to_gmail_query, format_bytes, parse_age
 
-from .validator import ArchiveValidator
+from .validator_legacy import ArchiveValidator
 
 
 class GmailArchiver:

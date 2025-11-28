@@ -14,7 +14,7 @@ from .connectors.auth import GmailAuthenticator
 from .core.archiver import ArchiverFacade
 from .core.archiver_legacy import GmailArchiver  # Keep for retry-delete command temporarily
 from .core.deduplicator import MessageDeduplicator
-from .core.validator import ArchiveValidator
+from .core.validator_legacy import ArchiveValidator
 from .data.migration import MigrationManager
 from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
 from .data.state import ArchiveState

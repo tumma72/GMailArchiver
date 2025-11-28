@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 from gmailarchiver.cli.output import OutputManager
 from gmailarchiver.connectors.auth import GmailAuthenticator
 from gmailarchiver.core.archiver_legacy import GmailArchiver
-from gmailarchiver.core.validator import ArchiveValidator
+from gmailarchiver.core.validator_legacy import ArchiveValidator
 
 
 class TestNoPrintStatements:
