@@ -895,11 +895,11 @@ class CommandContext {
 
 | ADR | Decision | Status |
 |-----|----------|--------|
-| [ADR-001](adrs/001-hybrid-architecture-model.md) | Hybrid mbox + SQLite model | ✅ Accepted |
-| [ADR-002](adrs/002-sqlite-fts5-search.md) | SQLite FTS5 for full-text search | ✅ Accepted |
-| [ADR-003](adrs/003-web-ui-technology-stack.md) | Svelte 5 + FastAPI for Web UI | ✅ Accepted |
-| [ADR-004](adrs/004-message-deduplication.md) | Message-ID exact matching | ✅ Accepted |
-| [ADR-005](adrs/005-distribution-strategy.md) | Multi-tiered distribution | ✅ Accepted |
+| [ADR-001](./adrs/001-hybrid-architecture-model.md) | Hybrid mbox + SQLite model | ✅ Accepted |
+| [ADR-002](./adrs/002-sqlite-fts5-search.md) | SQLite FTS5 for full-text search | ✅ Accepted |
+| [ADR-003](./adrs/003-web-ui-technology-stack.md) | Svelte 5 + FastAPI for Web UI | ✅ Accepted |
+| [ADR-004](./adrs/004-message-deduplication.md) | Message-ID exact matching | ✅ Accepted |
+| [ADR-005](./adrs/005-distribution-strategy.md) | Multi-tiered distribution | ✅ Accepted |
 
 ### Key Decisions Summary
 

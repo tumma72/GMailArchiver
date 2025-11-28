@@ -321,6 +321,207 @@ class HybridStorage:
                 except Exception as e:
                     logger.warning(f"Failed to remove staging file: {e}")
 
+    # ==================== BATCH ARCHIVE OPERATION ====================
+
+    def archive_messages_batch(
+        self,
+        messages: list[tuple[email.message.Message, str, str | None, str | None]],
+        archive_file: Path,
+        compression: str | None = None,
+        commit_interval: int = 100,
+    ) -> tuple[int, int]:
+        """
+        Archive multiple messages in a single batch operation.
+
+        This is the core performance fix for Issue #6. Amortizes expensive I/O
+        operations (fsync, mbox open/close, DB commits) across the entire batch
+        rather than per-message.
+
+        Performance characteristics:
+        - Single mbox open/close cycle (not per-message)
+        - Single fsync at end (not per-message)
+        - Configurable DB commit interval (default: 100 messages)
+        - Batch validation at end (not per-message)
+
+        Args:
+            messages: List of (email_message, gmail_id, thread_id, labels) tuples
+            archive_file: Path to archive file (may be compressed)
+            compression: Compression format ('gzip', 'lzma', 'zstd', or None)
+            commit_interval: Commit to DB every N messages (default: 100)
+
+        Returns:
+            Tuple of (archived_count, skipped_count)
+
+        Raises:
+            HybridStorageError: If operation fails
+        """
+        if not messages:
+            return (0, 0)
+
+        archived_count = 0
+        skipped_count = 0
+        batch_rfc_ids: list[str] = []
+        mbox_obj = None
+        mbox_path = archive_file
+
+        # If compression requested, work with uncompressed mbox first
+        if compression:
+            if archive_file.suffix in (".gz", ".xz", ".zst"):
+                mbox_path = archive_file.with_suffix("")
+            else:
+                mbox_path = archive_file.parent / (archive_file.stem + ".mbox")
+
+        try:
+            # Clean up any orphaned lock files
+            lock_file = Path(str(mbox_path) + ".lock")
+            if lock_file.exists():
+                logger.warning(f"Removing orphaned lock file: {lock_file}")
+                lock_file.unlink()
+
+            # Open mbox ONCE for entire batch
+            mbox_obj = mailbox.mbox(str(mbox_path))
+            mbox_obj.lock()
+
+            for email_message, gmail_id, thread_id, labels in messages:
+                # Check for duplicate (O(1) using pre-loaded set)
+                rfc_message_id = self._extract_rfc_message_id(email_message)
+                if rfc_message_id in self._known_rfc_ids:
+                    logger.debug(
+                        f"Skipping duplicate message {gmail_id}: "
+                        f"rfc_message_id '{rfc_message_id}' already archived"
+                    )
+                    skipped_count += 1
+                    continue
+
+                # Get offset BEFORE writing using the mbox's internal file handle
+                # This avoids opening a separate file handle
+                if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                    offset = mbox_obj._file.tell()
+                elif mbox_path.exists():
+                    offset = mbox_path.stat().st_size
+                else:
+                    offset = 0
+
+                # Write message
+                mbox_obj.add(email_message)
+
+                # Get length AFTER writing using the mbox's internal file handle
+                # This avoids flush() which calls fsync
+                if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                    length = mbox_obj._file.tell() - offset
+                else:
+                    # Fallback: estimate from message size
+                    length = len(email_message.as_bytes()) + 50
+
+                # Extract metadata
+                body_preview = self._extract_body_preview(email_message)
+                checksum = self._compute_checksum(email_message.as_bytes())
+
+                # Record in database (NO commit yet)
+                self.db.record_archived_message(
+                    gmail_id=gmail_id,
+                    rfc_message_id=rfc_message_id,
+                    archive_file=str(archive_file),  # Store final path (with compression)
+                    mbox_offset=offset,
+                    mbox_length=length,
+                    thread_id=thread_id,
+                    subject=email_message.get("Subject"),
+                    from_addr=email_message.get("From"),
+                    to_addr=email_message.get("To"),
+                    cc_addr=email_message.get("Cc"),
+                    date=email_message.get("Date"),
+                    body_preview=body_preview,
+                    checksum=checksum,
+                    size_bytes=len(email_message.as_bytes()),
+                    labels=labels,
+                )
+
+                # Add to known set and batch tracking
+                self._known_rfc_ids.add(rfc_message_id)
+                batch_rfc_ids.append(rfc_message_id)
+                archived_count += 1
+
+                # Commit at interval
+                if archived_count % commit_interval == 0:
+                    self.db.commit()
+                    logger.debug(f"Committed {archived_count} messages")
+
+            # Flush buffered data to file without calling fsync
+            # The mbox object's internal file handle should be flushed
+            if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                mbox_obj._file.flush()
+
+            # Unlock and close mbox WITHOUT calling mbox.close() (which calls fsync)
+            # We'll do our own fsync after this
+            if mbox_obj:
+                try:
+                    mbox_obj.unlock()
+                except Exception as e:
+                    logger.warning(f"Failed to unlock mbox: {e}")
+
+                # Close the internal file handle directly to avoid mbox.close()'s fsync
+                if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                    try:
+                        mbox_obj._file.close()
+                    except Exception as e:
+                        logger.warning(f"Failed to close mbox file: {e}")
+
+                mbox_obj = None
+
+            # Single fsync at END of batch (critical for performance)
+            # This is the ONLY fsync for the entire batch
+            with open(mbox_path, "r+b") as sync_file:
+                os.fsync(sync_file.fileno())
+
+            # Final commit
+            self.db.commit()
+
+            # Batch validation at end (not per-message)
+            self._validate_batch_consistency(batch_rfc_ids)
+
+            # Compress if requested
+            if compression:
+                logger.debug(f"Compressing with {compression}")
+                self._compress_file(mbox_path, archive_file, compression)
+                # Remove uncompressed file AND lock
+                mbox_path.unlink()
+                if lock_file.exists():
+                    lock_file.unlink()
+
+            logger.info(
+                f"Batch archived {archived_count} messages "
+                f"(skipped {skipped_count} duplicates) to {archive_file}"
+            )
+
+            return (archived_count, skipped_count)
+
+        except Exception as e:
+            # Rollback database
+            logger.error(f"Batch archive failed: {e}")
+            try:
+                self.db.rollback()
+                logger.debug("Database rolled back")
+            except Exception as rb_err:
+                logger.error(f"Rollback failed: {rb_err}")
+
+            # Remove rfc_ids from known set (rollback in-memory state)
+            for rfc_id in batch_rfc_ids:
+                self._known_rfc_ids.discard(rfc_id)
+
+            raise HybridStorageError(f"Failed to batch archive messages: {e}") from e
+
+        finally:
+            # Cleanup
+            if mbox_obj:
+                try:
+                    mbox_obj.unlock()
+                except Exception as e:
+                    logger.warning(f"Failed to unlock mbox: {e}")
+                try:
+                    mbox_obj.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close mbox: {e}")
+
     # ==================== CONSOLIDATION PRIMITIVES ====================
 
     def read_messages_from_archives(self, source_archives: list[Path]) -> list[dict[str, Any]]:
@@ -687,6 +888,26 @@ class HybridStorage:
                     logger.warning(f"Failed to close staging mbox: {e}")
 
     # ==================== VALIDATION ====================
+
+    def _validate_batch_consistency(self, rfc_message_ids: list[str]) -> None:
+        """
+        Validate that all batch messages exist in database.
+
+        This is a lightweight validation for batch operations - it checks that
+        all messages were successfully committed to the database without doing
+        expensive per-message mbox reads.
+
+        Args:
+            rfc_message_ids: List of RFC Message-IDs to validate
+
+        Raises:
+            IntegrityError: If any message not found in database
+        """
+        for rfc_id in rfc_message_ids:
+            if not self.db.get_message_by_rfc_message_id(rfc_id):
+                raise IntegrityError(
+                    f"Batch validation failed: {rfc_id} not in database after commit"
+                )
 
     def _validate_message_consistency(self, rfc_message_id: str) -> None:
         """

@@ -97,6 +97,13 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "--cov=gmailarchiver --cov-report=term-missing"
+markers = [
+    "unit: Fast isolated tests (no I/O, no external deps)",
+    "integration: Tests with mocked external dependencies",
+    "contract: API/database contract tests",
+    "e2e: End-to-end workflow tests",
+    "slow: Tests taking >1s",
+]
 
 [dependency-groups]
 dev = [

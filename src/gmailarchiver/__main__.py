@@ -11,7 +11,7 @@ from ._version import __version__
 from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
-from .core.archiver import GmailArchiver
+from .core.archiver_legacy import GmailArchiver
 from .core.deduplicator import MessageDeduplicator
 from .core.validator import ArchiveValidator
 from .data.migration import MigrationManager

@@ -1,6 +1,6 @@
 """Core layer - business logic for archiving operations."""
 
-from .archiver import GmailArchiver
+from .archiver_legacy import GmailArchiver
 from .compressor import ArchiveCompressor, CompressionResult, CompressionSummary
 from .consolidator import ArchiveConsolidator, ConsolidationResult
 from .deduplicator import (
