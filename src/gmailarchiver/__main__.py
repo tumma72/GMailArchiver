@@ -1873,7 +1873,7 @@ def import_cmd(
     import glob
     import time
 
-    from gmailarchiver.core.importer import ArchiveImporter
+    from gmailarchiver.core.importer_legacy import ArchiveImporter
 
     db_path = Path(state_db)
 

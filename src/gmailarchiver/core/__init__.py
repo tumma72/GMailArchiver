@@ -12,7 +12,7 @@ from .deduplicator import (
 )
 from .doctor import CheckResult, CheckSeverity, Doctor, DoctorReport, FixResult
 from .extractor import ExtractorError, ExtractStats, MessageExtractor
-from .importer import ArchiveImporter, ImportResult, MultiImportResult
+from .importer_legacy import ArchiveImporter, ImportResult, MultiImportResult
 from .search import MessageSearchResult, SearchEngine, SearchResults
 from .validator import (
     ArchiveValidator,

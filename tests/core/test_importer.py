@@ -9,7 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from gmailarchiver.core.importer import ArchiveImporter, ImportResult, MultiImportResult
+from gmailarchiver.core.importer_legacy import (
+    ArchiveImporter,
+    ImportResult,
+    MultiImportResult,
+)
 from gmailarchiver.data.db_manager import DBManager
 
 
