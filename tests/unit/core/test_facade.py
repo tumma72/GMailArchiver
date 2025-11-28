@@ -5,7 +5,6 @@ dependencies. All internal modules (MessageLister, MessageFilter, MessageWriter)
 are mocked to test orchestration logic.
 """
 
-from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -31,9 +30,7 @@ class TestArchiverFacadeInitialization:
         mock_gmail_client = Mock()
         custom_db_path = "/custom/path/archive.db"
 
-        facade = ArchiverFacade(
-            gmail_client=mock_gmail_client, state_db_path=custom_db_path
-        )
+        facade = ArchiverFacade(gmail_client=mock_gmail_client, state_db_path=custom_db_path)
 
         assert facade is not None
 
@@ -43,9 +40,7 @@ class TestArchiverFacadeInitialization:
         mock_gmail_client = Mock()
         mock_output_manager = Mock()
 
-        facade = ArchiverFacade(
-            gmail_client=mock_gmail_client, output_manager=mock_output_manager
-        )
+        facade = ArchiverFacade(gmail_client=mock_gmail_client, output_manager=mock_output_manager)
 
         assert facade is not None
 
@@ -109,9 +104,7 @@ class TestArchiverFacadeDelegationMethods:
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch(
-            "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
-        ):
+        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
             with patch(
                 "gmailarchiver.core.archiver.facade.MessageFilter",
                 return_value=mock_filter,
@@ -123,16 +116,12 @@ class TestArchiverFacadeDelegationMethods:
                     return ArchiverFacade(gmail_client=Mock())
 
     @pytest.mark.unit
-    def test_list_messages_for_archive_delegates_to_lister(
-        self, facade, mock_lister
-    ):
+    def test_list_messages_for_archive_delegates_to_lister(self, facade, mock_lister):
         """Test that list_messages_for_archive delegates to MessageLister."""
         query, messages = facade.list_messages_for_archive("3y")
 
         # Should call MessageLister.list_messages with age threshold
-        mock_lister.list_messages.assert_called_once_with(
-            "3y", progress_callback=None
-        )
+        mock_lister.list_messages.assert_called_once_with("3y", progress_callback=None)
 
         # Should return query and messages from lister
         assert query == "before:2022/01/01"
@@ -147,23 +136,17 @@ class TestArchiverFacadeDelegationMethods:
         facade.list_messages_for_archive("3y", progress_callback=progress_callback)
 
         # Should pass callback to lister
-        mock_lister.list_messages.assert_called_once_with(
-            "3y", progress_callback=progress_callback
-        )
+        mock_lister.list_messages.assert_called_once_with("3y", progress_callback=progress_callback)
 
     @pytest.mark.unit
     def test_filter_already_archived_delegates_to_filter(self, facade, mock_filter):
         """Test that filter_already_archived delegates to MessageFilter."""
         message_ids = ["msg001", "msg002"]
 
-        filtered, skipped = facade.filter_already_archived(
-            message_ids, incremental=True
-        )
+        filtered, skipped = facade.filter_already_archived(message_ids, incremental=True)
 
         # Should call MessageFilter.filter_archived with message IDs
-        mock_filter.filter_archived.assert_called_once_with(
-            message_ids, incremental=True
-        )
+        mock_filter.filter_archived.assert_called_once_with(message_ids, incremental=True)
 
         # Should return filtered list and skipped count
         assert filtered == ["msg002"]
@@ -177,9 +160,7 @@ class TestArchiverFacadeDelegationMethods:
         facade.filter_already_archived(message_ids, incremental=False)
 
         # Should pass incremental flag to filter
-        mock_filter.filter_archived.assert_called_once_with(
-            message_ids, incremental=False
-        )
+        mock_filter.filter_archived.assert_called_once_with(message_ids, incremental=False)
 
     @pytest.mark.unit
     def test_archive_messages_delegates_to_writer(self, facade, mock_writer):
@@ -265,9 +246,7 @@ class TestArchiverFacadeOrchestration:
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch(
-            "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
-        ):
+        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
             with patch(
                 "gmailarchiver.core.archiver.facade.MessageFilter",
                 return_value=mock_filter,
@@ -292,9 +271,7 @@ class TestArchiverFacadeOrchestration:
         )
 
         # Should call lister
-        mock_lister.list_messages.assert_called_once_with(
-            "3y", progress_callback=None
-        )
+        mock_lister.list_messages.assert_called_once_with("3y", progress_callback=None)
 
         # Should call filter with message IDs from lister
         mock_filter.filter_archived.assert_called_once_with(
@@ -316,9 +293,7 @@ class TestArchiverFacadeOrchestration:
         assert result["actual_file"] == "/tmp/archive.mbox"
 
     @pytest.mark.unit
-    def test_archive_with_dry_run_mode(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_dry_run_mode(self, facade, mock_lister, mock_filter, mock_writer):
         """Test that dry-run mode skips archiving."""
         result = facade.archive(
             age_threshold="3y",
@@ -345,9 +320,7 @@ class TestArchiverFacadeOrchestration:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    def test_archive_with_incremental_false(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_incremental_false(self, facade, mock_lister, mock_filter, mock_writer):
         """Test archive with incremental=False (no filtering)."""
         # Configure filter to return all messages when incremental=False
         mock_filter.filter_archived.return_value = (
@@ -368,9 +341,7 @@ class TestArchiverFacadeOrchestration:
         )
 
     @pytest.mark.unit
-    def test_archive_with_empty_message_list(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_empty_message_list(self, facade, mock_lister, mock_filter, mock_writer):
         """Test archive when no messages are found."""
         # Configure lister to return no messages
         mock_lister.list_messages.return_value = ("before:2022/01/01", [])
@@ -441,9 +412,7 @@ class TestArchiverFacadeOrchestration:
         assert call_kwargs["progress_callback"] == progress_callback
 
     @pytest.mark.unit
-    def test_archive_with_operation_handle(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_operation_handle(self, facade, mock_lister, mock_filter, mock_writer):
         """Test that operation handle is passed to writer."""
         mock_operation = Mock()
         mock_operation.progress_callback = None
@@ -496,9 +465,7 @@ class TestArchiverFacadeOrchestration:
             assert key in result
 
     @pytest.mark.unit
-    def test_archive_extracts_message_ids_from_list_result(
-        self, facade, mock_lister, mock_filter
-    ):
+    def test_archive_extracts_message_ids_from_list_result(self, facade, mock_lister, mock_filter):
         """Test that archive extracts message IDs from lister result."""
         # Lister returns list of message dicts
         mock_lister.list_messages.return_value = (
@@ -516,14 +483,10 @@ class TestArchiverFacadeOrchestration:
         )
 
         # Should extract IDs and pass to filter
-        mock_filter.filter_archived.assert_called_once_with(
-            ["msg001", "msg002"], incremental=True
-        )
+        mock_filter.filter_archived.assert_called_once_with(["msg001", "msg002"], incremental=True)
 
     @pytest.mark.unit
-    def test_archive_with_partial_failure(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_partial_failure(self, facade, mock_lister, mock_filter, mock_writer):
         """Test archive with some messages failing."""
         # Configure writer to report partial failure
         mock_writer.archive_messages.return_value = {
@@ -545,9 +508,7 @@ class TestArchiverFacadeOrchestration:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    def test_archive_with_interruption(
-        self, facade, mock_lister, mock_filter, mock_writer
-    ):
+    def test_archive_with_interruption(self, facade, mock_lister, mock_filter, mock_writer):
         """Test archive with interrupted archiving."""
         # Configure writer to report interruption
         mock_writer.archive_messages.return_value = {
@@ -605,9 +566,7 @@ class TestArchiverFacadeEdgeCases:
     @pytest.mark.unit
     def test_archive_with_none_operation_handle(self, facade):
         """Test archive with operation=None (default)."""
-        with patch.object(
-            facade._lister, "list_messages", return_value=("query", [])
-        ):
+        with patch.object(facade._lister, "list_messages", return_value=("query", [])):
             result = facade.archive(
                 age_threshold="3y",
                 output_file="/tmp/archive.mbox",
@@ -625,9 +584,7 @@ class TestArchiverFacadeEdgeCases:
             "list_messages",
             return_value=("query", [{"id": "msg001"}]),
         ):
-            query, messages = facade.list_messages_for_archive(
-                "3y", progress_callback=None
-            )
+            query, messages = facade.list_messages_for_archive("3y", progress_callback=None)
 
         # Should pass None callback to lister
         assert query is not None
@@ -654,12 +611,8 @@ class TestArchiverFacadeEdgeCases:
     @pytest.mark.unit
     def test_filter_with_empty_list(self, facade):
         """Test filter_already_archived with empty message list."""
-        with patch.object(
-            facade._filter, "filter_archived", return_value=([], 0)
-        ):
-            filtered, skipped = facade.filter_already_archived(
-                [], incremental=True
-            )
+        with patch.object(facade._filter, "filter_archived", return_value=([], 0)):
+            filtered, skipped = facade.filter_already_archived([], incremental=True)
 
         # Should return empty results
         assert filtered == []

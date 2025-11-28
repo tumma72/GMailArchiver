@@ -11,7 +11,8 @@ from ._version import __version__
 from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
-from .core.archiver_legacy import GmailArchiver
+from .core.archiver import ArchiverFacade
+from .core.archiver_legacy import GmailArchiver  # Keep for retry-delete command temporarily
 from .core.deduplicator import MessageDeduplicator
 from .core.validator import ArchiveValidator
 from .data.migration import MigrationManager
@@ -122,7 +123,11 @@ def archive(
     # Phase 1: Authentication
     gmail_client = ctx.authenticate_gmail(credentials=credentials)
     assert gmail_client is not None  # required=True ensures this
-    archiver = GmailArchiver(gmail_client, output=out)
+    archiver = ArchiverFacade(
+        gmail_client=gmail_client,
+        state_db_path="archive_state.db",
+        output_manager=out,
+    )
 
     # Phase 2: Discovery and Archiving (multi-task sequence)
     message_list: list[dict[str, str]] = []
@@ -269,7 +274,9 @@ def archive(
     with ArchiveState() as state:
         archived_ids = state.get_archived_message_ids_for_file(actual_file)
 
-    validation_results = archiver.validate_archive(actual_file, archived_ids)
+    # Validate using ArchiveValidator directly
+    validator = ArchiveValidator(actual_file, "archive_state.db", output=out)
+    validation_results = validator.validate_comprehensive(archived_ids)
 
     # Show validation report using new panel method
     out.show_validation_report(validation_results, title="Archive Validation")
@@ -303,7 +310,7 @@ def archive(
 
             # Perform permanent deletion
             with out.progress_context("Permanently deleting messages", total=None):
-                archiver.delete_archived_messages(list(archived_ids), permanent=True)
+                gmail_client.delete_messages_permanent(list(archived_ids))
             ctx.success("Messages permanently deleted")
 
         elif trash:
@@ -315,7 +322,7 @@ def archive(
                 return
 
             with out.progress_context("Moving messages to trash", total=None):
-                archiver.delete_archived_messages(list(archived_ids), permanent=False)
+                gmail_client.trash_messages(list(archived_ids))
             ctx.success("Messages moved to trash")
 
     # Phase 7: Final report

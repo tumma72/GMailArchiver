@@ -20,10 +20,12 @@ class TestMessageLister:
     def mock_gmail_client(self):
         """Create mock Gmail client."""
         client = Mock()
-        client.list_messages = Mock(return_value=[
-            {"id": "msg001", "threadId": "thread001"},
-            {"id": "msg002", "threadId": "thread001"},
-        ])
+        client.list_messages = Mock(
+            return_value=[
+                {"id": "msg001", "threadId": "thread001"},
+                {"id": "msg002", "threadId": "thread001"},
+            ]
+        )
         return client
 
     @pytest.fixture

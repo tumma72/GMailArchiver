@@ -35,8 +35,8 @@ class TestGmailArchiverInit:
 class TestArchive:
     """Tests for archive method."""
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_no_messages_found(
         self, mock_print: Mock, mock_progress: Mock, mock_db: Mock
@@ -52,8 +52,8 @@ class TestArchive:
         assert result["messages_archived"] == 0
         assert result["archive_file"] is None
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_all_already_archived(
         self, mock_print: Mock, mock_progress: Mock, mock_db_class: Mock
@@ -80,8 +80,8 @@ class TestArchive:
         assert result["messages_archived"] == 0
         assert result["skipped"] == 2
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_dry_run(self, mock_print: Mock, mock_progress: Mock, mock_db: Mock) -> None:
         """Test dry run mode."""
@@ -96,8 +96,8 @@ class TestArchive:
         # Should not actually archive in dry run
         assert "messages_archived" not in result
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_dry_run_with_compression(
         self, mock_print: Mock, mock_progress: Mock, mock_db: Mock
@@ -230,7 +230,7 @@ class TestCompressArchive:
 class TestValidateArchive:
     """Tests for validate_archive method."""
 
-    @patch("gmailarchiver.core.archiver.ArchiveValidator")
+    @patch("gmailarchiver.core.archiver_legacy.ArchiveValidator")
     def test_validate_archive_success(self, mock_validator_class: Mock) -> None:
         """Test successful archive validation returns results dict."""
         mock_client = Mock()
@@ -249,7 +249,7 @@ class TestValidateArchive:
         # report() is no longer called - caller handles display via OutputManager
         mock_validator.report.assert_not_called()
 
-    @patch("gmailarchiver.core.archiver.ArchiveValidator")
+    @patch("gmailarchiver.core.archiver_legacy.ArchiveValidator")
     def test_validate_archive_failure(self, mock_validator_class: Mock) -> None:
         """Test failed archive validation returns results dict with errors."""
         mock_client = Mock()
@@ -272,9 +272,9 @@ class TestValidateArchive:
 class TestArchiveMessagesIntegration:
     """Tests for _archive_messages method and full archive flow."""
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_works(
         self,
@@ -328,9 +328,9 @@ class TestArchiveMessagesIntegration:
             assert result["messages_archived"] == 1
             assert result["messages_failed"] == 0
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_with_compression_workflow(
         self,
@@ -374,9 +374,9 @@ class TestArchiveMessagesIntegration:
 
             assert result["messages_archived"] == 1
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_with_orphaned_lock_file(
         self,
@@ -423,9 +423,9 @@ class TestArchiveMessagesIntegration:
 
             assert result["messages_archived"] == 1
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_records_state(
         self,
@@ -470,9 +470,9 @@ class TestArchiveMessagesIntegration:
             # Verify HybridStorage.archive_message was called (which records in DB)
             mock_storage.archive_message.assert_called_once()
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_marks_messages_in_state(
         self,
@@ -663,7 +663,7 @@ class TestExtractBodyPreview:
 class TestAtomicOperations:
     """Tests for atomic mbox + database operations using HybridStorage."""
 
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_atomic_archive_both_succeed(self, mock_print: Mock, mock_progress_class: Mock) -> None:
         """Test that successful archiving commits both mbox and database."""
@@ -713,7 +713,7 @@ class TestAtomicOperations:
             assert location[2] > 0, "Length should be positive"
             db.close()
 
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_atomic_rollback_on_database_failure(
         self, mock_print: Mock, mock_progress_class: Mock
@@ -791,7 +791,7 @@ class TestAtomicOperations:
 
             db.close()
 
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_automatic_validation_after_archiving(
         self, mock_print: Mock, mock_progress_class: Mock
@@ -902,7 +902,7 @@ class TestAtomicOperations:
 class TestV11OffsetTracking:
     """Tests for v1.1 offset tracking during archiving."""
 
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_with_v1_1_schema_tracks_offsets(
         self, mock_print: Mock, mock_progress_class: Mock
@@ -1061,8 +1061,8 @@ class TestV11OffsetTracking:
 class TestExceptionHandling:
     """Tests for exception handling in archiver."""
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_incremental_falls_back_on_dbmanager_failure(
         self, mock_print: Mock, mock_progress: Mock, mock_dbmanager_class: Mock
@@ -1097,8 +1097,8 @@ class TestExceptionHandling:
             # When DBManager fails, archived_ids becomes empty set
             assert result["messages_to_archive"] == 2
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_incremental_with_nonexistent_database(
         self, mock_print: Mock, mock_progress: Mock, mock_db_class: Mock
@@ -1133,9 +1133,9 @@ class TestExceptionHandling:
             # Should not skip any messages (no archived_ids)
             assert result["messages_to_archive"] == 1
 
-    @patch("gmailarchiver.core.archiver.ArchiveState")
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.Progress")
+    @patch("gmailarchiver.core.archiver_legacy.ArchiveState")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.Progress")
     @patch("builtins.print")
     def test_archive_messages_falls_back_on_dbmanager_init_failure(
         self,
@@ -1265,8 +1265,8 @@ class TestGmailArchiverWithOutput:
 class TestArchiveWithOperationHandle:
     """Tests for archive() with OperationHandle integration."""
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
     def test_archive_with_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
@@ -1342,8 +1342,8 @@ class TestArchiveWithOperationHandle:
                 "Should update progress for each message"
             )
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.HybridStorage")
+    @patch("gmailarchiver.core.archiver_legacy.DBManager")
+    @patch("gmailarchiver.core.archiver_legacy.HybridStorage")
     def test_archive_without_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
