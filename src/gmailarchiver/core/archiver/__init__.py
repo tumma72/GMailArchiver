@@ -6,6 +6,6 @@ Public API is exposed through ArchiverFacade.
 Internal modules (prefixed with _) should not be imported directly.
 """
 
-# Public API will be exported here once facade is created
-# from .facade import ArchiverFacade
-# __all__ = ["ArchiverFacade"]
+from .facade import ArchiverFacade
+
+__all__ = ["ArchiverFacade"]
