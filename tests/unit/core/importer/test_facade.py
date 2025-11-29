@@ -186,9 +186,7 @@ class TestImporterFacadeImportMultiple:
 
     @patch("gmailarchiver.core.importer.facade.FileScanner")
     @patch("gmailarchiver.core.importer.facade.ImporterFacade.import_archive")
-    def test_import_multiple_success(
-        self, mock_import: Mock, mock_scanner_class: Mock
-    ) -> None:
+    def test_import_multiple_success(self, mock_import: Mock, mock_scanner_class: Mock) -> None:
         """Test importing multiple archives."""
         mock_scanner = Mock()
         mock_scanner.scan_pattern.return_value = [

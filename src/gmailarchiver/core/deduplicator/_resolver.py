@@ -22,9 +22,7 @@ class DuplicateResolver:
 
     VALID_STRATEGIES = ["newest", "largest", "first"]
 
-    def resolve(
-        self, messages: list[MessageInfo], strategy: str = "newest"
-    ) -> Resolution:
+    def resolve(self, messages: list[MessageInfo], strategy: str = "newest") -> Resolution:
         """
         Resolve which message to keep based on strategy.
 
@@ -40,16 +38,13 @@ class DuplicateResolver:
         """
         if strategy not in self.VALID_STRATEGIES:
             raise ValueError(
-                f"Invalid strategy: {strategy}. "
-                f"Must be one of: {', '.join(self.VALID_STRATEGIES)}"
+                f"Invalid strategy: {strategy}. Must be one of: {', '.join(self.VALID_STRATEGIES)}"
             )
 
         # Select message to keep based on strategy
         if strategy == "newest":
             # Sort by archived_timestamp descending (newest first)
-            sorted_msgs = sorted(
-                messages, key=lambda m: m.archived_timestamp, reverse=True
-            )
+            sorted_msgs = sorted(messages, key=lambda m: m.archived_timestamp, reverse=True)
             keep_msg = sorted_msgs[0]
         elif strategy == "largest":
             # Sort by size_bytes descending

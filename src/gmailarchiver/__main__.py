@@ -524,7 +524,7 @@ def retry_delete_cmd(
         assert client is not None  # required=True ensures this
 
         # Create archiver (for deletion functionality)
-        archiver = ArchiverFacade(client, state_db, output=ctx.output)
+        archiver = ArchiverFacade(client, state_db, output_manager=ctx.output)
 
         # 6. Delete messages with appropriate confirmation
         if permanent:

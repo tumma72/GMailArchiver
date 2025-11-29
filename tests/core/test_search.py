@@ -181,9 +181,6 @@ def v11_db(v11_db_factory) -> str:
     return db_path
 
 
-
-pytestmark = pytest.mark.skip(reason="Needs facade refactoring after legacy removal")
-
 class TestSearchEngineInit:
     """Tests for SearchEngine initialization."""
 

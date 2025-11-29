@@ -244,12 +244,8 @@ class TestMboxReaderExtractMetadata:
         msg.set_content("Body")
 
         reader = MboxReader()
-        metadata1 = reader.extract_metadata(
-            msg, "/tmp/test.mbox", 0, 100, "default", None
-        )
-        metadata2 = reader.extract_metadata(
-            msg, "/tmp/test.mbox", 0, 100, "default", None
-        )
+        metadata1 = reader.extract_metadata(msg, "/tmp/test.mbox", 0, 100, "default", None)
+        metadata2 = reader.extract_metadata(msg, "/tmp/test.mbox", 0, 100, "default", None)
 
         assert metadata1.checksum == metadata2.checksum
 
@@ -282,9 +278,7 @@ class TestMboxReaderReadMessages:
             mock_stat.return_value.st_size = 250
 
             reader = MboxReader()
-            messages = list(
-                reader.read_messages(Path("/tmp/test.mbox"), "/tmp/test.mbox")
-            )
+            messages = list(reader.read_messages(Path("/tmp/test.mbox"), "/tmp/test.mbox"))
 
         assert len(messages) == 2
 

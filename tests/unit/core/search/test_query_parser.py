@@ -1,6 +1,5 @@
 """Tests for query parser module (TDD)."""
 
-
 from gmailarchiver.core.search._parser import QueryParams, QueryParser
 
 
@@ -101,9 +100,7 @@ class TestQueryParams:
 
     def test_has_fulltext_terms(self) -> None:
         """Test detecting fulltext terms."""
-        params = QueryParams(
-            fulltext_terms=["test"], fts_query="test", original_query="test"
-        )
+        params = QueryParams(fulltext_terms=["test"], fts_query="test", original_query="test")
         assert params.has_fulltext
 
         params_empty = QueryParams(fulltext_terms=[], fts_query="", original_query="")

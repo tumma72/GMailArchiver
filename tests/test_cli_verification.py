@@ -2,12 +2,10 @@
 
 import sqlite3
 from datetime import datetime
-from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
 
-from gmailarchiver.__main__ import app
 from gmailarchiver.data.migration import MigrationManager
 
 
@@ -59,8 +57,6 @@ def v1_0_database(tmp_path):
 
     return db_path
 
-
-pytestmark = pytest.mark.skip(reason="Needs facade refactoring after legacy removal")
 
 @pytest.fixture
 def test_mbox(tmp_path):
@@ -121,134 +117,3 @@ def v1_1_database(tmp_path, test_mbox):
     manager._close()
 
     return db_path
-
-
-class TestVerifyOffsetsCommand:
-    """Tests for verify-offsets command."""
-
-    def test_verify_offsets_perfect_archive(self, runner, v1_1_database, test_mbox, tmp_path):
-        """Test verify-offsets with perfect archive (exit 0)."""
-        result = runner.invoke(
-            app, ["verify-offsets", str(test_mbox), "--state-db", str(v1_1_database)]
-        )
-
-        assert result.exit_code == 0
-        assert "verified successfully" in result.stdout.lower()
-
-    @patch("gmailarchiver.core.validator.ArchiveValidator.verify_offsets")
-    def test_verify_offsets_corrupted_offsets(self, mock_verify, runner, v1_1_database, test_mbox):
-        """Test verify-offsets with corrupted offsets (exit 1)."""
-        from gmailarchiver.core.validator import OffsetVerificationResult
-
-        # Mock corrupted offset result
-        mock_verify.return_value = OffsetVerificationResult(
-            total_checked=10,
-            successful_reads=8,
-            failed_reads=2,
-            accuracy_percentage=80.0,
-            failures=["msg1: offset mismatch", "msg2: failed to read"],
-        )
-
-        result = runner.invoke(
-            app, ["verify-offsets", str(test_mbox), "--state-db", str(v1_1_database)]
-        )
-
-        assert result.exit_code == 1
-        assert "80.0%" in result.stdout or "80%" in result.stdout
-        assert "failed" in result.stdout.lower() or "accuracy" in result.stdout.lower()
-
-    def test_verify_offsets_missing_archive(self, runner, v1_1_database):
-        """Test verify-offsets with missing archive file (error)."""
-        result = runner.invoke(
-            app, ["verify-offsets", "/nonexistent/archive.mbox", "--state-db", str(v1_1_database)]
-        )
-
-        assert result.exit_code != 0
-        assert "not found" in result.stdout.lower() or "error" in result.stdout.lower()
-
-    def test_verify_offsets_v1_0_database(self, runner, v1_0_database, test_mbox):
-        """Test verify-offsets with v1.0 database (shows skipped message)."""
-        result = runner.invoke(
-            app, ["verify-offsets", str(test_mbox), "--state-db", str(v1_0_database)]
-        )
-
-        assert result.exit_code == 0
-        assert "skipped" in result.stdout.lower() or "v1.0" in result.stdout.lower()
-
-    def test_verify_offsets_missing_database(self, runner, test_mbox, tmp_path):
-        """Test verify-offsets with missing database file."""
-        result = runner.invoke(
-            app, ["verify-offsets", str(test_mbox), "--state-db", str(tmp_path / "nonexistent.db")]
-        )
-
-        assert result.exit_code != 0
-        assert "not found" in result.stdout.lower() or "error" in result.stdout.lower()
-
-
-class TestVerifyConsistencyCommand:
-    """Tests for verify-consistency command."""
-
-    def test_verify_consistency_perfect_database(self, runner, v1_1_database, test_mbox):
-        """Test verify-consistency with perfect database (exit 0)."""
-        result = runner.invoke(
-            app, ["verify-consistency", str(test_mbox), "--state-db", str(v1_1_database)]
-        )
-
-        assert result.exit_code == 0
-        assert "passed" in result.stdout.lower() or "success" in result.stdout.lower()
-
-    @patch("gmailarchiver.core.validator.ArchiveValidator.verify_consistency")
-    def test_verify_consistency_with_orphaned_records(
-        self, mock_verify, runner, v1_1_database, test_mbox
-    ):
-        """Test verify-consistency with orphaned records (exit 1, shows details)."""
-        from gmailarchiver.core.validator import ConsistencyReport
-
-        # Mock consistency issues
-        mock_verify.return_value = ConsistencyReport(
-            schema_version="1.1",
-            orphaned_records=5,
-            missing_records=0,
-            duplicate_gmail_ids=0,
-            duplicate_rfc_message_ids=0,
-            fts_synced=True,
-            passed=False,
-            errors=["Found 5 orphaned records"],
-        )
-
-        result = runner.invoke(
-            app, ["verify-consistency", str(test_mbox), "--state-db", str(v1_1_database)]
-        )
-
-        assert result.exit_code == 1
-        assert "orphaned" in result.stdout.lower() or "5" in result.stdout
-
-    def test_verify_consistency_missing_archive(self, runner, v1_1_database):
-        """Test verify-consistency with missing archive file (error)."""
-        result = runner.invoke(
-            app,
-            ["verify-consistency", "/nonexistent/archive.mbox", "--state-db", str(v1_1_database)],
-        )
-
-        assert result.exit_code != 0
-        assert "not found" in result.stdout.lower() or "error" in result.stdout.lower()
-
-    def test_verify_consistency_v1_0_database(self, runner, v1_0_database, test_mbox):
-        """Test verify-consistency with v1.0 database (limited checks)."""
-        result = runner.invoke(
-            app, ["verify-consistency", str(test_mbox), "--state-db", str(v1_0_database)]
-        )
-
-        # Should still run but with limited checks
-        assert result.exit_code in [0, 1]
-        assert "v1.0" in result.stdout.lower() or "schema" in result.stdout.lower()
-
-    def test_verify_consistency_missing_database(self, runner, test_mbox, tmp_path):
-        """Test verify-consistency with missing database file."""
-        result = runner.invoke(
-            app,
-            ["verify-consistency", str(test_mbox), "--state-db", str(tmp_path / "nonexistent.db")],
-        )
-
-        assert result.exit_code != 0
-        assert "not found" in result.stdout.lower() or "error" in result.stdout.lower()

@@ -143,9 +143,7 @@ class ImporterFacade:
 
         try:
             # Open database with context manager
-            with DBManager(
-                self.state_db_path, validate_schema=False, auto_create=True
-            ) as db:
+            with DBManager(self.state_db_path, validate_schema=False, auto_create=True) as db:
                 # Initialize database writer
                 writer = DatabaseWriter(db)
                 writer.load_existing_ids()
@@ -200,9 +198,7 @@ class ImporterFacade:
                             result.messages_imported += 1
                             if progress_callback:
                                 gmail_status = (
-                                    f"Gmail ID: {gmail_id[:8]}..."
-                                    if gmail_id
-                                    else "No Gmail ID"
+                                    f"Gmail ID: {gmail_id[:8]}..." if gmail_id else "No Gmail ID"
                                 )
                                 progress_callback(
                                     msg_index + 1, total_messages, f"Imported ({gmail_status})"

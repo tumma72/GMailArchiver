@@ -131,9 +131,7 @@ class MboxReader:
 
         return None
 
-    def extract_body_preview(
-        self, msg: email.message.Message, max_chars: int = 1000
-    ) -> str:
+    def extract_body_preview(self, msg: email.message.Message, max_chars: int = 1000) -> str:
         """Extract body preview from email message.
 
         Args:
@@ -209,9 +207,7 @@ class MboxReader:
             account_id=account_id,
         )
 
-    def read_messages(
-        self, mbox_path: Path, archive_path: str
-    ) -> Iterator[MboxMessage]:
+    def read_messages(self, mbox_path: Path, archive_path: str) -> Iterator[MboxMessage]:
         """Read messages from mbox file with offset tracking.
 
         Args:

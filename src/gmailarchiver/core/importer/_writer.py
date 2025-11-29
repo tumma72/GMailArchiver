@@ -64,9 +64,7 @@ class DatabaseWriter:
         """
         return rfc_message_id in self.existing_ids or rfc_message_id in self.session_ids
 
-    def write_message(
-        self, metadata: MessageMetadata, skip_duplicates: bool
-    ) -> WriteResult:
+    def write_message(self, metadata: MessageMetadata, skip_duplicates: bool) -> WriteResult:
         """Write message metadata to database.
 
         Args:
@@ -130,9 +128,7 @@ class DatabaseWriter:
             self.db.rollback()
             return WriteResult.FAILED
 
-    def record_archive_run(
-        self, archive_file: str, messages_count: int, account_id: str
-    ) -> None:
+    def record_archive_run(self, archive_file: str, messages_count: int, account_id: str) -> None:
         """Record import operation in archive_runs table.
 
         Args:

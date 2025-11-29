@@ -20,9 +20,7 @@ class DuplicateRemover:
         """
         self.conn = sqlite3.connect(db_path)
 
-    def remove_messages(
-        self, messages: list[MessageInfo], dry_run: bool = True
-    ) -> int:
+    def remove_messages(self, messages: list[MessageInfo], dry_run: bool = True) -> int:
         """
         Remove messages from database.
 

@@ -105,8 +105,7 @@ class DeduplicatorFacade:
                 return "1.1"
 
             cursor = conn.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='archived_messages'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
             )
             if cursor.fetchone():
                 return "1.0"
@@ -132,9 +131,7 @@ class DeduplicatorFacade:
         """
         return self._scanner.find_duplicates()
 
-    def generate_report(
-        self, duplicates: dict[str, list[MessageInfo]]
-    ) -> DeduplicationReport:
+    def generate_report(self, duplicates: dict[str, list[MessageInfo]]) -> DeduplicationReport:
         """
         Generate report showing deduplication analysis.
 

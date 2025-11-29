@@ -283,7 +283,9 @@ class ValidatorFacade:
             )
 
         conn = sqlite3.connect(str(self.state_db_path))
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        )
         if not cursor.fetchone():
             conn.close()
             return OffsetVerificationResult(
@@ -296,12 +298,15 @@ class ValidatorFacade:
             )
 
         # Get messages with offsets from database
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length
             FROM messages
             WHERE archive_file = ?
             ORDER BY mbox_offset
-        """, (str(self.archive_path),))
+        """,
+            (str(self.archive_path),),
+        )
 
         messages = cursor.fetchall()
         conn.close()
@@ -325,17 +330,30 @@ class ValidatorFacade:
 
         try:
             # Open mbox and verify each offset
-            with open(mbox_path, 'rb') as f:
+            with open(mbox_path, "rb") as f:
                 for gmail_id, rfc_message_id, offset, length in messages:
                     try:
                         f.seek(offset)
                         data = f.read(length)
+
+                        # Check if we could read the expected length
+                        if len(data) != length:
+                            failures.append(
+                                f"Message {gmail_id}: Length mismatch "
+                                f"(expected {length}, read {len(data)})"
+                            )
+                            failed += 1
+                            continue
+
                         msg = mailbox.mboxMessage(data)
 
                         # Verify message ID matches
-                        actual_id = msg.get('Message-ID', '').strip()
+                        actual_id = msg.get("Message-ID", "").strip()
                         if actual_id != rfc_message_id:
-                            failures.append(f"Message {gmail_id}: ID mismatch (expected {rfc_message_id}, got {actual_id})")
+                            failures.append(
+                                f"Message {gmail_id}: ID mismatch "
+                                f"(expected {rfc_message_id}, got {actual_id})"
+                            )
                             failed += 1
                         else:
                             successful += 1
@@ -382,24 +400,84 @@ class ValidatorFacade:
         errors = []
 
         # Check schema version
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        )
         has_v11 = cursor.fetchone() is not None
+
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+        )
+        has_v10 = cursor.fetchone() is not None
+
+        if not has_v11 and not has_v10:
+            # No recognized schema
+            conn.close()
+            return ConsistencyReport(
+                schema_version="none",
+                orphaned_records=0,
+                missing_records=0,
+                duplicate_gmail_ids=0,
+                duplicate_rfc_message_ids=0,
+                fts_synced=True,
+                passed=False,
+                errors=[
+                    "Database has no recognized schema (no messages or archived_messages table)"
+                ],
+            )
+
         schema_version = "v1.1" if has_v11 else "v1.0"
 
-        # Count orphaned records (messages referencing non-existent archive files)
-        cursor = conn.execute("""
-            SELECT COUNT(*) FROM messages
-            WHERE archive_file NOT IN (
-                SELECT DISTINCT archive_file FROM messages WHERE archive_file = ?
+        # Count orphaned and missing records by comparing DB vs mbox
+        orphaned_records = 0
+        missing_records = 0
+
+        if has_v11:
+            # Get Message-IDs from database
+            table_name = "messages"
+            cursor = conn.execute(
+                f"""
+                SELECT rfc_message_id FROM {table_name}
+                WHERE archive_file = ?
+            """,
+                (str(self.archive_path),),
             )
-        """, (str(self.archive_path),))
-        orphaned_records = 0  # Simplified - full implementation would check file existence
+            db_message_ids = set(row[0] for row in cursor.fetchall())
+
+            # Get Message-IDs from mbox file
+            mbox_message_ids = set()
+            mbox_path, is_temp = self._decompressor.get_mbox_path(self.archive_path)
+            try:
+                import mailbox
+
+                mbox = mailbox.mbox(str(mbox_path))
+                for msg in mbox:
+                    msg_id = msg.get("Message-ID", "").strip()
+                    if msg_id:
+                        mbox_message_ids.add(msg_id)
+                mbox.close()
+            except Exception as e:
+                errors.append(f"Failed to read mbox for consistency check: {e}")
+            finally:
+                if is_temp:
+                    self._decompressor.cleanup_temp_file(mbox_path, is_temp)
+
+            # Orphaned: in DB but not in mbox
+            orphaned_records = len(db_message_ids - mbox_message_ids)
+            # Missing: in mbox but not in DB
+            missing_records = len(mbox_message_ids - db_message_ids)
+
+            if orphaned_records > 0:
+                errors.append(f"Found {orphaned_records} orphaned database records (not in mbox)")
+            if missing_records > 0:
+                errors.append(f"Found {missing_records} messages in mbox not tracked in database")
 
         # Check for duplicate Gmail IDs
-        cursor = conn.execute("""
+        table_name = "messages" if has_v11 else "archived_messages"
+        cursor = conn.execute(f"""
             SELECT COUNT(*) FROM (
                 SELECT gmail_id, COUNT(*) as cnt
-                FROM messages
+                FROM {table_name}
                 GROUP BY gmail_id
                 HAVING cnt > 1
             )
@@ -427,9 +505,11 @@ class ValidatorFacade:
                 fts_count = cursor.fetchone()[0]
                 cursor = conn.execute("SELECT COUNT(*) FROM messages")
                 msg_count = cursor.fetchone()[0]
-                fts_synced = (fts_count == msg_count)
+                fts_synced = fts_count == msg_count
                 if not fts_synced:
-                    errors.append(f"FTS index out of sync: {fts_count} FTS rows vs {msg_count} message rows")
+                    errors.append(
+                        f"FTS index out of sync: {fts_count} FTS rows vs {msg_count} message rows"
+                    )
             except sqlite3.OperationalError:
                 fts_synced = False
                 errors.append("FTS table not found or corrupted")
@@ -452,7 +532,7 @@ class ValidatorFacade:
         return ConsistencyReport(
             schema_version=schema_version,
             orphaned_records=orphaned_records,
-            missing_records=0,  # Placeholder
+            missing_records=missing_records,
             duplicate_gmail_ids=duplicate_gmail_ids,
             duplicate_rfc_message_ids=duplicate_rfc_ids,
             fts_synced=fts_synced,

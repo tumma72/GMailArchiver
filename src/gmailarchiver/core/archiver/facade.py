@@ -229,3 +229,18 @@ class ArchiverFacade:
             "skipped_count": skipped_count,
             **result,
         }
+
+    def delete_archived_messages(self, message_ids: list[str], permanent: bool = False) -> int:
+        """Delete or trash archived messages from Gmail.
+
+        Args:
+            message_ids: List of Gmail message IDs to delete
+            permanent: If True, permanently delete; if False, move to trash
+
+        Returns:
+            Number of messages deleted/trashed
+        """
+        if permanent:
+            return self.gmail_client.delete_messages_permanent(message_ids)
+        else:
+            return self.gmail_client.trash_messages(message_ids)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ._executor import SearchExecutor
 from ._parser import QueryParser
-from ._types import MessageSearchResult, SearchResults
+from ._types import SearchResults
 
 
 class SearchFacade:
@@ -102,9 +102,7 @@ class SearchFacade:
         # Execute
         from ._parser import QueryParams
 
-        params = QueryParams(
-            fulltext_terms=[text], fts_query=fts_query, original_query=text
-        )
+        params = QueryParams(fulltext_terms=[text], fts_query=fts_query, original_query=text)
         return self._executor.execute(params, limit=limit, offset=0)
 
     def search_metadata(

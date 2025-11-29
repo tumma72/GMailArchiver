@@ -51,9 +51,7 @@ class TestArchive:
 
     @patch("gmailarchiver.core.archiver._filter.MessageFilter.filter_archived")
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_all_already_archived(
-        self, mock_list: Mock, mock_filter: Mock
-    ) -> None:
+    def test_archive_all_already_archived(self, mock_list: Mock, mock_filter: Mock) -> None:
         """Test archiving when all messages already archived."""
         mock_client = Mock()
         mock_list.return_value = (
@@ -85,9 +83,7 @@ class TestArchive:
         assert "actual_file" not in result
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_dry_run_with_compression(
-        self, mock_list: Mock
-    ) -> None:
+    def test_archive_dry_run_with_compression(self, mock_list: Mock) -> None:
         """Test dry run with compression specified."""
         mock_client = Mock()
         mock_list.return_value = ("before:2024/01/01", [{"id": "msg1", "threadId": "thread1"}])
@@ -247,12 +243,11 @@ class TestValidateArchive:
             Path(mbox_path).unlink()
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestArchiveMessagesIntegration:
     """Tests for _archive_messages method and full archive flow."""
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_works(
         self,
@@ -295,12 +290,13 @@ class TestArchiveMessagesIntegration:
 
             result = archiver.archive("3y", str(output_file), incremental=False)
 
-            assert result["messages_found"] == 1
-            assert result["messages_archived"] == 1
-            assert result["messages_failed"] == 0
+            # Facade returns different keys than legacy
+            assert result["found_count"] == 1
+            assert result["archived_count"] == 1
+            assert result["failed_count"] == 0
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_with_compression_workflow(
         self,
@@ -336,10 +332,10 @@ class TestArchiveMessagesIntegration:
 
             result = archiver.archive("3y", str(output_file), compress="gzip", incremental=False)
 
-            assert result["messages_archived"] == 1
+            assert result["archived_count"] == 1
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_with_orphaned_lock_file(
         self,
@@ -378,10 +374,10 @@ class TestArchiveMessagesIntegration:
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
             result = archiver.archive("3y", str(output_file), incremental=False)
 
-            assert result["messages_archived"] == 1
+            assert result["archived_count"] == 1
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_records_state(
         self,
@@ -420,8 +416,8 @@ class TestArchiveMessagesIntegration:
             # Verify HybridStorage.archive_message was called (which records in DB)
             mock_storage.archive_message.assert_called_once()
 
-    @patch("gmailarchiver.core.archiver.HybridStorage")
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_marks_messages_in_state(
         self,
@@ -467,7 +463,6 @@ class TestArchiveMessagesIntegration:
             assert call_args.kwargs["gmail_id"] == "msg1"
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestDeleteArchivedMessages:
     """Tests for delete_archived_messages method."""
 
@@ -498,115 +493,10 @@ class TestDeleteArchivedMessages:
         mock_client.trash_messages.assert_called_once()
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
-class TestExtractRfcMessageId:
-    """Tests for _extract_rfc_message_id method."""
-
-    def test_extract_existing_message_id(self) -> None:
-        """Test extraction of existing Message-ID header."""
-        import email
-        from email import policy
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        msg = email.message_from_string(
-            "Message-ID: <unique123@example.com>\nSubject: Test\n\nBody", policy=policy.default
-        )
-
-        result = archiver._extract_rfc_message_id(msg)
-        assert result == "<unique123@example.com>"
-
-    def test_generate_fallback_message_id(self) -> None:
-        """Test fallback Message-ID generation when missing."""
-        import email
-        from email import policy
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        msg = email.message_from_string(
-            "Subject: Test Subject\nDate: Mon, 1 Jan 2024 12:00:00 +0000\n\nBody",
-            policy=policy.default,
-        )
-
-        result = archiver._extract_rfc_message_id(msg)
-
-        # Should generate SHA256-based ID
-        assert result.startswith("<")
-        assert result.endswith("@generated>")
-        assert len(result) > 20  # SHA256 hash is long
-
-    def test_handles_empty_message_id(self) -> None:
-        """Test handling of empty Message-ID."""
-        import email
-        from email import policy
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        msg = email.message_from_string(
-            "Message-ID:   \nSubject: Test\n\nBody", policy=policy.default
-        )
-
-        result = archiver._extract_rfc_message_id(msg)
-
-        # Should generate fallback
-        assert "@generated>" in result
+# NOTE: Tests for _extract_rfc_message_id and _extract_body_preview moved to
+# tests/data/test_hybrid_storage.py since this functionality is now in HybridStorage
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
-class TestExtractBodyPreview:
-    """Tests for _extract_body_preview method."""
-
-    def test_extract_from_plain_text(self) -> None:
-        """Test extraction from plain text message."""
-        import email
-        from email import policy
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        msg = email.message_from_string(
-            "Subject: Test\n\nThis is a test message body.", policy=policy.default
-        )
-
-        result = archiver._extract_body_preview(msg, max_chars=10)
-        assert result == "This is a "
-
-    def test_extract_from_multipart(self) -> None:
-        """Test extraction from multipart message."""
-        import email
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        # Create multipart message
-        msg = email.message.EmailMessage()
-        msg["Subject"] = "Test"
-        msg.set_content("Plain text body")
-        msg.add_alternative("<html><body>HTML body</body></html>", subtype="html")
-
-        result = archiver._extract_body_preview(msg)
-        assert "Plain text body" in result
-
-    def test_max_chars_limit(self) -> None:
-        """Test that preview respects max_chars limit."""
-        import email
-        from email import policy
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        long_text = "A" * 2000
-        msg = email.message_from_string(f"Subject: Test\n\n{long_text}", policy=policy.default)
-
-        result = archiver._extract_body_preview(msg, max_chars=1000)
-        assert len(result) == 1000
-        assert result == "A" * 1000
-
-
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestAtomicOperations:
     """Tests for atomic mbox + database operations using HybridStorage."""
 
@@ -640,7 +530,7 @@ class TestAtomicOperations:
             result = archiver.archive("3y", str(mbox_path), incremental=False)
 
             # Verify both mbox and database were updated
-            assert result["messages_archived"] == 1
+            assert result["archived_count"] == 1
             assert mbox_path.exists(), "Mbox file should exist"
 
             # Verify database has the message
@@ -654,9 +544,7 @@ class TestAtomicOperations:
             db.close()
 
     @patch("builtins.print")
-    def test_atomic_rollback_on_database_failure(
-        self, mock_print: Mock
-    ) -> None:
+    def test_atomic_rollback_on_database_failure(self, mock_print: Mock) -> None:
         """Test that database failure rolls back and doesn't leave orphaned mbox entries."""
         import tempfile
         from pathlib import Path
@@ -719,15 +607,13 @@ class TestAtomicOperations:
                 result = archiver.archive("3y", str(mbox_path), incremental=False)
 
                 # Should have 1 success and 1 failure
-                assert result["messages_archived"] >= 0
-                assert result["messages_failed"] >= 0
+                assert result["archived_count"] >= 0
+                assert result["failed_count"] >= 0
 
             db.close()
 
     @patch("builtins.print")
-    def test_automatic_validation_after_archiving(
-        self, mock_print: Mock
-    ) -> None:
+    def test_automatic_validation_after_archiving(self, mock_print: Mock) -> None:
         """Test that validation runs automatically after each message is archived."""
         import tempfile
         from pathlib import Path
@@ -755,7 +641,7 @@ class TestAtomicOperations:
             archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
             result = archiver.archive("3y", str(mbox_path), incremental=False)
 
-            assert result["messages_archived"] == 1
+            assert result["archived_count"] == 1
 
             # Verify the message can be read from mbox at the stored offset
             db = DBManager(str(db_path))
@@ -825,14 +711,11 @@ class TestAtomicOperations:
         conn.close()
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestV11OffsetTracking:
     """Tests for v1.1 offset tracking during archiving."""
 
     @patch("builtins.print")
-    def test_archive_with_v1_1_schema_tracks_offsets(
-        self, mock_print: Mock
-    ) -> None:
+    def test_archive_with_v1_1_schema_tracks_offsets(self, mock_print: Mock) -> None:
         """Test that archiving with v1.1 schema captures mbox offsets."""
         import email
         import json
@@ -925,9 +808,9 @@ class TestV11OffsetTracking:
             mock_client.decode_message_raw.return_value = raw_email
             mock_client.get_messages_batch = mock_get_messages_batch
 
-            # Create archiver and archive
+            # Create archiver and archive (use public API)
             archiver = ArchiverFacade(mock_client, str(db_path))
-            archiver._archive_messages(["msg123"], str(mbox_path))
+            archiver.archive_messages(["msg123"], str(mbox_path))
 
             # Verify offset and length were captured
             conn = sqlite3.connect(str(db_path))
@@ -978,11 +861,10 @@ class TestV11OffsetTracking:
                 mbox.close()
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestExceptionHandling:
     """Tests for exception handling in archiver."""
 
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._filter.DBManager")
     @patch("builtins.print")
     def test_incremental_falls_back_on_dbmanager_failure(
         self, mock_print: Mock, mock_dbmanager_class: Mock
@@ -1015,9 +897,9 @@ class TestExceptionHandling:
 
             # Should not skip any messages (falls back to empty set)
             # When DBManager fails, archived_ids becomes empty set
-            assert result["messages_to_archive"] == 2
+            assert result["found_count"] - result["skipped_count"] == 2
 
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._filter.DBManager")
     @patch("builtins.print")
     def test_incremental_with_nonexistent_database(
         self, mock_print: Mock, mock_db_class: Mock
@@ -1050,9 +932,9 @@ class TestExceptionHandling:
             result = archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
 
             # Should not skip any messages (no archived_ids)
-            assert result["messages_to_archive"] == 1
+            assert result["found_count"] - result["skipped_count"] == 1
 
-    @patch("gmailarchiver.core.archiver.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
     @patch("builtins.print")
     def test_archive_messages_falls_back_on_dbmanager_init_failure(
         self,
@@ -1079,112 +961,20 @@ class TestExceptionHandling:
 
             archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
 
-            # Should raise RuntimeError when DBManager fails
-            with pytest.raises(RuntimeError, match="Failed to initialize database"):
-                archiver._archive_messages(["msg1"], str(mbox_path))
+            # Should raise Exception when DBManager fails (use public API)
+            with pytest.raises(Exception, match="Schema validation failed"):
+                archiver.archive_messages(["msg1"], str(mbox_path))
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
-class TestBodyPreviewExceptions:
-    """Tests for exception handling in body preview extraction."""
-
-    def test_multipart_decode_exception(self) -> None:
-        """Test that decode exceptions in multipart messages are handled."""
-        import email
-        from unittest.mock import Mock, patch
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        # Create multipart message
-        msg = email.message.EmailMessage()
-        msg["Subject"] = "Test"
-        msg.set_content("Text part")
-
-        # Patch get_payload to raise exception
-        with patch.object(email.message.EmailMessage, "get_payload") as mock_payload:
-            mock_payload.side_effect = Exception("Decode failed")
-
-            # Should handle exception and return empty string
-            result = archiver._extract_body_preview(msg)
-            assert result == ""
-
-    def test_non_multipart_decode_exception(self) -> None:
-        """Test that decode exceptions in non-multipart messages are handled."""
-        import email
-        from email import policy
-        from unittest.mock import Mock, patch
-
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        # Create simple message
-        msg_text = "Subject: Test\n\nBody content"
-        msg = email.message_from_string(msg_text, policy=policy.default)
-
-        # Patch get_payload to raise exception
-        with patch.object(type(msg), "get_payload") as mock_payload:
-            mock_payload.side_effect = Exception("Decode failed")
-
-            # Should handle exception and return empty string
-            result = archiver._extract_body_preview(msg)
-            assert result == ""
+# NOTE: Tests for body preview exceptions and _log method moved to
+# tests/data/test_hybrid_storage.py and test_no_print_statements.py respectively
 
 
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
-class TestArchiverFacadeWithOutput:
-    """Tests for ArchiverFacade with OutputManager integration."""
-
-    def test_init_with_output_manager(self) -> None:
-        """Test initialization with OutputManager."""
-        from gmailarchiver.cli.output import OutputManager
-
-        mock_client = Mock()
-        output = OutputManager()
-
-        archiver = ArchiverFacade(mock_client, output=output)
-
-        assert archiver.output is output
-
-    def test_init_without_output_manager(self) -> None:
-        """Test initialization without OutputManager (backward compat)."""
-        mock_client = Mock()
-
-        archiver = ArchiverFacade(mock_client)
-
-        assert archiver.output is None
-
-    def test_log_helper_with_output(self) -> None:
-        """Test _log() helper uses OutputManager when available."""
-
-        from gmailarchiver.cli.output import OutputManager
-
-        mock_client = Mock()
-        output = OutputManager()
-
-        archiver = ArchiverFacade(mock_client, output=output)
-
-        # Capture console output
-        with patch.object(output, "info") as mock_info:
-            archiver._log("Test message")
-            mock_info.assert_called_once_with("Test message")
-
-    def test_log_helper_without_output(self) -> None:
-        """Test _log() helper falls back to print() when no OutputManager."""
-        mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
-
-        with patch("builtins.print") as mock_print:
-            archiver._log("Test message")
-            mock_print.assert_called_once_with("Test message")
-
-
-@pytest.mark.skip(reason="Tests private implementation - needs refactoring for facade API")
 class TestArchiveWithOperationHandle:
     """Tests for archive() with OperationHandle integration."""
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     def test_archive_with_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
@@ -1260,8 +1050,8 @@ class TestArchiveWithOperationHandle:
                 "Should update progress for each message"
             )
 
-    @patch("gmailarchiver.core.archiver.DBManager")
-    @patch("gmailarchiver.core.archiver.HybridStorage")
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     def test_archive_without_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
@@ -1308,4 +1098,4 @@ class TestArchiveWithOperationHandle:
             )
 
             # Should complete successfully
-            assert result["messages_archived"] == 1
+            assert result["archived_count"] == 1

@@ -6,8 +6,8 @@ Internal module - use SearchFacade instead.
 import sqlite3
 import time
 
-from ._types import MessageSearchResult, SearchResults
 from ._parser import QueryParams
+from ._types import MessageSearchResult, SearchResults
 
 
 class SearchExecutor:
@@ -22,13 +22,22 @@ class SearchExecutor:
 
         Args:
             db_path: Path to SQLite database
+
+        Raises:
+            ValueError: If database schema is missing required tables
         """
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
 
-    def execute(
-        self, params: QueryParams, limit: int = 100, offset: int = 0
-    ) -> SearchResults:
+        # Validate database has required tables
+        cursor = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+        )
+        if not cursor.fetchone():
+            self.conn.close()
+            raise ValueError(f"Database schema error: missing 'messages' table in {db_path}")
+
+    def execute(self, params: QueryParams, limit: int = 100, offset: int = 0) -> SearchResults:
         """
         Execute search query based on parsed parameters.
 
@@ -91,9 +100,7 @@ class SearchExecutor:
             return self._build_results(rows)
         except sqlite3.OperationalError:
             # Invalid FTS query - return empty results
-            return SearchResults(
-                total_results=0, results=[], query=fts_query, execution_time_ms=0
-            )
+            return SearchResults(total_results=0, results=[], query=fts_query, execution_time_ms=0)
 
     def _search_metadata(self, params: QueryParams, limit: int) -> SearchResults:
         """
@@ -147,9 +154,7 @@ class SearchExecutor:
         rows = cursor.fetchall()
         return self._build_results(rows, include_relevance=False)
 
-    def _search_hybrid(
-        self, params: QueryParams, limit: int, offset: int
-    ) -> SearchResults:
+    def _search_hybrid(self, params: QueryParams, limit: int, offset: int) -> SearchResults:
         """
         Execute hybrid FTS5 + metadata search.
 
