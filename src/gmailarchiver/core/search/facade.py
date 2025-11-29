@@ -5,9 +5,9 @@ Coordinates query parsing and execution for Gmail-style searches.
 
 from pathlib import Path
 
-from ..search_legacy import SearchResults
 from ._executor import SearchExecutor
 from ._parser import QueryParser
+from ._types import MessageSearchResult, SearchResults
 
 
 class SearchFacade:

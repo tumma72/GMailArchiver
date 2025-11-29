@@ -1,6 +1,5 @@
 """Tests for query parser module (TDD)."""
 
-import pytest
 
 from gmailarchiver.core.search._parser import QueryParams, QueryParser
 

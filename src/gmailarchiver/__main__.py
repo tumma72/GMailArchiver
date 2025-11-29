@@ -12,7 +12,6 @@ from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
 from .core.archiver import ArchiverFacade
-from .core.archiver_legacy import GmailArchiver  # Keep for retry-delete command temporarily
 from .core.compressor.facade import ArchiveCompressor
 from .core.consolidator.facade import ArchiveConsolidator
 from .core.deduplicator.facade import DeduplicatorFacade
@@ -525,7 +524,7 @@ def retry_delete_cmd(
         assert client is not None  # required=True ensures this
 
         # Create archiver (for deletion functionality)
-        archiver = GmailArchiver(client, state_db, output=ctx.output)
+        archiver = ArchiverFacade(client, state_db, output=ctx.output)
 
         # 6. Delete messages with appropriate confirmation
         if permanent:
@@ -1297,11 +1296,11 @@ def verify_offsets_cmd(
         )
 
     # Create validator and run verification
-    # Note: Using legacy ArchiveValidator as verify_offsets is not yet in facade
+    # Note: Using legacy ValidatorFacade as verify_offsets is not yet in facade
     try:
-        from .core.validator_legacy import ArchiveValidator
+        from .core.validator import ValidatorFacade
 
-        validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+        validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
         result = None
 
         with ctx.ui.task_sequence() as seq:
@@ -1399,11 +1398,11 @@ def verify_consistency_cmd(
         )
 
     # Create validator and run consistency check
-    # Note: Using legacy ArchiveValidator as verify_consistency is not yet in facade
+    # Note: Using legacy ValidatorFacade as verify_consistency is not yet in facade
     try:
-        from .core.validator_legacy import ArchiveValidator
+        from .core.validator import ValidatorFacade
 
-        validator = ArchiveValidator(archive_file, state_db, output=ctx.output)
+        validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
 
         with ctx.ui.task_sequence() as seq:
             with seq.task("Running consistency checks") as t:
@@ -2765,9 +2764,9 @@ def check(
                     db.close()
 
                     if Path(archive_file).exists():
-                        from .core.validator_legacy import ArchiveValidator
+                        from .core.validator import ValidatorFacade
 
-                        validator = ArchiveValidator(archive_file, state_db)
+                        validator = ValidatorFacade(archive_file, state_db)
                         report = validator.verify_consistency()
                         check_results["database_consistency"]["checked"] = True
                         check_results["database_consistency"]["report"] = report
@@ -2800,10 +2799,10 @@ def check(
                     db.close()
 
                     if row and Path(row[0]).exists():
-                        from .core.validator_legacy import ArchiveValidator
+                        from .core.validator import ValidatorFacade
 
                         archive_file = row[0]
-                        validator = ArchiveValidator(archive_file, state_db)
+                        validator = ValidatorFacade(archive_file, state_db)
                         result = validator.verify_offsets()
 
                         check_results["offset_accuracy"]["checked"] = True

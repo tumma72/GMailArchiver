@@ -65,7 +65,9 @@ class TestDuplicateRemover:
 
         # Verify messages still exist
         conn = sqlite3.connect(str(test_db))
-        cursor = conn.execute("SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2"))
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2")
+        )
         assert cursor.fetchone()[0] == 2
         conn.close()
 
@@ -83,7 +85,9 @@ class TestDuplicateRemover:
 
         # Verify messages were deleted
         conn = sqlite3.connect(str(test_db))
-        cursor = conn.execute("SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2"))
+        cursor = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2")
+        )
         assert cursor.fetchone()[0] == 0
         conn.close()
 

@@ -290,7 +290,10 @@ def test_check_oauth_token_valid() -> None:
             )
         )
 
-        with patch("gmailarchiver.core.doctor._diagnostics._get_default_token_path", return_value=token_path):
+        with patch(
+            "gmailarchiver.core.doctor._diagnostics._get_default_token_path",
+            return_value=token_path,
+        ):
             with patch("gmailarchiver.connectors.auth.Credentials") as mock_creds:
                 mock_creds_instance = Mock()
                 mock_creds_instance.valid = True
@@ -321,7 +324,10 @@ def test_check_oauth_token_expired() -> None:
             )
         )
 
-        with patch("gmailarchiver.core.doctor._diagnostics._get_default_token_path", return_value=token_path):
+        with patch(
+            "gmailarchiver.core.doctor._diagnostics._get_default_token_path",
+            return_value=token_path,
+        ):
             with patch("gmailarchiver.connectors.auth.Credentials") as mock_creds:
                 mock_creds_instance = Mock()
                 mock_creds_instance.valid = False

@@ -1,9 +1,9 @@
-"""Search package - exports SearchFacade.
+"""Search package - exports SearchFacade."""
 
-For backward compatibility, SearchEngine is still available.
-"""
-
-from ..search_legacy import MessageSearchResult, SearchEngine, SearchResults
+from ._types import MessageSearchResult, SearchResults
 from .facade import SearchFacade
+
+# Backward compatibility alias
+SearchEngine = SearchFacade
 
 __all__ = ["SearchFacade", "SearchEngine", "SearchResults", "MessageSearchResult"]

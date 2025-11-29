@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gmailarchiver.core.deduplicator._scanner import DuplicateScanner, MessageInfo
+from gmailarchiver.core.deduplicator._scanner import DuplicateScanner
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ Internal module - use SearchFacade instead.
 import sqlite3
 import time
 
-from ..search_legacy import MessageSearchResult, SearchResults
+from ._types import MessageSearchResult, SearchResults
 from ._parser import QueryParams
 
 

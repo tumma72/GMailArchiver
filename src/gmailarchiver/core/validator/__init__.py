@@ -7,20 +7,14 @@ Provides validation of mbox archives with support for:
 - Offset verification for v1.1 schemas
 """
 
-from ..validator_legacy import (
-    ArchiveValidator,
-    ConsistencyReport,
-    OffsetVerificationResult,
-)
 from ._checksum import ChecksumValidator
 from ._counter import MessageCounter
 from ._decompressor import Decompressor
-from .facade import ValidatorFacade
+from .facade import ConsistencyReport, OffsetVerificationResult, ValidatorFacade
 
-# Re-export for backward compatibility
+# Re-export for backward compatibility - ValidatorFacade can be used as ArchiveValidator
 __all__ = [
     "ValidatorFacade",
-    "ArchiveValidator",
     "ConsistencyReport",
     "OffsetVerificationResult",
     "Decompressor",

@@ -4,13 +4,35 @@ Coordinates scanning, resolution, and removal of duplicate messages.
 """
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..deduplicator_legacy import DeduplicationReport, DeduplicationResult
 from ._remover import DuplicateRemover
 from ._resolver import DuplicateResolver
 from ._scanner import DuplicateScanner, MessageInfo
+
+
+@dataclass
+class DeduplicationReport:
+    """Report on deduplication analysis."""
+
+    total_messages: int
+    duplicate_message_ids: int
+    total_duplicate_messages: int
+    messages_to_remove: int
+    space_recoverable: int
+    breakdown_by_archive: dict[str, dict[str, Any]]
+
+
+@dataclass
+class DeduplicationResult:
+    """Result of deduplication operation."""
+
+    messages_removed: int
+    messages_kept: int
+    space_saved: int
+    dry_run: bool
 
 
 class DeduplicatorFacade:

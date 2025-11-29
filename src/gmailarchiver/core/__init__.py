@@ -1,6 +1,6 @@
 """Core layer - business logic for archiving operations."""
 
-from .archiver_legacy import GmailArchiver
+from .archiver import ArchiverFacade
 from .compressor import ArchiveCompressor, CompressionResult, CompressionSummary
 from .consolidator import ArchiveConsolidator, ConsolidationResult
 from .deduplicator import (
@@ -12,23 +12,19 @@ from .deduplicator import (
 )
 from .doctor import CheckResult, CheckSeverity, Doctor, DoctorReport, FixResult
 from .extractor import ExtractorError, ExtractStats, MessageExtractor
-from .importer_legacy import ArchiveImporter, ImportResult, MultiImportResult
+from .importer import ImporterFacade, ImportResult, MultiImportResult
 from .search import MessageSearchResult, SearchEngine, SearchResults
-from .validator_legacy import (
-    ArchiveValidator,
-    ConsistencyReport,
-    OffsetVerificationResult,
-)
+from .validator import ConsistencyReport, OffsetVerificationResult, ValidatorFacade
 
 __all__ = [
     # Archiver
-    "GmailArchiver",
+    "ArchiverFacade",
     # Validator
-    "ArchiveValidator",
+    "ValidatorFacade",
     "OffsetVerificationResult",
     "ConsistencyReport",
     # Importer
-    "ArchiveImporter",
+    "ImporterFacade",
     "ImportResult",
     "MultiImportResult",
     # Consolidator

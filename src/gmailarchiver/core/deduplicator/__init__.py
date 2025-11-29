@@ -1,16 +1,17 @@
-"""Deduplicator package - exports DeduplicatorFacade.
+"""Deduplicator package - exports DeduplicatorFacade."""
 
-For backward compatibility, MessageDeduplicator is still available.
-"""
+from ._scanner import MessageInfo
+from .facade import DeduplicationReport, DeduplicationResult, DeduplicatorFacade
 
-from ..deduplicator_legacy import (
-    DeduplicationError,
-    DeduplicationReport,
-    DeduplicationResult,
-    MessageDeduplicator,
-    MessageInfo,
-)
-from .facade import DeduplicatorFacade
+
+class DeduplicationError(Exception):
+    """Error during deduplication operation."""
+
+    pass
+
+
+# Backward compatibility alias
+MessageDeduplicator = DeduplicatorFacade
 
 __all__ = [
     "DeduplicatorFacade",
