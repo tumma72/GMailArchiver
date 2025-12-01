@@ -44,12 +44,13 @@ jobs:
       - name: Verify built version matches tag
         run: |
           TAG_VERSION="${{ steps.tag_version.outputs.version }}"
-          # Extract version from built wheel filename
+          # Extract version from built wheel filename using Python for robustness
           WHEEL_FILE=$(ls dist/*.whl)
-          BUILT_VERSION=$(echo "$WHEEL_FILE" | sed -n 's/.*gmail_archiver_cli-\([^-]*\)-.*/\1/p')
+          BUILT_VERSION=$(python -c "import sys; wheel = sys.argv[1]; parts = wheel.replace('.whl', '').split('-'); print(parts[1])" "$WHEEL_FILE")
 
           echo "Tag version: $TAG_VERSION"
           echo "Built version: $BUILT_VERSION"
+          echo "Wheel file: $WHEEL_FILE"
 
           if [ "$BUILT_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ ERROR: Built version ($BUILT_VERSION) does not match tag version ($TAG_VERSION)"
@@ -94,11 +95,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to PyPI
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          echo "Publishing to PyPI..."
-          uvx twine upload dist/* --username __token__ --password "$PYPI_TOKEN"
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
 
       - name: Verify PyPI publication
         run: |
@@ -106,8 +105,12 @@ jobs:
           echo "Waiting for PyPI to index the package..."
           sleep 30
 
-          if pip index versions gmail-archiver-cli | grep -q "$VERSION"; then
+          # Query PyPI's JSON API to verify publication
+          RESPONSE=$(curl -s https://pypi.org/pypi/gmail-archiver-cli/json)
+          PUBLISHED_VERSION=$(echo "$RESPONSE" | python -c "import sys, json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null)
+
+          if [ "$PUBLISHED_VERSION" = "$VERSION" ]; then
             echo "✅ Package successfully published to PyPI: $VERSION"
           else
-            echo "⚠️  Package not yet indexed on PyPI (may take a few minutes)"
+            echo "⚠️  Expected version $VERSION, but PyPI shows $PUBLISHED_VERSION (indexing may take a few minutes)"
           fi
