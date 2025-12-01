@@ -9,8 +9,8 @@ import uuid
 from unittest.mock import Mock, patch
 
 import pytest
-from gmailarchiver.core.archiver._writer import MessageWriter
 
+from gmailarchiver.core.archiver._writer import MessageWriter
 from gmailarchiver.shared.input_validator import InvalidInputError
 
 
