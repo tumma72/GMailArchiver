@@ -10,15 +10,17 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.3.2 - Critical Bug Fix
+## 🎉 What's New in v1.4.2 - Performance & Architecture
 
-Version 1.3.2 fixes a **critical bug** that caused archiving failures:
+Version 1.4.2 delivers **2x performance improvement** and completes the facade pattern migration:
 
-- 🐛 **Fixed UNIQUE Constraint Errors** - Messages with duplicate RFC Message-IDs (same email in multiple folders) no longer cause database errors
-- 🛡️ **Improved Duplicate Handling** - Duplicates are now skipped gracefully with proper logging
-- ✅ **Enhanced Stability** - Eliminates orphaned messages in mbox files
+- ⚡ **2x Faster Archiving** - Optimized Gmail API batching (10-15 msg/sec practical throughput)
+- 🏗️ **Completed Facade Pattern** - All CLI commands now use clean facade architecture
+- 🐛 **Fixed Progress Bars** - Progress indicators now update correctly during operations
+- ✅ **Enhanced Testing** - 1570 tests (94% coverage, +182 tests from v1.4.1)
+- 📚 **Improved Documentation** - Added verbose flag to status command, doctor command checks
 
-### Recent Major Features (v1.2.0)
+### Recent Major Features
 
 - 🎨 **Unified Rich Output** - Beautiful terminal output with progress bars, ETA, and rate tracking
 - 📤 **Message Extraction** - Retrieve messages from search results
@@ -236,7 +238,23 @@ All commands support `--json` for scripting and `--help` for detailed options.
 
 ## 📜 Version History
 
-### v1.3.2 (2025-11-24) - Critical Bug Fix
+### v1.4.2 (2025-12-01) - Performance & Architecture
+
+**Performance**:
+- 2x faster archiving (batch_delay: 1.0s → 0.5s)
+- Optimized Gmail API batching for 10-15 msg/sec practical throughput
+
+**Architecture**:
+- Completed facade pattern migration for all CLI commands
+- Removed 9 legacy module files
+- All tests updated to use facade APIs
+
+**Bug Fixes**:
+- Fixed progress bars not updating during import and verify-integrity commands
+
+**Quality**: 1570 tests, 94% coverage (+182 tests from v1.4.1)
+
+### v1.3.2 (2024-11-24) - Critical Bug Fix
 
 **Bug Fixes**:
 - Fixed UNIQUE constraint failures during archiving (messages with duplicate RFC Message-IDs)

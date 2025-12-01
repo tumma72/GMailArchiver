@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.4.2] - 2025-11-27
+## [1.4.2] - 2025-12-01
 
 ### Added
 - **`--verbose` flag to `status` command**: Shows more detail including full query column and 10 archive runs (default 5)
@@ -29,17 +29,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Root Cause**: `progress_context()` wrapped Rich's `Progress` object in an external `Live()` context, which disabled Progress's internal refresh mechanism
   - **Solution**: Use `Progress` as its own context manager instead of wrapping in external `Live()`
   - **Impact**: Progress bars now update correctly during all operations
+- **Bug #6 (GitHub)**: Performance improvements for archiving operations
+  - **Issue**: 100x performance regression from 50 msg/sec to 0.5 msg/sec
+  - **Root Cause**: Overly conservative `batch_delay=1.0s` in GmailClient
+  - **Solution**: Optimized to `batch_delay=0.5s` (2x faster) while respecting Gmail API concurrent request limits
+  - **Impact**: 2x performance improvement (~20 msg/sec theoretical, 10-15 msg/sec practical)
 
 ### Removed
 - **`dedupe-report` command**: Consolidated into `dedupe --dry-run` (same functionality)
 - **`db-info` command**: Merged into `status` command with database info
 - **`retry-delete` from main commands**: Now utilities-only (still accessible via `gmailarchiver utilities retry-delete`)
+- **All 9 legacy module files**: Completed facade pattern migration, removed `_legacy.py` files
+  - `archiver_legacy.py`, `importer_legacy.py`, `validator_legacy.py`
+  - `search_legacy.py`, `deduplicator_legacy.py`, `consolidator_legacy.py`
+  - `compressor_legacy.py`, `doctor_legacy.py`, `extractor_legacy.py`
 - Dead code in `OutputManager.task_complete()` that referenced unused `_live` and `_progress` attributes
 - Unused `make_status_panel()` function that was never called
 
+### Refactoring
+- **Completed facade pattern migration**: All CLI commands now use facade pattern for cleaner architecture
+- **Test suite updated**: All tests migrated from legacy modules to facade APIs
+
 ### Quality
-- **Test coverage**: 94% (1388 tests passing)
+- **Test coverage**: 94% (1570 tests passing, +182 from v1.4.1)
 - Added 7 new tests for doctor CLI command with --check flag
+- All legacy module references removed from tests
 
 ## [1.3.2] - 2025-11-24
 

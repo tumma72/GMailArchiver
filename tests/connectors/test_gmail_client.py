@@ -28,7 +28,7 @@ class TestGmailClientInit:
         assert client.user_id == "me"
         assert client.batch_size == 10
         assert client.max_retries == 5
-        assert client.batch_delay == 1.0
+        assert client.batch_delay == 0.5
 
     @patch("gmailarchiver.connectors.gmail_client.build")
     def test_init_with_custom_params(self, mock_build: Mock) -> None:
