@@ -1001,9 +1001,11 @@ class SessionLogger:
             keep_last: Number of old log files to keep (most recent)
         """
         # Find all session log files (exclude current session)
+        # Sort by filename (which contains timestamp) for reliable ordering
+        # This handles cases where files are created in quick succession with same mtime
         all_logs = sorted(
             [f for f in self.log_dir.glob("session_*.log") if f != self.log_file],
-            key=lambda p: p.stat().st_mtime,
+            key=lambda p: p.name,
         )
 
         # Remove oldest files beyond retention limit

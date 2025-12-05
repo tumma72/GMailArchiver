@@ -484,10 +484,10 @@ def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=1024 * 1024 * 1024)  # 1 GB
 
-        doctor = Doctor(v11_db)
-
-        # Ensure OAuth token state does not influence this "all OK" scenario
-        with patch.object(doctor, "check_oauth_token") as mock_token_check:
+        # Patch DiagnosticsRunner.check_oauth_token which is called by run_diagnostics
+        with patch(
+            "gmailarchiver.core.doctor._diagnostics.DiagnosticsRunner.check_oauth_token"
+        ) as mock_token_check:
             mock_token_check.return_value = CheckResult(
                 name="OAuth token",
                 severity=CheckSeverity.OK,
@@ -495,6 +495,7 @@ def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
                 fixable=False,
             )
 
+            doctor = Doctor(v11_db)
             report = doctor.run_diagnostics()
 
         assert isinstance(report, DoctorReport)
