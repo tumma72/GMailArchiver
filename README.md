@@ -10,9 +10,9 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.4.4 - Performance Fix
+## 🎉 What's New in v1.4.5 - Performance Fix
 
-Version 1.4.4 includes v1.4.3's **complete fix for the O(n²) performance bottleneck** plus CI test repairs:
+Version 1.4.5 includes v1.4.3's **complete fix for the O(n²) performance bottleneck** plus CI/publishing fixes:
 
 - ⚡ **500-1000x Faster** - Batch archiving with O(n) complexity (was O(n²))
 - 🔧 **Root Cause Fixed** - Single mbox open/close cycle per batch (not per-message)
@@ -238,7 +238,7 @@ All commands support `--json` for scripting and `--help` for detailed options.
 
 ## 📜 Version History
 
-### v1.4.4 (2025-12-05) - Performance Fix + CI Repairs
+### v1.4.5 (2025-12-05) - Performance Fix + CI/Publishing Repairs
 
 **Complete Fix for O(n²) Performance Bottleneck** (from v1.4.3):
 - 500-1000x faster for large archives (O(n) complexity instead of O(n²))
@@ -247,7 +247,8 @@ All commands support `--json` for scripting and `--help` for detailed options.
 - Progress callbacks for real-time tracking during batch operations
 - Graceful interrupt handling (Ctrl+C saves progress for resumable operations)
 
-**CI Test Fixes**:
+**CI/Publishing Fixes**:
+- Configured PyPI Trusted Publishing for secure releases
 - Fixed doctor diagnostics test mock target
 - Fixed session logger cleanup file ordering
 
