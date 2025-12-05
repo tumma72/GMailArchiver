@@ -187,14 +187,14 @@ class TestArchiveMessagesBatch:
         ]
 
         # Archive batch
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
 
         # Verify counts
-        assert archived == 3
-        assert skipped == 0
+        assert result["archived"] == 3
+        assert result["skipped"] == 0
 
         # Verify all messages in mbox
         mbox = mailbox.mbox(str(mbox_path))
@@ -213,13 +213,13 @@ class TestArchiveMessagesBatch:
         """Test batch archiving with empty list returns zero counts."""
         storage = HybridStorage(db_manager)
 
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=[],
             archive_file=mbox_path,
         )
 
-        assert archived == 0
-        assert skipped == 0
+        assert result["archived"] == 0
+        assert result["skipped"] == 0
         # Mbox should not be created for empty batch
         assert not mbox_path.exists()
 
@@ -269,8 +269,10 @@ class TestArchiveMessagesBatch:
 class TestArchiveMessagesBatchAtomicity:
     """Tests for batch atomicity - all succeed or all rollback."""
 
-    def test_batch_rollback_on_db_error(self, db_manager: DBManager, mbox_path: Path) -> None:
-        """Test that database errors cause full batch rollback."""
+    def test_batch_handles_per_message_db_errors(
+        self, db_manager: DBManager, mbox_path: Path
+    ) -> None:
+        """Test that database errors are handled per-message without stopping batch."""
         storage = HybridStorage(db_manager)
 
         messages = [
@@ -290,11 +292,15 @@ class TestArchiveMessagesBatchAtomicity:
             return original_record(*args, **kwargs)
 
         with patch.object(db_manager, "record_archived_message", side_effect=failing_record):
-            with pytest.raises(HybridStorageError):
-                storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
+            result = storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
 
-        # Database should have no messages (rolled back)
-        assert db_manager.get_message_by_gmail_id("gmail_id_1") is None
+        # First message should succeed, second should fail
+        assert result["archived"] == 1
+        assert result["failed"] == 1
+
+        # First message should be in database
+        assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
+        # Second message should not be in database (failed)
         assert db_manager.get_message_by_gmail_id("gmail_id_2") is None
 
     def test_batch_all_or_nothing_semantics(self, db_manager: DBManager, mbox_path: Path) -> None:
@@ -347,14 +353,14 @@ class TestArchiveMessagesBatchDuplicates:
             (create_sample_email("same_msg_id"), "gmail_id_2", None, None),  # Duplicate
         ]
 
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
 
         # One archived, one skipped
-        assert archived == 1
-        assert skipped == 1
+        assert result["archived"] == 1
+        assert result["skipped"] == 1
 
         # Only first should be in DB
         assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
@@ -366,11 +372,10 @@ class TestArchiveMessagesBatchDuplicates:
         """Test that messages already in DB are skipped."""
         storage = HybridStorage(db_manager)
 
-        # Archive first message using single-message method
+        # Archive first message using batch method with single message
         msg1 = create_sample_email("existing_msg")
-        storage.archive_message(
-            email_message=msg1,
-            gmail_id="existing_gmail_id",
+        storage.archive_messages_batch(
+            messages=[(msg1, "existing_gmail_id", None, None)],
             archive_file=mbox_path,
         )
 
@@ -380,14 +385,14 @@ class TestArchiveMessagesBatchDuplicates:
             (create_sample_email("new_msg"), "new_gmail_id_2", None, None),
         ]
 
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
 
         # One new message archived, one skipped (duplicate)
-        assert archived == 1
-        assert skipped == 1
+        assert result["archived"] == 1
+        assert result["skipped"] == 1
 
 
 # ============================================================================
@@ -636,13 +641,13 @@ class TestArchiveMessagesBatchCompression:
 
         messages = [(create_sample_email(f"msg{i}"), f"gmail_id_{i}", None, None) for i in range(3)]
 
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
             compression="gzip",
         )
 
-        assert archived == 3
+        assert result["archived"] == 3
         assert mbox_path.exists()
 
     def test_batch_with_zstd_compression(self, db_manager: DBManager, temp_dir: Path) -> None:
@@ -652,13 +657,13 @@ class TestArchiveMessagesBatchCompression:
 
         messages = [(create_sample_email(f"msg{i}"), f"gmail_id_{i}", None, None) for i in range(3)]
 
-        archived, skipped = storage.archive_messages_batch(
+        result = storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
             compression="zstd",
         )
 
-        assert archived == 3
+        assert result["archived"] == 3
         assert mbox_path.exists()
 
 
@@ -670,8 +675,8 @@ class TestArchiveMessagesBatchCompression:
 class TestArchiveMessagesBatchReturnValues:
     """Tests for batch return values."""
 
-    def test_batch_returns_tuple_of_counts(self, db_manager: DBManager, mbox_path: Path) -> None:
-        """Test that batch returns (archived_count, skipped_count) tuple."""
+    def test_batch_returns_dict_with_counts(self, db_manager: DBManager, mbox_path: Path) -> None:
+        """Test that batch returns dict with archived, skipped, failed, interrupted keys."""
         storage = HybridStorage(db_manager)
 
         messages = [
@@ -683,8 +688,14 @@ class TestArchiveMessagesBatchReturnValues:
             archive_file=mbox_path,
         )
 
-        # Should return tuple of two integers
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], int)
-        assert isinstance(result[1], int)
+        # Should return dict with required keys
+        assert isinstance(result, dict)
+        assert "archived" in result
+        assert "skipped" in result
+        assert "failed" in result
+        assert "interrupted" in result
+        assert "actual_file" in result
+        assert isinstance(result["archived"], int)
+        assert isinstance(result["skipped"], int)
+        assert isinstance(result["failed"], int)
+        assert isinstance(result["interrupted"], bool)

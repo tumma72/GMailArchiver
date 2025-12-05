@@ -8,14 +8,10 @@ Phase 1.6 - Extracted from archiver_legacy.py for clean architecture.
 """
 
 import email
-import gzip
 import json
-import lzma
-import shutil
 import signal
 import threading
 import uuid
-from compression import zstd
 from email import policy
 from pathlib import Path
 from typing import Any
@@ -133,10 +129,10 @@ class MessageWriter:
         operation: OperationHandle | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        """Archive messages using HybridStorage for atomic operations.
+        """Archive messages using HybridStorage batch operation.
 
-        Uses a .partial file during operation to support resumable archives.
-        The partial file is renamed to the final file on successful completion.
+        This method uses batch archiving for O(n) performance instead of O(n²).
+        The batch method opens the mbox file once and does a single fsync at the end.
 
         Args:
             message_ids: List of Gmail message IDs
@@ -149,32 +145,30 @@ class MessageWriter:
             Dict with keys: archived, failed, interrupted, actual_file
         """
         output_path = Path(output_file)
-        # Use partial file during operation for resumability
-        partial_path = Path(str(output_file) + ".partial")
-        archived_count = 0
-        failed_count = 0
+        fetch_failed_count = 0
 
         assert self.hybrid_storage is not None, "HybridStorage not initialized"
         assert self.db_manager is not None, "DBManager not initialized"
 
         # Log initial status if operation handle provided
         if operation:
-            operation.log(f"Processing {len(message_ids)} messages", "INFO")
-            # Set total for progress tracking now that we know the count
-            operation.set_total(len(message_ids), "Archiving messages")
+            operation.log(f"Fetching {len(message_ids)} messages from Gmail...", "INFO")
 
         # Install SIGINT handler for graceful Ctrl+C
         self._install_sigint_handler()
-        interrupted = False
 
-        # Fetch messages in batches
+        # Phase 1: Fetch all messages from Gmail and prepare batch
+        # This is I/O bound (network) so we do it first
+        batch_messages: list[tuple[email.message.Message, str, str | None, str | None]] = []
+
         try:
-            for i, message in enumerate(self.client.get_messages_batch(message_ids), 1):
-                # Check for interrupt BEFORE processing (handles signal between iterations)
+            for message in self.client.get_messages_batch(message_ids):
+                # Check for interrupt during fetch
                 if self._interrupted.is_set():
-                    interrupted = True
                     self._log(
-                        "Interrupt received - saving progress...", "WARNING", operation=operation
+                        "Interrupt during fetch - archiving fetched messages...",
+                        "WARNING",
+                        operation=operation,
                     )
                     break
 
@@ -185,136 +179,93 @@ class MessageWriter:
                     # Parse email
                     msg = email.message_from_bytes(raw_email, policy=policy.default)
 
-                    # Extract subject for logging
-                    subject = msg.get("Subject", "No Subject")
-
                     # Extract Gmail labels as JSON
                     labels = None
                     if "labelIds" in message:
                         labels = json.dumps(message["labelIds"])
 
-                    # Archive using HybridStorage to PARTIAL file (atomic operation)
-                    # Note: We archive to partial_path but store output_file in DB
-                    # so resume logic can find the right session
-                    result = self.hybrid_storage.archive_message(
-                        email_message=msg,
-                        gmail_id=message["id"],
-                        archive_file=partial_path,
-                        thread_id=message.get("threadId"),
-                        labels=labels,
-                        compression=None,  # No compression during partial - compress at end
+                    # Add to batch: (email_message, gmail_id, thread_id, labels)
+                    batch_messages.append(
+                        (
+                            msg,
+                            message["id"],
+                            message.get("threadId"),
+                            labels,
+                        )
                     )
-
-                    # Check if message was actually archived or skipped as duplicate
-                    if result is None:
-                        # Message was skipped (duplicate rfc_message_id)
-                        if operation:
-                            truncated_subject = subject[:60] if len(subject) > 60 else subject
-                            operation.log(f"Skipped (duplicate): {truncated_subject}", "WARNING")
-                            operation.update_progress(1)
-                        continue
-
-                    archived_count += 1
-
-                    # Log success to operation handle
-                    if operation:
-                        # Truncate subject to 60 chars for readability
-                        truncated_subject = subject[:60] if len(subject) > 60 else subject
-                        operation.log(f"Archived: {truncated_subject}", "SUCCESS")
-                        operation.update_progress(1)
-
-                    # Update session progress every 100 messages
-                    if session_id and archived_count % 100 == 0:
-                        self.db_manager.update_session_progress(session_id, archived_count)
-
-                except KeyboardInterrupt:
-                    # Ctrl+C pressed - exit loop gracefully
-                    interrupted = True
-                    self._log(
-                        "Interrupt received - saving progress...", "WARNING", operation=operation
-                    )
-                    break
 
                 except Exception as e:
-                    # Log error but continue with next message
-                    msg_id = message["id"]
-                    error_msg = f"Failed to archive message {msg_id}: {e}"
-
-                    # Log to operation handle if available
+                    # Log error but continue fetching
+                    msg_id = message.get("id", "unknown")
+                    error_msg = f"Failed to fetch/parse message {msg_id}: {e}"
                     if operation:
                         operation.log(error_msg, "ERROR")
                     else:
                         self._log(f"Warning: {error_msg}", "WARNING")
+                    fetch_failed_count += 1
 
-                    failed_count += 1
+        except KeyboardInterrupt:
+            self._log(
+                "Interrupt during fetch - archiving fetched messages...",
+                "WARNING",
+                operation=operation,
+            )
 
-                # Check for Ctrl+C interrupt via signal handler - exit loop gracefully
-                if self._interrupted.is_set():
-                    interrupted = True
-                    self._log(
-                        "Interrupt received - saving progress...", "WARNING", operation=operation
-                    )
-                    break
+        # Log fetch completion
+        if operation:
+            operation.log(f"Fetched {len(batch_messages)} messages, archiving...", "INFO")
+            operation.set_total(len(batch_messages), "Archiving messages")
 
-            # Update progress regardless of interrupt status
-            if archived_count > 0 and session_id:
-                self.db_manager.update_session_progress(session_id, archived_count)
+        # Phase 2: Archive all messages in a single batch operation
+        # This is the performance-critical part - O(n) instead of O(n²)
+        def progress_callback(gmail_id: str, subject: str, status: str) -> None:
+            """Report progress for each message."""
+            if operation:
+                truncated_subject = subject[:60] if len(subject) > 60 else subject
+                if status == "success":
+                    operation.log(f"Archived: {truncated_subject}", "SUCCESS")
+                elif status == "skipped":
+                    operation.log(f"Skipped (duplicate): {truncated_subject}", "WARNING")
+                elif status == "error":
+                    operation.log(f"Failed: {truncated_subject}", "ERROR")
+                operation.update_progress(1)
 
-            # Only finalize (rename/compress) if NOT interrupted
-            if archived_count > 0 and not interrupted:
-                # Compress if requested
-                if compress:
-                    self._log(f"Compressing with {compress}...", operation=operation)
-                    # Compress from partial file if it exists, otherwise from output
-                    source_path = partial_path if partial_path.exists() else output_path
-                    if source_path.exists():
-                        self._compress_archive(source_path, output_path, compress)
-                        # Remove uncompressed source file (if it's the partial)
-                        if partial_path.exists():
-                            partial_path.unlink(missing_ok=True)
-                    final_path = output_path
-                else:
-                    # Rename partial to final (only if partial exists)
-                    if partial_path.exists():
-                        partial_path.rename(output_path)
-                        final_path = output_path
-                    elif output_path.exists():
-                        # File was written directly to output_path (e.g., in tests)
-                        final_path = output_path
-                    else:
-                        # Neither file exists - unexpected state
-                        final_path = output_path
+        try:
+            result = self.hybrid_storage.archive_messages_batch(
+                messages=batch_messages,
+                archive_file=output_path,
+                compression=compress,
+                commit_interval=100,
+                progress_callback=progress_callback,
+                interrupt_event=self._interrupted,
+                session_id=session_id,
+            )
 
-                # Mark session as complete
-                if session_id:
-                    self.db_manager.complete_session(session_id)
+            archived_count = result["archived"]
+            skipped_count = result["skipped"]
+            failed_count = result["failed"] + fetch_failed_count
+            interrupted = result["interrupted"]
+            final_path = Path(result["actual_file"])
 
-                # Update archive_file in messages table to point to final file
-                # (messages were recorded with partial_path)
-                self.db_manager.conn.execute(
-                    "UPDATE messages SET archive_file = ? WHERE archive_file = ?",
-                    (str(final_path), str(partial_path)),
-                )
-                self.db_manager.commit()
-            elif interrupted:
-                # Interrupted - keep partial file for resumption
-                final_path = partial_path
+            # Handle interrupted state
+            if interrupted:
                 self._log(
-                    f"Progress saved: {archived_count}/{len(message_ids)} messages",
+                    f"Progress saved: {archived_count}/{len(batch_messages)} messages",
                     "INFO",
                     operation=operation,
                 )
                 self._log("Run the same command again to resume", "INFO", operation=operation)
-            else:
-                final_path = partial_path
 
         except KeyboardInterrupt:
-            # Handle KeyboardInterrupt at outer level (during batch fetch)
-            interrupted = True
-            final_path = partial_path
+            # Handle KeyboardInterrupt at outer level
             self._log("Interrupt received - saving progress...", "WARNING", operation=operation)
-            if archived_count > 0 and session_id and self.db_manager:
-                self.db_manager.update_session_progress(session_id, archived_count)
+            return {
+                "archived": 0,
+                "failed": fetch_failed_count,
+                "attempted": len(message_ids),
+                "interrupted": True,
+                "actual_file": str(output_path),
+            }
 
         finally:
             # Restore original SIGINT handler
@@ -323,6 +274,8 @@ class MessageWriter:
         # Print summary (route through operation handle if available)
         file_size = final_path.stat().st_size if final_path.exists() else 0
         self._log(f"Archived {archived_count} messages", "SUCCESS", operation=operation)
+        if skipped_count > 0:
+            self._log(f"Skipped: {skipped_count} duplicates", "INFO", operation=operation)
         if failed_count > 0:
             fail_msg = f"Failed: {failed_count} messages (errors during archiving)"
             self._log(fail_msg, "WARNING", operation=operation)
@@ -334,37 +287,8 @@ class MessageWriter:
             "failed": failed_count,
             "attempted": len(message_ids),
             "interrupted": interrupted,
-            "actual_file": str(final_path),  # The actual file where data was written
+            "actual_file": str(final_path),
         }
-
-    def _compress_archive(self, source_path: Path, dest_path: Path, compress_format: str) -> None:
-        """Compress mbox archive.
-
-        Args:
-            source_path: Source mbox file
-            dest_path: Destination compressed file
-            compress_format: Compression format ('gzip', 'lzma', or 'zstd')
-        """
-        self._log(f"\nCompressing with {compress_format}...", "INFO")
-
-        if compress_format == "gzip":
-            with open(source_path, "rb") as f_in:
-                with gzip.open(dest_path, "wb", compresslevel=6) as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-        elif compress_format == "lzma":
-            with open(source_path, "rb") as f_in:
-                with lzma.open(dest_path, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-        elif compress_format == "zstd":
-            # Zstandard: fast compression with excellent ratios (Python 3.14+ stdlib)
-            # Level 3 is default (good balance), max is 22
-            with open(source_path, "rb") as f_in:
-                with zstd.open(dest_path, "wb", level=3) as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-        else:
-            raise ValueError(
-                f"Unsupported compression format: {compress_format}. Supported: gzip, lzma, zstd"
-            )
 
     def _log(
         self, message: str, level: str = "INFO", operation: OperationHandle | None = None

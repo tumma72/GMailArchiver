@@ -100,227 +100,6 @@ class HybridStorage:
         else:
             self._known_rfc_ids = set()
 
-    # ==================== ARCHIVE OPERATION ====================
-
-    def archive_message(
-        self,
-        email_message: email.message.Message,
-        gmail_id: str,
-        archive_file: Path,
-        thread_id: str | None = None,
-        labels: str | None = None,
-        compression: str | None = None,
-    ) -> tuple[int, int] | None:
-        """
-        Atomically archive a message to mbox AND database.
-
-        Two-phase commit:
-        1. Write to staging area (temp file)
-        2. Append to mbox and record offset
-        3. Update database via DBManager
-        4. If any step fails, rollback everything
-        5. Validate consistency
-
-        Args:
-            email_message: Email message to archive
-            gmail_id: Gmail message ID
-            archive_file: Path to archive file (may be compressed)
-            thread_id: Gmail thread ID (optional)
-            labels: JSON array of Gmail labels (optional)
-            compression: Compression format ('gzip', 'lzma', 'zstd', or None)
-
-        Returns:
-            Tuple of (mbox_offset, mbox_length), or None if message was skipped
-            due to duplicate rfc_message_id (v1.3.2+)
-
-        Raises:
-            HybridStorageError: If operation fails
-            IntegrityError: If validation fails
-        """
-        staging_file = self._staging_area / f"{gmail_id}.eml"
-        mbox_obj = None
-        mbox_path = archive_file
-
-        # If compression requested, work with uncompressed mbox first
-        if compression:
-            # Remove compression extension (e.g., .gz, .xz, .zst) to get base .mbox
-            # archive_file might be "foo.mbox.gz", we want "foo.mbox"
-            if archive_file.suffix in (".gz", ".xz", ".zst"):
-                mbox_path = archive_file.with_suffix("")
-            else:
-                # Fallback: shouldn't happen if compression format detected correctly
-                mbox_path = archive_file.parent / (archive_file.stem + ".mbox")
-
-        try:
-            # Phase 1a: Check for duplicate rfc_message_id BEFORE any I/O
-            # (v1.3.6: O(1) check using pre-loaded set instead of database query)
-            rfc_message_id = self._extract_rfc_message_id(email_message)
-            if rfc_message_id in self._known_rfc_ids:
-                logger.debug(
-                    f"Skipping duplicate message {gmail_id}: "
-                    f"rfc_message_id '{rfc_message_id}' already archived"
-                )
-                return None
-
-            # Phase 1: Prepare (write to staging)
-            logger.debug(f"Phase 1: Writing message {gmail_id} to staging")
-            with open(staging_file, "wb") as f:
-                f.write(email_message.as_bytes())
-
-            # Phase 2: Commit to mbox
-            logger.debug(f"Phase 2: Appending to mbox {mbox_path}")
-
-            # Clean up any orphaned lock files
-            lock_file = Path(str(mbox_path) + ".lock")
-            if lock_file.exists():
-                logger.warning(f"Removing orphaned lock file: {lock_file}")
-                lock_file.unlink()
-
-            mbox_obj = mailbox.mbox(str(mbox_path))
-            mbox_obj.lock()
-
-            # Get offset BEFORE writing
-            if mbox_path.exists():
-                with open(mbox_path, "rb") as f:
-                    f.seek(0, 2)  # Seek to end
-                    offset = f.tell()
-            else:
-                offset = 0
-
-            # Write message
-            mbox_obj.add(email_message)
-            mbox_obj.flush()
-
-            # CRITICAL: Verify file was actually created
-            if not mbox_path.exists():
-                raise HybridStorageError(
-                    f"File not created after mbox.flush(): {mbox_path} "
-                    f"(cwd: {Path.cwd()}, resolved: {mbox_path.resolve()})"
-                )
-
-            # Force data to disk (critical for data integrity on interrupt)
-            # mbox.flush() only flushes to OS buffers, not to physical disk
-            # Use a separate file handle to force sync to disk
-            with open(mbox_path, "r+b") as sync_file:
-                os.fsync(sync_file.fileno())
-
-            # Calculate length AFTER writing (verified on disk)
-            with open(mbox_path, "rb") as f:
-                f.seek(0, 2)  # Seek to end
-                length = f.tell() - offset
-
-            # Verify data was actually written (critical safety check)
-            if length == 0:
-                raise HybridStorageError(
-                    f"Data integrity error: message {gmail_id} appears to have 0 bytes written"
-                )
-
-            logger.debug(f"Message written at offset={offset}, length={length}")
-
-            # Phase 3: Commit to database
-            logger.debug("Phase 3: Recording in database")
-
-            # Extract metadata (rfc_message_id already extracted in Phase 1a)
-            body_preview = self._extract_body_preview(email_message)
-            checksum = self._compute_checksum(email_message.as_bytes())
-
-            self.db.record_archived_message(
-                gmail_id=gmail_id,
-                rfc_message_id=rfc_message_id,
-                archive_file=str(archive_file),  # Store final path (with compression)
-                mbox_offset=offset,
-                mbox_length=length,
-                thread_id=thread_id,
-                subject=email_message.get("Subject"),
-                from_addr=email_message.get("From"),
-                to_addr=email_message.get("To"),
-                cc_addr=email_message.get("Cc"),
-                date=email_message.get("Date"),
-                body_preview=body_preview,
-                checksum=checksum,
-                size_bytes=len(email_message.as_bytes()),
-                labels=labels,
-            )
-
-            # Phase 4: Compress if requested (before commit)
-            if compression:
-                logger.debug(f"Phase 4: Compressing with {compression}")
-                self._compress_file(mbox_path, archive_file, compression)
-                # Remove uncompressed file AND lock
-                mbox_path.unlink()
-                if lock_file.exists():
-                    lock_file.unlink()
-
-            # Phase 5: Validate BEFORE commit (ensures atomicity)
-            logger.debug("Phase 5: Validating consistency")
-            self._validate_message_consistency(rfc_message_id)
-
-            # Phase 6: Commit database transaction (only after validation passes)
-            logger.debug("Phase 6: Committing to database")
-            self.db.commit()
-
-            # Verify commit persisted (debug paranoia check)
-            verify = self.db.get_message_by_rfc_message_id(rfc_message_id)
-            if not verify:
-                raise HybridStorageError(
-                    f"Database commit verification failed: "
-                    f"message {rfc_message_id} not found after commit"
-                )
-
-            # Add to known set to prevent duplicates within the same batch
-            self._known_rfc_ids.add(rfc_message_id)
-
-            logger.info(
-                f"Successfully archived message {gmail_id} to {archive_file} at offset {offset}"
-            )
-
-            return (offset, length)
-
-        except IntegrityError:
-            # Re-raise IntegrityError as-is (critical data consistency issue)
-            logger.error(f"Integrity check failed for {gmail_id}")
-            try:
-                self.db.rollback()
-                logger.debug("Database rolled back")
-            except Exception as rb_err:
-                logger.error(f"Rollback failed: {rb_err}")
-            raise
-
-        except Exception as e:
-            # Rollback database
-            logger.error(f"Archive failed for {gmail_id}: {e}")
-            try:
-                self.db.rollback()
-                logger.debug("Database rolled back")
-            except Exception as rb_err:
-                logger.error(f"Rollback failed: {rb_err}")
-
-            # Note: mbox library doesn't support removal, manual cleanup may be needed
-            logger.error(
-                f"Manual cleanup may be required for {archive_file}. "
-                f"Message may be orphaned at offset {offset if 'offset' in locals() else 'unknown'}"
-            )
-
-            raise HybridStorageError(f"Failed to archive message {gmail_id}: {e}") from e
-
-        finally:
-            # Cleanup
-            if mbox_obj:
-                try:
-                    mbox_obj.unlock()
-                except Exception as e:
-                    logger.warning(f"Failed to unlock mbox: {e}")
-                try:
-                    mbox_obj.close()
-                except Exception as e:
-                    logger.warning(f"Failed to close mbox: {e}")
-
-            if staging_file.exists():
-                try:
-                    staging_file.unlink()
-                except Exception as e:
-                    logger.warning(f"Failed to remove staging file: {e}")
-
     # ==================== BATCH ARCHIVE OPERATION ====================
 
     def archive_messages_batch(
@@ -329,7 +108,10 @@ class HybridStorage:
         archive_file: Path,
         compression: str | None = None,
         commit_interval: int = 100,
-    ) -> tuple[int, int]:
+        progress_callback: Any | None = None,
+        interrupt_event: Any | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         Archive multiple messages in a single batch operation.
 
@@ -348,18 +130,29 @@ class HybridStorage:
             archive_file: Path to archive file (may be compressed)
             compression: Compression format ('gzip', 'lzma', 'zstd', or None)
             commit_interval: Commit to DB every N messages (default: 100)
+            progress_callback: Optional callback(gmail_id, subject, status) for progress
+            interrupt_event: Optional threading.Event for graceful interruption
+            session_id: Optional session ID for resumable operations
 
         Returns:
-            Tuple of (archived_count, skipped_count)
+            Dict with keys: archived, skipped, failed, interrupted, actual_file
 
         Raises:
             HybridStorageError: If operation fails
         """
         if not messages:
-            return (0, 0)
+            return {
+                "archived": 0,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(archive_file),
+            }
 
         archived_count = 0
         skipped_count = 0
+        failed_count = 0
+        interrupted = False
         batch_rfc_ids: list[str] = []
         mbox_obj = None
         mbox_path = archive_file
@@ -383,6 +176,11 @@ class HybridStorage:
             mbox_obj.lock()
 
             for email_message, gmail_id, thread_id, labels in messages:
+                # Check for interrupt BEFORE processing
+                if interrupt_event and interrupt_event.is_set():
+                    interrupted = True
+                    logger.warning("Interrupt received - saving progress...")
+                    break
                 # Check for duplicate (O(1) using pre-loaded set)
                 rfc_message_id = self._extract_rfc_message_id(email_message)
                 if rfc_message_id in self._known_rfc_ids:
@@ -391,60 +189,84 @@ class HybridStorage:
                         f"rfc_message_id '{rfc_message_id}' already archived"
                     )
                     skipped_count += 1
+                    subject = email_message.get("Subject", "No Subject")
+                    if progress_callback:
+                        progress_callback(gmail_id, subject, "skipped")
                     continue
 
-                # Get offset BEFORE writing using the mbox's internal file handle
-                # This avoids opening a separate file handle
-                if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                    offset = mbox_obj._file.tell()
-                elif mbox_path.exists():
-                    offset = mbox_path.stat().st_size
-                else:
-                    offset = 0
+                try:
+                    # Get offset BEFORE writing using the mbox's internal file handle
+                    # This avoids opening a separate file handle
+                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                        # Seek to end to get correct offset for appending
+                        # (file cursor may not be at end when mbox is reopened)
+                        mbox_obj._file.seek(0, 2)  # SEEK_END
+                        offset = mbox_obj._file.tell()
+                    elif mbox_path.exists():
+                        offset = mbox_path.stat().st_size
+                    else:
+                        offset = 0
 
-                # Write message
-                mbox_obj.add(email_message)
+                    # Write message
+                    mbox_obj.add(email_message)
 
-                # Get length AFTER writing using the mbox's internal file handle
-                # This avoids flush() which calls fsync
-                if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                    length = mbox_obj._file.tell() - offset
-                else:
-                    # Fallback: estimate from message size
-                    length = len(email_message.as_bytes()) + 50
+                    # Get length AFTER writing using the mbox's internal file handle
+                    # This avoids flush() which calls fsync
+                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                        length = mbox_obj._file.tell() - offset
+                    else:
+                        # Fallback: estimate from message size
+                        length = len(email_message.as_bytes()) + 50
 
-                # Extract metadata
-                body_preview = self._extract_body_preview(email_message)
-                checksum = self._compute_checksum(email_message.as_bytes())
+                    # Extract metadata
+                    subject = email_message.get("Subject", "No Subject")
+                    body_preview = self._extract_body_preview(email_message)
+                    checksum = self._compute_checksum(email_message.as_bytes())
 
-                # Record in database (NO commit yet)
-                self.db.record_archived_message(
-                    gmail_id=gmail_id,
-                    rfc_message_id=rfc_message_id,
-                    archive_file=str(archive_file),  # Store final path (with compression)
-                    mbox_offset=offset,
-                    mbox_length=length,
-                    thread_id=thread_id,
-                    subject=email_message.get("Subject"),
-                    from_addr=email_message.get("From"),
-                    to_addr=email_message.get("To"),
-                    cc_addr=email_message.get("Cc"),
-                    date=email_message.get("Date"),
-                    body_preview=body_preview,
-                    checksum=checksum,
-                    size_bytes=len(email_message.as_bytes()),
-                    labels=labels,
-                )
+                    # Record in database (NO commit yet)
+                    self.db.record_archived_message(
+                        gmail_id=gmail_id,
+                        rfc_message_id=rfc_message_id,
+                        archive_file=str(archive_file),  # Store final path (with compression)
+                        mbox_offset=offset,
+                        mbox_length=length,
+                        thread_id=thread_id,
+                        subject=subject,
+                        from_addr=email_message.get("From"),
+                        to_addr=email_message.get("To"),
+                        cc_addr=email_message.get("Cc"),
+                        date=email_message.get("Date"),
+                        body_preview=body_preview,
+                        checksum=checksum,
+                        size_bytes=len(email_message.as_bytes()),
+                        labels=labels,
+                        record_run=False,  # Don't record per-message, we'll record once at end
+                    )
 
-                # Add to known set and batch tracking
-                self._known_rfc_ids.add(rfc_message_id)
-                batch_rfc_ids.append(rfc_message_id)
-                archived_count += 1
+                    # Add to known set and batch tracking
+                    self._known_rfc_ids.add(rfc_message_id)
+                    batch_rfc_ids.append(rfc_message_id)
+                    archived_count += 1
 
-                # Commit at interval
-                if archived_count % commit_interval == 0:
-                    self.db.commit()
-                    logger.debug(f"Committed {archived_count} messages")
+                    # Report progress
+                    if progress_callback:
+                        progress_callback(gmail_id, subject, "success")
+
+                    # Commit at interval
+                    if archived_count % commit_interval == 0:
+                        self.db.commit()
+                        # Update session progress if tracking
+                        if session_id:
+                            self.db.update_session_progress(session_id, archived_count)
+                        logger.debug(f"Committed {archived_count} messages")
+
+                except Exception as e:
+                    # Log error but continue with next message
+                    logger.error(f"Failed to archive message {gmail_id}: {e}")
+                    failed_count += 1
+                    subject = email_message.get("Subject", "No Subject")
+                    if progress_callback:
+                        progress_callback(gmail_id, subject, "error")
 
             # Flush buffered data to file without calling fsync
             # The mbox object's internal file handle should be flushed
@@ -470,30 +292,62 @@ class HybridStorage:
 
             # Single fsync at END of batch (critical for performance)
             # This is the ONLY fsync for the entire batch
-            with open(mbox_path, "r+b") as sync_file:
-                os.fsync(sync_file.fileno())
+            if mbox_path.exists():
+                with open(mbox_path, "r+b") as sync_file:
+                    os.fsync(sync_file.fileno())
 
             # Final commit
             self.db.commit()
 
-            # Batch validation at end (not per-message)
-            self._validate_batch_consistency(batch_rfc_ids)
+            # Update session progress one final time
+            if session_id and archived_count > 0:
+                self.db.update_session_progress(session_id, archived_count)
 
-            # Compress if requested
-            if compression:
-                logger.debug(f"Compressing with {compression}")
-                self._compress_file(mbox_path, archive_file, compression)
-                # Remove uncompressed file AND lock
-                mbox_path.unlink()
-                if lock_file.exists():
-                    lock_file.unlink()
+            # Determine final file path
+            final_path = mbox_path
 
-            logger.info(
-                f"Batch archived {archived_count} messages "
-                f"(skipped {skipped_count} duplicates) to {archive_file}"
-            )
+            # Only finalize (validate/compress) if NOT interrupted
+            if archived_count > 0 and not interrupted:
+                # Batch validation at end (not per-message)
+                self._validate_batch_consistency(batch_rfc_ids)
 
-            return (archived_count, skipped_count)
+                # Compress if requested
+                if compression:
+                    logger.debug(f"Compressing with {compression}")
+                    self._compress_file(mbox_path, archive_file, compression)
+                    # Remove uncompressed file AND lock
+                    mbox_path.unlink()
+                    if lock_file.exists():
+                        lock_file.unlink()
+                    final_path = archive_file
+
+                # Mark session as complete
+                if session_id:
+                    self.db.complete_session(session_id)
+
+                # Record in audit trail
+                self.db.record_archive_run(
+                    operation="archive",
+                    messages_count=archived_count,
+                    archive_file=str(final_path),
+                )
+
+                logger.info(
+                    f"Batch archived {archived_count} messages "
+                    f"(skipped {skipped_count} duplicates) to {final_path}"
+                )
+            elif interrupted:
+                logger.warning(
+                    f"Interrupted: saved {archived_count}/{len(messages)} messages to {mbox_path}"
+                )
+
+            return {
+                "archived": archived_count,
+                "skipped": skipped_count,
+                "failed": failed_count,
+                "interrupted": interrupted,
+                "actual_file": str(final_path),
+            }
 
         except Exception as e:
             # Rollback database

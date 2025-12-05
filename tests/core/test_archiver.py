@@ -275,9 +275,8 @@ class TestArchiveMessagesIntegration:
         mock_db.close.return_value = None
         mock_db_class.return_value = mock_db
 
-        # Mock HybridStorage
+        # Mock HybridStorage - we set the return value inside the tmpdir block
         mock_storage = Mock()
-        mock_storage.archive_message.return_value = (0, len(test_email))
         mock_storage_class.return_value = mock_storage
 
         # Create archiver and archive
@@ -285,6 +284,15 @@ class TestArchiveMessagesIntegration:
             output_file = Path(tmpdir) / "archive.mbox"
             # Create the file so it exists for size check
             output_file.touch()
+
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
 
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
 
@@ -320,13 +328,21 @@ class TestArchiveMessagesIntegration:
 
         # Mock HybridStorage
         mock_storage = Mock()
-        mock_storage.archive_message.return_value = (0, len(test_email))
         mock_storage_class.return_value = mock_storage
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox.gz"
             # Create the file so it exists for size check
             output_file.touch()
+
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
 
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
 
@@ -359,13 +375,21 @@ class TestArchiveMessagesIntegration:
 
         # Mock HybridStorage - it handles lock file cleanup internally
         mock_storage = Mock()
-        mock_storage.archive_message.return_value = (0, len(test_email))
         mock_storage_class.return_value = mock_storage
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox"
             output_file.touch()
             lock_file = Path(str(output_file) + ".lock")
+
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
 
             # Create orphaned lock file
             lock_file.touch()
@@ -402,19 +426,27 @@ class TestArchiveMessagesIntegration:
 
         # Mock HybridStorage
         mock_storage = Mock()
-        mock_storage.archive_message.return_value = (0, len(test_email))
         mock_storage_class.return_value = mock_storage
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox"
             output_file.touch()
 
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
+
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
 
             archiver.archive("3y", str(output_file), incremental=False)
 
-            # Verify HybridStorage.archive_message was called (which records in DB)
-            mock_storage.archive_message.assert_called_once()
+            # Verify HybridStorage.archive_messages_batch was called (which records in DB)
+            mock_storage.archive_messages_batch.assert_called_once()
 
     @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.DBManager")
@@ -445,22 +477,32 @@ class TestArchiveMessagesIntegration:
 
         # Mock HybridStorage
         mock_storage = Mock()
-        mock_storage.archive_message.return_value = (0, len(test_email))
         mock_storage_class.return_value = mock_storage
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox"
             output_file.touch()
 
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
+
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
 
             archiver.archive("3y", str(output_file), incremental=False)
 
-            # Verify HybridStorage.archive_message was called with message
-            mock_storage.archive_message.assert_called_once()
-            call_args = mock_storage.archive_message.call_args
-            # Check gmail_id was passed
-            assert call_args.kwargs["gmail_id"] == "msg1"
+            # Verify HybridStorage.archive_messages_batch was called with messages
+            mock_storage.archive_messages_batch.assert_called_once()
+            call_args = mock_storage.archive_messages_batch.call_args
+            # Check messages list was passed with correct gmail_id
+            messages_arg = call_args.kwargs.get("messages") or call_args.args[0]
+            assert len(messages_arg) == 1
+            assert messages_arg[0][1] == "msg1"  # gmail_id is second element of tuple
 
 
 class TestDeleteArchivedMessages:
@@ -543,20 +585,20 @@ class TestAtomicOperations:
             assert location[2] > 0, "Length should be positive"
             db.close()
 
+    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("builtins.print")
-    def test_atomic_rollback_on_database_failure(self, mock_print: Mock) -> None:
-        """Test that database failure rolls back and doesn't leave orphaned mbox entries."""
+    def test_atomic_rollback_on_database_failure(
+        self, mock_print: Mock, mock_storage_class: Mock, mock_db_class: Mock
+    ) -> None:
+        """Test that database failure is handled gracefully with batch archiving."""
         import tempfile
         from pathlib import Path
-        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
-            db_path = temp_path / "test.db"
             mbox_path = temp_path / "test.mbox"
-
-            # Create v1.1 database schema
-            self._create_v11_db(db_path)
+            mbox_path.touch()
 
             # Setup mock client
             mock_client = Mock()
@@ -573,44 +615,31 @@ class TestAtomicOperations:
             mock_client.get_messages_batch.return_value = mock_messages
             mock_client.decode_message_raw.return_value = test_email
 
-            # Mock HybridStorage to fail on second message
-            from collections.abc import Callable
-            from typing import Any
+            # Mock DBManager
+            mock_db = Mock()
+            mock_db.close.return_value = None
+            mock_db_class.return_value = mock_db
 
-            original_archive: Callable[..., Any] | None = None
-            call_count = [0]
+            # Mock HybridStorage to return partial success with 1 failure
+            mock_storage = Mock()
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,  # One success
+                "skipped": 0,
+                "failed": 1,  # One failure
+                "interrupted": False,
+                "actual_file": str(mbox_path),
+            }
+            mock_storage_class.return_value = mock_storage
 
-            def failing_archive(*args: Any, **kwargs: Any) -> Any:
-                """Fail on second call to simulate database failure."""
-                call_count[0] += 1
-                if call_count[0] == 2:
-                    raise Exception("Database failure simulation")
-                assert original_archive is not None
-                return original_archive(*args, **kwargs)
+            # Archive should handle the failure gracefully
+            archiver = ArchiverFacade(mock_client, state_db_path=str(temp_path / "state.db"))
 
-            # Patch HybridStorage.archive_message to fail on second message
-            patch_target = "gmailarchiver.data.hybrid_storage.HybridStorage.archive_message"
-            with patch(patch_target) as mock_arch:
-                # Store original and set up side effect
-                from gmailarchiver.data.db_manager import DBManager as RealDB
-                from gmailarchiver.data.hybrid_storage import HybridStorage
+            # The archiving should continue and report partial success
+            result = archiver.archive("3y", str(mbox_path), incremental=False)
 
-                db = RealDB(str(db_path))
-                storage = HybridStorage(db)
-                original_archive = storage.archive_message
-                mock_arch.side_effect = failing_archive
-
-                # Archive should handle the failure gracefully
-                archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
-
-                # The archiving should continue and report partial success
-                result = archiver.archive("3y", str(mbox_path), incremental=False)
-
-                # Should have 1 success and 1 failure
-                assert result["archived_count"] >= 0
-                assert result["failed_count"] >= 0
-
-            db.close()
+            # Should have 1 success and 1 failure
+            assert result["archived_count"] == 1
+            assert result["failed_count"] == 1
 
     @patch("builtins.print")
     def test_automatic_validation_after_archiving(self, mock_print: Mock) -> None:
@@ -1004,10 +1033,32 @@ class TestArchiveWithOperationHandle:
         mock_db.close.return_value = None
         mock_db_class.return_value = mock_db
 
-        # Setup mock HybridStorage
+        # Setup mock HybridStorage with side_effect that calls progress callback
         mock_storage = Mock()
-        # Return (offset, length) tuple to indicate successful archive (not duplicate)
-        mock_storage.archive_message.return_value = (0, 100)
+
+        def batch_side_effect(
+            messages,
+            archive_file,
+            compression=None,
+            commit_interval=100,
+            progress_callback=None,
+            interrupt_event=None,
+            session_id=None,
+        ):
+            # Call progress callback for each message to simulate real behavior
+            if progress_callback:
+                for msg, gmail_id, thread_id, labels in messages:
+                    subject = msg.get("Subject", "Test Subject")
+                    progress_callback(gmail_id, subject, "success")
+            return {
+                "archived": len(messages),
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(archive_file),
+            }
+
+        mock_storage.archive_messages_batch.side_effect = batch_side_effect
         mock_storage_class.return_value = mock_storage
 
         # Setup mock operation handle
@@ -1033,11 +1084,9 @@ class TestArchiveWithOperationHandle:
                 "Operation handle update_progress() should be called"
             )
 
-            # Verify we logged processing messages
+            # Verify we logged fetching messages
             log_calls = [call[0][0] for call in mock_operation.log.call_args_list]
-            assert any("Processing" in call for call in log_calls), (
-                "Should log 'Processing X messages'"
-            )
+            assert any("Fetching" in call for call in log_calls), "Should log 'Fetching X messages'"
 
             # Verify we logged success for each message
             # Note: v1.3.5+ removed duplicate severity symbols
@@ -1079,13 +1128,20 @@ class TestArchiveWithOperationHandle:
 
         # Setup mock HybridStorage
         mock_storage = Mock()
-        # Return (offset, length) tuple to indicate successful archive (not duplicate)
-        mock_storage.archive_message.return_value = (0, 100)
         mock_storage_class.return_value = mock_storage
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox"
             output_file.touch()
+
+            # Set the mock return value now that we know the output path
+            mock_storage.archive_messages_batch.return_value = {
+                "archived": 1,
+                "skipped": 0,
+                "failed": 0,
+                "interrupted": False,
+                "actual_file": str(output_file),
+            }
 
             archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
 

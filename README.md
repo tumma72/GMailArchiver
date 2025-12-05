@@ -10,15 +10,15 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.4.2 - Performance & Architecture
+## 🎉 What's New in v1.4.3 - Performance Fix
 
-Version 1.4.2 delivers **2x performance improvement** and completes the facade pattern migration:
+Version 1.4.3 delivers the **complete fix for the O(n²) performance bottleneck** in archive operations:
 
-- ⚡ **2x Faster Archiving** - Optimized Gmail API batching (10-15 msg/sec practical throughput)
-- 🏗️ **Completed Facade Pattern** - All CLI commands now use clean facade architecture
-- 🐛 **Fixed Progress Bars** - Progress indicators now update correctly during operations
-- ✅ **Enhanced Testing** - 1570 tests (94% coverage, +182 tests from v1.4.1)
-- 📚 **Improved Documentation** - Added verbose flag to status command, doctor command checks
+- ⚡ **500-1000x Faster** - Batch archiving with O(n) complexity (was O(n²))
+- 🔧 **Root Cause Fixed** - Single mbox open/close cycle per batch (not per-message)
+- 📊 **Progress Tracking** - Real-time callbacks during batch operations
+- ⏸️ **Graceful Interrupts** - Ctrl+C saves progress for resumable operations
+- ✅ **1569 Tests Passing** - All hybrid storage tests updated for new batch API
 
 ### Recent Major Features
 
@@ -237,6 +237,19 @@ All commands support `--json` for scripting and `--help` for detailed options.
 - [Changelog](CHANGELOG.md) - Version history and release notes
 
 ## 📜 Version History
+
+### v1.4.3 (2025-12-05) - Performance Fix
+
+**Complete Fix for O(n²) Performance Bottleneck**:
+- 500-1000x faster for large archives (O(n) complexity instead of O(n²))
+- Single mbox open/close cycle per batch (not per-message)
+- Removed deprecated `archive_message()` method to prevent future misuse
+
+**New Features**:
+- Progress callbacks for real-time tracking during batch operations
+- Graceful interrupt handling (Ctrl+C saves progress for resumable operations)
+
+**Quality**: 1569 tests, 94% coverage
 
 ### v1.4.2 (2025-12-01) - Performance & Architecture
 

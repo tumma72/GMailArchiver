@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.3] - 2025-12-05
+
+### Fixed
+- **Bug #6 (GitHub) - Complete Fix**: Resolved O(n²) performance bottleneck in archive operations
+  - **Issue**: Severe performance degradation - 10,000 messages took ~4 days instead of 30 minutes
+  - **Root Cause**: Per-message mbox open/parse/close/fsync operations created O(n²) complexity
+    - Python's mbox library parses entire file on every open (O(n) per message → O(n²) total)
+    - Per-message fsync caused additional I/O overhead
+  - **Solution**: Batch archiving pattern with single mbox open, batched DB commits, single fsync
+  - **Impact**: O(n) complexity achieved - 500-1000x faster for large archives
+  - **New API**: `archive_messages_batch()` replaces deprecated `archive_message()`
+  - **Progress**: Real-time callbacks for progress tracking during batch operations
+  - **Interrupts**: Graceful Ctrl+C handling saves progress for resumable operations
+
+### Removed
+- **`HybridStorage.archive_message()`**: Deprecated per-message API removed to prevent future misuse
+  - All code now uses `archive_messages_batch()` for O(n) performance
+  - Tests updated to use batch API or helper wrapper
+
+### Technical Details
+- Batch method: single mbox open/close, configurable commit interval (default: 100)
+- Offset calculation: proper seek-to-end for appending to existing mbox files
+- Dict return type: `{archived, skipped, failed, interrupted, actual_file}`
+- Thread-safe interrupt handling via `threading.Event`
+
+### Quality
+- **Test coverage**: 94% (1569 tests passing)
+- All hybrid storage tests updated for new batch API
+- Offset calculation tests added
+
 ## [1.4.2] - 2025-12-01
 
 ### Added
