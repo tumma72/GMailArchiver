@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.4] - 2025-12-05
+
+### Fixed
+- **CI Test Fixes**: Repaired two test failures unrelated to performance fix
+  - `test_run_diagnostics_all_checks_pass`: Fixed mock target (was patching facade, now patches runner)
+  - `test_cleanup_keeps_most_recent`: Fixed file ordering (sort by filename for reliable timestamp ordering)
+
 ## [1.4.3] - 2025-12-05
 
 ### Fixed
