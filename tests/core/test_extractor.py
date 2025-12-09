@@ -20,22 +20,26 @@ from gmailarchiver.data.db_manager import DBManager
 
 def test_init_with_existing_db(temp_db: Path) -> None:
     """Test initialization with existing database."""
-    extractor = MessageExtractor(temp_db)
-    assert extractor.db_path == temp_db
+    db_manager = DBManager(str(temp_db))
+    extractor = MessageExtractor(db_manager)
+    assert extractor.db_manager == db_manager
     extractor.close()
 
 
 def test_init_with_missing_db(temp_dir: Path) -> None:
     """Test initialization with missing database."""
     missing_db = temp_dir / "nonexistent.db"
-    with pytest.raises(FileNotFoundError, match="Database not found"):
-        MessageExtractor(missing_db)
+    # DBManager will raise FileNotFoundError when initialized with missing db
+    with pytest.raises(FileNotFoundError):
+        db_manager = DBManager(str(missing_db), auto_create=False)
+        MessageExtractor(db_manager)
 
 
 def test_context_manager(temp_db: Path) -> None:
     """Test context manager protocol."""
-    with MessageExtractor(temp_db) as extractor:
-        assert extractor.db_path == temp_db
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
+        assert extractor.db_manager == db_manager
     # Database should be closed after context
 
 
@@ -48,7 +52,8 @@ def test_extract_by_gmail_id_success(
     populated_db: Path, uncompressed_mbox: Path, sample_message: bytes
 ) -> None:
     """Test extracting message by Gmail ID."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_gmail_id("msg001", output_path=None)
         # Use the actual sample message length from the fixture (216 bytes)
         assert len(message_bytes) == 216
@@ -61,7 +66,8 @@ def test_extract_by_gmail_id_to_file(
     """Test extracting message to file."""
     output_file = temp_dir / "extracted.eml"
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         extractor.extract_by_gmail_id("msg001", output_path=output_file)
 
     assert output_file.exists()
@@ -71,7 +77,8 @@ def test_extract_by_gmail_id_to_file(
 
 def test_extract_by_gmail_id_not_found(populated_db: Path, uncompressed_mbox: Path) -> None:
     """Test extracting non-existent message by Gmail ID."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         with pytest.raises(ExtractorError, match="Message not found"):
             extractor.extract_by_gmail_id("nonexistent")
 
@@ -94,7 +101,8 @@ def test_extract_by_gmail_id_missing_archive(populated_db: Path) -> None:
     if archive_path.exists():
         archive_path.unlink()
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         with pytest.raises(ExtractorError, match="Archive file not found"):
             extractor.extract_by_gmail_id("msg001")
 
@@ -106,7 +114,8 @@ def test_extract_by_gmail_id_missing_archive(populated_db: Path) -> None:
 
 def test_extract_by_rfc_message_id_success(populated_db: Path, uncompressed_mbox: Path) -> None:
     """Test extracting message by RFC Message-ID."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_rfc_message_id(
             "<test001@example.com>", output_path=None
         )
@@ -115,7 +124,8 @@ def test_extract_by_rfc_message_id_success(populated_db: Path, uncompressed_mbox
 
 def test_extract_by_rfc_message_id_not_found(populated_db: Path, uncompressed_mbox: Path) -> None:
     """Test extracting non-existent message by RFC Message-ID."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         with pytest.raises(ExtractorError, match="Message not found"):
             extractor.extract_by_rfc_message_id("<nonexistent@example.com>")
 
@@ -127,7 +137,8 @@ def test_extract_by_rfc_message_id_not_found(populated_db: Path, uncompressed_mb
 
 def test_extract_from_gzip(populated_db: Path, compressed_mbox_gzip: Path) -> None:
     """Test extracting from gzip-compressed archive."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_gmail_id("msg003", output_path=None)
         # gzip-compressed archive stores the same logical message content but with
         # a different envelope From line, so the total length is 220 bytes.
@@ -156,14 +167,16 @@ def test_extract_from_lzma(populated_db: Path, temp_dir: Path, sample_message: b
         )
 
     # Extract
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_gmail_id("msg004", output_path=None)
         assert len(message_bytes) == len(msg)
 
 
 def test_compression_format_detection(populated_db: Path) -> None:
     """Test compression format detection."""
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         assert extractor._get_compression_format(Path("test.mbox.gz")) == "gzip"
         assert extractor._get_compression_format(Path("test.mbox.xz")) == "lzma"
         assert extractor._get_compression_format(Path("test.mbox.lzma")) == "lzma"
@@ -180,7 +193,8 @@ def test_batch_extract_success(populated_db: Path, uncompressed_mbox: Path, temp
     """Test batch extraction of multiple messages."""
     output_dir = temp_dir / "extracted"
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         stats = extractor.batch_extract(["msg001", "msg002"], output_dir)
 
     assert stats["extracted"] == 2
@@ -198,7 +212,8 @@ def test_batch_extract_partial_failure(
     """Test batch extraction with some failures."""
     output_dir = temp_dir / "extracted"
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         stats = extractor.batch_extract(["msg001", "nonexistent", "msg002"], output_dir)
 
     assert stats["extracted"] == 2
@@ -213,7 +228,8 @@ def test_batch_extract_creates_directory(
     """Test batch extraction creates output directory if it doesn't exist."""
     output_dir = temp_dir / "new" / "nested" / "dir"
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         stats = extractor.batch_extract(["msg001"], output_dir)
 
     assert output_dir.exists()
@@ -244,7 +260,8 @@ def test_extract_with_invalid_offset(temp_db: Path, temp_dir: Path) -> None:
         )
 
     # Try to extract - should fail or return partial data
-    with MessageExtractor(temp_db) as extractor:
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
         # This may not raise an error but will return less data than expected
         message_bytes = extractor.extract_by_gmail_id("msg_invalid", output_path=None)
         assert len(message_bytes) < 100  # Won't get full 100 bytes
@@ -269,7 +286,8 @@ def test_extract_from_corrupted_gzip(temp_db: Path, temp_dir: Path) -> None:
         )
 
     # Try to extract - should raise ExtractorError
-    with MessageExtractor(temp_db) as extractor:
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
         with pytest.raises(ExtractorError, match="Failed to extract"):
             extractor.extract_by_gmail_id("msg_corrupted")
 
@@ -298,7 +316,8 @@ def test_extract_empty_message(temp_db: Path, temp_dir: Path) -> None:
         )
 
     # Extract
-    with MessageExtractor(temp_db) as extractor:
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_gmail_id("msg_empty", output_path=None)
         assert len(message_bytes) == 0
 
@@ -312,7 +331,8 @@ def test_extract_with_special_characters_in_path(populated_db: Path, temp_dir: P
     """
     output_file = temp_dir / "test file [with] (special) chars.eml"
 
-    with MessageExtractor(populated_db) as extractor:
+    db_manager = DBManager(str(populated_db))
+    with MessageExtractor(db_manager) as extractor:
         extractor.extract_by_gmail_id("msg001", output_path=output_file)
 
     assert output_file.exists()
@@ -345,7 +365,8 @@ def test_extract_from_zstd_compressed_archive(temp_db: Path, temp_dir: Path) -> 
         )
 
     # Extract
-    with MessageExtractor(temp_db) as extractor:
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
         message_bytes = extractor.extract_by_gmail_id("msg_zst", output_path=None)
         assert message_bytes == msg_content
 
@@ -362,7 +383,8 @@ def test_extract_from_compressed_with_invalid_format_raises_error(
     test_path = temp_dir / "archive.mbox"
     test_path.write_bytes(b"test content")
 
-    with MessageExtractor(temp_db) as extractor:
+    db_manager = DBManager(str(temp_db))
+    with MessageExtractor(db_manager) as extractor:
         with pytest.raises(ExtractorError, match="Unsupported compression format"):
             # Call private method directly with invalid format
             extractor._extract_from_compressed(test_path, "bz2", 0, 10)

@@ -526,8 +526,26 @@ class TaskSequenceImpl:
             # Show progress if total is known
             if task.total is not None and task.total > 0:
                 pct = (task.completed / task.total) * 100
-                text.append(f" [{task.completed:,}/{task.total:,}]", style="dim")
-                text.append(f" ({pct:.0f}%)", style="cyan")
+
+                # Build graphical progress bar (UI/UX guidelines Section 7.2)
+                bar_width = 20
+                filled = int(bar_width * pct / 100)
+                bar_filled = "━" * filled
+                bar_empty = "─" * (bar_width - filled)
+
+                text.append(" [", style="dim")
+                text.append(bar_filled, style="green")
+                text.append(bar_empty, style="dim")
+                text.append("]", style="dim")
+                text.append(f" {pct:.0f}%", style="cyan")
+                text.append(" • ", style="dim")
+                text.append(f"{task.completed:,}/{task.total:,}", style="dim")
+
+                # Calculate and show ETA
+                eta = self._calculate_eta(task)
+                if eta:
+                    text.append(" • ", style="dim")
+                    text.append(eta, style="dim")
             else:
                 text.append("...", style="dim")
         elif task.status == TaskStatus.SUCCESS:
@@ -543,6 +561,39 @@ class TaskSequenceImpl:
             text.append(task.description, style="dim")
 
         return text
+
+    def _calculate_eta(self, task: TaskState) -> str | None:
+        """Calculate estimated time remaining for a task.
+
+        Args:
+            task: Task state with progress info
+
+        Returns:
+            Human-readable ETA string (e.g., "2m 30s remaining") or None
+        """
+        if task.total is None or task.completed == 0:
+            return None
+
+        elapsed = time.time() - task.start_time
+        if elapsed <= 0:
+            return None
+
+        rate = task.completed / elapsed
+        remaining = task.total - task.completed
+
+        if rate > 0:
+            eta_seconds = remaining / rate
+            if eta_seconds < 60:
+                return f"{eta_seconds:.0f}s remaining"
+            elif eta_seconds < 3600:
+                minutes = int(eta_seconds // 60)
+                seconds = int(eta_seconds % 60)
+                return f"{minutes}m {seconds}s remaining"
+            else:
+                hours = int(eta_seconds // 3600)
+                minutes = int((eta_seconds % 3600) // 60)
+                return f"{hours}h {minutes}m remaining"
+        return None
 
     def _log(self, message: str, level: str) -> None:
         """Store a log message and optionally display it in the log window."""

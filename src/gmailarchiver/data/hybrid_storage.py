@@ -29,7 +29,10 @@ from contextlib import closing
 from dataclasses import dataclass
 from email import policy
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ..core.search._types import SearchResults
 
 from .db_manager import DBManager
 
@@ -57,6 +60,17 @@ class ConsolidationResult:
     total_messages: int
     duplicates_removed: int
     messages_consolidated: int
+
+
+@dataclass
+class ArchiveStats:
+    """Statistics about archived messages."""
+
+    total_messages: int
+    archive_files: list[str]
+    schema_version: str
+    database_size_bytes: int
+    recent_runs: list[dict[str, Any]]
 
 
 class HybridStorage:
@@ -1197,6 +1211,254 @@ class HybridStorage:
                     shutil.copyfileobj(f_in, f_out)
         else:
             raise ValueError(f"Unsupported compression format: {compression}")
+
+    # ==================== READ OPERATIONS ====================
+
+    def search_messages(
+        self,
+        query: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        from_addr: str | None = None,
+        to_addr: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> SearchResults:
+        """
+        Search archived messages using full-text search and metadata filters.
+
+        This is a read-only gateway method that delegates to DBManager while
+        providing a consistent interface for the core layer.
+
+        Args:
+            query: Full-text search query (searches subject, from, to, body_preview)
+            limit: Maximum number of results to return (default: 100)
+            offset: Number of results to skip for pagination (default: 0)
+            from_addr: Filter by from address (exact match)
+            to_addr: Filter by to address (exact match)
+            date_from: Filter by date >= this value (ISO 8601 format)
+            date_to: Filter by date <= this value (ISO 8601 format)
+
+        Returns:
+            SearchResults object with query results and metadata
+        """
+        import time
+
+        from ..core.search._types import MessageSearchResult, SearchResults
+
+        start_time = time.time()
+
+        # Delegate to DBManager with appropriate parameters
+        # Note: DBManager.search_messages uses fulltext parameter instead of query
+        # and date_start/date_end instead of date_from/date_to
+        fulltext = query if query else None
+
+        # Get total count first (without limit)
+        all_results = self.db.search_messages(
+            fulltext=fulltext,
+            from_addr=from_addr,
+            to_addr=to_addr,
+            subject=None,  # Already covered by fulltext search
+            date_start=date_from,
+            date_end=date_to,
+            limit=999999,  # Get all to determine total count
+        )
+        total_count = len(all_results)
+
+        # Now apply pagination
+        paginated_results = all_results[offset : offset + limit]
+
+        # Convert database results to MessageSearchResult objects
+        search_results = []
+        for result in paginated_results:
+            search_results.append(
+                MessageSearchResult(
+                    gmail_id=result.get("gmail_id", ""),
+                    rfc_message_id=result.get("rfc_message_id", ""),
+                    subject=result.get("subject", ""),
+                    from_addr=result.get("from_addr", ""),
+                    to_addr=result.get("to_addr"),
+                    date=result.get("date", ""),
+                    body_preview=result.get("body_preview"),
+                    archive_file=result.get("archive_file", ""),
+                    mbox_offset=result.get("mbox_offset", 0),
+                    relevance_score=None,  # DBManager doesn't provide relevance scores yet
+                )
+            )
+
+        execution_time_ms = (time.time() - start_time) * 1000
+
+        return SearchResults(
+            total_results=total_count,
+            results=search_results,
+            query=query,
+            execution_time_ms=execution_time_ms,
+        )
+
+    def get_message(self, gmail_id: str) -> dict[str, Any] | None:
+        """
+        Retrieve message metadata by Gmail ID.
+
+        Args:
+            gmail_id: Gmail message ID
+
+        Returns:
+            Dictionary with message metadata, or None if not found
+        """
+        return self.db.get_message_by_gmail_id(gmail_id)
+
+    def get_message_by_rfc_id(self, rfc_message_id: str) -> dict[str, Any] | None:
+        """
+        Retrieve message metadata by RFC 2822 Message-ID.
+
+        Args:
+            rfc_message_id: RFC 2822 Message-ID header value
+
+        Returns:
+            Dictionary with message metadata, or None if not found
+        """
+        return self.db.get_message_by_rfc_message_id(rfc_message_id)
+
+    def extract_message_content(self, gmail_id: str) -> email.message.Message:
+        """
+        Extract full message content from mbox archive.
+
+        This reads the actual email message from the mbox file using the
+        offset and length stored in the database.
+
+        Args:
+            gmail_id: Gmail message ID
+
+        Returns:
+            email.message.Message object with full message content
+
+        Raises:
+            HybridStorageError: If message not found or archive file missing
+        """
+        # Get message location from database
+        record = self.db.get_message_by_gmail_id(gmail_id)
+        if not record:
+            raise HybridStorageError(f"Message {gmail_id} not found in database")
+
+        archive_file = Path(record["archive_file"])
+        offset = record["mbox_offset"]
+        length = record["mbox_length"]
+
+        # Check if archive file exists
+        if not archive_file.exists():
+            raise HybridStorageError(f"Archive file {archive_file} not found")
+
+        # Handle compressed archives - decompress to temp file
+        compression = self._detect_compression(archive_file)
+        if compression:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+
+            try:
+                self._decompress_file(archive_file, tmp_path, compression)
+                read_path = tmp_path
+            except Exception as e:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise HybridStorageError(f"Failed to decompress {archive_file}: {e}") from e
+        else:
+            read_path = archive_file
+            tmp_path = None
+
+        try:
+            # Read message at offset
+            with open(read_path, "rb") as f:
+                f.seek(offset)
+                message_bytes = f.read(length)
+
+            # Parse as email message
+            return email.message_from_bytes(message_bytes, policy=policy.default)
+
+        finally:
+            # Clean up temp file if created
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink()
+
+    # ==================== STATISTICS OPERATIONS ====================
+
+    def get_archive_stats(self) -> ArchiveStats:
+        """
+        Get comprehensive statistics about archived messages.
+
+        Returns:
+            ArchiveStats object with total messages, archive files, schema version,
+            database size, and recent runs
+        """
+        # Get total message count
+        total_messages = self.db.get_message_count()
+
+        # Get distinct archive files
+        cursor = self.db.conn.execute(
+            "SELECT DISTINCT archive_file FROM messages ORDER BY archive_file"
+        )
+        archive_files = [row[0] for row in cursor.fetchall()]
+
+        # Get schema version
+        schema_version = self.db.schema_version
+
+        # Get database file size
+        database_size_bytes = self.db.db_path.stat().st_size
+
+        # Get recent runs
+        recent_runs = self.db.get_archive_runs(limit=10)
+
+        return ArchiveStats(
+            total_messages=total_messages,
+            archive_files=archive_files,
+            schema_version=schema_version,
+            database_size_bytes=database_size_bytes,
+            recent_runs=recent_runs,
+        )
+
+    def get_message_ids_for_archive(self, archive_file: str) -> set[str]:
+        """
+        Get all Gmail message IDs for a specific archive file.
+
+        Args:
+            archive_file: Path to archive file
+
+        Returns:
+            Set of gmail_id values for the archive file
+        """
+        return self.db.get_gmail_ids_for_archive(archive_file)
+
+    def get_recent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Get recent archive operation history.
+
+        Args:
+            limit: Maximum number of runs to return (default: 10)
+
+        Returns:
+            List of archive run dictionaries, ordered by timestamp descending
+        """
+        return self.db.get_archive_runs(limit=limit)
+
+    def is_message_archived(self, gmail_id: str) -> bool:
+        """
+        Check if a message is already archived.
+
+        Args:
+            gmail_id: Gmail message ID to check
+
+        Returns:
+            True if message exists in database, False otherwise
+        """
+        return self.db.is_archived(gmail_id)
+
+    def get_message_count(self) -> int:
+        """
+        Get total number of archived messages.
+
+        Returns:
+            Total count of messages in the database
+        """
+        return self.db.get_message_count()
 
     # ==================== CONTEXT MANAGER ====================
 

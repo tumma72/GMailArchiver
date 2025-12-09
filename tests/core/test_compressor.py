@@ -97,6 +97,14 @@ def state_db(temp_dir):
     return db_path
 
 
+@pytest.fixture
+def db_manager(state_db):
+    """Create a DBManager instance for tests."""
+    manager = DBManager(str(state_db), validate_schema=False)
+    yield manager
+    manager.close()
+
+
 def create_test_mbox(path: Path, message_count: int = 10) -> int:
     """Create a test mbox file with specified number of messages.
 
@@ -200,7 +208,8 @@ def test_compress_single_mbox_to_zstd(temp_dir, state_db):
     original_size = create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     # Execute
     result = compressor.compress(
@@ -234,7 +243,8 @@ def test_compress_single_mbox_to_gzip(temp_dir, state_db):
     original_size = create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="gzip", in_place=False, dry_run=False
     )
@@ -252,7 +262,8 @@ def test_compress_single_mbox_to_lzma(temp_dir, state_db):
     original_size = create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="lzma", in_place=False, dry_run=False
     )
@@ -273,7 +284,8 @@ def test_compress_in_place(temp_dir, state_db):
     original_size = create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=True, dry_run=False
     )
@@ -295,7 +307,8 @@ def test_compress_in_place_updates_db(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     compressor.compress(files=[str(mbox_path)], format="zstd", in_place=True, dry_run=False)
 
     # Verify database updated
@@ -318,7 +331,8 @@ def test_compress_in_place_keep_original_preserves_source_file(temp_dir, state_d
     create_test_mbox(mbox_path, message_count=5)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     compressor.compress(
         files=[str(mbox_path)],
         format="zstd",
@@ -354,7 +368,8 @@ def test_compress_dry_run_no_actual_compression(temp_dir, state_db):
     original_size = create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=True
     )
@@ -380,7 +395,8 @@ def test_compress_dry_run_shows_space_savings(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=50)  # Larger file for better estimate
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=True
     )
@@ -408,7 +424,8 @@ def test_compress_multiple_files(temp_dir, state_db):
     populate_db_from_mbox(state_db, mbox2)
     populate_db_from_mbox(state_db, mbox3)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox1), str(mbox2), str(mbox3)], format="zstd", in_place=False, dry_run=False
     )
@@ -441,7 +458,8 @@ def test_compress_batch_with_mixed_formats(temp_dir, state_db):
 
     populate_db_from_mbox(state_db, mbox1)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox1), str(mbox2)], format="zstd", in_place=False, dry_run=False
     )
@@ -461,7 +479,8 @@ def test_compress_updates_archive_file_paths(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     compressor.compress(files=[str(mbox_path)], format="gzip", in_place=False, dry_run=False)
 
     # Verify database has both old and new paths
@@ -491,7 +510,8 @@ def test_compress_preserves_mbox_offsets(temp_dir, state_db):
     finally:
         db.close()
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     compressor.compress(files=[str(mbox_path)], format="zstd", in_place=True, dry_run=False)
 
     # Verify message count preserved
@@ -509,7 +529,8 @@ def test_compress_preserves_mbox_offsets(temp_dir, state_db):
 
 def test_compress_nonexistent_file(temp_dir, state_db):
     """Test error handling for non-existent files."""
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     with pytest.raises(FileNotFoundError):
         compressor.compress(
@@ -522,7 +543,8 @@ def test_compress_invalid_compression_format(temp_dir, state_db):
     mbox_path = temp_dir / "test.mbox"
     create_test_mbox(mbox_path, message_count=10)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     with pytest.raises(ValueError, match="Unsupported compression format"):
         compressor.compress(files=[str(mbox_path)], format="invalid", in_place=False, dry_run=False)
@@ -530,7 +552,8 @@ def test_compress_invalid_compression_format(temp_dir, state_db):
 
 def test_compress_empty_file_list(temp_dir, state_db):
     """Test error handling for empty file list."""
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     with pytest.raises(ValueError, match="files cannot be empty"):
         compressor.compress(files=[], format="zstd", in_place=False, dry_run=False)
@@ -547,7 +570,8 @@ def test_compress_already_compressed_file(temp_dir, state_db):
         with gzip.open(compressed_path, "wb") as f_out:
             f_out.write(f_in.read())
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(compressed_path)], format="gzip", in_place=False, dry_run=False
     )
@@ -566,7 +590,8 @@ def test_compress_verifies_integrity_after_compression(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
     )
@@ -593,7 +618,8 @@ def test_compression_result_dataclass(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
     )
@@ -620,7 +646,8 @@ def test_compression_summary_includes_file_details(temp_dir, state_db):
     populate_db_from_mbox(state_db, mbox1)
     populate_db_from_mbox(state_db, mbox2)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox1), str(mbox2)], format="zstd", in_place=False, dry_run=False
     )
@@ -639,7 +666,8 @@ def test_compress_very_small_file(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=1)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
     )
@@ -657,7 +685,8 @@ def test_compress_large_batch(temp_dir, state_db):
         populate_db_from_mbox(state_db, mbox_path)
         files.append(str(mbox_path))
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(files=files, format="zstd", in_place=False, dry_run=False)
 
     assert result.files_compressed == 10
@@ -670,7 +699,8 @@ def test_compress_with_special_characters_in_filename(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
     )
@@ -689,7 +719,8 @@ def test_compress_tracks_execution_time(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=10)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     result = compressor.compress(
         files=[str(mbox_path)], format="zstd", in_place=False, dry_run=False
     )
@@ -704,7 +735,8 @@ def test_compress_different_formats_have_different_ratios(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=20)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     # Test with zstd
     result_zstd = compressor.compress(
@@ -728,7 +760,8 @@ def test_compress_preserves_message_count(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=message_count)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
     compressor.compress(files=[str(mbox_path)], format="zstd", in_place=True, dry_run=False)
 
     # Verify message count unchanged
@@ -754,7 +787,8 @@ def test_compressor_cleanup_on_verification_failure(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=5)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     # Mock verification to fail
     with patch.object(compressor, "_verify_compressed_file", return_value=False):
@@ -779,7 +813,8 @@ def test_unsupported_compression_format_raises_error(temp_dir, state_db):
     create_test_mbox(mbox_path, message_count=3)
     populate_db_from_mbox(state_db, mbox_path)
 
-    compressor = ArchiveCompressor(str(state_db))
+    db = DBManager(str(state_db), validate_schema=False)
+    compressor = ArchiveCompressor(db)
 
     # Try to compress with invalid format
     with pytest.raises(ValueError, match="Unsupported compression format"):

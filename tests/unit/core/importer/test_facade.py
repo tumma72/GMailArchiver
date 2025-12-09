@@ -18,14 +18,16 @@ class TestImporterFacadeInit:
 
     def test_init_minimal(self) -> None:
         """Test initialization with minimal parameters."""
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
-        assert facade.state_db_path == "/tmp/test.db"
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
+        assert facade.db_manager == mock_db
         assert facade.gmail_client is None
 
     def test_init_with_gmail_client(self) -> None:
         """Test initialization with Gmail client."""
+        mock_db = Mock()
         mock_client = Mock()
-        facade = ImporterFacade(state_db_path="/tmp/test.db", gmail_client=mock_client)
+        facade = ImporterFacade(db_manager=mock_db, gmail_client=mock_client)
         assert facade.gmail_client == mock_client
 
 
@@ -52,7 +54,8 @@ class TestImporterFacadeCountMessages:
         mock_reader.count_messages.return_value = 42
         mock_reader_class.return_value = mock_reader
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         count = facade.count_messages("/tmp/test.mbox")
 
         assert count == 42
@@ -78,7 +81,8 @@ class TestImporterFacadeCountMessages:
         mock_reader.count_messages.return_value = 10
         mock_reader_class.return_value = mock_reader
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         count = facade.count_messages("/tmp/test.mbox.gz")
 
         assert count == 10
@@ -89,7 +93,8 @@ class TestImporterFacadeCountMessages:
         """Test counting when file doesn't exist."""
         mock_exists.return_value = False
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         count = facade.count_messages("/tmp/missing.mbox")
 
         assert count == 0
@@ -99,7 +104,6 @@ class TestImporterFacadeCountMessages:
 class TestImporterFacadeImportArchive:
     """Tests for import_archive method."""
 
-    @patch("gmailarchiver.core.importer.facade.DBManager")
     @patch("gmailarchiver.core.importer.facade.FileScanner")
     @patch("gmailarchiver.core.importer.facade.MboxReader")
     @patch("gmailarchiver.core.importer.facade.GmailLookup")
@@ -114,7 +118,6 @@ class TestImporterFacadeImportArchive:
         mock_lookup_class: Mock,
         mock_reader_class: Mock,
         mock_scanner_class: Mock,
-        mock_db_class: Mock,
     ) -> None:
         """Test basic import flow without Gmail lookups."""
         # Mock Path.exists()
@@ -124,11 +127,6 @@ class TestImporterFacadeImportArchive:
         mock_time.time.side_effect = [1000.0, 1001.0]  # 1 second execution
 
         # Setup mocks
-        mock_db = Mock()
-        mock_db.__enter__ = Mock(return_value=mock_db)
-        mock_db.__exit__ = Mock(return_value=None)
-        mock_db_class.return_value = mock_db
-
         mock_scanner = Mock()
         mock_scanner.decompress_to_temp.return_value = (Path("/tmp/test.mbox"), False)
         mock_scanner_class.return_value = mock_scanner
@@ -159,7 +157,8 @@ class TestImporterFacadeImportArchive:
         mock_writer_class.return_value = mock_writer
 
         # Import
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         result = facade.import_archive("/tmp/test.mbox")
 
         assert isinstance(result, ImportResult)
@@ -174,7 +173,8 @@ class TestImporterFacadeImportArchive:
         """Test import when file doesn't exist."""
         mock_exists.return_value = False
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
 
         with pytest.raises(FileNotFoundError, match="Archive not found"):
             facade.import_archive("/tmp/missing.mbox")
@@ -211,7 +211,8 @@ class TestImporterFacadeImportMultiple:
         )
         mock_import.side_effect = [result1, result2]
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         multi_result = facade.import_multiple("/tmp/*.mbox")
 
         assert multi_result.total_files == 2
@@ -227,7 +228,8 @@ class TestImporterFacadeImportMultiple:
         mock_scanner.scan_pattern.return_value = []
         mock_scanner_class.return_value = mock_scanner
 
-        facade = ImporterFacade(state_db_path="/tmp/test.db")
+        mock_db = Mock()
+        facade = ImporterFacade(db_manager=mock_db)
         multi_result = facade.import_multiple("/tmp/*.mbox")
 
         assert multi_result.total_files == 0

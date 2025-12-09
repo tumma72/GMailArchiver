@@ -1260,6 +1260,157 @@ class DBManager:
         self.conn.commit()
         return cursor.rowcount
 
+    # ==================== QUERY METHODS ====================
+
+    def search_messages(
+        self,
+        fulltext: str | None = None,
+        from_addr: str | None = None,
+        to_addr: str | None = None,
+        subject: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """
+        Search messages using FTS5 fulltext search and metadata filters.
+
+        Args:
+            fulltext: Full-text search query (searches subject, from, to, body_preview)
+            from_addr: Filter by from address (exact match)
+            to_addr: Filter by to address (exact match)
+            subject: Filter by subject (partial match using LIKE)
+            date_start: Filter by date >= this value (ISO 8601 format)
+            date_end: Filter by date <= this value (ISO 8601 format)
+            limit: Maximum number of results to return (default: 100)
+
+        Returns:
+            List of message dictionaries matching the search criteria
+        """
+        # Build query based on whether we have fulltext search
+        if fulltext:
+            # Use FTS5 for fulltext search
+            query = """
+                SELECT m.gmail_id, m.rfc_message_id, m.thread_id, m.subject,
+                       m.from_addr, m.to_addr, m.cc_addr, m.date,
+                       m.archived_timestamp, m.archive_file, m.mbox_offset,
+                       m.mbox_length, m.body_preview, m.checksum,
+                       m.size_bytes, m.labels, m.account_id
+                FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ?
+            """
+            params: list[Any] = [fulltext]
+        else:
+            # Standard query without FTS
+            query = """
+                SELECT gmail_id, rfc_message_id, thread_id, subject,
+                       from_addr, to_addr, cc_addr, date,
+                       archived_timestamp, archive_file, mbox_offset,
+                       mbox_length, body_preview, checksum,
+                       size_bytes, labels, account_id
+                FROM messages
+                WHERE 1=1
+            """
+            params = []
+
+        # Add metadata filters (use m. prefix when FTS is active)
+        table_prefix = "m." if fulltext else ""
+
+        if from_addr:
+            query += f" AND {table_prefix}from_addr = ?"
+            params.append(from_addr)
+
+        if to_addr:
+            query += f" AND {table_prefix}to_addr = ?"
+            params.append(to_addr)
+
+        if subject:
+            query += f" AND {table_prefix}subject LIKE ?"
+            params.append(f"%{subject}%")
+
+        if date_start:
+            query += f" AND {table_prefix}date >= ?"
+            params.append(date_start)
+
+        if date_end:
+            query += f" AND {table_prefix}date <= ?"
+            params.append(date_end)
+
+        # Add limit
+        query += " LIMIT ?"
+        params.append(limit)
+
+        cursor = self.conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_gmail_ids_for_archive(self, archive_file: str) -> set[str]:
+        """
+        Get all Gmail message IDs for a specific archive file.
+
+        Args:
+            archive_file: Path to archive file
+
+        Returns:
+            Set of gmail_id values for the archive file
+        """
+        cursor = self.conn.execute(
+            "SELECT gmail_id FROM messages WHERE archive_file = ?",
+            (archive_file,),
+        )
+        return {row[0] for row in cursor.fetchall() if row[0]}
+
+    def get_message_count(self) -> int:
+        """
+        Get total number of archived messages.
+
+        Returns:
+            Total count of messages in the database
+        """
+        cursor = self.conn.execute("SELECT COUNT(*) FROM messages")
+        result = cursor.fetchone()
+        return int(result[0]) if result else 0
+
+    def get_archive_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Get recent archive run history.
+
+        Args:
+            limit: Maximum number of runs to return (default: 10)
+
+        Returns:
+            List of archive run dictionaries, ordered by timestamp descending
+            (most recent first). Each dict contains: run_id, run_timestamp,
+            query, messages_archived, archive_file
+        """
+        cursor = self.conn.execute(
+            """
+            SELECT run_id, run_timestamp, query, messages_archived,
+                   archive_file, account_id, operation_type
+            FROM archive_runs
+            ORDER BY run_timestamp DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def is_archived(self, gmail_id: str) -> bool:
+        """
+        Check if a message is already archived.
+
+        Args:
+            gmail_id: Gmail message ID to check
+
+        Returns:
+            True if message exists in database, False otherwise
+        """
+        cursor = self.conn.execute(
+            "SELECT 1 FROM messages WHERE gmail_id = ? LIMIT 1",
+            (gmail_id,),
+        )
+        return cursor.fetchone() is not None
+
     # ==================== CONTEXT MANAGER ====================
 
     def __enter__(self) -> DBManager:

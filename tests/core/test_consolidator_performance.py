@@ -101,7 +101,10 @@ def test_consolidate_10k_messages_performance(temp_dir: Path, state_db: Path) ->
     create_large_mbox(mbox2, 5000, state_db, offset=5000)
 
     # Consolidate
-    consolidator = ArchiveConsolidator(str(state_db))
+    from gmailarchiver.data.db_manager import DBManager
+
+    db_manager = DBManager(str(state_db), validate_schema=False)
+    consolidator = ArchiveConsolidator(db_manager)
     output_path = temp_dir / "consolidated.mbox"
 
     result = consolidator.consolidate(
@@ -136,7 +139,10 @@ def test_consolidate_1k_messages_quick(temp_dir: Path, state_db: Path) -> None:
     create_large_mbox(mbox2, 500, state_db, offset=500)
 
     # Consolidate
-    consolidator = ArchiveConsolidator(str(state_db))
+    from gmailarchiver.data.db_manager import DBManager
+
+    db_manager = DBManager(str(state_db), validate_schema=False)
+    consolidator = ArchiveConsolidator(db_manager)
     output_path = temp_dir / "consolidated.mbox"
 
     result = consolidator.consolidate(

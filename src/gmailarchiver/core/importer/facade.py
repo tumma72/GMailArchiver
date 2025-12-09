@@ -59,16 +59,16 @@ class ImporterFacade:
 
     def __init__(
         self,
-        state_db_path: str,
+        db_manager: DBManager,
         gmail_client: GmailClient | None = None,
     ) -> None:
         """Initialize importer facade.
 
         Args:
-            state_db_path: Path to SQLite database file
+            db_manager: Database manager for data operations
             gmail_client: Optional GmailClient for looking up real Gmail IDs
         """
-        self.state_db_path = state_db_path
+        self.db_manager = db_manager
         self.gmail_client = gmail_client
 
     def count_messages(self, archive_path: str | Path) -> int:
@@ -142,92 +142,89 @@ class ImporterFacade:
         mbox_path, is_temp = scanner.decompress_to_temp(archive_path)
 
         try:
-            # Open database with context manager
-            with DBManager(self.state_db_path, validate_schema=False, auto_create=True) as db:
-                # Initialize database writer
-                writer = DatabaseWriter(db)
-                writer.load_existing_ids()
+            # Initialize database writer
+            writer = DatabaseWriter(self.db_manager)
+            writer.load_existing_ids()
 
-                # Read messages with offset tracking
-                messages = list(reader.read_messages(mbox_path, str(archive_path)))
-                total_messages = len(messages)
+            # Read messages with offset tracking
+            messages = list(reader.read_messages(mbox_path, str(archive_path)))
+            total_messages = len(messages)
 
-                # Process each message
-                for msg_index, mbox_msg in enumerate(messages):
-                    try:
-                        # Extract RFC Message-ID
-                        rfc_message_id = reader.extract_rfc_message_id(mbox_msg.message)
+            # Process each message
+            for msg_index, mbox_msg in enumerate(messages):
+                try:
+                    # Extract RFC Message-ID
+                    rfc_message_id = reader.extract_rfc_message_id(mbox_msg.message)
 
-                        # Skip duplicates early if enabled
-                        if skip_duplicates and writer.is_duplicate(rfc_message_id):
-                            result.messages_skipped += 1
-                            if progress_callback:
-                                progress_callback(
-                                    msg_index + 1, total_messages, "Skipped duplicate"
-                                )
-                            continue
-
-                        # Look up Gmail ID if enabled
-                        gmail_id = None
-                        if gmail_lookup.is_enabled():
-                            if progress_callback:
-                                progress_callback(
-                                    msg_index + 1, total_messages, "Looking up Gmail ID..."
-                                )
-                            lookup_result = gmail_lookup.lookup_gmail_id(rfc_message_id)
-                            gmail_id = lookup_result.gmail_id
-                            if lookup_result.found:
-                                result.gmail_ids_found += 1
-                            else:
-                                result.gmail_ids_not_found += 1
-
-                        # Extract metadata
-                        metadata = reader.extract_metadata(
-                            msg=mbox_msg.message,
-                            archive_path=str(archive_path),
-                            offset=mbox_msg.offset,
-                            length=mbox_msg.length,
-                            account_id=account_id,
-                            gmail_id=gmail_id,
-                        )
-
-                        # Write to database
-                        write_result = writer.write_message(metadata, skip_duplicates)
-
-                        if write_result == WriteResult.IMPORTED:
-                            result.messages_imported += 1
-                            if progress_callback:
-                                gmail_status = (
-                                    f"Gmail ID: {gmail_id[:8]}..." if gmail_id else "No Gmail ID"
-                                )
-                                progress_callback(
-                                    msg_index + 1, total_messages, f"Imported ({gmail_status})"
-                                )
-                        elif write_result == WriteResult.SKIPPED:
-                            result.messages_skipped += 1
-                            if progress_callback:
-                                progress_callback(
-                                    msg_index + 1, total_messages, "Skipped duplicate"
-                                )
-                        else:  # FAILED
-                            result.messages_failed += 1
-                            if progress_callback:
-                                progress_callback(msg_index + 1, total_messages, "DB error")
-
-                    except Exception as e:
-                        result.messages_failed += 1
-                        error_msg = f"Message {msg_index}: {str(e)}"
-                        result.errors.append(error_msg)
+                    # Skip duplicates early if enabled
+                    if skip_duplicates and writer.is_duplicate(rfc_message_id):
+                        result.messages_skipped += 1
                         if progress_callback:
-                            progress_callback(msg_index + 1, total_messages, "Error")
+                            progress_callback(msg_index + 1, total_messages, "Skipped duplicate")
+                        continue
 
-                # Record archive run if any messages were imported
-                if result.messages_imported > 0:
-                    writer.record_archive_run(
-                        archive_file=str(archive_path),
-                        messages_count=result.messages_imported,
+                    # Look up Gmail ID if enabled
+                    gmail_id = None
+                    if gmail_lookup.is_enabled():
+                        if progress_callback:
+                            progress_callback(
+                                msg_index + 1, total_messages, "Looking up Gmail ID..."
+                            )
+                        lookup_result = gmail_lookup.lookup_gmail_id(rfc_message_id)
+                        gmail_id = lookup_result.gmail_id
+                        if lookup_result.found:
+                            result.gmail_ids_found += 1
+                        else:
+                            result.gmail_ids_not_found += 1
+
+                    # Extract metadata
+                    metadata = reader.extract_metadata(
+                        msg=mbox_msg.message,
+                        archive_path=str(archive_path),
+                        offset=mbox_msg.offset,
+                        length=mbox_msg.length,
                         account_id=account_id,
+                        gmail_id=gmail_id,
                     )
+
+                    # Write to database
+                    write_result = writer.write_message(metadata, skip_duplicates)
+
+                    if write_result == WriteResult.IMPORTED:
+                        result.messages_imported += 1
+                        if progress_callback:
+                            gmail_status = (
+                                f"Gmail ID: {gmail_id[:8]}..." if gmail_id else "No Gmail ID"
+                            )
+                            progress_callback(
+                                msg_index + 1, total_messages, f"Imported ({gmail_status})"
+                            )
+                    elif write_result == WriteResult.SKIPPED:
+                        result.messages_skipped += 1
+                        if progress_callback:
+                            progress_callback(msg_index + 1, total_messages, "Skipped duplicate")
+                    else:  # FAILED
+                        result.messages_failed += 1
+                        if progress_callback:
+                            progress_callback(msg_index + 1, total_messages, "DB error")
+
+                except Exception as e:
+                    result.messages_failed += 1
+                    error_msg = f"Message {msg_index}: {str(e)}"
+                    result.errors.append(error_msg)
+                    if progress_callback:
+                        progress_callback(msg_index + 1, total_messages, "Error")
+
+            # Record archive run if any messages were imported
+            if result.messages_imported > 0:
+                writer.record_archive_run(
+                    archive_file=str(archive_path),
+                    messages_count=result.messages_imported,
+                    account_id=account_id,
+                )
+
+            # Commit all changes
+            self.db_manager.commit()
 
         finally:
             # Clean up temporary file if created

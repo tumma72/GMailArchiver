@@ -3,8 +3,13 @@
 Internal module - use DeduplicatorFacade instead.
 """
 
-import sqlite3
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.db_manager import DBManager
 
 
 @dataclass
@@ -22,14 +27,14 @@ class MessageInfo:
 class DuplicateScanner:
     """Scan database for duplicate messages via RFC 2822 Message-ID."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db: DBManager) -> None:
         """
-        Initialize scanner with database connection.
+        Initialize scanner with database manager.
 
         Args:
-            db_path: Path to SQLite database
+            db: DBManager instance for database operations
         """
-        self.conn = sqlite3.connect(db_path)
+        self.db = db
 
     def find_duplicates(self) -> dict[str, list[MessageInfo]]:
         """
@@ -43,7 +48,7 @@ class DuplicateScanner:
             Messages in each group are sorted by archived_timestamp DESC
         """
         # Find all rfc_message_ids that appear more than once
-        cursor = self.conn.execute("""
+        cursor = self.db.conn.execute("""
             SELECT rfc_message_id, COUNT(*) as count
             FROM messages
             WHERE rfc_message_id IS NOT NULL
@@ -60,7 +65,7 @@ class DuplicateScanner:
         duplicates: dict[str, list[MessageInfo]] = {}
 
         for rfc_id in duplicate_ids:
-            cursor = self.conn.execute(
+            cursor = self.db.conn.execute(
                 """
                 SELECT gmail_id, archive_file, mbox_offset, mbox_length,
                        size_bytes, archived_timestamp
@@ -90,7 +95,3 @@ class DuplicateScanner:
             duplicates[rfc_id] = messages
 
         return duplicates
-
-    def close(self) -> None:
-        """Close database connection."""
-        self.conn.close()

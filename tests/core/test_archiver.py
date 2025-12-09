@@ -246,8 +246,8 @@ class TestValidateArchive:
 class TestArchiveMessagesIntegration:
     """Tests for _archive_messages method and full archive flow."""
 
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_works(
         self,
@@ -303,8 +303,8 @@ class TestArchiveMessagesIntegration:
             assert result["archived_count"] == 1
             assert result["failed_count"] == 0
 
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_with_compression_workflow(
         self,
@@ -350,8 +350,8 @@ class TestArchiveMessagesIntegration:
 
             assert result["archived_count"] == 1
 
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_with_orphaned_lock_file(
         self,
@@ -400,8 +400,8 @@ class TestArchiveMessagesIntegration:
 
             assert result["archived_count"] == 1
 
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_records_state(
         self,
@@ -448,8 +448,8 @@ class TestArchiveMessagesIntegration:
             # Verify HybridStorage.archive_messages_batch was called (which records in DB)
             mock_storage.archive_messages_batch.assert_called_once()
 
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_marks_messages_in_state(
         self,
@@ -585,8 +585,8 @@ class TestAtomicOperations:
             assert location[2] > 0, "Length should be positive"
             db.close()
 
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("builtins.print")
     def test_atomic_rollback_on_database_failure(
         self, mock_print: Mock, mock_storage_class: Mock, mock_db_class: Mock
@@ -893,12 +893,12 @@ class TestV11OffsetTracking:
 class TestExceptionHandling:
     """Tests for exception handling in archiver."""
 
-    @patch("gmailarchiver.core.archiver._filter.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_incremental_falls_back_on_dbmanager_failure(
         self, mock_print: Mock, mock_dbmanager_class: Mock
     ) -> None:
-        """Test that incremental mode falls back gracefully if DBManager fails."""
+        """Test that DBManager failure during facade construction raises exception."""
         import tempfile
         from pathlib import Path
 
@@ -914,21 +914,12 @@ class TestExceptionHandling:
 
             # Setup mock client
             mock_client = Mock()
-            mock_client.list_messages.return_value = [
-                {"id": "msg1", "threadId": "thread1"},
-                {"id": "msg2", "threadId": "thread2"},
-            ]
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
+            # With new architecture, exception is raised during facade construction
+            with pytest.raises(Exception, match="Schema validation failed"):
+                ArchiverFacade(mock_client, state_db_path=str(db_path))
 
-            # Use dry_run to avoid executing archiving logic
-            result = archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
-
-            # Should not skip any messages (falls back to empty set)
-            # When DBManager fails, archived_ids becomes empty set
-            assert result["found_count"] - result["skipped_count"] == 2
-
-    @patch("gmailarchiver.core.archiver._filter.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_incremental_with_nonexistent_database(
         self, mock_print: Mock, mock_db_class: Mock
@@ -963,21 +954,20 @@ class TestExceptionHandling:
             # Should not skip any messages (no archived_ids)
             assert result["found_count"] - result["skipped_count"] == 1
 
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
     def test_archive_messages_falls_back_on_dbmanager_init_failure(
         self,
         mock_print: Mock,
         mock_dbmanager_class: Mock,
     ) -> None:
-        """Test _archive_messages raises error if DBManager init fails."""
+        """Test that DBManager init failure during facade construction raises exception."""
         import tempfile
         from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             db_path = temp_path / "test.db"
-            mbox_path = temp_path / "test.mbox"
 
             # Create database file
             db_path.touch()
@@ -988,11 +978,9 @@ class TestExceptionHandling:
             # Setup mock client
             mock_client = Mock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
-
-            # Should raise Exception when DBManager fails (use public API)
+            # With new architecture, exception is raised during facade construction
             with pytest.raises(Exception, match="Schema validation failed"):
-                archiver.archive_messages(["msg1"], str(mbox_path))
+                ArchiverFacade(mock_client, state_db_path=str(db_path))
 
 
 # NOTE: Tests for body preview exceptions and _log method moved to
@@ -1002,8 +990,8 @@ class TestExceptionHandling:
 class TestArchiveWithOperationHandle:
     """Tests for archive() with OperationHandle integration."""
 
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     def test_archive_with_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
@@ -1084,23 +1072,30 @@ class TestArchiveWithOperationHandle:
                 "Operation handle update_progress() should be called"
             )
 
-            # Verify we logged fetching messages
-            log_calls = [call[0][0] for call in mock_operation.log.call_args_list]
-            assert any("Fetching" in call for call in log_calls), "Should log 'Fetching X messages'"
+            # Verify set_total was called for fetch phase progress tracking
+            set_total_calls = mock_operation.set_total.call_args_list
+            assert len(set_total_calls) >= 1, "Should call set_total for progress tracking"
+            # First call should be for fetching phase
+            first_call_args = set_total_calls[0]
+            assert "Fetching" in str(first_call_args), (
+                "First set_total should be for 'Fetching messages from Gmail'"
+            )
 
             # Verify we logged success for each message
             # Note: v1.3.5+ removed duplicate severity symbols
             # Message is "Archived:" not "✓ Archived:"
+            log_calls = [call[0][0] for call in mock_operation.log.call_args_list]
             success_logs = [call for call in log_calls if "Archived:" in call]
             assert len(success_logs) == 2, "Should log success for each archived message"
 
             # Verify progress was updated for each message
-            assert mock_operation.update_progress.call_count == 2, (
-                "Should update progress for each message"
+            # 2 messages fetched + 2 messages archived = 4 progress updates
+            assert mock_operation.update_progress.call_count == 4, (
+                "Should update progress for fetch phase (2) + archive phase (2)"
             )
 
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     def test_archive_without_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:

@@ -19,21 +19,14 @@ class ExtractStats(TypedDict):
 class MessageExtractor:
     """Extract messages from mbox archives using database offsets."""
 
-    def __init__(self, db_path: str | Path) -> None:
-        """Initialize extractor with database path.
+    def __init__(self, db_manager: DBManager) -> None:
+        """Initialize extractor with database manager.
 
         Args:
-            db_path: Path to SQLite database file
-
-        Raises:
-            FileNotFoundError: If database doesn't exist
+            db_manager: Database manager for message lookups
         """
-        self.db_path = Path(db_path)
-        if not self.db_path.exists():
-            raise FileNotFoundError(f"Database not found: {db_path}")
-
-        self.db = DBManager(str(db_path))
-        self.locator = MessageLocator(self.db)
+        self.db_manager = db_manager
+        self.locator = MessageLocator(self.db_manager)
 
     def extract_by_gmail_id(self, gmail_id: str, output_path: str | Path | None = None) -> bytes:
         """Extract message by Gmail ID.
@@ -119,7 +112,7 @@ class MessageExtractor:
 
     def close(self) -> None:
         """Close database connection."""
-        self.db.close()
+        self.db_manager.close()
 
     def __enter__(self) -> MessageExtractor:
         """Context manager entry."""

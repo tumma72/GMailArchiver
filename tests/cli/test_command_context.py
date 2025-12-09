@@ -25,7 +25,7 @@ class TestCommandContext:
         ctx = CommandContext(output=output)
 
         assert ctx.output is output
-        assert ctx.db is None
+        assert ctx.storage is None
         assert ctx.gmail is None
         assert ctx.json_mode is False
         assert ctx.dry_run is False
@@ -33,19 +33,19 @@ class TestCommandContext:
     def test_creation_with_all_options(self) -> None:
         """CommandContext can be created with all options."""
         output = MagicMock(spec=OutputManager)
-        db = MagicMock()
+        storage = MagicMock()
         gmail = MagicMock()
 
         ctx = CommandContext(
             output=output,
-            db=db,
+            storage=storage,
             gmail=gmail,
             json_mode=True,
             dry_run=True,
             state_db_path="/path/to/db",
         )
 
-        assert ctx.db is db
+        assert ctx.storage is storage
         assert ctx.gmail is gmail
         assert ctx.json_mode is True
         assert ctx.dry_run is True
@@ -294,9 +294,9 @@ class TestWithContextDecorator:
         assert captured_ctx.dry_run is True
 
     def test_requires_db_missing_file(self, tmp_path: Path) -> None:
-        """@with_context with requires_db should fail if DB doesn't exist."""
+        """@with_context with requires_storage should fail if DB doesn't exist."""
 
-        @with_context(requires_db=True)
+        @with_context(requires_storage=True)
         def test_cmd(ctx: CommandContext) -> None:
             pass
 
@@ -311,14 +311,14 @@ class TestWithContextDecorator:
             mock_output.show_error_panel.assert_called_once()
 
     def test_requires_db_success(self, tmp_path: Path) -> None:
-        """@with_context with requires_db should inject DBManager."""
+        """@with_context with requires_storage should inject HybridStorage."""
         # Create a minimal database
         db_path = tmp_path / "test.db"
         db_path.write_bytes(b"")  # Create empty file
 
         captured_ctx = None
 
-        @with_context(requires_db=True)
+        @with_context(requires_storage=True)
         def test_cmd(ctx: CommandContext) -> None:
             nonlocal captured_ctx
             captured_ctx = ctx
@@ -326,23 +326,26 @@ class TestWithContextDecorator:
         with (
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
             patch("gmailarchiver.cli.command_context.DBManager") as MockDB,
+            patch("gmailarchiver.cli.command_context.HybridStorage") as MockStorage,
         ):
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
             mock_db = MagicMock()
             MockDB.return_value = mock_db
+            mock_storage = MagicMock()
+            MockStorage.return_value = mock_storage
 
             test_cmd(state_db=str(db_path))
 
         assert captured_ctx is not None
-        assert captured_ctx.db is mock_db
+        assert captured_ctx.storage is mock_storage
 
     def test_requires_schema_version_check(self, tmp_path: Path) -> None:
         """@with_context with requires_schema should check version."""
         db_path = tmp_path / "test.db"
         db_path.write_bytes(b"")
 
-        @with_context(requires_db=True, requires_schema="1.2")
+        @with_context(requires_storage=True, requires_schema="1.2")
         def test_cmd(ctx: CommandContext) -> None:
             pass
 
@@ -350,6 +353,7 @@ class TestWithContextDecorator:
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
             patch("gmailarchiver.cli.command_context.SchemaManager") as MockSchemaManager,
             patch("gmailarchiver.cli.command_context.DBManager") as MockDB,
+            patch("gmailarchiver.cli.command_context.HybridStorage") as MockStorage,
         ):
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
@@ -464,18 +468,21 @@ class TestWithContextDecorator:
         db_path = tmp_path / "test.db"
         db_path.write_bytes(b"")
 
-        @with_context(requires_db=True)
+        @with_context(requires_storage=True)
         def test_cmd(ctx: CommandContext) -> None:
             pass
 
         with (
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
             patch("gmailarchiver.cli.command_context.DBManager") as MockDB,
+            patch("gmailarchiver.cli.command_context.HybridStorage") as MockStorage,
         ):
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
             mock_db = MagicMock()
             MockDB.return_value = mock_db
+            mock_storage = MagicMock()
+            MockStorage.return_value = mock_storage
 
             test_cmd(state_db=str(db_path))
 
@@ -486,18 +493,21 @@ class TestWithContextDecorator:
         db_path = tmp_path / "test.db"
         db_path.write_bytes(b"")
 
-        @with_context(requires_db=True)
+        @with_context(requires_storage=True)
         def test_cmd(ctx: CommandContext) -> None:
             raise ValueError("test error")
 
         with (
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
             patch("gmailarchiver.cli.command_context.DBManager") as MockDB,
+            patch("gmailarchiver.cli.command_context.HybridStorage") as MockStorage,
         ):
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
             mock_db = MagicMock()
             MockDB.return_value = mock_db
+            mock_storage = MagicMock()
+            MockStorage.return_value = mock_storage
 
             with pytest.raises(typer.Exit):
                 test_cmd(state_db=str(db_path))

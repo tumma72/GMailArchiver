@@ -1,79 +1,105 @@
 """Tests for search executor module (TDD)."""
 
 import sqlite3
-import tempfile
-from pathlib import Path
+from collections.abc import Generator
 
 import pytest
 
 from gmailarchiver.core.search._executor import SearchExecutor
 from gmailarchiver.core.search._parser import QueryParams
+from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 @pytest.fixture
-def test_db() -> Path:
-    """Create test database with FTS5 support."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as f:
-        db_path = Path(f.name)
+def test_db(v11_db_factory) -> str:
+    """Create test database with FTS5 support using v1.1 schema."""
+    db_path = v11_db_factory("test_search_executor.db")
 
-    conn = sqlite3.connect(str(db_path))
-
-    # Create messages table
-    conn.execute("""
-        CREATE TABLE messages (
-            gmail_id TEXT PRIMARY KEY,
-            rfc_message_id TEXT,
-            subject TEXT,
-            from_addr TEXT,
-            to_addr TEXT,
-            date TIMESTAMP,
-            body_preview TEXT,
-            archive_file TEXT,
-            mbox_offset INTEGER
-        )
-    """)
-
-    # Create FTS5 virtual table
-    conn.execute("""
-        CREATE VIRTUAL TABLE messages_fts USING fts5(
-            subject, from_addr, to_addr, body_preview,
-            content=messages,
-            content_rowid=rowid
-        )
-    """)
-
-    # Insert test data
-    conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg1', '<msg1@test>', 'Meeting Tomorrow', 'alice@test.com',
-         'bob@test.com', '2024-01-01', 'Meeting at 10am', 'archive.mbox', 0)
-    """)
-    conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg2', '<msg2@test>', 'Invoice', 'vendor@test.com',
-         'billing@test.com', '2024-01-02', 'Invoice #12345', 'archive.mbox', 1024)
-    """)
-
-    # Sync FTS index
-    conn.execute("""
-        INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')
-    """)
-
+    # Add test data
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO messages
+        (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+         date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+         body_preview, checksum, size_bytes, labels, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "msg1",
+            "<msg1@test>",
+            "thread1",
+            "Meeting Tomorrow",
+            "alice@test.com",
+            "bob@test.com",
+            None,
+            "2024-01-01",
+            "2024-01-01T12:00:00",
+            "archive.mbox",
+            0,
+            1024,
+            "Meeting at 10am",
+            "checksum1",
+            1024,
+            '["INBOX"]',
+            "default",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages
+        (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+         date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+         body_preview, checksum, size_bytes, labels, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "msg2",
+            "<msg2@test>",
+            "thread2",
+            "Invoice",
+            "vendor@test.com",
+            "billing@test.com",
+            None,
+            "2024-01-02",
+            "2024-01-02T12:00:00",
+            "archive.mbox",
+            1024,
+            2048,
+            "Invoice #12345",
+            "checksum2",
+            2048,
+            '["INBOX"]',
+            "default",
+        ),
+    )
     conn.commit()
     conn.close()
 
-    yield db_path
+    return db_path
+
+
+@pytest.fixture
+def storage(test_db: str) -> Generator[HybridStorage]:
+    """Create HybridStorage for test database."""
+    db_manager = DBManager(test_db)
+    # Set row_factory for SearchExecutor compatibility
+    db_manager.conn.row_factory = sqlite3.Row
+    storage = HybridStorage(db_manager, preload_rfc_ids=False)
+
+    yield storage
 
     # Cleanup
-    db_path.unlink()
+    db_manager.close()
 
 
 class TestSearchExecutor:
     """Test search execution."""
 
-    def test_execute_fulltext_search(self, test_db: Path) -> None:
+    def test_execute_fulltext_search(self, storage: HybridStorage) -> None:
         """Test executing fulltext search."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["meeting"], fts_query="meeting", original_query="meeting"
         )
@@ -85,9 +111,9 @@ class TestSearchExecutor:
         assert results.results[0].gmail_id == "msg1"
         assert results.results[0].subject == "Meeting Tomorrow"
 
-    def test_execute_metadata_search(self, test_db: Path) -> None:
+    def test_execute_metadata_search(self, storage: HybridStorage) -> None:
         """Test executing metadata-only search."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=[],
             fts_query="",
@@ -100,9 +126,9 @@ class TestSearchExecutor:
         assert results.total_results == 1
         assert results.results[0].from_addr == "alice@test.com"
 
-    def test_execute_hybrid_search(self, test_db: Path) -> None:
+    def test_execute_hybrid_search(self, storage: HybridStorage) -> None:
         """Test executing hybrid FTS + metadata search."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["invoice"],
             fts_query="invoice",
@@ -116,9 +142,9 @@ class TestSearchExecutor:
         assert results.results[0].subject == "Invoice"
         assert "vendor" in results.results[0].from_addr
 
-    def test_execute_with_limit(self, test_db: Path) -> None:
+    def test_execute_with_limit(self, storage: HybridStorage) -> None:
         """Test limit parameter."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(fulltext_terms=[], fts_query="", original_query="")
 
         results = executor.execute(params, limit=1, offset=0)
@@ -126,9 +152,9 @@ class TestSearchExecutor:
         assert results.total_results == 1
         assert len(results.results) == 1
 
-    def test_execute_tracks_time(self, test_db: Path) -> None:
+    def test_execute_tracks_time(self, storage: HybridStorage) -> None:
         """Test that execution time is tracked."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["meeting"], fts_query="meeting", original_query="meeting"
         )
@@ -137,9 +163,9 @@ class TestSearchExecutor:
 
         assert results.execution_time_ms > 0
 
-    def test_execute_invalid_fts_query(self, test_db: Path) -> None:
+    def test_execute_invalid_fts_query(self, storage: HybridStorage) -> None:
         """Test handling of invalid FTS query."""
-        executor = SearchExecutor(str(test_db))
+        executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["invalid:query"],
             fts_query="invalid:query",

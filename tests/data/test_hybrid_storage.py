@@ -2741,3 +2741,514 @@ def test_consolidate_staging_cleanup_exception(db_manager: DBManager, temp_dir: 
                         deduplicate=False,
                         compression=None,
                     )
+
+
+# ============================================================================
+# Read Operations Tests (NEW - TDD Red Phase)
+# ============================================================================
+
+
+class TestReadOperations:
+    """Tests for HybridStorage read operations.
+
+    These methods provide read-only access to archived messages via the
+    HybridStorage gateway, following the architecture rule that core layer
+    must not access DBManager directly.
+    """
+
+    def test_search_messages_fulltext(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test search_messages with full-text query."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive messages with searchable content
+        msg1 = email.message.EmailMessage()
+        msg1["Message-ID"] = "<invoice123@example.com>"
+        msg1["Subject"] = "Invoice for Q1 2024"
+        msg1["From"] = "billing@company.com"
+        msg1["To"] = "customer@example.com"
+        msg1.set_content("Please find attached the invoice for the first quarter.")
+
+        msg2 = email.message.EmailMessage()
+        msg2["Message-ID"] = "<receipt456@example.com>"
+        msg2["Subject"] = "Receipt for purchase"
+        msg2["From"] = "sales@company.com"
+        msg2["To"] = "customer@example.com"
+        msg2.set_content("Thank you for your purchase. Here is your receipt.")
+
+        archive_single_message(storage, msg1, "msg1", mbox_path, None)
+        archive_single_message(storage, msg2, "msg2", mbox_path, None)
+
+        # Search for "invoice" - should return msg1 only
+        results = storage.search_messages(query="invoice", limit=10)
+
+        assert results is not None
+        assert results.total_results == 1
+        assert len(results.results) == 1
+        assert results.results[0].gmail_id == "msg1"
+        assert results.results[0].subject == "Invoice for Q1 2024"
+        assert results.query == "invoice"
+        assert results.execution_time_ms >= 0
+
+    def test_search_messages_with_metadata_filters(
+        self, db_manager: DBManager, temp_dir: Path
+    ) -> None:
+        """Test search_messages with metadata filters (from, to, date range)."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive messages from different senders
+        msg1 = email.message.EmailMessage()
+        msg1["Message-ID"] = "<msg1@example.com>"
+        msg1["Subject"] = "Test 1"
+        msg1["From"] = "alice@example.com"
+        msg1["To"] = "bob@example.com"
+        msg1.set_content("Body 1")
+
+        msg2 = email.message.EmailMessage()
+        msg2["Message-ID"] = "<msg2@example.com>"
+        msg2["Subject"] = "Test 2"
+        msg2["From"] = "charlie@example.com"
+        msg2["To"] = "bob@example.com"
+        msg2.set_content("Body 2")
+
+        archive_single_message(storage, msg1, "msg1", mbox_path, None)
+        archive_single_message(storage, msg2, "msg2", mbox_path, None)
+
+        # Search with from_addr filter
+        results = storage.search_messages(query=None, from_addr="alice@example.com", limit=10)
+
+        assert results.total_results == 1
+        assert results.results[0].gmail_id == "msg1"
+        assert results.results[0].from_addr == "alice@example.com"
+
+    def test_search_messages_with_pagination(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test search_messages with limit and offset for pagination."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive 5 messages
+        for i in range(5):
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = f"<msg{i}@example.com>"
+            msg["Subject"] = f"Message {i}"
+            msg["From"] = "sender@example.com"
+            msg["To"] = "recipient@example.com"
+            msg.set_content(f"Body {i}")
+            archive_single_message(storage, msg, f"msg{i}", mbox_path, None)
+
+        # First page
+        page1 = storage.search_messages(query=None, limit=2, offset=0)
+        assert len(page1.results) == 2
+        assert page1.total_results == 5
+
+        # Second page
+        page2 = storage.search_messages(query=None, limit=2, offset=2)
+        assert len(page2.results) == 2
+        assert page2.total_results == 5
+
+        # Third page (partial)
+        page3 = storage.search_messages(query=None, limit=2, offset=4)
+        assert len(page3.results) == 1
+        assert page3.total_results == 5
+
+    def test_search_messages_empty_database(self, db_manager: DBManager) -> None:
+        """Test search_messages with empty database returns empty results."""
+        storage = HybridStorage(db_manager)
+
+        results = storage.search_messages(query="anything", limit=10)
+
+        assert results.total_results == 0
+        assert len(results.results) == 0
+        assert results.query == "anything"
+
+    def test_search_messages_no_matches(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test search_messages when query has no matches."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<test@example.com>"
+        msg["Subject"] = "Hello World"
+        msg["From"] = "sender@example.com"
+        msg.set_content("This is a test message")
+
+        archive_single_message(storage, msg, "msg1", mbox_path, None)
+
+        # Search for non-existent content
+        results = storage.search_messages(query="nonexistent", limit=10)
+
+        assert results.total_results == 0
+        assert len(results.results) == 0
+
+    def test_get_message_by_gmail_id_success(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_message retrieves message by gmail_id."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<test@example.com>"
+        msg["Subject"] = "Test Subject"
+        msg["From"] = "sender@example.com"
+        msg["To"] = "recipient@example.com"
+        msg.set_content("Test body")
+
+        archive_single_message(storage, msg, "gmail123", mbox_path, "thread456")
+
+        # Retrieve message
+        record = storage.get_message(gmail_id="gmail123")
+
+        assert record is not None
+        assert record["gmail_id"] == "gmail123"
+        assert record["rfc_message_id"] == "<test@example.com>"
+        assert record["subject"] == "Test Subject"
+        assert record["from_addr"] == "sender@example.com"
+        assert record["to_addr"] == "recipient@example.com"
+        assert record["thread_id"] == "thread456"
+        assert record["archive_file"] == str(mbox_path)
+        assert record["mbox_offset"] >= 0
+        assert record["mbox_length"] > 0
+
+    def test_get_message_by_gmail_id_not_found(self, db_manager: DBManager) -> None:
+        """Test get_message returns None for non-existent gmail_id."""
+        storage = HybridStorage(db_manager)
+
+        record = storage.get_message(gmail_id="nonexistent")
+
+        assert record is None
+
+    def test_get_message_by_rfc_id_success(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_message_by_rfc_id retrieves message by RFC Message-ID."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<unique_rfc_id@example.com>"
+        msg["Subject"] = "Find me by RFC ID"
+        msg["From"] = "sender@example.com"
+        msg.set_content("Body content")
+
+        archive_single_message(storage, msg, "gmail999", mbox_path, None)
+
+        # Retrieve by RFC Message-ID
+        record = storage.get_message_by_rfc_id(rfc_message_id="<unique_rfc_id@example.com>")
+
+        assert record is not None
+        assert record["gmail_id"] == "gmail999"
+        assert record["rfc_message_id"] == "<unique_rfc_id@example.com>"
+        assert record["subject"] == "Find me by RFC ID"
+
+    def test_get_message_by_rfc_id_not_found(self, db_manager: DBManager) -> None:
+        """Test get_message_by_rfc_id returns None for non-existent RFC ID."""
+        storage = HybridStorage(db_manager)
+
+        record = storage.get_message_by_rfc_id(rfc_message_id="<nonexistent@example.com>")
+
+        assert record is None
+
+    def test_extract_message_content_from_uncompressed_mbox(
+        self, db_manager: DBManager, temp_dir: Path
+    ) -> None:
+        """Test extract_message_content reads full message from uncompressed mbox."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        original_msg = email.message.EmailMessage()
+        original_msg["Message-ID"] = "<content_test@example.com>"
+        original_msg["Subject"] = "Extract this content"
+        original_msg["From"] = "sender@example.com"
+        original_msg["To"] = "recipient@example.com"
+        original_msg.set_content("This is the full message body that should be extracted.")
+
+        archive_single_message(storage, original_msg, "extract_msg", mbox_path, None)
+
+        # Extract the message content
+        extracted_msg = storage.extract_message_content(gmail_id="extract_msg")
+
+        assert extracted_msg is not None
+        assert extracted_msg["Message-ID"] == "<content_test@example.com>"
+        assert extracted_msg["Subject"] == "Extract this content"
+        assert extracted_msg["From"] == "sender@example.com"
+        assert extracted_msg["To"] == "recipient@example.com"
+        assert "full message body" in extracted_msg.get_content()
+
+    def test_extract_message_content_from_compressed_mbox(
+        self, db_manager: DBManager, temp_dir: Path
+    ) -> None:
+        """Test extract_message_content reads from compressed (gzip) mbox."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox.gz"
+
+        # Archive with compression
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<compressed@example.com>"
+        msg["Subject"] = "Compressed message"
+        msg["From"] = "sender@example.com"
+        msg.set_content("This message is compressed with gzip.")
+
+        archive_single_message(storage, msg, "compressed_msg", mbox_path, None, None, "gzip")
+
+        # Extract from compressed archive
+        extracted_msg = storage.extract_message_content(gmail_id="compressed_msg")
+
+        assert extracted_msg is not None
+        assert extracted_msg["Message-ID"] == "<compressed@example.com>"
+        assert extracted_msg["Subject"] == "Compressed message"
+        assert "compressed with gzip" in extracted_msg.get_content()
+
+    def test_extract_message_content_message_not_found(self, db_manager: DBManager) -> None:
+        """Test extract_message_content raises error for non-existent message."""
+        storage = HybridStorage(db_manager)
+
+        with pytest.raises(HybridStorageError, match="Message.*not found"):
+            storage.extract_message_content(gmail_id="nonexistent")
+
+    def test_extract_message_content_archive_file_missing(
+        self, db_manager: DBManager, temp_dir: Path
+    ) -> None:
+        """Test extract_message_content raises error when archive file is missing."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<missing_archive@example.com>"
+        msg["Subject"] = "Test"
+        msg["From"] = "sender@example.com"
+        msg.set_content("Body")
+
+        archive_single_message(storage, msg, "msg1", mbox_path, None)
+
+        # Delete the archive file
+        mbox_path.unlink()
+
+        # Try to extract - should fail
+        with pytest.raises(HybridStorageError, match="Archive file.*not found"):
+            storage.extract_message_content(gmail_id="msg1")
+
+
+# ============================================================================
+# Statistics Operations Tests (NEW - TDD Red Phase)
+# ============================================================================
+
+
+class TestStatisticsOperations:
+    """Tests for HybridStorage statistics operations.
+
+    These methods replace ArchiveState and provide comprehensive statistics
+    via the HybridStorage gateway.
+    """
+
+    def test_get_archive_stats_empty_database(self, db_manager: DBManager) -> None:
+        """Test get_archive_stats with empty database."""
+        storage = HybridStorage(db_manager)
+
+        stats = storage.get_archive_stats()
+
+        assert stats is not None
+        assert stats.total_messages == 0
+        assert len(stats.archive_files) == 0
+        assert stats.schema_version in ["1.1", "1.2"]
+        assert stats.database_size_bytes > 0  # Database file exists even if empty
+        assert isinstance(stats.recent_runs, list)
+
+    def test_get_archive_stats_with_messages(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_archive_stats returns accurate statistics."""
+        storage = HybridStorage(db_manager)
+        mbox1 = temp_dir / "archive1.mbox"
+        mbox2 = temp_dir / "archive2.mbox"
+
+        # Archive messages to different files
+        msg1 = email.message.EmailMessage()
+        msg1["Message-ID"] = "<msg1@example.com>"
+        msg1["Subject"] = "Message 1"
+        msg1["From"] = "sender@example.com"
+        msg1.set_content("Body 1")
+
+        msg2 = email.message.EmailMessage()
+        msg2["Message-ID"] = "<msg2@example.com>"
+        msg2["Subject"] = "Message 2"
+        msg2["From"] = "sender@example.com"
+        msg2.set_content("Body 2")
+
+        msg3 = email.message.EmailMessage()
+        msg3["Message-ID"] = "<msg3@example.com>"
+        msg3["Subject"] = "Message 3"
+        msg3["From"] = "sender@example.com"
+        msg3.set_content("Body 3")
+
+        archive_single_message(storage, msg1, "msg1", mbox1, None)
+        archive_single_message(storage, msg2, "msg2", mbox1, None)
+        archive_single_message(storage, msg3, "msg3", mbox2, None)
+
+        # Get statistics
+        stats = storage.get_archive_stats()
+
+        assert stats.total_messages == 3
+        assert len(stats.archive_files) == 2
+        assert str(mbox1) in stats.archive_files
+        assert str(mbox2) in stats.archive_files
+        assert stats.schema_version in ["1.1", "1.2"]
+        assert stats.database_size_bytes > 0
+
+    def test_get_message_ids_for_archive(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_message_ids_for_archive returns correct gmail_ids."""
+        storage = HybridStorage(db_manager)
+        mbox1 = temp_dir / "archive1.mbox"
+        mbox2 = temp_dir / "archive2.mbox"
+
+        # Archive messages to different files
+        msg1 = email.message.EmailMessage()
+        msg1["Message-ID"] = "<msg1@example.com>"
+        msg1["Subject"] = "In archive 1"
+        msg1["From"] = "sender@example.com"
+        msg1.set_content("Body")
+
+        msg2 = email.message.EmailMessage()
+        msg2["Message-ID"] = "<msg2@example.com>"
+        msg2["Subject"] = "Also in archive 1"
+        msg2["From"] = "sender@example.com"
+        msg2.set_content("Body")
+
+        msg3 = email.message.EmailMessage()
+        msg3["Message-ID"] = "<msg3@example.com>"
+        msg3["Subject"] = "In archive 2"
+        msg3["From"] = "sender@example.com"
+        msg3.set_content("Body")
+
+        archive_single_message(storage, msg1, "msg1", mbox1, None)
+        archive_single_message(storage, msg2, "msg2", mbox1, None)
+        archive_single_message(storage, msg3, "msg3", mbox2, None)
+
+        # Get IDs for archive1
+        ids_archive1 = storage.get_message_ids_for_archive(archive_file=str(mbox1))
+
+        assert len(ids_archive1) == 2
+        assert "msg1" in ids_archive1
+        assert "msg2" in ids_archive1
+        assert "msg3" not in ids_archive1
+
+        # Get IDs for archive2
+        ids_archive2 = storage.get_message_ids_for_archive(archive_file=str(mbox2))
+
+        assert len(ids_archive2) == 1
+        assert "msg3" in ids_archive2
+
+    def test_get_message_ids_for_archive_nonexistent_file(self, db_manager: DBManager) -> None:
+        """Test get_message_ids_for_archive returns empty set for nonexistent file."""
+        storage = HybridStorage(db_manager)
+
+        ids = storage.get_message_ids_for_archive(archive_file="/nonexistent/archive.mbox")
+
+        assert len(ids) == 0
+
+    def test_get_recent_runs(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_recent_runs returns archive operation history."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Perform multiple archive operations
+        for i in range(3):
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = f"<run{i}@example.com>"
+            msg["Subject"] = f"Run {i}"
+            msg["From"] = "sender@example.com"
+            msg.set_content(f"Body {i}")
+            archive_single_message(storage, msg, f"msg{i}", mbox_path, None)
+
+        # Get recent runs
+        runs = storage.get_recent_runs(limit=10)
+
+        assert len(runs) >= 3  # At least 3 runs (may have more from batch operations)
+        # Verify structure of run records
+        for run in runs:
+            assert "run_id" in run
+            assert "run_timestamp" in run
+            assert "messages_archived" in run
+            assert "archive_file" in run
+            assert "operation_type" in run or "query" in run  # Depends on schema version
+
+    def test_get_recent_runs_with_limit(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_recent_runs respects limit parameter."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Create 5 archive operations
+        for i in range(5):
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = f"<limit_test{i}@example.com>"
+            msg["Subject"] = f"Message {i}"
+            msg["From"] = "sender@example.com"
+            msg.set_content(f"Body {i}")
+            archive_single_message(storage, msg, f"limit_msg{i}", mbox_path, None)
+
+        # Request only 2 most recent
+        runs = storage.get_recent_runs(limit=2)
+
+        assert len(runs) <= 2
+
+    def test_get_recent_runs_empty_database(self, db_manager: DBManager) -> None:
+        """Test get_recent_runs with no archive operations."""
+        storage = HybridStorage(db_manager)
+
+        runs = storage.get_recent_runs(limit=10)
+
+        assert len(runs) == 0
+
+    def test_is_message_archived_true(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test is_message_archived returns True for archived message."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive a message
+        msg = email.message.EmailMessage()
+        msg["Message-ID"] = "<archived@example.com>"
+        msg["Subject"] = "Archived message"
+        msg["From"] = "sender@example.com"
+        msg.set_content("Body")
+
+        archive_single_message(storage, msg, "archived_msg", mbox_path, None)
+
+        # Check if archived
+        is_archived = storage.is_message_archived(gmail_id="archived_msg")
+
+        assert is_archived is True
+
+    def test_is_message_archived_false(self, db_manager: DBManager) -> None:
+        """Test is_message_archived returns False for non-archived message."""
+        storage = HybridStorage(db_manager)
+
+        is_archived = storage.is_message_archived(gmail_id="never_archived")
+
+        assert is_archived is False
+
+    def test_get_message_count_zero(self, db_manager: DBManager) -> None:
+        """Test get_message_count returns 0 for empty database."""
+        storage = HybridStorage(db_manager)
+
+        count = storage.get_message_count()
+
+        assert count == 0
+
+    def test_get_message_count_accurate(self, db_manager: DBManager, temp_dir: Path) -> None:
+        """Test get_message_count returns accurate count."""
+        storage = HybridStorage(db_manager)
+        mbox_path = temp_dir / "archive.mbox"
+
+        # Archive multiple messages
+        for i in range(7):
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = f"<count{i}@example.com>"
+            msg["Subject"] = f"Message {i}"
+            msg["From"] = "sender@example.com"
+            msg.set_content(f"Body {i}")
+            archive_single_message(storage, msg, f"count_msg{i}", mbox_path, None)
+
+        # Get count
+        count = storage.get_message_count()
+
+        assert count == 7

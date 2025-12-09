@@ -27,9 +27,13 @@ class ConsolidationResult:
 class ArchiveConsolidator:
     """Consolidate multiple mbox archives into a single archive."""
 
-    def __init__(self, state_db_path: str) -> None:
-        """Initialize consolidator with database path."""
-        self.state_db_path = state_db_path
+    def __init__(self, db_manager: DBManager) -> None:
+        """Initialize consolidator with database manager.
+
+        Args:
+            db_manager: Database manager for state operations
+        """
+        self.db_manager = db_manager
 
     def consolidate(
         self,
@@ -69,8 +73,7 @@ class ArchiveConsolidator:
         output_path = Path(output_archive)
 
         # Initialize components
-        db_manager = DBManager(self.state_db_path, validate_schema=False)
-        storage = HybridStorage(db_manager)
+        storage = HybridStorage(self.db_manager)
         merger = MessageMerger(storage)
         sorter = MessageSorter()
 
@@ -108,7 +111,7 @@ class ArchiveConsolidator:
             storage.bulk_update_archive_locations_with_dedup(updates, duplicate_gmail_ids)
 
             # Phase 6: Commit transaction
-            db_manager.commit()
+            self.db_manager.commit()
 
             end_time = time.perf_counter()
             execution_time_ms = (end_time - start_time) * 1000
@@ -125,7 +128,5 @@ class ArchiveConsolidator:
             )
         except Exception:
             # Rollback on any error
-            db_manager.rollback()
+            self.db_manager.rollback()
             raise
-        finally:
-            db_manager.close()

@@ -4,14 +4,17 @@ import importlib
 import json
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from gmailarchiver.connectors.auth import _get_default_token_path
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.db_manager import DBManager
 
 
 class CheckSeverity(Enum):
@@ -36,15 +39,15 @@ class CheckResult:
 class DiagnosticsRunner:
     """Run diagnostic checks for Gmail Archiver."""
 
-    def __init__(self, db_path: Path, conn: sqlite3.Connection | None) -> None:
+    def __init__(self, db_path: Path, db_manager: DBManager | None) -> None:
         """Initialize diagnostics runner.
 
         Args:
             db_path: Path to database file
-            conn: Optional database connection
+            db_manager: Optional database manager
         """
         self.db_path = db_path
-        self.conn = conn
+        self.db_manager = db_manager
 
     def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
@@ -65,7 +68,7 @@ class DiagnosticsRunner:
                 details="Run with --fix to create new database",
             )
 
-        if not self.conn:
+        if not self.db_manager:
             return CheckResult(
                 name="Database schema",
                 severity=CheckSeverity.ERROR,
@@ -74,7 +77,7 @@ class DiagnosticsRunner:
             )
 
         try:
-            cursor = self.conn.execute("PRAGMA user_version")
+            cursor = self.db_manager.conn.execute("PRAGMA user_version")
             version = cursor.fetchone()[0]
 
             if version == 11:
@@ -99,7 +102,7 @@ class DiagnosticsRunner:
                     message=f"Unknown schema version: {version}",
                     fixable=False,
                 )
-        except sqlite3.Error as e:
+        except Exception as e:
             return CheckResult(
                 name="Database schema",
                 severity=CheckSeverity.ERROR,
@@ -109,7 +112,7 @@ class DiagnosticsRunner:
 
     def check_database_integrity(self) -> CheckResult:
         """Check database integrity using PRAGMA integrity_check."""
-        if not self.conn:
+        if not self.db_manager:
             return CheckResult(
                 name="Database integrity",
                 severity=CheckSeverity.ERROR,
@@ -118,7 +121,7 @@ class DiagnosticsRunner:
             )
 
         try:
-            cursor = self.conn.execute("PRAGMA integrity_check")
+            cursor = self.db_manager.conn.execute("PRAGMA integrity_check")
             result = cursor.fetchone()
 
             if result and result[0] == "ok":
@@ -136,7 +139,7 @@ class DiagnosticsRunner:
                     fixable=False,
                     details="Database may need to be restored from backup",
                 )
-        except sqlite3.Error as e:
+        except Exception as e:
             return CheckResult(
                 name="Database integrity",
                 severity=CheckSeverity.ERROR,
@@ -146,7 +149,7 @@ class DiagnosticsRunner:
 
     def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
-        if not self.conn:
+        if not self.db_manager:
             return CheckResult(
                 name="FTS index",
                 severity=CheckSeverity.OK,
@@ -156,7 +159,7 @@ class DiagnosticsRunner:
 
         try:
             # Check if FTS table exists
-            cursor = self.conn.execute(
+            cursor = self.db_manager.conn.execute(
                 """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='messages_fts'
@@ -171,7 +174,7 @@ class DiagnosticsRunner:
                 )
 
             # Count orphaned FTS records
-            cursor = self.conn.execute(
+            cursor = self.db_manager.conn.execute(
                 """
                 SELECT COUNT(*) FROM messages_fts
                 WHERE rowid NOT IN (SELECT rowid FROM messages)
@@ -181,9 +184,9 @@ class DiagnosticsRunner:
 
             if count == 0:
                 # Heuristic fallback for test scenarios
-                cursor = self.conn.execute("SELECT COUNT(*) FROM messages_fts")
+                cursor = self.db_manager.conn.execute("SELECT COUNT(*) FROM messages_fts")
                 fts_count = cursor.fetchone()[0]
-                cursor = self.conn.execute("SELECT COUNT(*) FROM messages")
+                cursor = self.db_manager.conn.execute("SELECT COUNT(*) FROM messages")
                 msg_count = cursor.fetchone()[0]
                 count = max(fts_count - msg_count, 0)
 
@@ -202,7 +205,7 @@ class DiagnosticsRunner:
                     fixable=True,
                     details="Run with --fix to remove orphaned records",
                 )
-        except sqlite3.Error as e:
+        except Exception as e:
             return CheckResult(
                 name="FTS index",
                 severity=CheckSeverity.WARNING,
@@ -212,7 +215,7 @@ class DiagnosticsRunner:
 
     def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files referenced in database exist."""
-        if not self.conn:
+        if not self.db_manager:
             return CheckResult(
                 name="Archive files",
                 severity=CheckSeverity.OK,
@@ -222,7 +225,7 @@ class DiagnosticsRunner:
 
         try:
             # Check if messages table exists
-            cursor = self.conn.execute(
+            cursor = self.db_manager.conn.execute(
                 """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='messages'
@@ -237,7 +240,7 @@ class DiagnosticsRunner:
                 )
 
             # Get unique archive files
-            cursor = self.conn.execute("SELECT DISTINCT archive_file FROM messages")
+            cursor = self.db_manager.conn.execute("SELECT DISTINCT archive_file FROM messages")
             archive_files = [row[0] for row in cursor.fetchall()]
 
             if not archive_files:
@@ -266,7 +269,7 @@ class DiagnosticsRunner:
                     fixable=False,
                     details=f"Missing: {', '.join(missing[:3])}{'...' if len(missing) > 3 else ''}",
                 )
-        except sqlite3.Error as e:
+        except Exception as e:
             return CheckResult(
                 name="Archive files",
                 severity=CheckSeverity.WARNING,

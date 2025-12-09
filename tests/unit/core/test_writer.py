@@ -32,15 +32,16 @@ class TestMessageWriter:
         return db
 
     @pytest.fixture
-    def mock_hybrid_storage(self):
+    def mock_hybrid_storage(self, mock_db_manager):
         """Create mock hybrid storage."""
         storage = Mock()
+        storage.db = mock_db_manager
         return storage
 
     @pytest.fixture
-    def writer(self, mock_gmail_client):
-        """Create MessageWriter with mocked client."""
-        return MessageWriter(gmail_client=mock_gmail_client, state_db_path="/tmp/test.db")
+    def writer(self, mock_gmail_client, mock_hybrid_storage):
+        """Create MessageWriter with mocked client and storage."""
+        return MessageWriter(gmail_client=mock_gmail_client, storage=mock_hybrid_storage)
 
     @pytest.fixture
     def mock_archive_helper(self):
@@ -54,25 +55,16 @@ class TestMessageWriter:
 
     @pytest.mark.unit
     def test_archive_messages_with_valid_message_ids(
-        self, writer, mock_db_manager, mock_hybrid_storage, mock_archive_helper
+        self, writer, mock_db_manager, mock_archive_helper
     ):
         """Test archiving with valid message IDs (success path)."""
         message_ids = ["msg001", "msg002", "msg003"]
         output_file = "/tmp/archive.mbox"
 
-        with patch("gmailarchiver.core.archiver._writer.DBManager", return_value=mock_db_manager):
-            with patch(
-                "gmailarchiver.core.archiver._writer.HybridStorage",
-                return_value=mock_hybrid_storage,
-            ):
-                test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
-                with patch(
-                    "gmailarchiver.core.archiver._writer.uuid.uuid4", return_value=test_uuid
-                ):
-                    with patch.object(
-                        writer, "_archive_messages", return_value=mock_archive_helper
-                    ):
-                        result = writer.archive_messages(message_ids, output_file)
+        test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        with patch("gmailarchiver.core.archiver._writer.uuid.uuid4", return_value=test_uuid):
+            with patch.object(writer, "_archive_messages", return_value=mock_archive_helper):
+                result = writer.archive_messages(message_ids, output_file)
 
         # Should return correct structure
         assert result["archived_count"] == 3
@@ -80,95 +72,13 @@ class TestMessageWriter:
         assert result["interrupted"] is False
         assert result["actual_file"] == "/tmp/archive.mbox"
 
-        # Should create DBManager with correct parameters
-        mock_db_manager_class = patch("gmailarchiver.core.archiver._writer.DBManager").start()
-        # Cleanup
-        patch.stopall()
+        # Should create session with correct parameters
+        mock_db_manager.create_session.assert_called_once()
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_creates_db_manager_correctly(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
-        """Test that DBManager is created with correct parameters."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
-        mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-        with patch.object(
-            writer,
-            "_archive_messages",
-            return_value={
-                "archived": 1,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": "/tmp/test.mbox",
-            },
-        ):
-            writer.archive_messages(["msg001"], "/tmp/test.mbox")
-
-        # Should create DBManager with validate_schema=False and auto_create=True
-        mock_db_class.assert_called_once_with(
-            "/tmp/test.db", validate_schema=False, auto_create=True
-        )
-
-    @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_creates_hybrid_storage(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
-        """Test that HybridStorage is created with DBManager."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
-        mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-        with patch.object(
-            writer,
-            "_archive_messages",
-            return_value={
-                "archived": 1,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": "/tmp/test.mbox",
-            },
-        ):
-            writer.archive_messages(["msg001"], "/tmp/test.mbox")
-
-        # Should create HybridStorage with DBManager instance
-        mock_hybrid_class.assert_called_once_with(mock_db)
-
-    @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_creates_session_with_uuid(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_creates_session_with_uuid(self, mock_uuid, writer, mock_db_manager):
         """Test that session is created with UUID and correct parameters."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
         mock_uuid.return_value = test_uuid
 
@@ -185,8 +95,8 @@ class TestMessageWriter:
             writer.archive_messages(["msg001", "msg002"], "/tmp/test.mbox", compress="gzip")
 
         # Should create session with UUID
-        mock_db.create_session.assert_called_once()
-        call_kwargs = mock_db.create_session.call_args[1]
+        mock_db_manager.create_session.assert_called_once()
+        call_kwargs = mock_db_manager.create_session.call_args[1]
         assert call_kwargs["session_id"] == str(test_uuid)
         assert call_kwargs["target_file"] == "/tmp/test.mbox"
         assert "archive_messages(2 messages)" in call_kwargs["query"]
@@ -204,21 +114,9 @@ class TestMessageWriter:
         assert result["actual_file"] == "/tmp/archive.mbox"
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_gzip_compression(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_with_gzip_compression(self, mock_uuid, writer):
         """Test archiving with gzip compression."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
@@ -237,21 +135,9 @@ class TestMessageWriter:
         assert result["actual_file"] == "/tmp/test.mbox.gz"
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_lzma_compression(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_with_lzma_compression(self, mock_uuid, writer):
         """Test archiving with lzma compression."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
@@ -270,21 +156,9 @@ class TestMessageWriter:
         assert result["actual_file"] == "/tmp/test.mbox.xz"
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_zstd_compression(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_with_zstd_compression(self, mock_uuid, writer):
         """Test archiving with zstd compression."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
@@ -303,21 +177,9 @@ class TestMessageWriter:
         assert result["actual_file"] == "/tmp/test.mbox.zst"
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_without_compression(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_without_compression(self, mock_uuid, writer):
         """Test archiving without compression."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
@@ -357,80 +219,9 @@ class TestMessageWriter:
             writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="invalid")
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_cleanup_on_success(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
-        """Test that database is closed on successful archiving."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
-        mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-        with patch.object(
-            writer,
-            "_archive_messages",
-            return_value={
-                "archived": 1,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": "/tmp/test.mbox",
-            },
-        ):
-            writer.archive_messages(["msg001"], "/tmp/test.mbox")
-
-        # Should close database
-        mock_db.close.assert_called_once()
-
-    @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_cleanup_on_error(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
-        """Test that database is closed even when error occurs."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
-        mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
-
-        # Simulate error in _archive_messages
-        with patch.object(writer, "_archive_messages", side_effect=Exception("Archive failed")):
-            with pytest.raises(Exception, match="Archive failed"):
-                writer.archive_messages(["msg001"], "/tmp/test.mbox")
-
-        # Should still close database in exception handler
-        mock_db.close.assert_called_once()
-
-    @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
-    @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_result_dict_structure(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_result_dict_structure(self, mock_uuid, writer):
         """Test that result dict has correct structure with all keys."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
@@ -458,21 +249,9 @@ class TestMessageWriter:
         assert result["actual_file"] == "/tmp/test.mbox.gz"
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_operation_handle(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_with_operation_handle(self, mock_uuid, writer):
         """Test that operation handle is passed to helper method."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         mock_operation = Mock()
@@ -495,21 +274,9 @@ class TestMessageWriter:
         assert call_args[0][3] == mock_operation  # 4th positional arg
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_partial_failure(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_with_partial_failure(self, mock_uuid, writer):
         """Test archiving with some messages failing."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         # Simulate partial failure
@@ -530,21 +297,9 @@ class TestMessageWriter:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver._writer.DBManager")
-    @patch("gmailarchiver.core.archiver._writer.HybridStorage")
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_handles_interruption(
-        self, mock_uuid, mock_hybrid_class, mock_db_class, writer
-    ):
+    def test_archive_messages_handles_interruption(self, mock_uuid, writer):
         """Test that interrupted flag is properly returned."""
-        mock_db = Mock()
-        mock_db.create_session = Mock()
-        mock_db.close = Mock()
-        mock_db_class.return_value = mock_db
-
-        mock_storage = Mock()
-        mock_hybrid_class.return_value = mock_storage
-
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         # Simulate interruption

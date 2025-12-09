@@ -1,8 +1,8 @@
 # Gmail Archiver Architecture
 
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-08
 **Schema Version:** 1.2
-**Status:** Production
+**Status:** Production (v1.6.0+)
 
 ---
 
@@ -101,8 +101,8 @@ graph TB
 
     ARCH --> HS
     IMP --> HS
-    VAL --> DBM
-    SRCH --> DBM
+    VAL --> HS
+    SRCH --> HS
     DEDUP --> HS
 
     HS --> DBM
@@ -115,13 +115,23 @@ graph TB
     GMAIL --> OAUTH
 ```
 
+### Key Architectural Rule: HybridStorage as Single Gateway
+
+**All core layer components access data exclusively through HybridStorage.**
+
+This ensures:
+- Atomic operations across mbox + database
+- Consistent transaction management
+- Single point for data validation
+- No SQL leakage into business logic
+
 ### Layer Responsibilities
 
 | Layer | Responsibility | Key Components |
 |-------|----------------|----------------|
 | **Interface** | CLI parsing, output formatting | `__main__.py`, CommandContext, OutputManager |
 | **Business Logic** | Core workflows, orchestration | Archiver, Importer, Validator, Search |
-| **Data** | Database, transactions, schema | DBManager, HybridStorage, SchemaManager |
+| **Data** | Database, transactions, schema | HybridStorage (gateway), DBManager (internal), SchemaManager |
 | **Connectors** | External service integration | GmailClient, GmailAuthenticator |
 | **Shared** | Cross-cutting utilities | utils, input_validator, path_validator |
 
@@ -145,8 +155,8 @@ graph TB
     end
 
     subgraph "Data Layer"
-        HS[HybridStorage]
-        DBM[DBManager]
+        HS[HybridStorage<br/>PUBLIC GATEWAY]
+        DBM[DBManager<br/>INTERNAL]
         SM[SchemaManager]
     end
 
@@ -163,24 +173,23 @@ graph TB
 
     CLI --> CTX
     CTX --> OUT
-    CTX --> DBM
     CTX --> GMAIL
 
     ARCH --> HS
     IMP --> HS
-    VAL --> DBM
-    SRCH --> DBM
+    VAL --> HS
+    SRCH --> HS
     DEDUP --> HS
     CONSOL --> HS
 
     HS --> DBM
+    HS -.-> SM
     DBM --> SM
 
     ARCH --> GMAIL
 
     CLI --> UTIL
     ARCH --> UTIL
-    DBM --> UTIL
 ```
 
 ### Layer Contracts
@@ -189,11 +198,13 @@ Each layer has specific contracts:
 
 | Layer | Can Depend On | Cannot Depend On |
 |-------|---------------|------------------|
-| **Interface** | All layers | - |
-| **Business Logic** | Data, Connectors, Shared | Interface |
+| **Interface** | Core layer facades, Connectors, Shared | Data layer directly |
+| **Business Logic** | Data (via HybridStorage only), Connectors, Shared | Interface, DBManager directly |
 | **Data** | Shared | Interface, Business Logic, Connectors |
 | **Connectors** | Shared | Interface, Business Logic, Data |
 | **Shared** | (none) | All other layers |
+
+**Critical Rule:** Business logic layer accesses data **only through HybridStorage**, never DBManager directly.
 
 ### Source Code Organization
 
@@ -506,7 +517,8 @@ sequenceDiagram
 sequenceDiagram
     participant User
     participant CLI
-    participant Searcher
+    participant Searcher as SearchFacade
+    participant HS as HybridStorage
     participant DB as DBManager
     participant FTS as FTS5 Index
     participant MBOX as mbox File
@@ -514,22 +526,33 @@ sequenceDiagram
     User->>CLI: gmailarchiver search "invoice"
     CLI->>Searcher: search("invoice")
 
-    Searcher->>DB: search_messages("invoice")
+    Note over Searcher: Parse Gmail-style query
+
+    Searcher->>HS: search_messages(query, limit)
+    HS->>DB: search_messages(fulltext="invoice")
     DB->>FTS: MATCH 'invoice'
     FTS-->>DB: [rowids with BM25 scores]
-    DB-->>Searcher: [SearchResult objects]
+    DB-->>HS: [dict records]
+    HS-->>Searcher: SearchResults
 
     alt User wants full message
-        Searcher->>DB: get_message_location(msg_id)
-        DB-->>Searcher: (archive_file, offset, length)
-
-        Searcher->>MBOX: seek(offset), read(length)
-        MBOX-->>Searcher: raw_message_bytes
+        Searcher->>HS: extract_message_content(msg_id)
+        HS->>DB: get_message_location(msg_id)
+        DB-->>HS: (archive_file, offset, length)
+        HS->>MBOX: seek(offset), read(length)
+        MBOX-->>HS: raw_message_bytes
+        HS-->>Searcher: email.Message
     end
 
     Searcher-->>CLI: SearchResults
     CLI-->>User: Formatted results
 ```
+
+**Key Points:**
+- SearchFacade handles query parsing (business logic)
+- HybridStorage handles data access
+- DBManager handles SQL (internal)
+- No direct DB access from SearchFacade
 
 ### Import Flow
 
@@ -537,7 +560,7 @@ sequenceDiagram
 sequenceDiagram
     participant User
     participant CLI
-    participant Importer
+    participant Importer as ImporterFacade
     participant HS as HybridStorage
     participant DB as DBManager
     participant MBOX as Source mbox
@@ -545,9 +568,12 @@ sequenceDiagram
     User->>CLI: gmailarchiver import archive.mbox
     CLI->>Importer: import_archive(path)
 
+    Importer->>HS: get_all_rfc_message_ids()
+    HS->>DB: get_all_rfc_message_ids()
+    DB-->>HS: existing_ids (Set)
+    HS-->>Importer: existing_ids
+
     Importer->>MBOX: Open and iterate
-    Importer->>DB: get_all_rfc_message_ids()
-    DB-->>Importer: existing_ids (Set)
 
     loop For each message in mbox
         MBOX-->>Importer: message, offset
@@ -760,45 +786,41 @@ graph LR
 
 ## Component Contracts
 
-### DBManager Contract
-#### Responsibilities
-• ALL database operations (single source of truth)
-• Transaction management with auto-rollback
-• Audit trail in archive_runs
-• Schema validation
+### HybridStorage Contract (PRIMARY DATA GATEWAY)
 
-#### Interface
-```mermaid
-classDiagram
-class DBManager {
-	+ record_archived_message(**metadata)
-	+ get_message_location(rfc_message_id) → (file, off, len)
-	+ get_all_rfc_message_ids() → set[str]
-	+ verify_database_integrity() → list[str]
-	+ search_messages(query) → list[SearchResult]
-}
-```
-
-#### Guarantees
-• Parameterized queries only (no SQL injection)
-• All writes recorded in audit trail
-• Auto-rollback on transaction failure
-
-### HybridStorage Contract
+**HybridStorage is the single entry point for all data operations from the core layer.**
 
 #### Responsibilities
 • Atomic mbox + database operations
 • Two-phase commit pattern (staging → commit → validate)
 • Automatic validation after writes
 • Staging area for safe writes
+• **READ operations** for search, statistics, and message retrieval
+• **WRITE operations** for archiving and consolidation
 
 #### Interface
 ```mermaid
 classDiagram
 class HybridStorage {
-    +archive_message(msg, gmail_id, path) tuple[int, int] | None
-    +consolidate_archives(sources, output) ConsolidationResult
-    +validate_archive_consistency(path) bool
+    %% WRITE OPERATIONS
+    +archive_messages_batch(messages, archive_file, ...) BatchResult
+    +consolidate_archives(sources, output, ...) ConsolidationResult
+    +bulk_write_messages(messages, path, compression) dict
+
+    %% READ OPERATIONS
+    +search_messages(query, limit, offset) SearchResults
+    +get_message(gmail_id) MessageRecord | None
+    +extract_message_content(gmail_id) email.Message
+
+    %% STATISTICS
+    +get_archive_stats() ArchiveStats
+    +get_message_ids_for_archive(archive_file) set~str~
+    +get_recent_runs(limit) list~ArchiveRun~
+    +is_message_archived(gmail_id) bool
+    +get_message_count() int
+
+    %% VALIDATION
+    +validate_archive_integrity(archive_file) ValidationResult
     +is_duplicate(rfc_message_id) bool
 }
 ```
@@ -808,6 +830,45 @@ class HybridStorage {
 • Validation after every write
 • No partial/orphaned state
 • Pre-loaded RFC Message-IDs for O(1) duplicate detection
+• Provides both read AND write operations
+
+---
+
+### DBManager Contract (INTERNAL)
+
+**DBManager is an INTERNAL component - core layer should NOT use it directly.**
+
+Use HybridStorage instead for all data operations.
+
+#### Responsibilities
+• ALL SQL operations (single source of truth for SQL)
+• Transaction management with auto-rollback
+• Audit trail in archive_runs
+• Schema validation
+
+#### Interface
+```mermaid
+classDiagram
+class DBManager {
+    <<internal>>
+    +record_archived_message(**metadata)
+    +get_message_location(rfc_message_id) tuple
+    +get_all_rfc_message_ids() set~str~
+    +search_messages(fulltext, from_addr, ...) list~dict~
+    +get_gmail_ids_for_archive(archive_file) set~str~
+    +get_message_count() int
+    +get_archive_runs(limit) list~dict~
+    +verify_database_integrity() list~str~
+    +commit()
+    +rollback()
+}
+```
+
+#### Guarantees
+• Parameterized queries only (no SQL injection)
+• All writes recorded in audit trail
+• Auto-rollback on transaction failure
+• **All SQL contained here** (no SQL elsewhere in codebase)
 
 ---
 
@@ -935,4 +996,4 @@ mindmap
 
 ---
 
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-08

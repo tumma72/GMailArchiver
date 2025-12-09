@@ -5,13 +5,13 @@ This layer manages all persistent state:
 - Schema version management (SchemaManager)
 - Atomic mbox + database operations (HybridStorage)
 - Database migrations (MigrationManager)
-- Legacy state tracking (ArchiveState)
 
 Dependencies: shared layer only
 """
 
 from .db_manager import DBManager, DBManagerError, SchemaValidationError
 from .hybrid_storage import (
+    ArchiveStats,
     ConsolidationResult,
     HybridStorage,
     HybridStorageError,
@@ -24,7 +24,6 @@ from .schema_manager import (
     SchemaVersion,
     SchemaVersionError,
 )
-from .state import ArchiveState
 
 __all__ = [
     # DBManager
@@ -41,8 +40,7 @@ __all__ = [
     "HybridStorageError",
     "IntegrityError",
     "ConsolidationResult",
+    "ArchiveStats",
     # MigrationManager
     "MigrationManager",
-    # ArchiveState (legacy)
-    "ArchiveState",
 ]

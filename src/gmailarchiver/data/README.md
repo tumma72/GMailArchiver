@@ -54,7 +54,6 @@ with DBManager("archive_state.db") as db:
 | `SchemaManager` | Version detection and capability checking | `tests/data/test_schema_manager.py` |
 | `HybridStorage` | Atomic mbox + database operations | `tests/data/test_hybrid_storage.py` |
 | `MigrationManager` | Schema upgrades (v1.0 -> v1.1) | `tests/data/test_migration.py` |
-| `ArchiveState` | Legacy wrapper (deprecated) | `tests/data/test_state.py` |
 
 ## Directory Structure
 
@@ -66,8 +65,7 @@ data/
 ├── db_manager.py        # DBManager implementation
 ├── schema_manager.py    # SchemaManager implementation
 ├── hybrid_storage.py    # HybridStorage implementation
-├── migration.py         # MigrationManager implementation
-└── state.py             # ArchiveState (legacy)
+└── migration.py         # MigrationManager implementation
 ```
 
 ## Exports
@@ -80,7 +78,6 @@ DBManager
 SchemaManager
 HybridStorage
 MigrationManager
-ArchiveState
 
 # Enums
 SchemaVersion

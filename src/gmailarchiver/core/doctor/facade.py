@@ -1,12 +1,12 @@
 """System diagnostics and auto-repair facade for Gmail Archiver."""
 
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from gmailarchiver.core.doctor._diagnostics import CheckResult, CheckSeverity, DiagnosticsRunner
 from gmailarchiver.core.doctor._repair import FixResult, RepairManager
+from gmailarchiver.data.db_manager import DBManager
 
 
 @dataclass
@@ -57,24 +57,31 @@ class Doctor:
         self.db_path = Path(db_path) if db_path != ":memory:" else Path(":memory:")
         self.validate_schema = validate_schema
         self.auto_create = auto_create
-        self._conn: sqlite3.Connection | None = None
+        self._db_manager: DBManager | None = None
 
-    def _get_connection(self) -> sqlite3.Connection | None:
-        """Get database connection, handling errors gracefully."""
-        if self._conn:
-            return self._conn
+    def _get_db_manager(self) -> DBManager | None:
+        """Get or create DBManager instance, handling errors gracefully."""
+        if self._db_manager:
+            return self._db_manager
 
         try:
             if str(self.db_path) == ":memory:":
-                self._conn = sqlite3.connect(":memory:")
+                self._db_manager = DBManager(":memory:", validate_schema=False, auto_create=True)
             elif self.db_path.exists():
-                self._conn = sqlite3.connect(str(self.db_path))
+                # For diagnostics, we don't want to fail on schema validation
+                # Doctor needs to be able to inspect databases with any schema version
+                self._db_manager = DBManager(
+                    str(self.db_path), validate_schema=False, auto_create=False
+                )
+            elif self.auto_create:
+                self._db_manager = DBManager(
+                    str(self.db_path), validate_schema=False, auto_create=True
+                )
             else:
                 return None
 
-            self._conn.row_factory = sqlite3.Row
-            return self._conn
-        except (sqlite3.Error, PermissionError):
+            return self._db_manager
+        except Exception:
             return None
 
     def run_diagnostics(self) -> DoctorReport:
@@ -83,8 +90,8 @@ class Doctor:
         Returns:
             DoctorReport with results of all checks
         """
-        conn = self._get_connection()
-        diagnostics = DiagnosticsRunner(self.db_path, conn)
+        db_manager = self._get_db_manager()
+        diagnostics = DiagnosticsRunner(self.db_path, db_manager)
 
         checks: list[CheckResult] = []
 
@@ -145,8 +152,8 @@ class Doctor:
         report = self.run_diagnostics()
 
         # Initialize repair manager
-        conn = self._get_connection()
-        repair = RepairManager(self.db_path, conn)
+        db_manager = self._get_db_manager()
+        repair = RepairManager(self.db_path, db_manager)
 
         for check in report.checks:
             if check.fixable and check.severity != CheckSeverity.OK:
@@ -164,80 +171,81 @@ class Doctor:
     # Delegation methods for direct access to diagnostics/repair
     def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_database_schema()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_database_schema()
 
     def check_database_integrity(self) -> CheckResult:
         """Check database integrity."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_database_integrity()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_database_integrity()
 
     def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_orphaned_fts()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_orphaned_fts()
 
     def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files exist."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_archive_files_exist()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_archive_files_exist()
 
     def check_python_version(self) -> CheckResult:
         """Check Python version."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_python_version()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_python_version()
 
     def check_dependencies(self) -> CheckResult:
         """Check dependencies."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_dependencies()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_dependencies()
 
     def check_oauth_token(self) -> CheckResult:
         """Check OAuth token."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_oauth_token()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_oauth_token()
 
     def check_credentials_file(self) -> CheckResult:
         """Check credentials file."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_credentials_file()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_credentials_file()
 
     def check_disk_space(self) -> CheckResult:
         """Check disk space."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_disk_space()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_disk_space()
 
     def check_write_permissions(self) -> CheckResult:
         """Check write permissions."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_write_permissions()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_write_permissions()
 
     def check_stale_locks(self) -> CheckResult:
         """Check stale locks."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_stale_locks()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_stale_locks()
 
     def check_temp_directory(self) -> CheckResult:
         """Check temp directory."""
-        conn = self._get_connection()
-        return DiagnosticsRunner(self.db_path, conn).check_temp_directory()
+        db_manager = self._get_db_manager()
+        return DiagnosticsRunner(self.db_path, db_manager).check_temp_directory()
 
     def fix_missing_database(self) -> FixResult:
         """Fix missing database."""
-        conn = self._get_connection()
-        return RepairManager(self.db_path, conn).fix_missing_database()
+        db_manager = self._get_db_manager()
+        return RepairManager(self.db_path, db_manager).fix_missing_database()
 
     def fix_orphaned_fts(self) -> FixResult:
         """Fix orphaned FTS records."""
-        conn = self._get_connection()
-        return RepairManager(self.db_path, conn).fix_orphaned_fts()
+        db_manager = self._get_db_manager()
+        return RepairManager(self.db_path, db_manager).fix_orphaned_fts()
 
     def fix_stale_locks(self) -> FixResult:
         """Fix stale locks."""
-        conn = self._get_connection()
-        return RepairManager(self.db_path, conn).fix_stale_locks()
+        db_manager = self._get_db_manager()
+        return RepairManager(self.db_path, db_manager).fix_stale_locks()
 
-    def __del__(self) -> None:
-        """Close database connection on cleanup."""
-        if self._conn:
-            self._conn.close()
+    def close(self) -> None:
+        """Close database manager if owned."""
+        if self._db_manager:
+            self._db_manager.close()
+            self._db_manager = None

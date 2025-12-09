@@ -3,7 +3,12 @@
 Internal module - use DeduplicatorFacade instead.
 """
 
-import sqlite3
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.db_manager import DBManager
 
 from ._scanner import MessageInfo
 
@@ -11,14 +16,14 @@ from ._scanner import MessageInfo
 class DuplicateRemover:
     """Remove duplicate messages from database."""
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db: DBManager) -> None:
         """
-        Initialize remover with database connection.
+        Initialize remover with database manager.
 
         Args:
-            db_path: Path to SQLite database
+            db: DBManager instance for database operations
         """
-        self.conn = sqlite3.connect(db_path)
+        self.db = db
 
     def remove_messages(self, messages: list[MessageInfo], dry_run: bool = True) -> int:
         """
@@ -45,12 +50,7 @@ class DuplicateRemover:
         placeholders = ",".join("?" * len(gmail_ids))
         sql = f"DELETE FROM messages WHERE gmail_id IN ({placeholders})"
 
-        self.conn.execute(sql, gmail_ids)
-        self.conn.commit()
+        self.db.conn.execute(sql, gmail_ids)
+        self.db.commit()
 
         return message_count
-
-    def close(self) -> None:
-        """Close database connection."""
-        if self.conn:
-            self.conn.close()

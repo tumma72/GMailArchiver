@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from gmailarchiver.core.deduplicator.facade import DeduplicatorFacade
+from gmailarchiver.data.db_manager import DBManager
 
 
 @pytest.fixture
@@ -66,7 +67,8 @@ class TestDeduplicatorFacade:
 
     def test_find_duplicates(self, test_db: Path) -> None:
         """Test finding duplicates through facade."""
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         duplicates = facade.find_duplicates()
 
@@ -76,7 +78,8 @@ class TestDeduplicatorFacade:
 
     def test_generate_report(self, test_db: Path) -> None:
         """Test generating deduplication report."""
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         duplicates = facade.find_duplicates()
         report = facade.generate_report(duplicates)
@@ -89,7 +92,8 @@ class TestDeduplicatorFacade:
 
     def test_deduplicate_dry_run(self, test_db: Path) -> None:
         """Test deduplication in dry-run mode."""
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         duplicates = facade.find_duplicates()
         result = facade.deduplicate(duplicates, strategy="newest", dry_run=True)
@@ -107,7 +111,8 @@ class TestDeduplicatorFacade:
 
     def test_deduplicate_actual(self, test_db: Path) -> None:
         """Test actual deduplication (removes from DB)."""
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         duplicates = facade.find_duplicates()
         result = facade.deduplicate(duplicates, strategy="newest", dry_run=False)
@@ -134,7 +139,8 @@ class TestDeduplicatorFacade:
         conn.commit()
         conn.close()
 
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         duplicates = facade.find_duplicates()
         result = facade.deduplicate(duplicates, strategy="largest", dry_run=False)
@@ -148,7 +154,8 @@ class TestDeduplicatorFacade:
     def test_missing_database_raises(self) -> None:
         """Test that missing database raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            DeduplicatorFacade("/nonexistent/database.db")
+            db = DBManager("/nonexistent/database.db", auto_create=False)
+            DeduplicatorFacade(db)
 
     def test_v10_schema_raises(self) -> None:
         """Test that v1.0 schema raises ValueError."""
@@ -165,22 +172,27 @@ class TestDeduplicatorFacade:
         conn.commit()
         conn.close()
 
-        with pytest.raises(ValueError, match="requires v1.1 database schema"):
-            DeduplicatorFacade(str(db_path))
+        db = DBManager(str(db_path), validate_schema=False)
+        with pytest.raises(ValueError, match="requires v1.1"):
+            DeduplicatorFacade(db)
 
+        db.close()
         db_path.unlink()
 
     def test_context_manager(self, test_db: Path) -> None:
         """Test context manager protocol."""
-        with DeduplicatorFacade(str(test_db)) as facade:
+        db = DBManager(str(test_db))
+        with DeduplicatorFacade(db) as facade:
             duplicates = facade.find_duplicates()
             assert len(duplicates) == 1
 
         # Should not raise after closing
+        db.close()
 
     def test_empty_duplicates_deduplicate(self, test_db: Path) -> None:
         """Test deduplicating empty duplicates dict."""
-        facade = DeduplicatorFacade(str(test_db))
+        db = DBManager(str(test_db))
+        facade = DeduplicatorFacade(db)
 
         result = facade.deduplicate({}, strategy="newest", dry_run=False)
 

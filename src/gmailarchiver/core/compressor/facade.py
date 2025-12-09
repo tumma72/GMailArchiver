@@ -81,13 +81,13 @@ class CompressionSummary:
 class ArchiveCompressor:
     """Compress mbox archives to save disk space."""
 
-    def __init__(self, state_db_path: str) -> None:
-        """Initialize compressor with database path.
+    def __init__(self, db_manager: DBManager) -> None:
+        """Initialize compressor with database manager.
 
         Args:
-            state_db_path: Path to state database
+            db_manager: Database manager for state operations
         """
-        self.state_db_path = state_db_path
+        self.db_manager = db_manager
         self._compressors: dict[str, type[CompressionHandler]] = {
             "gzip": GzipCompressor,
             "lzma": LzmaCompressor,
@@ -144,8 +144,6 @@ class ArchiveCompressor:
         files_compressed = 0
         files_skipped = 0
 
-        db_manager = DBManager(self.state_db_path, validate_schema=False)
-
         try:
             for file_path in file_paths:
                 result = self._compress_file(
@@ -154,7 +152,6 @@ class ArchiveCompressor:
                     in_place,
                     dry_run,
                     keep_original,
-                    db_manager,
                 )
                 file_results.append(result)
 
@@ -171,9 +168,9 @@ class ArchiveCompressor:
 
             # Commit database changes if not dry run
             if not dry_run:
-                db_manager.commit()
+                self.db_manager.commit()
             else:
-                db_manager.rollback()
+                self.db_manager.rollback()
 
             end_time = time.perf_counter()
             execution_time_ms = (end_time - start_time) * 1000
@@ -217,10 +214,8 @@ class ArchiveCompressor:
                 )
 
         except Exception:
-            db_manager.rollback()
+            self.db_manager.rollback()
             raise
-        finally:
-            db_manager.close()
 
     def _compress_file(
         self,
@@ -229,7 +224,6 @@ class ArchiveCompressor:
         in_place: bool,
         dry_run: bool,
         keep_original: bool,
-        db_manager: DBManager,
     ) -> CompressionResult:
         """Compress a single file.
 
@@ -239,7 +233,6 @@ class ArchiveCompressor:
             in_place: Replace original file
             dry_run: Preview only
             keep_original: Keep original file
-            db_manager: Database manager for updating paths
 
         Returns:
             CompressionResult for this file
@@ -295,7 +288,7 @@ class ArchiveCompressor:
 
             # Update database if in_place
             if in_place:
-                self._update_database_paths(db_manager, str(file_path), str(dest_path))
+                self._update_database_paths(str(file_path), str(dest_path))
                 # Remove original file unless the caller requested to keep it
                 if not keep_original:
                     file_path.unlink()
@@ -416,16 +409,15 @@ class ArchiveCompressor:
             logger.error(f"Verification failed for {file_path}: {e}")
             return False
 
-    def _update_database_paths(self, db_manager: DBManager, old_path: str, new_path: str) -> None:
+    def _update_database_paths(self, old_path: str, new_path: str) -> None:
         """Update database to point to new compressed file.
 
         Args:
-            db_manager: Database manager
             old_path: Old archive file path
             new_path: New compressed file path
         """
         # Get all messages for the old archive
-        messages = db_manager.get_all_messages_for_archive(old_path)
+        messages = self.db_manager.get_all_messages_for_archive(old_path)
 
         if not messages:
             logger.warning(f"No messages found for archive: {old_path}")
@@ -443,5 +435,5 @@ class ArchiveCompressor:
             for msg in messages
         ]
 
-        db_manager.bulk_update_archive_locations(updates)
+        self.db_manager.bulk_update_archive_locations(updates)
         logger.info(f"Updated {len(updates)} messages from {old_path} to {new_path}")

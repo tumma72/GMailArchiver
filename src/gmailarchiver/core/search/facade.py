@@ -5,6 +5,8 @@ Coordinates query parsing and execution for Gmail-style searches.
 
 from pathlib import Path
 
+from ...data.db_manager import DBManager
+from ...data.hybrid_storage import HybridStorage
 from ._executor import SearchExecutor
 from ._parser import QueryParser
 from ._types import SearchResults
@@ -44,7 +46,17 @@ class SearchFacade:
 
         self.db_path = state_db_path
         self._parser = QueryParser()
-        self._executor = SearchExecutor(state_db_path)
+
+        # Create HybridStorage for database access (architecture gateway)
+        self._db_manager = DBManager(state_db_path)
+        self._storage = HybridStorage(self._db_manager, preload_rfc_ids=False)
+
+        # Set row_factory for SearchExecutor's SQL queries
+        import sqlite3
+
+        self._db_manager.conn.row_factory = sqlite3.Row
+
+        self._executor = SearchExecutor(self._storage)
 
     def search(self, query: str, limit: int = 100, offset: int = 0) -> SearchResults:
         """
@@ -150,7 +162,7 @@ class SearchFacade:
 
     def close(self) -> None:
         """Close database connection."""
-        self._executor.close()
+        self._db_manager.close()
 
     def __enter__(self) -> SearchFacade:
         """Context manager entry."""

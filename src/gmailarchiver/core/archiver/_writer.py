@@ -18,7 +18,6 @@ from typing import Any
 
 from gmailarchiver.cli.output import OperationHandle
 from gmailarchiver.connectors.gmail_client import GmailClient
-from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.input_validator import validate_compression_format
 from gmailarchiver.shared.utils import format_bytes
@@ -31,17 +30,15 @@ class MessageWriter:
     Handles the write phase of archiving workflow.
     """
 
-    def __init__(self, gmail_client: GmailClient, state_db_path: str) -> None:
-        """Initialize MessageWriter with Gmail client and database path.
+    def __init__(self, gmail_client: GmailClient, storage: HybridStorage) -> None:
+        """Initialize MessageWriter with Gmail client and hybrid storage.
 
         Args:
             gmail_client: Gmail API client for fetching messages
-            state_db_path: Path to state database for metadata tracking
+            storage: HybridStorage instance for atomic mbox+database operations
         """
         self.client = gmail_client
-        self.state_db_path = state_db_path
-        self.db_manager: DBManager | None = None
-        self.hybrid_storage: HybridStorage | None = None
+        self.storage = storage
         self._interrupted = threading.Event()
         self._original_sigint_handler: Any = None
 
@@ -79,14 +76,10 @@ class MessageWriter:
                 "actual_file": output_file,
             }
 
-        # Initialize storage managers
-        self.db_manager = DBManager(self.state_db_path, validate_schema=False, auto_create=True)
-        self.hybrid_storage = HybridStorage(self.db_manager)
-
         # Create session for tracking progress
         session_id = str(uuid.uuid4())
         query = f"archive_messages({len(message_ids)} messages)"
-        self.db_manager.create_session(
+        self.storage.db.create_session(
             session_id=session_id,
             target_file=output_file,
             query=query,
@@ -94,32 +87,22 @@ class MessageWriter:
             compression=compress,
         )
 
-        try:
-            # Archive messages using helper method
-            result = self._archive_messages(
-                message_ids,
-                output_file,
-                compress,
-                operation,
-                session_id=session_id,
-            )
+        # Archive messages using helper method
+        result = self._archive_messages(
+            message_ids,
+            output_file,
+            compress,
+            operation,
+            session_id=session_id,
+        )
 
-            # Clean up database connection
-            self.db_manager.close()
-
-            # Map helper result to expected output format
-            return {
-                "archived_count": result.get("archived", 0),
-                "failed_count": result.get("failed", 0),
-                "interrupted": result.get("interrupted", False),
-                "actual_file": result.get("actual_file", output_file),
-            }
-
-        except Exception:
-            # Clean up on error
-            if self.db_manager:
-                self.db_manager.close()
-            raise
+        # Map helper result to expected output format
+        return {
+            "archived_count": result.get("archived", 0),
+            "failed_count": result.get("failed", 0),
+            "interrupted": result.get("interrupted", False),
+            "actual_file": result.get("actual_file", output_file),
+        }
 
     def _archive_messages(
         self,
@@ -147,19 +130,16 @@ class MessageWriter:
         output_path = Path(output_file)
         fetch_failed_count = 0
 
-        assert self.hybrid_storage is not None, "HybridStorage not initialized"
-        assert self.db_manager is not None, "DBManager not initialized"
-
-        # Log initial status if operation handle provided
-        if operation:
-            operation.log(f"Fetching {len(message_ids)} messages from Gmail...", "INFO")
-
         # Install SIGINT handler for graceful Ctrl+C
         self._install_sigint_handler()
 
         # Phase 1: Fetch all messages from Gmail and prepare batch
         # This is I/O bound (network) so we do it first
         batch_messages: list[tuple[email.message.Message, str, str | None, str | None]] = []
+
+        # Set up progress tracking for fetch phase
+        if operation:
+            operation.set_total(len(message_ids), "Fetching messages from Gmail")
 
         try:
             for message in self.client.get_messages_batch(message_ids):
@@ -194,12 +174,17 @@ class MessageWriter:
                         )
                     )
 
+                    # Update progress for fetch phase
+                    if operation:
+                        operation.update_progress(1)
+
                 except Exception as e:
                     # Log error but continue fetching
                     msg_id = message.get("id", "unknown")
                     error_msg = f"Failed to fetch/parse message {msg_id}: {e}"
                     if operation:
                         operation.log(error_msg, "ERROR")
+                        operation.update_progress(1)  # Still count toward total
                     else:
                         self._log(f"Warning: {error_msg}", "WARNING")
                     fetch_failed_count += 1
@@ -231,7 +216,7 @@ class MessageWriter:
                 operation.update_progress(1)
 
         try:
-            result = self.hybrid_storage.archive_messages_batch(
+            result = self.storage.archive_messages_batch(
                 messages=batch_messages,
                 archive_file=output_path,
                 compression=compress,

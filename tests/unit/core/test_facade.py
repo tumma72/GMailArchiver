@@ -25,14 +25,17 @@ class TestArchiverFacadeInitialization:
         assert facade is not None
 
     @pytest.mark.unit
-    def test_facade_creation_with_custom_state_db_path(self):
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
+    def test_facade_creation_with_custom_state_db_path(self, mock_storage, mock_db):
         """Test creating facade with custom state database path."""
         mock_gmail_client = Mock()
-        custom_db_path = "/custom/path/archive.db"
+        custom_db_path = "/tmp/custom/path/archive.db"
 
         facade = ArchiverFacade(gmail_client=mock_gmail_client, state_db_path=custom_db_path)
 
         assert facade is not None
+        assert facade.state_db_path == custom_db_path
 
     @pytest.mark.unit
     def test_facade_creation_with_output_manager(self):
@@ -45,27 +48,44 @@ class TestArchiverFacadeInitialization:
         assert facade is not None
 
     @pytest.mark.unit
+    @patch("gmailarchiver.core.archiver.facade.DBManager")
+    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.MessageLister")
     @patch("gmailarchiver.core.archiver.facade.MessageFilter")
     @patch("gmailarchiver.core.archiver.facade.MessageWriter")
     def test_facade_creates_internal_modules(
-        self, mock_writer_class, mock_filter_class, mock_lister_class
+        self,
+        mock_writer_class,
+        mock_filter_class,
+        mock_lister_class,
+        mock_storage_class,
+        mock_db_class,
     ):
         """Test that facade creates internal module instances."""
         mock_gmail_client = Mock()
         state_db_path = "/tmp/test.db"
+        mock_db = Mock()
+        mock_storage = Mock()
+        mock_db_class.return_value = mock_db
+        mock_storage_class.return_value = mock_storage
 
         ArchiverFacade(gmail_client=mock_gmail_client, state_db_path=state_db_path)
+
+        # Should create DBManager
+        mock_db_class.assert_called_once()
+
+        # Should create HybridStorage with DBManager
+        mock_storage_class.assert_called_once_with(mock_db)
 
         # Should create MessageLister with gmail_client
         mock_lister_class.assert_called_once_with(gmail_client=mock_gmail_client)
 
-        # Should create MessageFilter with state_db_path
-        mock_filter_class.assert_called_once_with(state_db_path=state_db_path)
+        # Should create MessageFilter with db_manager
+        mock_filter_class.assert_called_once_with(db_manager=mock_db)
 
-        # Should create MessageWriter with gmail_client and state_db_path
+        # Should create MessageWriter with gmail_client and storage
         mock_writer_class.assert_called_once_with(
-            gmail_client=mock_gmail_client, state_db_path=state_db_path
+            gmail_client=mock_gmail_client, storage=mock_storage
         )
 
 
@@ -104,16 +124,20 @@ class TestArchiverFacadeDelegationMethods:
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
-            with patch(
-                "gmailarchiver.core.archiver.facade.MessageFilter",
-                return_value=mock_filter,
-            ):
+        with patch("gmailarchiver.core.archiver.facade.DBManager"):
+            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
                 with patch(
-                    "gmailarchiver.core.archiver.facade.MessageWriter",
-                    return_value=mock_writer,
+                    "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
                 ):
-                    return ArchiverFacade(gmail_client=Mock())
+                    with patch(
+                        "gmailarchiver.core.archiver.facade.MessageFilter",
+                        return_value=mock_filter,
+                    ):
+                        with patch(
+                            "gmailarchiver.core.archiver.facade.MessageWriter",
+                            return_value=mock_writer,
+                        ):
+                            return ArchiverFacade(gmail_client=Mock())
 
     @pytest.mark.unit
     def test_list_messages_for_archive_delegates_to_lister(self, facade, mock_lister):
@@ -246,16 +270,20 @@ class TestArchiverFacadeOrchestration:
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
-            with patch(
-                "gmailarchiver.core.archiver.facade.MessageFilter",
-                return_value=mock_filter,
-            ):
+        with patch("gmailarchiver.core.archiver.facade.DBManager"):
+            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
                 with patch(
-                    "gmailarchiver.core.archiver.facade.MessageWriter",
-                    return_value=mock_writer,
+                    "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
                 ):
-                    return ArchiverFacade(gmail_client=Mock())
+                    with patch(
+                        "gmailarchiver.core.archiver.facade.MessageFilter",
+                        return_value=mock_filter,
+                    ):
+                        with patch(
+                            "gmailarchiver.core.archiver.facade.MessageWriter",
+                            return_value=mock_writer,
+                        ):
+                            return ArchiverFacade(gmail_client=Mock())
 
     @pytest.mark.unit
     def test_archive_orchestrates_full_workflow(
@@ -558,10 +586,12 @@ class TestArchiverFacadeEdgeCases:
     @pytest.fixture
     def facade(self):
         """Create basic facade for edge case testing."""
-        with patch("gmailarchiver.core.archiver.facade.MessageLister"):
-            with patch("gmailarchiver.core.archiver.facade.MessageFilter"):
-                with patch("gmailarchiver.core.archiver.facade.MessageWriter"):
-                    return ArchiverFacade(gmail_client=Mock())
+        with patch("gmailarchiver.core.archiver.facade.DBManager"):
+            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
+                with patch("gmailarchiver.core.archiver.facade.MessageLister"):
+                    with patch("gmailarchiver.core.archiver.facade.MessageFilter"):
+                        with patch("gmailarchiver.core.archiver.facade.MessageWriter"):
+                            return ArchiverFacade(gmail_client=Mock())
 
     @pytest.mark.unit
     def test_archive_with_none_operation_handle(self, facade):

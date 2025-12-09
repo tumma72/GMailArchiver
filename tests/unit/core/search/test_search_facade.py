@@ -1,8 +1,6 @@
 """Tests for SearchFacade (TDD)."""
 
 import sqlite3
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -10,71 +8,108 @@ from gmailarchiver.core.search.facade import SearchFacade
 
 
 @pytest.fixture
-def test_db() -> Path:
-    """Create test database with messages."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as f:
-        db_path = Path(f.name)
-
-    conn = sqlite3.connect(str(db_path))
-
-    # Create messages table
-    conn.execute("""
-        CREATE TABLE messages (
-            gmail_id TEXT PRIMARY KEY,
-            rfc_message_id TEXT,
-            subject TEXT,
-            from_addr TEXT,
-            to_addr TEXT,
-            date TIMESTAMP,
-            body_preview TEXT,
-            archive_file TEXT,
-            mbox_offset INTEGER
-        )
-    """)
-
-    # Create FTS5 virtual table
-    conn.execute("""
-        CREATE VIRTUAL TABLE messages_fts USING fts5(
-            subject, from_addr, to_addr, body_preview,
-            content=messages,
-            content_rowid=rowid
-        )
-    """)
+def test_db(v11_db_factory) -> str:
+    """Create test database with messages using v1.1 schema."""
+    db_path = v11_db_factory("test_search_facade.db")
 
     # Insert test data
-    conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg1', '<msg1@test>', 'Meeting Tomorrow', 'alice@test.com',
-         'bob@test.com', '2024-01-01', 'Meeting at 10am', 'archive.mbox', 0)
-    """)
-    conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg2', '<msg2@test>', 'Invoice #12345', 'vendor@test.com',
-         'billing@test.com', '2024-01-02', 'Payment due', 'archive.mbox', 1024)
-    """)
-    conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg3', '<msg3@test>', 'Project Update', 'alice@test.com',
-         'team@test.com', '2024-01-03', 'Status report', 'archive.mbox', 2048)
-    """)
-
-    # Sync FTS index
-    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')")
-
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO messages
+        (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+         date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+         body_preview, checksum, size_bytes, labels, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "msg1",
+            "<msg1@test>",
+            "thread1",
+            "Meeting Tomorrow",
+            "alice@test.com",
+            "bob@test.com",
+            None,
+            "2024-01-01",
+            "2024-01-01T12:00:00",
+            "archive.mbox",
+            0,
+            1024,
+            "Meeting at 10am",
+            "checksum1",
+            1024,
+            '["INBOX"]',
+            "default",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages
+        (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+         date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+         body_preview, checksum, size_bytes, labels, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "msg2",
+            "<msg2@test>",
+            "thread2",
+            "Invoice #12345",
+            "vendor@test.com",
+            "billing@test.com",
+            None,
+            "2024-01-02",
+            "2024-01-02T12:00:00",
+            "archive.mbox",
+            1024,
+            2048,
+            "Payment due",
+            "checksum2",
+            2048,
+            '["INBOX"]',
+            "default",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO messages
+        (gmail_id, rfc_message_id, thread_id, subject, from_addr, to_addr, cc_addr,
+         date, archived_timestamp, archive_file, mbox_offset, mbox_length,
+         body_preview, checksum, size_bytes, labels, account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "msg3",
+            "<msg3@test>",
+            "thread3",
+            "Project Update",
+            "alice@test.com",
+            "team@test.com",
+            None,
+            "2024-01-03",
+            "2024-01-03T12:00:00",
+            "archive.mbox",
+            2048,
+            1024,
+            "Status report",
+            "checksum3",
+            1024,
+            '["INBOX"]',
+            "default",
+        ),
+    )
     conn.commit()
     conn.close()
 
-    yield db_path
-
-    db_path.unlink()
+    return db_path
 
 
 class TestSearchFacade:
     """Test SearchFacade high-level interface."""
 
-    def test_search_gmail_style_query(self, test_db: Path) -> None:
+    def test_search_gmail_style_query(self, test_db: str) -> None:
         """Test Gmail-style query parsing and execution."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search("from:alice meeting")
 
@@ -82,44 +117,44 @@ class TestSearchFacade:
         assert any("Meeting" in r.subject for r in results.results)
         assert all("alice" in r.from_addr for r in results.results)
 
-    def test_search_fulltext_only(self, test_db: Path) -> None:
+    def test_search_fulltext_only(self, test_db: str) -> None:
         """Test fulltext search."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search("invoice")
 
         assert results.total_results == 1
         assert results.results[0].subject == "Invoice #12345"
 
-    def test_search_metadata_only(self, test_db: Path) -> None:
+    def test_search_metadata_only(self, test_db: str) -> None:
         """Test metadata-only search."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search("from:alice")
 
         assert results.total_results == 2
         assert all("alice" in r.from_addr for r in results.results)
 
-    def test_search_with_limit(self, test_db: Path) -> None:
+    def test_search_with_limit(self, test_db: str) -> None:
         """Test limit parameter."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search("from:alice", limit=1)
 
         assert results.total_results == 1
         assert len(results.results) == 1
 
-    def test_search_tracks_execution_time(self, test_db: Path) -> None:
+    def test_search_tracks_execution_time(self, test_db: str) -> None:
         """Test that execution time is tracked."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search("meeting")
 
         assert results.execution_time_ms > 0
 
-    def test_context_manager(self, test_db: Path) -> None:
+    def test_context_manager(self, test_db: str) -> None:
         """Test context manager protocol."""
-        with SearchFacade(str(test_db)) as facade:
+        with SearchFacade(test_db) as facade:
             results = facade.search("meeting")
             assert results.total_results >= 1
 
@@ -131,27 +166,27 @@ class TestSearchFacade:
         with pytest.raises(FileNotFoundError):
             SearchFacade("/nonexistent/database.db")
 
-    def test_search_fulltext_direct(self, test_db: Path) -> None:
+    def test_search_fulltext_direct(self, test_db: str) -> None:
         """Test direct fulltext search method."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search_fulltext("meeting")
 
         assert results.total_results >= 1
         assert any("Meeting" in r.subject for r in results.results)
 
-    def test_search_metadata_direct(self, test_db: Path) -> None:
+    def test_search_metadata_direct(self, test_db: str) -> None:
         """Test direct metadata search method."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search_metadata(from_addr="alice")
 
         assert results.total_results == 2
         assert all("alice" in r.from_addr for r in results.results)
 
-    def test_search_metadata_date_filters(self, test_db: Path) -> None:
+    def test_search_metadata_date_filters(self, test_db: str) -> None:
         """Test metadata search with date filters."""
-        facade = SearchFacade(str(test_db))
+        facade = SearchFacade(test_db)
 
         results = facade.search_metadata(after="2024-01-02", before="2024-01-04")
 

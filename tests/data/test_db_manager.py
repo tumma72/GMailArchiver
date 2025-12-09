@@ -1490,3 +1490,452 @@ class TestDBManagerExceptionHandling:
 
                 assert "Failed to record message" in str(exc_info.value)
                 assert "malformed" in str(exc_info.value)
+
+
+# ============================================================================
+# New Query Methods Tests (TDD - Red Phase)
+# ============================================================================
+
+
+class TestSearchMessages:
+    """Tests for search_messages method (FTS5 + metadata search)."""
+
+    def test_search_messages_fulltext_search(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test fulltext search using FTS5."""
+        with DBManager(v11_db) as db:
+            # Insert test messages
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["subject"] = "Python programming tips"
+            msg1["body_preview"] = "Learn about Python decorators and generators"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["subject"] = "Java tutorials"
+            msg2["body_preview"] = "Introduction to Java streams"
+            db.record_archived_message(**msg2)
+
+            # Search for "Python"
+            results = db.search_messages(fulltext="Python")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg1"
+            assert results[0]["subject"] == "Python programming tips"
+
+    def test_search_messages_from_filter(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test filtering by from_addr."""
+        with DBManager(v11_db) as db:
+            # Insert messages from different senders
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["from_addr"] = "alice@example.com"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["from_addr"] = "bob@example.com"
+            db.record_archived_message(**msg2)
+
+            # Filter by from_addr
+            results = db.search_messages(from_addr="alice@example.com")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg1"
+            assert results[0]["from_addr"] == "alice@example.com"
+
+    def test_search_messages_to_filter(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test filtering by to_addr."""
+        with DBManager(v11_db) as db:
+            # Insert messages to different recipients
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["to_addr"] = "alice@example.com"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["to_addr"] = "bob@example.com"
+            db.record_archived_message(**msg2)
+
+            # Filter by to_addr
+            results = db.search_messages(to_addr="alice@example.com")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg1"
+            assert results[0]["to_addr"] == "alice@example.com"
+
+    def test_search_messages_subject_filter(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test filtering by subject."""
+        with DBManager(v11_db) as db:
+            # Insert messages with different subjects
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["subject"] = "Meeting notes"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["subject"] = "Project update"
+            db.record_archived_message(**msg2)
+
+            # Filter by subject (partial match)
+            results = db.search_messages(subject="Meeting")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg1"
+            assert results[0]["subject"] == "Meeting notes"
+
+    def test_search_messages_date_range_filter(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test filtering by date range."""
+        with DBManager(v11_db) as db:
+            # Insert messages with different dates
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["date"] = "2024-01-01T00:00:00"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["date"] = "2024-06-01T00:00:00"
+            db.record_archived_message(**msg2)
+
+            # Filter by date range (after 2024-05-01)
+            results = db.search_messages(date_start="2024-05-01")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg2"
+
+    def test_search_messages_combined_filters(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test combining fulltext search with metadata filters."""
+        with DBManager(v11_db) as db:
+            # Insert test messages
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["from_addr"] = "alice@example.com"
+            msg1["subject"] = "Python tips"
+            msg1["body_preview"] = "Advanced Python techniques"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["from_addr"] = "bob@example.com"
+            msg2["subject"] = "Python basics"
+            msg2["body_preview"] = "Introduction to Python"
+            db.record_archived_message(**msg2)
+
+            # Search for "Python" from alice only
+            results = db.search_messages(fulltext="Python", from_addr="alice@example.com")
+
+            assert len(results) == 1
+            assert results[0]["gmail_id"] == "msg1"
+            assert results[0]["from_addr"] == "alice@example.com"
+
+    def test_search_messages_empty_results(self, v11_db: str) -> None:
+        """Test search with no matching results."""
+        with DBManager(v11_db) as db:
+            results = db.search_messages(fulltext="nonexistent")
+
+            assert len(results) == 0
+            assert results == []
+
+    def test_search_messages_empty_database(self, v11_db: str) -> None:
+        """Test search on empty database."""
+        with DBManager(v11_db) as db:
+            results = db.search_messages(fulltext="anything")
+
+            assert len(results) == 0
+
+    def test_search_messages_limit_parameter(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test limiting search results."""
+        with DBManager(v11_db) as db:
+            # Insert multiple messages
+            for i in range(5):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                msg["subject"] = "Test message"
+                db.record_archived_message(**msg)
+
+            # Search with limit
+            results = db.search_messages(subject="Test", limit=3)
+
+            assert len(results) == 3
+
+
+class TestGetGmailIdsForArchive:
+    """Tests for get_gmail_ids_for_archive method."""
+
+    def test_get_gmail_ids_for_archive_single_file(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test getting gmail_ids for specific archive file."""
+        with DBManager(v11_db) as db:
+            # Insert messages to different archives
+            msg1 = sample_message_data.copy()
+            msg1["gmail_id"] = "msg1"
+            msg1["rfc_message_id"] = "<msg1@example.com>"
+            msg1["archive_file"] = "archive1.mbox"
+            db.record_archived_message(**msg1)
+
+            msg2 = sample_message_data.copy()
+            msg2["gmail_id"] = "msg2"
+            msg2["rfc_message_id"] = "<msg2@example.com>"
+            msg2["archive_file"] = "archive1.mbox"
+            db.record_archived_message(**msg2)
+
+            msg3 = sample_message_data.copy()
+            msg3["gmail_id"] = "msg3"
+            msg3["rfc_message_id"] = "<msg3@example.com>"
+            msg3["archive_file"] = "archive2.mbox"
+            db.record_archived_message(**msg3)
+
+            # Get IDs for archive1.mbox
+            ids = db.get_gmail_ids_for_archive("archive1.mbox")
+
+            assert len(ids) == 2
+            assert "msg1" in ids
+            assert "msg2" in ids
+            assert "msg3" not in ids
+
+    def test_get_gmail_ids_for_archive_empty_file(self, v11_db: str) -> None:
+        """Test getting gmail_ids for archive with no messages."""
+        with DBManager(v11_db) as db:
+            ids = db.get_gmail_ids_for_archive("nonexistent.mbox")
+
+            assert len(ids) == 0
+            assert ids == set()
+
+    def test_get_gmail_ids_for_archive_returns_set(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test that method returns a set (not list)."""
+        with DBManager(v11_db) as db:
+            # Insert message
+            msg = sample_message_data.copy()
+            msg["gmail_id"] = "msg1"
+            msg["rfc_message_id"] = "<msg1@example.com>"
+            msg["archive_file"] = "test.mbox"
+            db.record_archived_message(**msg)
+
+            ids = db.get_gmail_ids_for_archive("test.mbox")
+
+            assert isinstance(ids, set)
+            assert ids == {"msg1"}
+
+
+class TestGetMessageCount:
+    """Tests for get_message_count method."""
+
+    def test_get_message_count_zero(self, v11_db: str) -> None:
+        """Test message count on empty database."""
+        with DBManager(v11_db) as db:
+            count = db.get_message_count()
+
+            assert count == 0
+
+    def test_get_message_count_one(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+        """Test message count with one message."""
+        with DBManager(v11_db) as db:
+            db.record_archived_message(**sample_message_data)
+
+            count = db.get_message_count()
+
+            assert count == 1
+
+    def test_get_message_count_multiple(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test message count with multiple messages."""
+        with DBManager(v11_db) as db:
+            # Insert 10 messages
+            for i in range(10):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                db.record_archived_message(**msg)
+
+            count = db.get_message_count()
+
+            assert count == 10
+
+    def test_get_message_count_after_deletion(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test message count updates after deletion."""
+        with DBManager(v11_db) as db:
+            # Insert 3 messages
+            for i in range(3):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                db.record_archived_message(**msg)
+
+            # Delete one message
+            db.delete_message("msg1")
+
+            count = db.get_message_count()
+
+            assert count == 2
+
+
+class TestGetArchiveRuns:
+    """Tests for get_archive_runs method."""
+
+    def test_get_archive_runs_empty_database(self, v11_db: str) -> None:
+        """Test getting archive runs from empty database."""
+        with DBManager(v11_db) as db:
+            runs = db.get_archive_runs(limit=10)
+
+            assert len(runs) == 0
+            assert runs == []
+
+    def test_get_archive_runs_default_limit(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test getting archive runs with default limit."""
+        with DBManager(v11_db) as db:
+            # Insert messages to create archive runs
+            for i in range(5):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                msg["archive_file"] = f"archive{i}.mbox"
+                db.record_archived_message(**msg)
+
+            # Get runs (default limit should be reasonable, e.g., 10)
+            runs = db.get_archive_runs()
+
+            assert len(runs) == 5  # Should return all 5 runs if limit >= 5
+
+    def test_get_archive_runs_with_limit(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test limiting number of archive runs returned."""
+        with DBManager(v11_db) as db:
+            # Insert 10 messages to create 10 runs
+            for i in range(10):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                msg["archive_file"] = f"archive{i}.mbox"
+                db.record_archived_message(**msg)
+
+            # Get only 3 runs
+            runs = db.get_archive_runs(limit=3)
+
+            assert len(runs) == 3
+
+    def test_get_archive_runs_ordered_by_timestamp_desc(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test that archive runs are ordered by timestamp descending (most recent first)."""
+        import time
+
+        with DBManager(v11_db) as db:
+            # Insert messages with slight delay to ensure different timestamps
+            for i in range(3):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                msg["archive_file"] = f"archive{i}.mbox"
+                db.record_archived_message(**msg)
+                time.sleep(0.01)  # Small delay
+
+            runs = db.get_archive_runs(limit=10)
+
+            # Most recent run (archive2.mbox) should be first
+            assert runs[0]["archive_file"].endswith("archive2.mbox")
+            assert runs[-1]["archive_file"].endswith("archive0.mbox")
+
+    def test_get_archive_runs_returns_dict_with_required_fields(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test that each run dict contains required fields."""
+        with DBManager(v11_db) as db:
+            # Insert a message
+            db.record_archived_message(**sample_message_data)
+
+            runs = db.get_archive_runs(limit=1)
+
+            assert len(runs) == 1
+            run = runs[0]
+            # Check required fields exist
+            assert "run_id" in run
+            assert "run_timestamp" in run
+            assert "query" in run or "operation_type" in run  # Either field should exist
+            assert "messages_archived" in run
+            assert "archive_file" in run
+
+
+class TestIsArchived:
+    """Tests for is_archived method."""
+
+    def test_is_archived_true_for_existing_message(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test that is_archived returns True for archived message."""
+        with DBManager(v11_db) as db:
+            db.record_archived_message(**sample_message_data)
+
+            is_archived = db.is_archived(sample_message_data["gmail_id"])
+
+            assert is_archived is True
+
+    def test_is_archived_false_for_nonexistent_message(self, v11_db: str) -> None:
+        """Test that is_archived returns False for non-archived message."""
+        with DBManager(v11_db) as db:
+            is_archived = db.is_archived("nonexistent_id")
+
+            assert is_archived is False
+
+    def test_is_archived_false_on_empty_database(self, v11_db: str) -> None:
+        """Test that is_archived returns False on empty database."""
+        with DBManager(v11_db) as db:
+            is_archived = db.is_archived("any_id")
+
+            assert is_archived is False
+
+    def test_is_archived_multiple_messages(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
+        """Test is_archived with multiple messages in database."""
+        with DBManager(v11_db) as db:
+            # Insert multiple messages
+            for i in range(5):
+                msg = sample_message_data.copy()
+                msg["gmail_id"] = f"msg{i}"
+                msg["rfc_message_id"] = f"<msg{i}@example.com>"
+                db.record_archived_message(**msg)
+
+            # Check archived messages
+            assert db.is_archived("msg0") is True
+            assert db.is_archived("msg3") is True
+            # Check non-archived message
+            assert db.is_archived("msg999") is False

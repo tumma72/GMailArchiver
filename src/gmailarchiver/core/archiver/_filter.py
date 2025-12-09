@@ -4,8 +4,6 @@ This module is part of the archiver package's internal implementation.
 Use the ArchiverFacade for public API access.
 """
 
-from pathlib import Path
-
 from gmailarchiver.data.db_manager import DBManager
 
 
@@ -17,13 +15,13 @@ class MessageFilter:
     This is an internal implementation detail - use ArchiverFacade for public API.
     """
 
-    def __init__(self, state_db_path: str) -> None:
-        """Initialize MessageFilter with database path.
+    def __init__(self, db_manager: DBManager) -> None:
+        """Initialize MessageFilter with database manager.
 
         Args:
-            state_db_path: Path to the state database for tracking archived messages
+            db_manager: Database manager for tracking archived messages
         """
-        self.state_db_path = state_db_path
+        self.db_manager = db_manager
 
     def filter_archived(
         self,
@@ -43,13 +41,12 @@ class MessageFilter:
             return message_ids, 0
 
         # Check database for existing messages
-        db_path = Path(self.state_db_path)
         try:
-            db = DBManager(str(db_path), validate_schema=False, auto_create=True)
             # Get only non-NULL gmail_ids (NULL means message deleted from Gmail)
-            cursor = db.conn.execute("SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL")
+            cursor = self.db_manager.conn.execute(
+                "SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL"
+            )
             archived_ids = {row[0] for row in cursor.fetchall()}
-            db.close()
         except Exception:
             # If query fails, database might be empty or table doesn't exist yet
             archived_ids = set()

@@ -525,7 +525,11 @@ class TestSearchEdgeCases:
             engine.close()
 
     def test_missing_messages_table_raises_error(self, v11_db_factory) -> None:
-        """Test that missing messages table raises ValueError."""
+        """Test that missing messages table raises error during initialization.
+
+        With the refactored architecture, DBManager validates schema before
+        SearchExecutor gets a chance to validate. Both are valid errors.
+        """
         # Create a database without messages table
         db_path = v11_db_factory("no_messages.db")
         conn = sqlite3.connect(db_path)
@@ -533,7 +537,10 @@ class TestSearchEdgeCases:
         conn.commit()
         conn.close()
 
-        with pytest.raises(ValueError, match="missing 'messages' table"):
+        # DBManagerError is raised first due to schema validation
+        from gmailarchiver.data.db_manager import DBManagerError
+
+        with pytest.raises(DBManagerError, match="Failed to initialize database"):
             SearchEngine(db_path)
 
 

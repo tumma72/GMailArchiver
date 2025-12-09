@@ -5,6 +5,10 @@ Internal module - use SearchFacade instead.
 
 import sqlite3
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...data.hybrid_storage import HybridStorage
 
 from ._parser import QueryParams
 from ._types import MessageSearchResult, SearchResults
@@ -16,26 +20,25 @@ class SearchExecutor:
     # Valid FTS5 field names (whitelist for security)
     VALID_FTS_FIELDS = {"subject", "from_addr", "to_addr", "body_preview"}
 
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, storage: HybridStorage) -> None:
         """
-        Initialize executor with database connection.
+        Initialize executor with HybridStorage.
 
         Args:
-            db_path: Path to SQLite database
+            storage: HybridStorage instance (provides access to DBManager)
 
         Raises:
             ValueError: If database schema is missing required tables
         """
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
+        self.storage = storage
+        self.db = storage.db  # DBManager instance for advanced queries
 
         # Validate database has required tables
-        cursor = self.conn.execute(
+        cursor = self.db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         )
         if not cursor.fetchone():
-            self.conn.close()
-            raise ValueError(f"Database schema error: missing 'messages' table in {db_path}")
+            raise ValueError("Database schema error: missing 'messages' table")
 
     def execute(self, params: QueryParams, limit: int = 100, offset: int = 0) -> SearchResults:
         """
@@ -95,7 +98,7 @@ class SearchExecutor:
         """
 
         try:
-            cursor = self.conn.execute(sql, (fts_query, limit))
+            cursor = self.db.conn.execute(sql, (fts_query, limit))
             rows = cursor.fetchall()
             return self._build_results(rows)
         except sqlite3.OperationalError:
@@ -150,7 +153,7 @@ class SearchExecutor:
 
         sql_params.append(limit)
 
-        cursor = self.conn.execute(sql, sql_params)
+        cursor = self.db.conn.execute(sql, sql_params)
         rows = cursor.fetchall()
         return self._build_results(rows, include_relevance=False)
 
@@ -202,7 +205,7 @@ class SearchExecutor:
         sql_params.append(limit)
 
         try:
-            cursor = self.conn.execute(sql, sql_params)
+            cursor = self.db.conn.execute(sql, sql_params)
             rows = cursor.fetchall()
             return self._build_results(rows)
         except sqlite3.OperationalError:
@@ -230,7 +233,7 @@ class SearchExecutor:
             LIMIT ?
         """
 
-        cursor = self.conn.execute(sql, (limit,))
+        cursor = self.db.conn.execute(sql, (limit,))
         rows = cursor.fetchall()
         return self._build_results(rows, include_relevance=False)
 
@@ -270,7 +273,3 @@ class SearchExecutor:
         return SearchResults(
             total_results=len(results), results=results, query="", execution_time_ms=0
         )
-
-    def close(self) -> None:
-        """Close database connection."""
-        self.conn.close()

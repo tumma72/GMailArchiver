@@ -14,6 +14,8 @@ from typing import Any
 
 from gmailarchiver.cli.output import OperationHandle, OutputManager
 from gmailarchiver.connectors.gmail_client import GmailClient
+from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
 from ._filter import MessageFilter
 from ._lister import MessageLister
@@ -60,10 +62,14 @@ class ArchiverFacade:
         self.state_db_path = str(Path(state_db_path).expanduser())
         self.output_manager = output_manager
 
-        # Initialize internal modules
+        # Initialize data layer (single gateway pattern)
+        self.db_manager = DBManager(self.state_db_path, validate_schema=False, auto_create=True)
+        self.storage = HybridStorage(self.db_manager)
+
+        # Initialize internal modules with injected dependencies
         self._lister = MessageLister(gmail_client=gmail_client)
-        self._filter = MessageFilter(state_db_path=self.state_db_path)
-        self._writer = MessageWriter(gmail_client=gmail_client, state_db_path=self.state_db_path)
+        self._filter = MessageFilter(db_manager=self.db_manager)
+        self._writer = MessageWriter(gmail_client=gmail_client, storage=self.storage)
 
     def list_messages_for_archive(
         self,

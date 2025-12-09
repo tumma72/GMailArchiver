@@ -14,6 +14,7 @@ from gmailarchiver.core.deduplicator import (
 from gmailarchiver.core.deduplicator import (
     DeduplicatorFacade as MessageDeduplicator,  # Use facade
 )
+from gmailarchiver.data.db_manager import DBManager
 
 
 def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) -> None:
@@ -35,8 +36,7 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
     """
     conn = sqlite3.connect(str(db_path))
 
-    # Create v1.1 schema
-    # NOTE: Remove UNIQUE constraint on rfc_message_id to allow duplicate testing
+    # v1.1 schema has gmail_id as PK, allowing duplicate rfc_message_ids
     conn.execute("""
         CREATE TABLE messages (
             gmail_id TEXT PRIMARY KEY,
@@ -47,7 +47,7 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
             to_addr TEXT,
             cc_addr TEXT,
             date TIMESTAMP,
-            archived_timestamp TIMESTAMP,
+            archived_timestamp TIMESTAMP NOT NULL,
             archive_file TEXT NOT NULL,
             mbox_offset INTEGER NOT NULL,
             mbox_length INTEGER NOT NULL,
@@ -59,13 +59,13 @@ def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) 
         )
     """)
 
-    # Create schema_version table
     conn.execute("""
         CREATE TABLE schema_version (
             version TEXT PRIMARY KEY,
-            migrated_timestamp TEXT
+            migrated_timestamp TEXT NOT NULL
         )
     """)
+
     conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
 
     # Insert messages
@@ -108,15 +108,18 @@ class TestMessageDeduplicatorInit:
         """Test initialization with v1.1 database."""
         create_v1_1_db_with_messages(temp_db, [])
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         # Use resolve() to handle symlink differences on macOS
-        # Facade uses db_path attribute instead of state_db_path
+        # Facade uses db_path attribute
         assert Path(dedup.db_path).resolve() == temp_db.resolve()
         dedup.close()
+        db.close()
+        db.close()
 
     def test_init_rejects_v1_0_database(self, temp_db: Path) -> None:
         """Test that v1.0 databases are rejected."""
-        # Create v1.0 schema
+        # Create v1.0 schema directly with sqlite3
         conn = sqlite3.connect(str(temp_db))
         conn.execute("""
             CREATE TABLE archived_messages (
@@ -128,13 +131,17 @@ class TestMessageDeduplicatorInit:
         conn.commit()
         conn.close()
 
-        with pytest.raises(ValueError, match="requires v1.1 database schema"):
-            MessageDeduplicator(str(temp_db))
+        # Open with validation disabled, then try to create facade
+        db = DBManager(str(temp_db), validate_schema=False)
+        with pytest.raises(ValueError, match="requires v1.1"):
+            MessageDeduplicator(db)
+        db.close()
 
     def test_init_rejects_nonexistent_database(self, temp_db: Path) -> None:
         """Test that nonexistent databases are rejected."""
         with pytest.raises(FileNotFoundError):
-            MessageDeduplicator(str(temp_db))
+            db = DBManager(str(temp_db), auto_create=False)
+            MessageDeduplicator(db)
 
 
 class TestFindDuplicates:
@@ -160,11 +167,13 @@ class TestFindDuplicates:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         assert len(duplicates) == 0
         dedup.close()
+        db.close()
 
     def test_find_duplicates_with_exact_duplicates(self, temp_db: Path) -> None:
         """Test finding exact duplicates (same Message-ID, different archives)."""
@@ -190,7 +199,8 @@ class TestFindDuplicates:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         assert len(duplicates) == 1
@@ -206,6 +216,7 @@ class TestFindDuplicates:
         assert dup_list[0].size_bytes > 0
 
         dedup.close()
+        db.close()
 
     def test_find_duplicates_with_partial_duplicates(self, temp_db: Path) -> None:
         """Test with some IDs appearing once and some multiple times."""
@@ -258,7 +269,8 @@ class TestFindDuplicates:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         # Should find 2 duplicate groups (dup1 and dup2), unique is ignored
@@ -272,6 +284,7 @@ class TestFindDuplicates:
         assert len(duplicates["<dup2@example.com>"]) == 3
 
         dedup.close()
+        db.close()
 
     def test_find_duplicates_with_many_groups(self, temp_db: Path) -> None:
         """Test performance with 100+ duplicate groups."""
@@ -292,65 +305,71 @@ class TestFindDuplicates:
 
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         # Should find all 100 groups
         assert len(duplicates) == 100
 
         dedup.close()
+        db.close()
 
     def test_find_duplicates_skips_missing_rfc_message_id(self, temp_db: Path) -> None:
         """Test that messages with NULL rfc_message_id are skipped."""
+        # Create schema that allows NULL rfc_message_id (for this specific test)
         conn = sqlite3.connect(str(temp_db))
 
-        # Create schema
         conn.execute("""
             CREATE TABLE messages (
                 gmail_id TEXT PRIMARY KEY,
-                rfc_message_id TEXT,
+                rfc_message_id TEXT,  -- No NOT NULL constraint for this test
                 archive_file TEXT NOT NULL,
                 mbox_offset INTEGER NOT NULL,
                 mbox_length INTEGER NOT NULL,
-                size_bytes INTEGER
+                archived_timestamp TIMESTAMP NOT NULL
             )
         """)
+
         conn.execute("""
             CREATE TABLE schema_version (
                 version TEXT PRIMARY KEY,
-                migrated_timestamp TEXT
+                migrated_timestamp TEXT NOT NULL
             )
         """)
+
         conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
 
         # Insert messages (one with NULL rfc_message_id)
         conn.execute(
             """
             INSERT INTO messages
-            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length)
-            VALUES (?, ?, ?, ?, ?)
+            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length, archived_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-            ("msg1", None, "archive1.mbox", 0, 1000),
+            ("msg1", None, "archive1.mbox", 0, 1000, "2025-01-01T00:00:00"),
         )
 
         conn.execute(
             """
             INSERT INTO messages
-            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length)
-            VALUES (?, ?, ?, ?, ?)
+            (gmail_id, rfc_message_id, archive_file, mbox_offset, mbox_length, archived_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
         """,
-            ("msg2", "<valid@example.com>", "archive1.mbox", 1000, 2000),
+            ("msg2", "<valid@example.com>", "archive1.mbox", 1000, 2000, "2025-01-01T00:00:00"),
         )
 
         conn.commit()
         conn.close()
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         # Should find no duplicates (msg1 skipped, msg2 is unique)
         assert len(duplicates) == 0
         dedup.close()
+        db.close()
 
 
 class TestGenerateReport:
@@ -394,7 +413,8 @@ class TestGenerateReport:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         report = dedup.generate_report(duplicates)
 
@@ -417,6 +437,7 @@ class TestGenerateReport:
         assert report.breakdown_by_archive["archive1.mbox"]["space_recoverable"] == 2300
 
         dedup.close()
+        db.close()
 
     def test_generate_report_with_no_duplicates(self, temp_db: Path) -> None:
         """Test report generation with no duplicates."""
@@ -432,7 +453,8 @@ class TestGenerateReport:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         report = dedup.generate_report(duplicates)
 
@@ -443,30 +465,13 @@ class TestGenerateReport:
         assert report.space_recoverable == 0
 
         dedup.close()
+        db.close()
 
     def test_generate_report_handles_null_size_bytes(self, temp_db: Path) -> None:
         """Test report gracefully handles NULL size_bytes."""
-        conn = sqlite3.connect(str(temp_db))
+        create_v1_1_db_with_messages(temp_db, [])
 
-        # NOTE: Remove UNIQUE constraint to allow duplicate testing
-        conn.execute("""
-            CREATE TABLE messages (
-                gmail_id TEXT PRIMARY KEY,
-                rfc_message_id TEXT NOT NULL,
-                archive_file TEXT NOT NULL,
-                mbox_offset INTEGER NOT NULL,
-                mbox_length INTEGER NOT NULL,
-                size_bytes INTEGER,
-                archived_timestamp TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE schema_version (
-                version TEXT PRIMARY KEY,
-                migrated_timestamp TEXT
-            )
-        """)
-        conn.execute("INSERT INTO schema_version VALUES ('1.1', datetime('now'))")
+        conn = sqlite3.connect(str(temp_db))
 
         # Insert duplicates with NULL size_bytes
         conn.execute(
@@ -492,13 +497,15 @@ class TestGenerateReport:
         conn.commit()
         conn.close()
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         report = dedup.generate_report(duplicates)
 
         # Should use mbox_length as fallback
         assert report.space_recoverable > 0
         dedup.close()
+        db.close()
 
 
 class TestDeduplicateStrategies:
@@ -528,7 +535,8 @@ class TestDeduplicateStrategies:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
@@ -538,15 +546,16 @@ class TestDeduplicateStrategies:
         assert result.space_saved > 0
 
         # Verify msg2 was kept (newest)
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT gmail_id FROM messages")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
         remaining = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
         dedup.close()
+        db.close()
 
     def test_deduplicate_strategy_largest(self, temp_db: Path) -> None:
         """Test 'largest' strategy keeps message with highest size_bytes."""
@@ -572,7 +581,8 @@ class TestDeduplicateStrategies:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         result = dedup.deduplicate(duplicates, strategy="largest", dry_run=False)
 
@@ -580,15 +590,16 @@ class TestDeduplicateStrategies:
         assert result.messages_kept == 1
 
         # Verify msg2 was kept (largest)
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT gmail_id FROM messages")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
         remaining = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
         dedup.close()
+        db.close()
 
     def test_deduplicate_strategy_first(self, temp_db: Path) -> None:
         """Test 'first' strategy keeps message from first archive file (alphabetically)."""
@@ -612,7 +623,8 @@ class TestDeduplicateStrategies:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         result = dedup.deduplicate(duplicates, strategy="first", dry_run=False)
 
@@ -620,15 +632,16 @@ class TestDeduplicateStrategies:
         assert result.messages_kept == 1
 
         # Verify msg2 was kept (from archive_a.mbox)
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT gmail_id FROM messages")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
         remaining = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
         dedup.close()
+        db.close()
 
     def test_deduplicate_handles_multiple_groups(self, temp_db: Path) -> None:
         """Test deduplication with multiple duplicate groups."""
@@ -674,7 +687,8 @@ class TestDeduplicateStrategies:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
@@ -683,14 +697,15 @@ class TestDeduplicateStrategies:
         assert result.messages_kept == 2
 
         # Verify msg2 and msg3 were kept (newest in each group)
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT gmail_id FROM messages ORDER BY gmail_id")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT gmail_id FROM messages ORDER BY gmail_id")
         remaining = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        _db.close()
 
         assert remaining == ["msg2", "msg3"]
 
         dedup.close()
+        db.close()
 
 
 class TestDryRunMode:
@@ -720,14 +735,15 @@ class TestDryRunMode:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         # Get count before dry run
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT COUNT(*) FROM messages")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT COUNT(*) FROM messages")
         count_before = cursor.fetchone()[0]
-        conn.close()
+        _db.close()
 
         # Run in dry-run mode
         result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
@@ -738,14 +754,15 @@ class TestDryRunMode:
         assert result.space_saved > 0
 
         # Verify database was NOT modified
-        conn = sqlite3.connect(str(temp_db))
-        cursor = conn.execute("SELECT COUNT(*) FROM messages")
+        _db = DBManager(str(temp_db))
+        cursor = _db.conn.execute("SELECT COUNT(*) FROM messages")
         count_after = cursor.fetchone()[0]
-        conn.close()
+        _db.close()
 
         assert count_before == count_after == 2
 
         dedup.close()
+        db.close()
 
     def test_dry_run_reports_what_would_be_removed(self, temp_db: Path) -> None:
         """Test that dry-run accurately reports what would be removed."""
@@ -771,7 +788,8 @@ class TestDryRunMode:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         dry_result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
 
@@ -784,6 +802,7 @@ class TestDryRunMode:
         assert dry_result.space_saved == wet_result.space_saved
 
         dedup.close()
+        db.close()
 
 
 class TestEdgeCases:
@@ -793,7 +812,8 @@ class TestEdgeCases:
         """Test with empty database."""
         create_v1_1_db_with_messages(temp_db, [])
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         assert len(duplicates) == 0
@@ -802,6 +822,7 @@ class TestEdgeCases:
         assert report.total_messages == 0
 
         dedup.close()
+        db.close()
 
     def test_deduplicate_with_no_duplicates(self, temp_db: Path) -> None:
         """Test deduplication when no duplicates exist."""
@@ -817,7 +838,8 @@ class TestEdgeCases:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
         result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
@@ -826,6 +848,7 @@ class TestEdgeCases:
         assert result.space_saved == 0
 
         dedup.close()
+        db.close()
 
     def test_invalid_strategy_raises_error(self, temp_db: Path) -> None:
         """Test that invalid strategy raises ValueError."""
@@ -850,25 +873,29 @@ class TestEdgeCases:
         ]
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
         duplicates = dedup.find_duplicates()
 
         with pytest.raises(ValueError, match="Invalid strategy"):
             dedup.deduplicate(duplicates, strategy="invalid", dry_run=True)
 
         dedup.close()
+        db.close()
 
     def test_context_manager(self, temp_db: Path) -> None:
         """Test context manager closes connection properly."""
         create_v1_1_db_with_messages(temp_db, [])
 
-        with MessageDeduplicator(str(temp_db)) as dedup:
+        db = DBManager(str(temp_db))
+        with MessageDeduplicator(db) as dedup:
             duplicates = dedup.find_duplicates()
             assert len(duplicates) == 0
 
         # Facade doesn't expose conn, just verify no exception on reuse attempt
         # (closed connections would raise on operations)
         # This is sufficient to test context manager cleanup
+        db.close()
 
 
 class TestPerformance:
@@ -894,7 +921,8 @@ class TestPerformance:
 
         create_v1_1_db_with_messages(temp_db, messages)
 
-        dedup = MessageDeduplicator(str(temp_db))
+        db = DBManager(str(temp_db))
+        dedup = MessageDeduplicator(db)
 
         start = time.time()
         duplicates = dedup.find_duplicates()
@@ -907,3 +935,4 @@ class TestPerformance:
         assert len(duplicates) == 10
 
         dedup.close()
+        db.close()

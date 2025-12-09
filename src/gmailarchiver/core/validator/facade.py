@@ -11,6 +11,7 @@ from typing import Any
 from gmailarchiver.core.validator._checksum import ChecksumValidator
 from gmailarchiver.core.validator._counter import MessageCounter
 from gmailarchiver.core.validator._decompressor import Decompressor
+from gmailarchiver.data.db_manager import DBManager
 
 
 @dataclass
@@ -63,6 +64,7 @@ class ValidatorFacade:
         archive_path: str | Path,
         state_db_path: str | Path = "archive_state.db",
         output: Any | None = None,
+        db_manager: DBManager | None = None,
     ) -> None:
         """Initialize validator facade.
 
@@ -70,16 +72,48 @@ class ValidatorFacade:
             archive_path: Path to mbox archive file
             state_db_path: Path to SQLite database file
             output: Optional OutputManager for structured logging
+            db_manager: Optional DBManager for database operations (will create if not provided)
         """
         self.archive_path = Path(archive_path)
         self.state_db_path = Path(state_db_path)
         self.output = output
         self.errors: list[str] = []
 
+        # Database manager (create if not provided)
+        self._db_manager = db_manager
+        self._owns_db_manager = db_manager is None
+
         # Internal modules
         self._decompressor = Decompressor()
         self._counter = MessageCounter()
         self._checksum = ChecksumValidator()
+
+    def _get_db_manager(self) -> DBManager | None:
+        """Get or create DBManager instance.
+
+        Returns:
+            DBManager instance or None if database doesn't exist
+        """
+        if self._db_manager is not None:
+            return self._db_manager
+
+        if not self.state_db_path.exists():
+            return None
+
+        try:
+            # For validation, we don't want to fail on schema validation
+            self._db_manager = DBManager(
+                str(self.state_db_path), validate_schema=False, auto_create=False
+            )
+            return self._db_manager
+        except Exception:
+            return None
+
+    def close(self) -> None:
+        """Close database manager if owned by this validator."""
+        if self._owns_db_manager and self._db_manager is not None:
+            self._db_manager.close()
+            self._db_manager = None
 
     def _log(self, message: str, level: str = "INFO") -> None:
         """Log message through OutputManager if available.
@@ -269,10 +303,10 @@ class ValidatorFacade:
             OffsetVerificationResult with statistics
         """
         import mailbox
-        import sqlite3
 
-        # Check if database exists and has v1.1 schema
-        if not self.state_db_path.exists():
+        # Get database manager
+        db_manager = self._get_db_manager()
+        if db_manager is None:
             return OffsetVerificationResult(
                 total_checked=0,
                 successful_reads=0,
@@ -282,12 +316,21 @@ class ValidatorFacade:
                 skipped=True,
             )
 
-        conn = sqlite3.connect(str(self.state_db_path))
-        cursor = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
-        )
-        if not cursor.fetchone():
-            conn.close()
+        # Check if messages table exists (v1.1 schema)
+        try:
+            cursor = db_manager.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
+            )
+            if not cursor.fetchone():
+                return OffsetVerificationResult(
+                    total_checked=0,
+                    successful_reads=0,
+                    failed_reads=0,
+                    accuracy_percentage=0.0,
+                    failures=[],
+                    skipped=True,
+                )
+        except Exception:
             return OffsetVerificationResult(
                 total_checked=0,
                 successful_reads=0,
@@ -298,18 +341,26 @@ class ValidatorFacade:
             )
 
         # Get messages with offsets from database
-        cursor = conn.execute(
-            """
-            SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length
-            FROM messages
-            WHERE archive_file = ?
-            ORDER BY mbox_offset
-        """,
-            (str(self.archive_path),),
-        )
-
-        messages = cursor.fetchall()
-        conn.close()
+        try:
+            cursor = db_manager.conn.execute(
+                """
+                SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length
+                FROM messages
+                WHERE archive_file = ?
+                ORDER BY mbox_offset
+            """,
+                (str(self.archive_path),),
+            )
+            messages = cursor.fetchall()
+        except Exception:
+            return OffsetVerificationResult(
+                total_checked=0,
+                successful_reads=0,
+                failed_reads=0,
+                accuracy_percentage=0.0,
+                failures=[],
+                skipped=True,
+            )
 
         if not messages:
             return OffsetVerificationResult(
@@ -382,9 +433,9 @@ class ValidatorFacade:
         Returns:
             ConsistencyReport with detailed findings
         """
-        import sqlite3
-
-        if not self.state_db_path.exists():
+        # Get database manager
+        db_manager = self._get_db_manager()
+        if db_manager is None:
             return ConsistencyReport(
                 schema_version="unknown",
                 orphaned_records=0,
@@ -396,8 +447,8 @@ class ValidatorFacade:
                 errors=["Database file not found"],
             )
 
-        conn = sqlite3.connect(str(self.state_db_path))
         errors = []
+        conn = db_manager.conn
 
         # Check schema version
         cursor = conn.execute(
@@ -412,7 +463,6 @@ class ValidatorFacade:
 
         if not has_v11 and not has_v10:
             # No recognized schema
-            conn.close()
             return ConsistencyReport(
                 schema_version="none",
                 orphaned_records=0,
@@ -510,11 +560,9 @@ class ValidatorFacade:
                     errors.append(
                         f"FTS index out of sync: {fts_count} FTS rows vs {msg_count} message rows"
                     )
-            except sqlite3.OperationalError:
+            except Exception:
                 fts_synced = False
                 errors.append("FTS table not found or corrupted")
-
-        conn.close()
 
         if duplicate_gmail_ids > 0:
             errors.append(f"Found {duplicate_gmail_ids} duplicate Gmail IDs")

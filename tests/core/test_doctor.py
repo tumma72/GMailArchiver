@@ -1083,13 +1083,13 @@ def test_doctor_report_dict_conversion() -> None:
 
 
 def test_get_connection_returns_none_for_missing_db() -> None:
-    """Test _get_connection returns None for missing database (line 118)."""
+    """Test _get_db_manager returns None for missing database (line 118)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "nonexistent.db"
-        doctor = Doctor(str(db_path))
+        doctor = Doctor(str(db_path), auto_create=False)
 
-        conn = doctor._get_connection()
-        assert conn is None
+        db_manager = doctor._get_db_manager()
+        assert db_manager is None
 
 
 def test_check_database_schema_connection_failure() -> None:
@@ -1169,7 +1169,7 @@ def test_fix_orphaned_fts_connection_failure() -> None:
     """Test fix_orphaned_fts handles connection failure (lines 835)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "missing.db"
-        doctor = Doctor(str(db_path))
+        doctor = Doctor(str(db_path), auto_create=False)
 
         result = doctor.fix_orphaned_fts()
 
@@ -1202,10 +1202,10 @@ def test_check_database_schema_for_connection_failures() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "nonexistent.db"
 
-        doctor = Doctor(str(db_path))
+        doctor = Doctor(str(db_path), auto_create=False)
         result = doctor.check_database_schema()
 
-        # Should detect error
+        # Should detect error when auto_create=False
         assert result.severity == CheckSeverity.ERROR
         assert "not found" in result.message.lower() or "missing" in result.message.lower()
 
@@ -1215,10 +1215,10 @@ def test_run_diagnostics_detects_fixable_issues() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "missing.db"
 
-        doctor = Doctor(str(db_path))
+        doctor = Doctor(str(db_path), auto_create=False)
         report = doctor.run_diagnostics()
 
-        # Should have detected fixable issue (missing database)
+        # Should have detected fixable issue (missing database when auto_create=False)
         assert len(report.fixable_issues) > 0
 
 

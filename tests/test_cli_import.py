@@ -19,21 +19,14 @@ def runner():
 
 @pytest.fixture
 def v1_1_database(tmp_path):
-    """Create a v1.1 database for testing."""
+    """Create a v1.2 database for testing (auto-upgraded from v1.1)."""
     db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
 
-    # Create v1.1 schema
-    manager._create_enhanced_schema(manager.conn)
+    # Use DBManager to create a fresh v1.2 database
+    from gmailarchiver.data.db_manager import DBManager
 
-    # Set schema version
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-    )
-
-    manager.conn.commit()
-    manager._close()
+    db = DBManager(str(db_path), validate_schema=False, auto_create=True)
+    db.close()
 
     return db_path
 
@@ -151,6 +144,7 @@ class TestImportCommand:
                 str(v1_1_database),
                 "--account-id",
                 "work_account",
+                "--skip-gmail-lookup",
             ],
         )
 

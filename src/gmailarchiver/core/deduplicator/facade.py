@@ -3,10 +3,13 @@
 Coordinates scanning, resolution, and removal of duplicate messages.
 """
 
-import sqlite3
+from __future__ import annotations
+
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.db_manager import DBManager
 
 from ._remover import DuplicateRemover
 from ._resolver import DuplicateResolver
@@ -43,76 +46,53 @@ class DeduplicatorFacade:
     Supports multiple resolution strategies: newest, largest, first.
 
     Example:
-        >>> with DeduplicatorFacade("state.db") as dedup:
+        >>> db = DBManager("state.db")
+        >>> with DeduplicatorFacade(db) as dedup:
         ...     duplicates = dedup.find_duplicates()
         ...     report = dedup.generate_report(duplicates)
         ...     print(f"Found {report.duplicate_message_ids} duplicate groups")
         ...     result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
     """
 
-    def __init__(self, state_db_path: str) -> None:
+    def __init__(self, db: DBManager) -> None:
         """
         Initialize deduplicator facade.
 
         Args:
-            state_db_path: Path to SQLite state database
+            db: DBManager instance for database operations
 
         Raises:
-            FileNotFoundError: If database doesn't exist
-            ValueError: If database is not v1.1 schema
+            ValueError: If database is not v1.1+ schema
         """
-        db_path = Path(state_db_path)
-        if not db_path.exists():
-            raise FileNotFoundError(f"Database not found: {state_db_path}")
+        self.db = db
 
-        self.db_path = state_db_path
+        # Verify v1.1+ schema (supports both v1.1 and v1.2)
+        # If schema_version wasn't set (validate_schema=False), try to get it
+        if not hasattr(db, "schema_version"):
+            # Manually validate schema to get version
+            try:
+                schema_version = db._validate_schema_version()
+            except Exception as e:
+                raise ValueError(
+                    f"DeduplicatorFacade requires v1.1+ database schema. "
+                    f"Schema validation failed: {e}"
+                ) from e
+        else:
+            schema_version = db.schema_version
 
-        # Verify v1.1 schema
-        version = self._detect_schema_version()
-        if version != "1.1":
+        if schema_version not in ("1.1", "1.2"):
             raise ValueError(
-                f"DeduplicatorFacade requires v1.1 database schema, "
-                f"found: {version}. Run migration first."
+                f"DeduplicatorFacade requires v1.1+ database schema, "
+                f"found: {schema_version}. Run migration first."
             )
+
+        # For backward compatibility, store db_path
+        self.db_path = str(db.db_path)
 
         # Initialize internal modules
-        self._scanner = DuplicateScanner(state_db_path)
+        self._scanner = DuplicateScanner(db)
         self._resolver = DuplicateResolver()
-        self._remover = DuplicateRemover(state_db_path)
-
-    def _detect_schema_version(self) -> str:
-        """
-        Detect database schema version.
-
-        Returns:
-            Schema version string ("1.0", "1.1", or "none")
-        """
-        conn = sqlite3.connect(self.db_path)
-
-        try:
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
-            )
-            if cursor.fetchone():
-                version_cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
-                row = version_cursor.fetchone()
-                return row[0] if row else "1.0"
-
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
-            )
-            if cursor.fetchone():
-                return "1.1"
-
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
-            )
-            if cursor.fetchone():
-                return "1.0"
-
-            return "none"
-        finally:
-            conn.close()
+        self._remover = DuplicateRemover(db)
 
     def find_duplicates(self) -> dict[str, list[MessageInfo]]:
         """
@@ -147,12 +127,7 @@ class DeduplicatorFacade:
             >>> print(f"Can save {report.space_recoverable} bytes")
         """
         # Get total message count
-        conn = sqlite3.connect(self.db_path)
-        try:
-            cursor = conn.execute("SELECT COUNT(*) FROM messages")
-            total_messages = cursor.fetchone()[0]
-        finally:
-            conn.close()
+        total_messages = self.db.get_message_count()
 
         if not duplicates:
             return DeduplicationReport(
@@ -253,9 +228,12 @@ class DeduplicatorFacade:
         )
 
     def close(self) -> None:
-        """Close all database connections."""
-        self._scanner.close()
-        self._remover.close()
+        """Close all database connections.
+
+        Note: Database connection is managed by DBManager,
+        not by this facade. This method exists for backward compatibility.
+        """
+        pass
 
     def __enter__(self) -> DeduplicatorFacade:
         """Context manager entry."""

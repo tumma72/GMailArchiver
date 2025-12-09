@@ -1,5 +1,6 @@
 """Gmail Archiver CLI application."""
 
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,6 @@ from .core.search.facade import SearchFacade
 from .core.validator.facade import ValidatorFacade
 from .data.migration import MigrationManager
 from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
-from .data.state import ArchiveState
 from .shared.utils import format_bytes
 
 
@@ -63,7 +63,7 @@ def main(
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="archive")
+@with_context(requires_storage=True, has_progress=True, operation_name="archive")
 def archive(
     ctx: CommandContext,
     age_threshold: str = typer.Argument(
@@ -276,8 +276,9 @@ def archive(
     actual_file = result.get("actual_file", output) if result else output
 
     # Get the actual message IDs that were archived
-    with ArchiveState() as state:
-        archived_ids = state.get_archived_message_ids_for_file(actual_file)
+    # (ctx.storage is guaranteed by requires_storage=True)
+    assert ctx.storage is not None
+    archived_ids = ctx.storage.get_message_ids_for_archive(actual_file)
 
     # Validate using ValidatorFacade directly
     validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
@@ -363,7 +364,7 @@ def archive(
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="validate")
+@with_context(requires_storage=True, has_progress=True, operation_name="validate")
 def validate(
     ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file to validate"),
@@ -407,8 +408,8 @@ def validate(
         # Task 1: Load database information
         with seq.task("Loading database information") as t:
             try:
-                with ArchiveState(state_db) as state:
-                    expected_ids = state.get_archived_message_ids_for_file(archive_file)
+                assert ctx.storage is not None, "Storage should be initialized by @with_context"
+                expected_ids = ctx.storage.get_message_ids_for_archive(archive_file)
                 t.complete(f"Found {len(expected_ids):,} messages")
             except Exception as e:
                 t.fail("Database error", reason=str(e))
@@ -467,7 +468,7 @@ def validate(
 
 
 @utilities_app.command("retry-delete")
-@with_context(operation_name="retry-delete")
+@with_context(requires_storage=True, operation_name="retry-delete")
 def retry_delete_cmd(
     ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Archive file to delete messages from"),
@@ -498,8 +499,8 @@ def retry_delete_cmd(
     """
     try:
         # 1. Get archived message IDs from database
-        with ArchiveState(state_db) as state:
-            message_ids = list(state.get_archived_message_ids_for_file(archive_file))
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        message_ids = list(ctx.storage.get_message_ids_for_archive(archive_file))
 
         if not message_ids:
             ctx.fail_and_exit(
@@ -604,70 +605,86 @@ def status(
         version = manager.detect_schema_version()
         db_size = db_path.stat().st_size
 
-        with ArchiveState(state_db, validate_path=False) as state:
-            # Overall stats
-            total_archived = state.get_archived_count()
+        # Direct database access to support both v1.0 and v1.1+ schemas
+        # (DBManager requires v1.1+ schema)
+        conn = sqlite3.connect(state_db)
+        conn.row_factory = sqlite3.Row
 
-            # Recent runs - show more in verbose mode
-            run_limit = 10 if verbose else 5
-            recent_runs = state.get_archive_runs(limit=run_limit)
+        # Get message count - handle both v1.0 (archived_messages) and v1.1+ (messages)
+        table_name = "messages" if version in ("1.1", "1.2") else "archived_messages"
+        cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
+        result = cursor.fetchone()
+        total_archived = int(result[0]) if result else 0
 
-            # Get unique archive files from runs
-            archive_files = set(
-                run["archive_file"] for run in recent_runs if run.get("archive_file")
-            )
+        # Get recent runs
+        run_limit = 10 if verbose else 5
+        cursor = conn.execute(
+            """
+            SELECT run_id, run_timestamp as timestamp, query,
+                   messages_archived, archive_file
+            FROM archive_runs
+            ORDER BY run_id DESC
+            LIMIT ?
+            """,
+            (run_limit,),
+        )
+        recent_runs = [dict(row) for row in cursor.fetchall()]
+        conn.close()
 
-            # Build report data - always show schema version and db size
-            report_data: dict[str, str] = {
-                "Schema Version": version,
-                "Database Size": format_bytes(db_size),
-                "Total Messages": f"{total_archived:,}",
-                "Archive Files": str(len(archive_files)),
-            }
+        # Get unique archive files from runs
+        archive_files = set(run["archive_file"] for run in recent_runs if run.get("archive_file"))
 
-            # Add verbose details (more detail about same info)
-            if verbose and archive_files:
-                sorted_files = sorted(archive_files)
-                if sorted_files:
-                    report_data["Archive Files"] = (
-                        f"{len(archive_files)} (recent: {sorted_files[-1][:25]}...)"
+        # Build report data - always show schema version and db size
+        report_data: dict[str, str] = {
+            "Schema Version": version,
+            "Database Size": format_bytes(db_size),
+            "Total Messages": f"{total_archived:,}",
+            "Archive Files": str(len(archive_files)),
+        }
+
+        # Add verbose details (more detail about same info)
+        if verbose and archive_files:
+            sorted_files = sorted(archive_files)
+            if sorted_files:
+                report_data["Archive Files"] = (
+                    f"{len(archive_files)} (recent: {sorted_files[-1][:25]}...)"
+                )
+
+        ctx.show_report("Archive Status", report_data)
+
+        # Display recent runs table
+        if recent_runs:
+            # Include query column in verbose mode
+            if verbose:
+                headers = ["Run ID", "Timestamp", "Query", "Messages", "Archive File"]
+                rows: list[list[str]] = []
+                for run in recent_runs:
+                    rows.append(
+                        [
+                            str(run["run_id"]),
+                            run["timestamp"][:19],
+                            run["query"][:30] if run["query"] else "",
+                            str(run["messages_archived"]),
+                            run["archive_file"],
+                        ]
+                    )
+            else:
+                headers = ["Run ID", "Timestamp", "Messages", "Archive File"]
+                rows = []
+                for run in recent_runs:
+                    rows.append(
+                        [
+                            str(run["run_id"]),
+                            run["timestamp"][:19],
+                            str(run["messages_archived"]),
+                            run["archive_file"],
+                        ]
                     )
 
-            ctx.show_report("Archive Status", report_data)
-
-            # Display recent runs table
-            if recent_runs:
-                # Include query column in verbose mode
-                if verbose:
-                    headers = ["Run ID", "Timestamp", "Query", "Messages", "Archive File"]
-                    rows: list[list[str]] = []
-                    for run in recent_runs:
-                        rows.append(
-                            [
-                                str(run["run_id"]),
-                                run["timestamp"][:19],
-                                run["query"][:30] if run["query"] else "",
-                                str(run["messages_archived"]),
-                                run["archive_file"],
-                            ]
-                        )
-                else:
-                    headers = ["Run ID", "Timestamp", "Messages", "Archive File"]
-                    rows = []
-                    for run in recent_runs:
-                        rows.append(
-                            [
-                                str(run["run_id"]),
-                                run["timestamp"][:19],
-                                str(run["messages_archived"]),
-                                run["archive_file"],
-                            ]
-                        )
-
-                table_title = f"Recent Archive Runs (Last {run_limit})"
-                ctx.show_table(table_title, headers, rows)
-            else:
-                ctx.warning("No archive runs found")
+            table_title = f"Recent Archive Runs (Last {run_limit})"
+            ctx.show_table(table_title, headers, rows)
+        else:
+            ctx.warning("No archive runs found")
 
     except Exception as e:
         ctx.fail_and_exit(
@@ -680,7 +697,7 @@ def status(
 
 
 @app.command()
-@with_context(operation_name="cleanup")
+@with_context(requires_storage=True, operation_name="cleanup")
 def cleanup(
     ctx: CommandContext,
     session_id: str | None = typer.Argument(
@@ -716,8 +733,6 @@ def cleanup(
         # Force cleanup without confirmation
         $ gmailarchiver cleanup --all --force
     """
-    from gmailarchiver.data.db_manager import DBManager
-
     # Check if database exists
     db_path = Path(state_db)
     if not db_path.exists():
@@ -741,11 +756,11 @@ def cleanup(
         raise typer.Exit(1)
 
     try:
-        db = DBManager(state_db, validate_schema=False, auto_create=False)
-        db.ensure_sessions_table()
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        ctx.storage.db.ensure_sessions_table()
 
         # Get all partial sessions
-        sessions = db.get_all_partial_sessions()
+        sessions = ctx.storage.db.get_all_partial_sessions()
 
         if list_sessions:
             if not sessions:
@@ -822,16 +837,16 @@ def cleanup(
                 ctx.info(f"Deleted partial file: {partial_file.name}")
 
             # Delete messages associated with the partial file
-            deleted_msgs = db.delete_messages_for_file(str(partial_file))
+            deleted_msgs = ctx.storage.db.delete_messages_for_file(str(partial_file))
             if deleted_msgs > 0:
                 ctx.info(f"Removed {deleted_msgs} message records")
 
             # Delete session record
-            db.delete_session(session["session_id"])
+            ctx.storage.db.delete_session(session["session_id"])
             ctx.success(f"Cleaned session: {session['session_id'][:12]}...")
             cleaned_count += 1
 
-        db.close()
+        ctx.storage.db.close()
 
         ctx.success(f"Cleaned up {cleaned_count} partial session(s)")
 
@@ -1074,7 +1089,7 @@ def rollback(
 
 @utilities_app.command()
 @app.command(hidden=True)
-@with_context(requires_db=True, operation_name="dedupe")
+@with_context(requires_storage=True, requires_schema="1.1", operation_name="dedupe")
 def dedupe(
     ctx: CommandContext,
     state_db: str = typer.Option(
@@ -1109,8 +1124,6 @@ def dedupe(
         $ gmailarchiver dedupe --strategy largest --no-dry-run
         $ gmailarchiver dedupe --json
     """
-    db_path = Path(state_db)
-
     # Validate strategy
     valid_strategies = ["newest", "largest", "first"]
     if strategy not in valid_strategies:
@@ -1122,7 +1135,9 @@ def dedupe(
 
     try:
         # Initialize deduplicator (validates v1.1 schema)
-        with DeduplicatorFacade(str(db_path)) as dedup:
+        # Use the DBManager from the context (created by @with_context decorator)
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        with DeduplicatorFacade(ctx.storage.db) as dedup:
             with ctx.ui.task_sequence() as seq:
                 # Task 1: Find duplicates
                 with seq.task("Finding duplicates") as t:
@@ -1216,15 +1231,11 @@ def dedupe(
 
                     # Auto-verify if requested (only for non-dry-run)
                     if auto_verify:
-                        from gmailarchiver.data.db_manager import DBManager
-
                         ctx.info("\nRunning verification...")
 
                         with seq.task("Verifying database integrity") as t:
                             try:
-                                db = DBManager(str(db_path), validate_schema=False)
-                                issues = db.verify_database_integrity()
-                                db.close()
+                                issues = ctx.storage.db.verify_database_integrity()
 
                                 if not issues:
                                     t.complete("No issues found")
@@ -1268,7 +1279,7 @@ def dedupe(
 
 @utilities_app.command(name="verify-offsets")
 @app.command(name="verify-offsets", hidden=True)
-@with_context(requires_db=True, operation_name="verify-offsets")
+@with_context(requires_storage=True, operation_name="verify-offsets")
 def verify_offsets_cmd(
     ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file"),
@@ -1370,7 +1381,7 @@ def verify_offsets_cmd(
 
 @utilities_app.command(name="verify-consistency")
 @app.command(name="verify-consistency", hidden=True)
-@with_context(requires_db=True, operation_name="verify-consistency")
+@with_context(requires_storage=True, operation_name="verify-consistency")
 def verify_consistency_cmd(
     ctx: CommandContext,
     archive_file: str = typer.Argument(..., help="Path to archive file"),
@@ -1466,7 +1477,7 @@ def verify_consistency_cmd(
 
 
 @app.command()
-@with_context(requires_db=True, requires_schema="1.1", operation_name="search")
+@with_context(requires_storage=True, requires_schema="1.1", operation_name="search")
 def search(
     ctx: CommandContext,
     query: str | None = typer.Argument(None, help="Gmail-style search query"),
@@ -1685,7 +1696,8 @@ def search(
             # Extract selected messages
             ctx.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
 
-            with MessageExtractor(state_db) as extractor:
+            assert ctx.storage is not None, "Storage should be initialized by @with_context"
+            with MessageExtractor(ctx.storage.db) as extractor:
                 with ctx.output.progress_context(
                     "Extracting messages", total=len(selected_ids)
                 ) as progress:
@@ -1725,7 +1737,9 @@ def search(
 
             gmail_ids = [r.gmail_id for r in results.results]
 
-            with MessageExtractor(state_db) as extractor:
+            assert ctx.storage is not None, "Storage should be initialized by @with_context"
+
+            with MessageExtractor(ctx.storage.db) as extractor:
                 with ctx.output.progress_context(
                     "Extracting messages", total=len(gmail_ids)
                 ) as progress:
@@ -1767,7 +1781,7 @@ def search(
 
 
 @app.command()
-@with_context(requires_db=True, operation_name="extract")
+@with_context(requires_storage=True, operation_name="extract")
 def extract(
     ctx: CommandContext,
     message_id: str = typer.Argument(..., help="Gmail ID or RFC Message-ID to extract"),
@@ -1797,7 +1811,9 @@ def extract(
     from gmailarchiver.core.extractor._extractor import ExtractorError
 
     try:
-        with MessageExtractor(state_db) as extractor:
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+
+        with MessageExtractor(ctx.storage.db) as extractor:
             # Try extracting by gmail_id first, then by rfc_message_id
             try:
                 message_bytes = extractor.extract_by_gmail_id(message_id, output_file)
@@ -1837,7 +1853,7 @@ def extract(
 
 
 @app.command(name="import")
-@with_context(has_progress=True, operation_name="import")
+@with_context(requires_storage=True, has_progress=True, operation_name="import")
 def import_cmd(
     ctx: CommandContext,
     archive_pattern: str = typer.Argument(..., help="Mbox file path or glob pattern"),
@@ -1938,7 +1954,9 @@ def import_cmd(
             ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
 
     # Import each file with progress
-    importer = ImporterFacade(state_db, gmail_client=gmail_client)
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+
+    importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
     results: list[Any] = []
     start_time = time.perf_counter()
 
@@ -2057,13 +2075,9 @@ def import_cmd(
 
     # Auto-verify if requested
     if auto_verify and total_failed == 0:
-        from gmailarchiver.data.db_manager import DBManager
-
         ctx.info("\nRunning verification...")
         try:
-            db = DBManager(str(db_path), validate_schema=False)
-            issues = db.verify_database_integrity()
-            db.close()
+            issues = ctx.storage.db.verify_database_integrity()
 
             if not issues:
                 ctx.success("Verification complete - no issues found")
@@ -2085,7 +2099,7 @@ def import_cmd(
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="consolidate")
+@with_context(requires_storage=True, has_progress=True, operation_name="consolidate")
 def consolidate(
     ctx: CommandContext,
     archives: list[str] = typer.Argument(..., help="Archive files or glob patterns"),
@@ -2173,7 +2187,8 @@ def consolidate(
             raise typer.Exit(0)
 
     # 5. Consolidate with progress
-    consolidator = ArchiveConsolidator(state_db)
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+    consolidator = ArchiveConsolidator(ctx.storage.db)
 
     try:
         with ctx.ui.task_sequence() as seq:
@@ -2197,13 +2212,9 @@ def consolidate(
 
             # Task 2: Auto-verify if requested (within task_sequence)
             if auto_verify:
-                from gmailarchiver.data.db_manager import DBManager
-
                 with seq.task("Verifying database integrity") as t:
                     try:
-                        db = DBManager(str(state_db), validate_schema=False)
-                        issues = db.verify_database_integrity()
-                        db.close()
+                        issues = ctx.storage.db.verify_database_integrity()
 
                         if not issues:
                             t.complete("No issues found")
@@ -2426,11 +2437,14 @@ def consolidate(
             str(e),
             suggestion="Check archive files and try again",
         )
+    finally:
+        if ctx.storage:
+            ctx.storage.db.close()
 
 
 @utilities_app.command(name="verify-integrity")
 @app.command(name="verify-integrity", hidden=True)
-@with_context(requires_db=True, has_progress=True, operation_name="verify-integrity")
+@with_context(requires_storage=True, has_progress=True, operation_name="verify-integrity")
 def verify_integrity_cmd(
     ctx: CommandContext,
     state_db: str = typer.Option(
@@ -2457,7 +2471,7 @@ def verify_integrity_cmd(
         $ gmailarchiver verify-integrity --verbose
         $ gmailarchiver verify-integrity --json
     """
-    assert ctx.db is not None, "Database should be initialized by @with_context"
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
 
     issues: list[str] = []
 
@@ -2465,7 +2479,9 @@ def verify_integrity_cmd(
         with ctx.ui.task_sequence() as seq:
             # Task: Run integrity checks
             with seq.task("Running integrity checks") as t:
-                issues = ctx.db.verify_database_integrity()
+                # Access DBManager directly for low-level database operations
+                assert ctx.storage is not None
+                issues = ctx.storage.db.verify_database_integrity()
 
                 if not issues:
                     t.complete("No issues found")
@@ -2519,7 +2535,7 @@ def verify_integrity_cmd(
 
 @utilities_app.command()
 @app.command(hidden=True)
-@with_context(requires_db=True, has_progress=True, operation_name="repair")
+@with_context(requires_storage=True, has_progress=True, operation_name="repair")
 def repair(
     ctx: CommandContext,
     state_db: str = typer.Option(
@@ -2553,7 +2569,7 @@ def repair(
         $ gmailarchiver repair --state-db /path/to/archive_state.db
         $ gmailarchiver repair --json
     """
-    assert ctx.db is not None, "Database should be initialized by @with_context"
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
 
     from gmailarchiver.data.migration import MigrationManager
 
@@ -2572,14 +2588,16 @@ def repair(
             # Phase 1: Fix FTS sync issues
             task = progress.add_task("Phase 1: FTS synchronization", total=2) if progress else None
             ctx.info("Phase 1: Checking FTS synchronization...")
-            repairs = ctx.db.repair_database(dry_run=dry_run)
+            # Access DBManager directly for low-level database operations
+            assert ctx.storage is not None
+            repairs = ctx.storage.db.repair_database(dry_run=dry_run)
             if progress and task:
                 progress.update(task, completed=1)
 
             # Phase 2: Backfill invalid offsets if requested
             if backfill:
                 ctx.info("Phase 2: Checking for invalid offsets...")
-                invalid_msgs = ctx.db.get_messages_with_invalid_offsets()
+                invalid_msgs = ctx.storage.db.get_messages_with_invalid_offsets()
 
                 if invalid_msgs:
                     ctx.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
@@ -2656,7 +2674,7 @@ def _display_repair_results(output: OutputManager, repairs: dict[str, int], dry_
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="check")
+@with_context(requires_storage=True, has_progress=True, operation_name="check")
 def check(
     ctx: CommandContext,
     state_db: str = typer.Option(
@@ -2688,8 +2706,6 @@ def check(
         $ gmailarchiver check --verbose
         $ gmailarchiver check --json
     """
-    from gmailarchiver.data.db_manager import DBManager
-
     db_path = Path(state_db)
 
     # Check if database exists
@@ -2719,13 +2735,13 @@ def check(
         "fts_synchronization": {"passed": False, "issues": []},
     }
 
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+
     with ctx.ui.task_sequence() as seq:
         # ==================== CHECK 1: Database Integrity ====================
         with seq.task("Checking database integrity") as t:
             try:
-                db = DBManager(str(db_path), validate_schema=False)
-                issues = db.verify_database_integrity()
-                db.close()
+                issues = ctx.storage.db.verify_database_integrity()
 
                 if not issues:
                     check_results["database_integrity"]["passed"] = True
@@ -2752,16 +2768,16 @@ def check(
         # ==================== CHECK 2: Database Consistency ====================
         with seq.task("Checking database consistency") as t:
             try:
-                db = DBManager(str(db_path), validate_schema=False)
-                cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+                cursor = ctx.storage.db.conn.execute(
+                    "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+                )
                 has_archives = cursor.fetchone() is not None
-                db.close()
 
                 if has_archives:
-                    db = DBManager(str(db_path), validate_schema=False)
-                    cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+                    cursor = ctx.storage.db.conn.execute(
+                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+                    )
                     archive_file = cursor.fetchone()[0]
-                    db.close()
 
                     if Path(archive_file).exists():
                         from .core.validator import ValidatorFacade
@@ -2793,10 +2809,10 @@ def check(
         with seq.task("Checking offset accuracy") as t:
             if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
                 try:
-                    db = DBManager(str(db_path), validate_schema=False)
-                    cursor = db.conn.execute("SELECT DISTINCT archive_file FROM messages LIMIT 1")
+                    cursor = ctx.storage.db.conn.execute(
+                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+                    )
                     row = cursor.fetchone()
-                    db.close()
 
                     if row and Path(row[0]).exists():
                         from .core.validator import ValidatorFacade
@@ -2907,9 +2923,7 @@ def check(
         ctx.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
 
         try:
-            db = DBManager(str(db_path), validate_schema=False)
-            repairs = db.repair_database(dry_run=False)
-            db.close()
+            repairs = ctx.storage.db.repair_database(dry_run=False)
 
             # Show repair results
             total_repairs = sum(repairs.values())
@@ -2919,9 +2933,7 @@ def check(
                 # Re-run checks to verify repairs
                 ctx.info("\nRe-checking after repairs...")
 
-                db = DBManager(str(db_path), validate_schema=False)
-                post_repair_issues = db.verify_database_integrity()
-                db.close()
+                post_repair_issues = ctx.storage.db.verify_database_integrity()
 
                 if not post_repair_issues:
                     ctx.success("All issues resolved!")
@@ -3447,7 +3459,7 @@ def schedule_disable(
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="compress")
+@with_context(requires_storage=True, has_progress=True, operation_name="compress")
 def compress(
     ctx: CommandContext,
     files: list[str] = typer.Argument(..., help="Mbox file paths or glob patterns to compress"),
@@ -3521,9 +3533,10 @@ def compress(
     if dry_run:
         ctx.info("[bold yellow]DRY RUN MODE - No actual compression will occur[/bold yellow]")
 
-    try:
-        compressor = ArchiveCompressor(state_db)
+    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+    compressor = ArchiveCompressor(ctx.storage.db)
 
+    try:
         # Compress files with progress tracking
         with ctx.output.progress_context(
             f"Compressing {len(expanded_files)} file(s)", total=len(expanded_files)
@@ -3630,10 +3643,13 @@ def compress(
             title="Unexpected Error",
             message=str(e),
         )
+    finally:
+        if ctx.storage:
+            ctx.storage.db.close()
 
 
 @app.command()
-@with_context(has_progress=True, operation_name="doctor")
+@with_context(requires_storage=True, has_progress=True, operation_name="doctor")
 def doctor(
     ctx: CommandContext,
     state_db: str = typer.Option(
@@ -3773,14 +3789,12 @@ def doctor(
         ctx.info("\n── Internal Database Checks ──")
         db_path = Path(state_db)
         if db_path.exists():
-            from gmailarchiver.data.db_manager import DBManager
+            assert ctx.storage is not None, "Storage should be initialized by @with_context"
 
             with ctx.ui.task_sequence() as seq:
                 with seq.task("Running internal checks") as t:
                     try:
-                        db = DBManager(str(db_path), validate_schema=False)
-                        issues = db.verify_database_integrity()
-                        db.close()
+                        issues = ctx.storage.db.verify_database_integrity()
 
                         if not issues:
                             t.complete("All internal checks passed")
@@ -3842,7 +3856,12 @@ def auth_reset(
 
 
 @utilities_app.command(name="backfill-gmail-ids")
-@with_context(requires_gmail=True, has_progress=True, operation_name="backfill-gmail-ids")
+@with_context(
+    requires_storage=True,
+    requires_gmail=True,
+    has_progress=True,
+    operation_name="backfill-gmail-ids",
+)
 def backfill_gmail_ids_cmd(
     ctx: CommandContext,
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without updating"),
@@ -3881,21 +3900,19 @@ def backfill_gmail_ids_cmd(
     """
     import re
 
-    from gmailarchiver.data.db_manager import DBManager
-
     # Pattern to detect synthetic gmail_ids (start with 000...)
     synthetic_id_pattern = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
 
     try:
-        # Gmail client is already authenticated via @with_context
+        # Gmail client and storage are already initialized via @with_context
         assert ctx.gmail is not None, "Gmail client should be initialized"
+        assert ctx.storage is not None, "Storage should be initialized"
         client = ctx.gmail
 
         # 2. Find messages needing Gmail ID lookup
         ctx.info("Scanning database for messages needing backfill...")
-        with DBManager(state_db, validate_schema=False, auto_create=False) as db:
-            cursor = db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
-            all_messages = cursor.fetchall()
+        cursor = ctx.storage.db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
+        all_messages = cursor.fetchall()
 
         # Messages needing backfill: NULL gmail_id OR synthetic pattern
         messages_needing_backfill: list[tuple[str | None, str]] = []
@@ -3995,13 +4012,12 @@ def backfill_gmail_ids_cmd(
                     ctx.info(f"  {rfc_display} -> {status}")
         else:
             ctx.info(f"\nUpdating database with {len(updates):,} changes...")
-            with DBManager(state_db, validate_schema=False, auto_create=False) as db:
-                for new_gmail_id, rfc_message_id in updates:
-                    db.conn.execute(
-                        "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
-                        (new_gmail_id, rfc_message_id),
-                    )
-                db.conn.commit()
+            for new_gmail_id, rfc_message_id in updates:
+                ctx.storage.db.conn.execute(
+                    "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
+                    (new_gmail_id, rfc_message_id),
+                )
+            ctx.storage.db.conn.commit()
             ctx.success("Database updated!")
 
         # Summary

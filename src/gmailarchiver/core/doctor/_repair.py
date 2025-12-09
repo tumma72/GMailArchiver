@@ -1,9 +1,12 @@
 """Auto-repair operations for Gmail Archiver."""
 
 import logging
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.db_manager import DBManager
 
 logger = logging.getLogger(__name__)
 
@@ -20,30 +23,30 @@ class FixResult:
 class RepairManager:
     """Auto-repair manager for fixable issues."""
 
-    def __init__(self, db_path: Path, conn: sqlite3.Connection | None) -> None:
+    def __init__(self, db_path: Path, db_manager: DBManager | None) -> None:
         """Initialize repair manager.
 
         Args:
             db_path: Path to database file
-            conn: Optional database connection
+            db_manager: Optional database manager
         """
         self.db_path = db_path
-        self.conn = conn
+        self.db_manager = db_manager
 
     def fix_missing_database(self) -> FixResult:
         """Create missing database with v1.1 schema."""
         try:
             from gmailarchiver.data.db_manager import DBManager
 
-            DBManager(str(self.db_path), validate_schema=False, auto_create=True)
+            # Create new database with v1.1 schema
+            db = DBManager(str(self.db_path), validate_schema=False, auto_create=True)
 
             # Ensure PRAGMA user_version reflects v1.1 for external tools
-            conn = sqlite3.connect(str(self.db_path))
             try:
-                conn.execute("PRAGMA user_version = 11")
-                conn.commit()
+                db.conn.execute("PRAGMA user_version = 11")
+                db.conn.commit()
             finally:
-                conn.close()
+                db.close()
 
             return FixResult(
                 check_name="Database schema",
@@ -59,7 +62,7 @@ class RepairManager:
 
     def fix_orphaned_fts(self) -> FixResult:
         """Remove orphaned FTS records."""
-        if not self.conn:
+        if not self.db_manager:
             return FixResult(
                 check_name="FTS index",
                 success=False,
@@ -68,7 +71,7 @@ class RepairManager:
 
         try:
             # Delete orphaned FTS records
-            cursor = self.conn.execute(
+            cursor = self.db_manager.conn.execute(
                 """
                 DELETE FROM messages_fts
                 WHERE rowid NOT IN (SELECT rowid FROM messages)
@@ -78,7 +81,7 @@ class RepairManager:
 
             if removed == 0:
                 # Heuristic fallback for test scenarios
-                cursor = self.conn.execute(
+                cursor = self.db_manager.conn.execute(
                     """
                     DELETE FROM messages_fts
                     WHERE rowid > (SELECT IFNULL(MAX(rowid), 0) FROM messages)
@@ -86,14 +89,14 @@ class RepairManager:
                 )
                 removed = cursor.rowcount
 
-            self.conn.commit()
+            self.db_manager.conn.commit()
 
             return FixResult(
                 check_name="FTS index",
                 success=True,
                 message=f"Removed {removed} orphaned FTS record(s)",
             )
-        except sqlite3.Error as e:
+        except Exception as e:
             return FixResult(
                 check_name="FTS index",
                 success=False,

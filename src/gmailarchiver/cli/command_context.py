@@ -38,6 +38,7 @@ import typer
 from gmailarchiver.connectors.auth import GmailAuthenticator
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.data.schema_manager import (
     SchemaManager,
     SchemaVersion,
@@ -60,13 +61,13 @@ class CommandContext:
     Provides a consistent interface for:
     - Output (info, warning, success, error messages)
     - Progress tracking (operations, progress bars)
-    - Data access (database, Gmail client)
+    - Data access (storage layer, Gmail client)
     - Error handling (fail_and_exit with suggestions)
 
     Attributes:
         output: OutputManager instance for all output operations
         operation_handle: Current operation handle (if has_progress=True)
-        db: DBManager instance (if requires_db=True)
+        storage: HybridStorage instance (if requires_storage=True)
         gmail: GmailClient instance (if requires_gmail=True)
         json_mode: Whether JSON output is enabled
         dry_run: Whether dry-run mode is enabled
@@ -75,7 +76,7 @@ class CommandContext:
 
     output: OutputManager
     operation_handle: OperationHandle | None = None
-    db: DBManager | None = None
+    storage: HybridStorage | None = None
     gmail: GmailClient | None = None
     json_mode: bool = False
     dry_run: bool = False
@@ -465,7 +466,7 @@ class _StaticOperationHandle:
 
 
 def with_context(
-    requires_db: bool = False,
+    requires_storage: bool = False,
     requires_gmail: bool = False,
     requires_schema: str | None = None,
     has_progress: bool = False,
@@ -476,14 +477,14 @@ def with_context(
     Handles all common boilerplate:
     - TTY detection for output mode selection
     - OutputManager initialization
-    - DBManager initialization (if requires_db=True)
+    - HybridStorage initialization (if requires_storage=True)
     - GmailClient initialization (if requires_gmail=True)
     - Schema version checking (if requires_schema is set)
     - Exception handling with user-friendly messages
     - Resource cleanup
 
     Args:
-        requires_db: Initialize DBManager and inject as ctx.db
+        requires_storage: Initialize HybridStorage and inject as ctx.storage
         requires_gmail: Initialize GmailClient and inject as ctx.gmail
         requires_schema: Minimum schema version required (e.g., "1.2")
         has_progress: Enable progress tracking via live output
@@ -494,7 +495,7 @@ def with_context(
 
     Example:
         @app.command()
-        @with_context(requires_db=True, has_progress=True)
+        @with_context(requires_storage=True, has_progress=True)
         def validate(ctx: CommandContext, archive_file: str) -> None:
             ...
     """
@@ -547,10 +548,11 @@ def with_context(
             )
 
             db: DBManager | None = None
+            storage: HybridStorage | None = None
 
             try:
-                # Initialize database if required
-                if requires_db:
+                # Initialize storage if required
+                if requires_storage:
                     db_path = Path(state_db)
                     if not db_path.exists():
                         ctx.fail_and_exit(
@@ -575,7 +577,13 @@ def with_context(
 
                     # Initialize DBManager (skip validation since SchemaManager already checked)
                     db = DBManager(str(db_path), validate_schema=False)
-                    ctx.db = db
+
+                    # Wrap DBManager with HybridStorage
+                    # Only preload RFC IDs if we've validated the schema supports it (v1.1+)
+                    # This prevents failures when schema check hasn't run yet
+                    preload_rfc_ids = requires_schema is not None
+                    storage = HybridStorage(db, preload_rfc_ids=preload_rfc_ids)
+                    ctx.storage = storage
 
                 # Initialize Gmail client if required (uses spinner UI)
                 if requires_gmail:
@@ -610,6 +618,8 @@ def with_context(
                     output.end_operation(success=True)
 
                 # Cleanup resources
+                # Note: HybridStorage doesn't own the DBManager connection,
+                # so we close the underlying DBManager directly
                 if db is not None:
                     try:
                         db.close()
