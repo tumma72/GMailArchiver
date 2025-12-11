@@ -88,7 +88,7 @@ class ValidatorFacade:
         self._counter = MessageCounter()
         self._checksum = ChecksumValidator()
 
-    def _get_db_manager(self) -> DBManager | None:
+    async def _get_db_manager(self) -> DBManager | None:
         """Get or create DBManager instance.
 
         Returns:
@@ -105,14 +105,15 @@ class ValidatorFacade:
             self._db_manager = DBManager(
                 str(self.state_db_path), validate_schema=False, auto_create=False
             )
+            await self._db_manager.initialize()
             return self._db_manager
         except Exception:
             return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database manager if owned by this validator."""
         if self._owns_db_manager and self._db_manager is not None:
-            self._db_manager.close()
+            await self._db_manager.close()
             self._db_manager = None
 
     def _log(self, message: str, level: str = "INFO") -> None:
@@ -296,7 +297,7 @@ class ValidatorFacade:
         """
         return self._decompressor.get_mbox_path(self.archive_path)
 
-    def verify_offsets(self) -> OffsetVerificationResult:
+    async def verify_offsets(self) -> OffsetVerificationResult:
         """Verify mbox offset accuracy by reading messages.
 
         Returns:
@@ -305,8 +306,8 @@ class ValidatorFacade:
         import mailbox
 
         # Get database manager
-        db_manager = self._get_db_manager()
-        if db_manager is None:
+        db_manager = await self._get_db_manager()
+        if db_manager is None or db_manager.conn is None:
             return OffsetVerificationResult(
                 total_checked=0,
                 successful_reads=0,
@@ -316,12 +317,15 @@ class ValidatorFacade:
                 skipped=True,
             )
 
+        conn = db_manager.conn  # Type narrowed to non-None
+
         # Check if messages table exists (v1.1 schema)
         try:
-            cursor = db_manager.conn.execute(
+            cursor = await conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
             )
-            if not cursor.fetchone():
+            row = await cursor.fetchone()
+            if not row:
                 return OffsetVerificationResult(
                     total_checked=0,
                     successful_reads=0,
@@ -342,7 +346,7 @@ class ValidatorFacade:
 
         # Get messages with offsets from database
         try:
-            cursor = db_manager.conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT gmail_id, rfc_message_id, mbox_offset, mbox_length
                 FROM messages
@@ -351,7 +355,7 @@ class ValidatorFacade:
             """,
                 (str(self.archive_path),),
             )
-            messages = cursor.fetchall()
+            messages = await cursor.fetchall()
         except Exception:
             return OffsetVerificationResult(
                 total_checked=0,
@@ -427,15 +431,15 @@ class ValidatorFacade:
             skipped=False,
         )
 
-    def verify_consistency(self) -> ConsistencyReport:
+    async def verify_consistency(self) -> ConsistencyReport:
         """Verify database consistency (orphaned records, FTS sync, etc).
 
         Returns:
             ConsistencyReport with detailed findings
         """
         # Get database manager
-        db_manager = self._get_db_manager()
-        if db_manager is None:
+        db_manager = await self._get_db_manager()
+        if db_manager is None or db_manager.conn is None:
             return ConsistencyReport(
                 schema_version="unknown",
                 orphaned_records=0,
@@ -444,22 +448,24 @@ class ValidatorFacade:
                 duplicate_rfc_message_ids=0,
                 fts_synced=True,
                 passed=False,
-                errors=["Database file not found"],
+                errors=["Database file not found or connection not initialized"],
             )
 
-        errors = []
-        conn = db_manager.conn
+        errors: list[str] = []
+        conn = db_manager.conn  # Type narrowed to non-None
 
         # Check schema version
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         )
-        has_v11 = cursor.fetchone() is not None
+        row = await cursor.fetchone()
+        has_v11 = row is not None
 
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
         )
-        has_v10 = cursor.fetchone() is not None
+        row = await cursor.fetchone()
+        has_v10 = row is not None
 
         if not has_v11 and not has_v10:
             # No recognized schema
@@ -485,14 +491,15 @@ class ValidatorFacade:
         if has_v11:
             # Get Message-IDs from database
             table_name = "messages"
-            cursor = conn.execute(
+            cursor = await conn.execute(
                 f"""
                 SELECT rfc_message_id FROM {table_name}
                 WHERE archive_file = ?
             """,
                 (str(self.archive_path),),
             )
-            db_message_ids = set(row[0] for row in cursor.fetchall())
+            rows = await cursor.fetchall()
+            db_message_ids = set(row[0] for row in rows)
 
             # Get Message-IDs from mbox file
             mbox_message_ids = set()
@@ -524,7 +531,7 @@ class ValidatorFacade:
 
         # Check for duplicate Gmail IDs
         table_name = "messages" if has_v11 else "archived_messages"
-        cursor = conn.execute(f"""
+        cursor = await conn.execute(f"""
             SELECT COUNT(*) FROM (
                 SELECT gmail_id, COUNT(*) as cnt
                 FROM {table_name}
@@ -532,12 +539,13 @@ class ValidatorFacade:
                 HAVING cnt > 1
             )
         """)
-        duplicate_gmail_ids = cursor.fetchone()[0]
+        row = await cursor.fetchone()
+        duplicate_gmail_ids = row[0] if row else 0
 
         # Check for duplicate RFC message IDs (v1.1 only)
         duplicate_rfc_ids = 0
         if has_v11:
-            cursor = conn.execute("""
+            cursor = await conn.execute("""
                 SELECT COUNT(*) FROM (
                     SELECT rfc_message_id, COUNT(*) as cnt
                     FROM messages
@@ -545,16 +553,19 @@ class ValidatorFacade:
                     HAVING cnt > 1
                 )
             """)
-            duplicate_rfc_ids = cursor.fetchone()[0]
+            row = await cursor.fetchone()
+            duplicate_rfc_ids = row[0] if row else 0
 
         # Check FTS sync (v1.1 only)
         fts_synced = True
         if has_v11:
             try:
-                cursor = conn.execute("SELECT COUNT(*) FROM messages_fts")
-                fts_count = cursor.fetchone()[0]
-                cursor = conn.execute("SELECT COUNT(*) FROM messages")
-                msg_count = cursor.fetchone()[0]
+                cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts")
+                row = await cursor.fetchone()
+                fts_count = row[0] if row else 0
+                cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+                row = await cursor.fetchone()
+                msg_count = row[0] if row else 0
                 fts_synced = fts_count == msg_count
                 if not fts_synced:
                     errors.append(

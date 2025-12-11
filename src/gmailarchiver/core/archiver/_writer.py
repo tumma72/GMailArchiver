@@ -42,7 +42,7 @@ class MessageWriter:
         self._interrupted = threading.Event()
         self._original_sigint_handler: Any = None
 
-    def archive_messages(
+    async def archive_messages(
         self,
         message_ids: list[str],
         output_file: str,
@@ -79,7 +79,7 @@ class MessageWriter:
         # Create session for tracking progress
         session_id = str(uuid.uuid4())
         query = f"archive_messages({len(message_ids)} messages)"
-        self.storage.db.create_session(
+        await self.storage.db.create_session(
             session_id=session_id,
             target_file=output_file,
             query=query,
@@ -88,7 +88,7 @@ class MessageWriter:
         )
 
         # Archive messages using helper method
-        result = self._archive_messages(
+        result = await self._archive_messages(
             message_ids,
             output_file,
             compress,
@@ -104,7 +104,7 @@ class MessageWriter:
             "actual_file": result.get("actual_file", output_file),
         }
 
-    def _archive_messages(
+    async def _archive_messages(
         self,
         message_ids: list[str],
         output_file: str,
@@ -216,7 +216,7 @@ class MessageWriter:
                 operation.update_progress(1)
 
         try:
-            result = self.storage.archive_messages_batch(
+            result = await self.storage.archive_messages_batch(
                 messages=batch_messages,
                 archive_file=output_path,
                 compression=compress,

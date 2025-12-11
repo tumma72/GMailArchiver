@@ -3,9 +3,10 @@
 Internal module - use SearchFacade instead.
 """
 
-import sqlite3
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
+
+from aiosqlite import Row
 
 if TYPE_CHECKING:
     from ...data.hybrid_storage import HybridStorage
@@ -22,25 +23,45 @@ class SearchExecutor:
 
     def __init__(self, storage: HybridStorage) -> None:
         """
-        Initialize executor with HybridStorage.
+        Initialize executor with HybridStorage (internal - use create() instead).
 
         Args:
             storage: HybridStorage instance (provides access to DBManager)
-
-        Raises:
-            ValueError: If database schema is missing required tables
         """
         self.storage = storage
         self.db = storage.db  # DBManager instance for advanced queries
 
+    @classmethod
+    async def create(cls, storage: HybridStorage) -> Self:
+        """
+        Create and validate executor.
+
+        Args:
+            storage: HybridStorage instance (provides access to DBManager)
+
+        Returns:
+            Initialized SearchExecutor
+
+        Raises:
+            ValueError: If database schema is missing required tables
+        """
+        instance = cls(storage)
+
         # Validate database has required tables
-        cursor = self.db.conn.execute(
+        if instance.db.conn is None:
+            raise ValueError("Database connection not initialized")
+        cursor = await instance.db.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         )
-        if not cursor.fetchone():
+        row = await cursor.fetchone()
+        if not row:
             raise ValueError("Database schema error: missing 'messages' table")
 
-    def execute(self, params: QueryParams, limit: int = 100, offset: int = 0) -> SearchResults:
+        return instance
+
+    async def execute(
+        self, params: QueryParams, limit: int = 100, offset: int = 0
+    ) -> SearchResults:
         """
         Execute search query based on parsed parameters.
 
@@ -57,16 +78,16 @@ class SearchExecutor:
         # Determine search strategy based on params
         if params.has_fulltext and params.has_metadata:
             # Hybrid: FTS5 + metadata filters
-            results = self._search_hybrid(params, limit, offset)
+            results = await self._search_hybrid(params, limit, offset)
         elif params.has_fulltext:
             # Pure FTS5 search
-            results = self._search_fulltext(params.fts_query, limit)
+            results = await self._search_fulltext(params.fts_query, limit)
         elif params.has_metadata:
             # Pure metadata search
-            results = self._search_metadata(params, limit)
+            results = await self._search_metadata(params, limit)
         else:
             # No filters - return all messages
-            results = self._search_all(limit)
+            results = await self._search_all(limit)
 
         # Update timing
         results.execution_time_ms = (time.perf_counter() - start_time) * 1000
@@ -74,7 +95,7 @@ class SearchExecutor:
 
         return results
 
-    def _search_fulltext(self, fts_query: str, limit: int) -> SearchResults:
+    async def _search_fulltext(self, fts_query: str, limit: int) -> SearchResults:
         """
         Execute pure FTS5 search.
 
@@ -98,14 +119,18 @@ class SearchExecutor:
         """
 
         try:
-            cursor = self.db.conn.execute(sql, (fts_query, limit))
-            rows = cursor.fetchall()
+            if self.db.conn is None:
+                return SearchResults(
+                    total_results=0, results=[], query=fts_query, execution_time_ms=0
+                )
+            cursor = await self.db.conn.execute(sql, (fts_query, limit))
+            rows = list(await cursor.fetchall())
             return self._build_results(rows)
-        except sqlite3.OperationalError:
+        except Exception:
             # Invalid FTS query - return empty results
             return SearchResults(total_results=0, results=[], query=fts_query, execution_time_ms=0)
 
-    def _search_metadata(self, params: QueryParams, limit: int) -> SearchResults:
+    async def _search_metadata(self, params: QueryParams, limit: int) -> SearchResults:
         """
         Execute metadata-only search.
 
@@ -153,11 +178,15 @@ class SearchExecutor:
 
         sql_params.append(limit)
 
-        cursor = self.db.conn.execute(sql, sql_params)
-        rows = cursor.fetchall()
+        if self.db.conn is None:
+            return SearchResults(
+                total_results=0, results=[], query=params.original_query, execution_time_ms=0
+            )
+        cursor = await self.db.conn.execute(sql, sql_params)
+        rows = list(await cursor.fetchall())
         return self._build_results(rows, include_relevance=False)
 
-    def _search_hybrid(self, params: QueryParams, limit: int, offset: int) -> SearchResults:
+    async def _search_hybrid(self, params: QueryParams, limit: int, offset: int) -> SearchResults:
         """
         Execute hybrid FTS5 + metadata search.
 
@@ -205,16 +234,20 @@ class SearchExecutor:
         sql_params.append(limit)
 
         try:
-            cursor = self.db.conn.execute(sql, sql_params)
-            rows = cursor.fetchall()
+            if self.db.conn is None:
+                return SearchResults(
+                    total_results=0, results=[], query=params.original_query, execution_time_ms=0
+                )
+            cursor = await self.db.conn.execute(sql, sql_params)
+            rows = list(await cursor.fetchall())
             return self._build_results(rows)
-        except sqlite3.OperationalError:
+        except Exception:
             # Invalid FTS query - return empty results
             return SearchResults(
                 total_results=0, results=[], query=params.original_query, execution_time_ms=0
             )
 
-    def _search_all(self, limit: int) -> SearchResults:
+    async def _search_all(self, limit: int) -> SearchResults:
         """
         Return all messages (no filters).
 
@@ -233,13 +266,13 @@ class SearchExecutor:
             LIMIT ?
         """
 
-        cursor = self.db.conn.execute(sql, (limit,))
-        rows = cursor.fetchall()
+        if self.db.conn is None:
+            return SearchResults(total_results=0, results=[], query="", execution_time_ms=0)
+        cursor = await self.db.conn.execute(sql, (limit,))
+        rows = list(await cursor.fetchall())
         return self._build_results(rows, include_relevance=False)
 
-    def _build_results(
-        self, rows: list[sqlite3.Row], include_relevance: bool = True
-    ) -> SearchResults:
+    def _build_results(self, rows: list[Row], include_relevance: bool = True) -> SearchResults:
         """
         Build SearchResults from database rows.
 

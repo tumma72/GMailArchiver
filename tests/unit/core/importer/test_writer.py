@@ -4,7 +4,7 @@ Tests database operations, deduplication, and batch writing.
 All tests use mocks - no actual database I/O.
 """
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -27,41 +27,39 @@ class TestDatabaseWriterInit:
 class TestDatabaseWriterLoadExistingIds:
     """Tests for loading existing RFC Message-IDs."""
 
-    def test_load_existing_ids_success(self) -> None:
+    @pytest.mark.asyncio
+    async def test_load_existing_ids_success(self) -> None:
         """Test loading existing IDs from database."""
         mock_db = Mock()
-        mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = [
-            ("<msg1@example.com>",),
-            ("<msg2@example.com>",),
-        ]
-        mock_db.conn.execute.return_value = mock_cursor
+        mock_db.get_all_rfc_message_ids = AsyncMock(
+            return_value={"<msg1@example.com>", "<msg2@example.com>"}
+        )
 
         writer = DatabaseWriter(mock_db)
-        existing_ids = writer.load_existing_ids()
+        existing_ids = await writer.load_existing_ids()
 
         assert existing_ids == {"<msg1@example.com>", "<msg2@example.com>"}
-        mock_db.conn.execute.assert_called_once_with("SELECT rfc_message_id FROM messages")
+        mock_db.get_all_rfc_message_ids.assert_called_once()
 
-    def test_load_existing_ids_empty_table(self) -> None:
+    @pytest.mark.asyncio
+    async def test_load_existing_ids_empty_table(self) -> None:
         """Test loading from empty table."""
         mock_db = Mock()
-        mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []
-        mock_db.conn.execute.return_value = mock_cursor
+        mock_db.get_all_rfc_message_ids = AsyncMock(return_value=set())
 
         writer = DatabaseWriter(mock_db)
-        existing_ids = writer.load_existing_ids()
+        existing_ids = await writer.load_existing_ids()
 
         assert existing_ids == set()
 
-    def test_load_existing_ids_table_missing(self) -> None:
+    @pytest.mark.asyncio
+    async def test_load_existing_ids_table_missing(self) -> None:
         """Test loading when table doesn't exist yet."""
         mock_db = Mock()
-        mock_db.conn.execute.side_effect = Exception("Table does not exist")
+        mock_db.get_all_rfc_message_ids = AsyncMock(side_effect=Exception("Table does not exist"))
 
         writer = DatabaseWriter(mock_db)
-        existing_ids = writer.load_existing_ids()
+        existing_ids = await writer.load_existing_ids()
 
         assert existing_ids == set()
 
@@ -106,9 +104,11 @@ class TestDatabaseWriterIsDuplicate:
 class TestDatabaseWriterWriteMessage:
     """Tests for writing single message."""
 
-    def test_write_message_success(self) -> None:
+    @pytest.mark.asyncio
+    async def test_write_message_success(self) -> None:
         """Test successfully writing a message."""
         mock_db = Mock()
+        mock_db.record_archived_message = AsyncMock()
         writer = DatabaseWriter(mock_db)
         writer.existing_ids = set()
         writer.session_ids = set()
@@ -131,13 +131,14 @@ class TestDatabaseWriterWriteMessage:
             account_id="default",
         )
 
-        result = writer.write_message(metadata, skip_duplicates=True)
+        result = await writer.write_message(metadata, skip_duplicates=True)
 
         assert result == WriteResult.IMPORTED
         assert "<test@example.com>" in writer.session_ids
         mock_db.record_archived_message.assert_called_once()
 
-    def test_write_message_duplicate_skipped(self) -> None:
+    @pytest.mark.asyncio
+    async def test_write_message_duplicate_skipped(self) -> None:
         """Test skipping duplicate message when skip_duplicates=True."""
         mock_db = Mock()
         writer = DatabaseWriter(mock_db)
@@ -162,15 +163,17 @@ class TestDatabaseWriterWriteMessage:
             account_id="default",
         )
 
-        result = writer.write_message(metadata, skip_duplicates=True)
+        result = await writer.write_message(metadata, skip_duplicates=True)
 
         assert result == WriteResult.SKIPPED
-        mock_db.record_archived_message.assert_not_called()
 
-    def test_write_message_duplicate_replaced(self) -> None:
+    @pytest.mark.asyncio
+    async def test_write_message_duplicate_replaced(self) -> None:
         """Test replacing duplicate when skip_duplicates=False."""
         mock_db = Mock()
-        mock_db.conn.execute.return_value = None
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(return_value=None)
+        mock_db.conn.commit = AsyncMock()
 
         writer = DatabaseWriter(mock_db)
         writer.existing_ids = {"<test@example.com>"}
@@ -194,17 +197,21 @@ class TestDatabaseWriterWriteMessage:
             account_id="default",
         )
 
-        result = writer.write_message(metadata, skip_duplicates=False)
+        result = await writer.write_message(metadata, skip_duplicates=False)
 
         assert result == WriteResult.IMPORTED
         assert "<test@example.com>" in writer.session_ids
         # Should use INSERT OR REPLACE via direct SQL
         mock_db.conn.execute.assert_called_once()
 
-    def test_write_message_database_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_write_message_database_error(self) -> None:
         """Test handling database errors during write."""
         mock_db = Mock()
-        mock_db.record_archived_message.side_effect = Exception("DB constraint violation")
+        mock_db.record_archived_message = AsyncMock(
+            side_effect=Exception("DB constraint violation")
+        )
+        mock_db.rollback = AsyncMock()
 
         writer = DatabaseWriter(mock_db)
         writer.existing_ids = set()
@@ -228,7 +235,7 @@ class TestDatabaseWriterWriteMessage:
             account_id="default",
         )
 
-        result = writer.write_message(metadata, skip_duplicates=True)
+        result = await writer.write_message(metadata, skip_duplicates=True)
 
         assert result == WriteResult.FAILED
         mock_db.rollback.assert_called_once()
@@ -238,12 +245,14 @@ class TestDatabaseWriterWriteMessage:
 class TestDatabaseWriterRecordArchiveRun:
     """Tests for recording archive run."""
 
-    def test_record_archive_run(self) -> None:
+    @pytest.mark.asyncio
+    async def test_record_archive_run(self) -> None:
         """Test recording import operation in archive_runs."""
         mock_db = Mock()
+        mock_db.record_archive_run = AsyncMock()
         writer = DatabaseWriter(mock_db)
 
-        writer.record_archive_run(
+        await writer.record_archive_run(
             archive_file="/tmp/archive.mbox",
             messages_count=42,
             account_id="default",

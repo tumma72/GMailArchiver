@@ -4,6 +4,7 @@ Coordinates query parsing and execution for Gmail-style searches.
 """
 
 from pathlib import Path
+from typing import Self
 
 from ...data.db_manager import DBManager
 from ...data.hybrid_storage import HybridStorage
@@ -25,17 +26,43 @@ class SearchFacade:
     - Bare words perform full-text search
 
     Example:
-        >>> with SearchFacade("state.db") as search:
+        >>> async with await SearchFacade.create("state.db") as search:
         ...     results = search.search("from:alice meeting after:2024-01-01")
         ...     print(f"Found {results.total_results} messages")
     """
 
-    def __init__(self, state_db_path: str) -> None:
+    def __init__(
+        self,
+        db_manager: DBManager,
+        storage: HybridStorage,
+        executor: SearchExecutor,
+        db_path: str,
+    ) -> None:
         """
-        Initialize search facade.
+        Initialize search facade (internal - use create() instead).
+
+        Args:
+            db_manager: Initialized DBManager instance
+            storage: HybridStorage instance
+            executor: SearchExecutor instance
+            db_path: Path to database (for reference)
+        """
+        self._db_manager = db_manager
+        self._storage = storage
+        self._executor = executor
+        self.db_path = db_path
+        self._parser = QueryParser()
+
+    @classmethod
+    async def create(cls, state_db_path: str) -> Self:
+        """
+        Create and initialize search facade.
 
         Args:
             state_db_path: Path to SQLite state database
+
+        Returns:
+            Initialized SearchFacade instance
 
         Raises:
             FileNotFoundError: If database doesn't exist
@@ -44,21 +71,25 @@ class SearchFacade:
         if not db_path.exists():
             raise FileNotFoundError(f"Database not found: {state_db_path}")
 
-        self.db_path = state_db_path
-        self._parser = QueryParser()
+        # Create and initialize DBManager
+        db_manager = DBManager(state_db_path)
+        await db_manager.initialize()
 
         # Create HybridStorage for database access (architecture gateway)
-        self._db_manager = DBManager(state_db_path)
-        self._storage = HybridStorage(self._db_manager, preload_rfc_ids=False)
+        storage = HybridStorage(db_manager, preload_rfc_ids=False)
 
         # Set row_factory for SearchExecutor's SQL queries
         import sqlite3
 
-        self._db_manager.conn.row_factory = sqlite3.Row
+        if db_manager.conn is None:
+            raise RuntimeError("Database connection not initialized")
+        db_manager.conn.row_factory = sqlite3.Row
 
-        self._executor = SearchExecutor(self._storage)
+        executor = await SearchExecutor.create(storage)
 
-    def search(self, query: str, limit: int = 100, offset: int = 0) -> SearchResults:
+        return cls(db_manager, storage, executor, state_db_path)
+
+    async def search(self, query: str, limit: int = 100, offset: int = 0) -> SearchResults:
         """
         Execute Gmail-style search query.
 
@@ -71,7 +102,7 @@ class SearchFacade:
             SearchResults with matching messages
 
         Example:
-            >>> results = facade.search("from:alice subject:meeting project")
+            >>> results = await facade.search("from:alice subject:meeting project")
             >>> for msg in results.results:
             ...     print(f"{msg.subject} - {msg.from_addr}")
         """
@@ -79,11 +110,11 @@ class SearchFacade:
         params = self._parser.parse(query)
 
         # Execute search
-        results = self._executor.execute(params, limit=limit, offset=offset)
+        results = await self._executor.execute(params, limit=limit, offset=offset)
 
         return results
 
-    def search_fulltext(
+    async def search_fulltext(
         self, text: str, fields: list[str] | None = None, limit: int = 100
     ) -> SearchResults:
         """
@@ -98,7 +129,7 @@ class SearchFacade:
             SearchResults with BM25 ranked results
 
         Example:
-            >>> results = facade.search_fulltext("invoice payment")
+            >>> results = await facade.search_fulltext("invoice payment")
             >>> print(f"Found {results.total_results} messages")
         """
         # Build FTS query
@@ -115,9 +146,9 @@ class SearchFacade:
         from ._parser import QueryParams
 
         params = QueryParams(fulltext_terms=[text], fts_query=fts_query, original_query=text)
-        return self._executor.execute(params, limit=limit, offset=0)
+        return await self._executor.execute(params, limit=limit, offset=0)
 
-    def search_metadata(
+    async def search_metadata(
         self,
         from_addr: str | None = None,
         to_addr: str | None = None,
@@ -141,7 +172,7 @@ class SearchFacade:
             SearchResults ordered by date
 
         Example:
-            >>> results = facade.search_metadata(
+            >>> results = await facade.search_metadata(
             ...     from_addr="alice",
             ...     after="2024-01-01"
             ... )
@@ -158,16 +189,16 @@ class SearchFacade:
             after=after,
             before=before,
         )
-        return self._executor.execute(params, limit=limit, offset=0)
+        return await self._executor.execute(params, limit=limit, offset=0)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database connection."""
-        self._db_manager.close()
+        await self._db_manager.close()
 
-    def __enter__(self) -> SearchFacade:
-        """Context manager entry."""
+    async def __aenter__(self) -> Self:
+        """Async context manager entry."""
         return self
 
-    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        """Context manager exit."""
-        self.close()
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Async context manager exit."""
+        await self.close()

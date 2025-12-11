@@ -6,7 +6,7 @@ Coordinates scanning, resolution, and removal of duplicate messages.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 if TYPE_CHECKING:
     from gmailarchiver.data.db_manager import DBManager
@@ -47,31 +47,55 @@ class DeduplicatorFacade:
 
     Example:
         >>> db = DBManager("state.db")
-        >>> with DeduplicatorFacade(db) as dedup:
-        ...     duplicates = dedup.find_duplicates()
-        ...     report = dedup.generate_report(duplicates)
+        >>> await db.initialize()
+        >>> async with await DeduplicatorFacade.create(db) as dedup:
+        ...     duplicates = await dedup.find_duplicates()
+        ...     report = await dedup.generate_report(duplicates)
         ...     print(f"Found {report.duplicate_message_ids} duplicate groups")
-        ...     result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
+        ...     result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
     """
 
-    def __init__(self, db: DBManager) -> None:
+    def __init__(self, db: DBManager, schema_version: str) -> None:
         """
-        Initialize deduplicator facade.
+        Initialize deduplicator facade (internal - use create() instead).
 
         Args:
             db: DBManager instance for database operations
+            schema_version: Validated schema version
 
         Raises:
             ValueError: If database is not v1.1+ schema
         """
         self.db = db
 
+        # For backward compatibility, store db_path
+        self.db_path = str(db.db_path)
+
+        # Initialize internal modules
+        self._scanner = DuplicateScanner(db)
+        self._resolver = DuplicateResolver()
+        self._remover = DuplicateRemover(db)
+
+    @classmethod
+    async def create(cls, db: DBManager) -> Self:
+        """
+        Create and initialize deduplicator facade.
+
+        Args:
+            db: Initialized DBManager instance
+
+        Returns:
+            Initialized DeduplicatorFacade instance
+
+        Raises:
+            ValueError: If database is not v1.1+ schema
+        """
         # Verify v1.1+ schema (supports both v1.1 and v1.2)
         # If schema_version wasn't set (validate_schema=False), try to get it
-        if not hasattr(db, "schema_version"):
+        if not hasattr(db, "schema_version") or db.schema_version is None:
             # Manually validate schema to get version
             try:
-                schema_version = db._validate_schema_version()
+                schema_version = await db._validate_schema_version()
             except Exception as e:
                 raise ValueError(
                     f"DeduplicatorFacade requires v1.1+ database schema. "
@@ -86,15 +110,9 @@ class DeduplicatorFacade:
                 f"found: {schema_version}. Run migration first."
             )
 
-        # For backward compatibility, store db_path
-        self.db_path = str(db.db_path)
+        return cls(db, schema_version)
 
-        # Initialize internal modules
-        self._scanner = DuplicateScanner(db)
-        self._resolver = DuplicateResolver()
-        self._remover = DuplicateRemover(db)
-
-    def find_duplicates(self) -> dict[str, list[MessageInfo]]:
+    async def find_duplicates(self) -> dict[str, list[MessageInfo]]:
         """
         Find all duplicate messages grouped by rfc_message_id.
 
@@ -105,13 +123,15 @@ class DeduplicatorFacade:
             Dict mapping rfc_message_id to list of MessageInfo (locations)
 
         Example:
-            >>> duplicates = facade.find_duplicates()
+            >>> duplicates = await facade.find_duplicates()
             >>> for msg_id, locations in duplicates.items():
             ...     print(f"{msg_id}: {len(locations)} copies")
         """
-        return self._scanner.find_duplicates()
+        return await self._scanner.find_duplicates()
 
-    def generate_report(self, duplicates: dict[str, list[MessageInfo]]) -> DeduplicationReport:
+    async def generate_report(
+        self, duplicates: dict[str, list[MessageInfo]]
+    ) -> DeduplicationReport:
         """
         Generate report showing deduplication analysis.
 
@@ -122,12 +142,12 @@ class DeduplicatorFacade:
             DeduplicationReport with statistics
 
         Example:
-            >>> duplicates = facade.find_duplicates()
-            >>> report = facade.generate_report(duplicates)
+            >>> duplicates = await facade.find_duplicates()
+            >>> report = await facade.generate_report(duplicates)
             >>> print(f"Can save {report.space_recoverable} bytes")
         """
         # Get total message count
-        total_messages = self.db.get_message_count()
+        total_messages = await self.db.get_message_count()
 
         if not duplicates:
             return DeduplicationReport(
@@ -174,7 +194,7 @@ class DeduplicatorFacade:
             breakdown_by_archive=breakdown,
         )
 
-    def deduplicate(
+    async def deduplicate(
         self,
         duplicates: dict[str, list[MessageInfo]],
         strategy: str = "newest",
@@ -195,8 +215,8 @@ class DeduplicatorFacade:
             ValueError: If strategy is invalid
 
         Example:
-            >>> duplicates = facade.find_duplicates()
-            >>> result = facade.deduplicate(duplicates, strategy="newest", dry_run=True)
+            >>> duplicates = await facade.find_duplicates()
+            >>> result = await facade.deduplicate(duplicates, strategy="newest", dry_run=True)
             >>> print(f"Would remove {result.messages_removed} messages")
         """
         if not duplicates:
@@ -218,7 +238,7 @@ class DeduplicatorFacade:
 
         # Execute removal
         if all_to_remove:
-            self._remover.remove_messages(all_to_remove, dry_run=dry_run)
+            await self._remover.remove_messages(all_to_remove, dry_run=dry_run)
 
         return DeduplicationResult(
             messages_removed=messages_removed,
@@ -227,7 +247,7 @@ class DeduplicatorFacade:
             dry_run=dry_run,
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close all database connections.
 
         Note: Database connection is managed by DBManager,
@@ -235,10 +255,10 @@ class DeduplicatorFacade:
         """
         pass
 
-    def __enter__(self) -> DeduplicatorFacade:
-        """Context manager entry."""
+    async def __aenter__(self) -> Self:
+        """Async context manager entry."""
         return self
 
-    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
-        """Context manager exit."""
-        self.close()
+    async def __aexit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Async context manager exit."""
+        await self.close()

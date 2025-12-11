@@ -12,9 +12,11 @@ from gmailarchiver.core.deduplicator import (
     DeduplicationResult,
 )
 from gmailarchiver.core.deduplicator import (
-    DeduplicatorFacade as MessageDeduplicator,  # Use facade
+    DeduplicatorFacade as MessageDeduplicator,
 )
 from gmailarchiver.data.db_manager import DBManager
+
+pytestmark = pytest.mark.asyncio
 
 
 def create_v1_1_db_with_messages(db_path: Path, messages: list[dict[str, Any]]) -> None:
@@ -104,20 +106,21 @@ def temp_db() -> Path:
 class TestMessageDeduplicatorInit:
     """Test MessageDeduplicator initialization."""
 
-    def test_init_with_v1_1_database(self, temp_db: Path) -> None:
+    async def test_init_with_v1_1_database(self, temp_db: Path) -> None:
         """Test initialization with v1.1 database."""
         create_v1_1_db_with_messages(temp_db, [])
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
         # Use resolve() to handle symlink differences on macOS
         # Facade uses db_path attribute
         assert Path(dedup.db_path).resolve() == temp_db.resolve()
-        dedup.close()
-        db.close()
-        db.close()
+        await dedup.close()
+        await db.close()
+        await db.close()
 
-    def test_init_rejects_v1_0_database(self, temp_db: Path) -> None:
+    async def test_init_rejects_v1_0_database(self, temp_db: Path) -> None:
         """Test that v1.0 databases are rejected."""
         # Create v1.0 schema directly with sqlite3
         conn = sqlite3.connect(str(temp_db))
@@ -133,21 +136,23 @@ class TestMessageDeduplicatorInit:
 
         # Open with validation disabled, then try to create facade
         db = DBManager(str(temp_db), validate_schema=False)
+        await db.initialize()
         with pytest.raises(ValueError, match="requires v1.1"):
-            MessageDeduplicator(db)
-        db.close()
+            await MessageDeduplicator.create(db)
+        await db.close()
 
-    def test_init_rejects_nonexistent_database(self, temp_db: Path) -> None:
+    async def test_init_rejects_nonexistent_database(self, temp_db: Path) -> None:
         """Test that nonexistent databases are rejected."""
         with pytest.raises(FileNotFoundError):
             db = DBManager(str(temp_db), auto_create=False)
-            MessageDeduplicator(db)
+            await db.initialize()
+            await MessageDeduplicator.create(db)
 
 
 class TestFindDuplicates:
     """Test finding duplicate messages."""
 
-    def test_find_duplicates_with_no_duplicates(self, temp_db: Path) -> None:
+    async def test_find_duplicates_with_no_duplicates(self, temp_db: Path) -> None:
         """Test finding duplicates when none exist."""
         messages = [
             {
@@ -168,14 +173,15 @@ class TestFindDuplicates:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         assert len(duplicates) == 0
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_find_duplicates_with_exact_duplicates(self, temp_db: Path) -> None:
+    async def test_find_duplicates_with_exact_duplicates(self, temp_db: Path) -> None:
         """Test finding exact duplicates (same Message-ID, different archives)."""
         messages = [
             {
@@ -200,8 +206,9 @@ class TestFindDuplicates:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         assert len(duplicates) == 1
         assert "<duplicate@example.com>" in duplicates
@@ -215,10 +222,10 @@ class TestFindDuplicates:
         assert dup_list[0].mbox_offset >= 0
         assert dup_list[0].size_bytes > 0
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_find_duplicates_with_partial_duplicates(self, temp_db: Path) -> None:
+    async def test_find_duplicates_with_partial_duplicates(self, temp_db: Path) -> None:
         """Test with some IDs appearing once and some multiple times."""
         messages = [
             # Unique message
@@ -270,8 +277,9 @@ class TestFindDuplicates:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         # Should find 2 duplicate groups (dup1 and dup2), unique is ignored
         assert len(duplicates) == 2
@@ -283,10 +291,10 @@ class TestFindDuplicates:
         assert len(duplicates["<dup1@example.com>"]) == 2
         assert len(duplicates["<dup2@example.com>"]) == 3
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_find_duplicates_with_many_groups(self, temp_db: Path) -> None:
+    async def test_find_duplicates_with_many_groups(self, temp_db: Path) -> None:
         """Test performance with 100+ duplicate groups."""
         messages = []
         for i in range(100):
@@ -306,16 +314,17 @@ class TestFindDuplicates:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         # Should find all 100 groups
         assert len(duplicates) == 100
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_find_duplicates_skips_missing_rfc_message_id(self, temp_db: Path) -> None:
+    async def test_find_duplicates_skips_missing_rfc_message_id(self, temp_db: Path) -> None:
         """Test that messages with NULL rfc_message_id are skipped."""
         # Create schema that allows NULL rfc_message_id (for this specific test)
         conn = sqlite3.connect(str(temp_db))
@@ -363,19 +372,20 @@ class TestFindDuplicates:
         conn.close()
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         # Should find no duplicates (msg1 skipped, msg2 is unique)
         assert len(duplicates) == 0
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
 
 class TestGenerateReport:
     """Test deduplication report generation."""
 
-    def test_generate_report_with_duplicates(self, temp_db: Path) -> None:
+    async def test_generate_report_with_duplicates(self, temp_db: Path) -> None:
         """Test report generation with duplicate messages."""
         messages = [
             {
@@ -414,9 +424,10 @@ class TestGenerateReport:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        report = dedup.generate_report(duplicates)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        report = await dedup.generate_report(duplicates)
 
         # Verify report structure
         assert isinstance(report, DeduplicationReport)
@@ -436,10 +447,10 @@ class TestGenerateReport:
         assert report.breakdown_by_archive["archive1.mbox"]["messages_to_remove"] == 2
         assert report.breakdown_by_archive["archive1.mbox"]["space_recoverable"] == 2300
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_generate_report_with_no_duplicates(self, temp_db: Path) -> None:
+    async def test_generate_report_with_no_duplicates(self, temp_db: Path) -> None:
         """Test report generation with no duplicates."""
         messages = [
             {
@@ -454,9 +465,10 @@ class TestGenerateReport:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        report = dedup.generate_report(duplicates)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        report = await dedup.generate_report(duplicates)
 
         assert report.total_messages == 1
         assert report.duplicate_message_ids == 0
@@ -464,10 +476,10 @@ class TestGenerateReport:
         assert report.messages_to_remove == 0
         assert report.space_recoverable == 0
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_generate_report_handles_null_size_bytes(self, temp_db: Path) -> None:
+    async def test_generate_report_handles_null_size_bytes(self, temp_db: Path) -> None:
         """Test report gracefully handles NULL size_bytes."""
         create_v1_1_db_with_messages(temp_db, [])
 
@@ -498,20 +510,21 @@ class TestGenerateReport:
         conn.close()
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        report = dedup.generate_report(duplicates)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        report = await dedup.generate_report(duplicates)
 
         # Should use mbox_length as fallback
         assert report.space_recoverable > 0
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
 
 class TestDeduplicateStrategies:
     """Test deduplication with different keep strategies."""
 
-    def test_deduplicate_strategy_newest(self, temp_db: Path) -> None:
+    async def test_deduplicate_strategy_newest(self, temp_db: Path) -> None:
         """Test 'newest' strategy keeps message with latest archived_timestamp."""
         messages = [
             {
@@ -536,9 +549,10 @@ class TestDeduplicateStrategies:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         assert isinstance(result, DeduplicationResult)
         assert result.messages_removed == 1
@@ -547,17 +561,18 @@ class TestDeduplicateStrategies:
 
         # Verify msg2 was kept (newest)
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
-        remaining = [row[0] for row in cursor.fetchall()]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT gmail_id FROM messages")
+        remaining = [row[0] for row in await cursor.fetchall()]
+        await _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_deduplicate_strategy_largest(self, temp_db: Path) -> None:
+    async def test_deduplicate_strategy_largest(self, temp_db: Path) -> None:
         """Test 'largest' strategy keeps message with highest size_bytes."""
         messages = [
             {
@@ -582,26 +597,28 @@ class TestDeduplicateStrategies:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy="largest", dry_run=False)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        result = await dedup.deduplicate(duplicates, strategy="largest", dry_run=False)
 
         assert result.messages_removed == 1
         assert result.messages_kept == 1
 
         # Verify msg2 was kept (largest)
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
-        remaining = [row[0] for row in cursor.fetchall()]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT gmail_id FROM messages")
+        remaining = [row[0] for row in await cursor.fetchall()]
+        await _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_deduplicate_strategy_first(self, temp_db: Path) -> None:
+    async def test_deduplicate_strategy_first(self, temp_db: Path) -> None:
         """Test 'first' strategy keeps message from first archive file (alphabetically)."""
         messages = [
             {
@@ -624,26 +641,28 @@ class TestDeduplicateStrategies:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy="first", dry_run=False)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        result = await dedup.deduplicate(duplicates, strategy="first", dry_run=False)
 
         assert result.messages_removed == 1
         assert result.messages_kept == 1
 
         # Verify msg2 was kept (from archive_a.mbox)
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT gmail_id FROM messages")
-        remaining = [row[0] for row in cursor.fetchall()]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT gmail_id FROM messages")
+        remaining = [row[0] for row in await cursor.fetchall()]
+        await _db.close()
 
         assert "msg2" in remaining
         assert "msg1" not in remaining
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_deduplicate_handles_multiple_groups(self, temp_db: Path) -> None:
+    async def test_deduplicate_handles_multiple_groups(self, temp_db: Path) -> None:
         """Test deduplication with multiple duplicate groups."""
         messages = [
             # Group 1
@@ -688,9 +707,10 @@ class TestDeduplicateStrategies:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         # Should keep 2 messages (one per group), remove 2
         assert result.messages_removed == 2
@@ -698,20 +718,21 @@ class TestDeduplicateStrategies:
 
         # Verify msg2 and msg3 were kept (newest in each group)
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT gmail_id FROM messages ORDER BY gmail_id")
-        remaining = [row[0] for row in cursor.fetchall()]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT gmail_id FROM messages ORDER BY gmail_id")
+        remaining = [row[0] for row in await cursor.fetchall()]
+        await _db.close()
 
         assert remaining == ["msg2", "msg3"]
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
 
 class TestDryRunMode:
     """Test dry-run mode."""
 
-    def test_dry_run_does_not_modify_database(self, temp_db: Path) -> None:
+    async def test_dry_run_does_not_modify_database(self, temp_db: Path) -> None:
         """Test that dry-run mode doesn't modify the database."""
         messages = [
             {
@@ -736,17 +757,19 @@ class TestDryRunMode:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         # Get count before dry run
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT COUNT(*) FROM messages")
-        count_before = cursor.fetchone()[0]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT COUNT(*) FROM messages")
+        count_before = (await cursor.fetchone())[0]
+        await _db.close()
 
         # Run in dry-run mode
-        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
+        result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
 
         # Verify result contains expected data
         assert result.messages_removed == 1
@@ -755,16 +778,17 @@ class TestDryRunMode:
 
         # Verify database was NOT modified
         _db = DBManager(str(temp_db))
-        cursor = _db.conn.execute("SELECT COUNT(*) FROM messages")
-        count_after = cursor.fetchone()[0]
-        _db.close()
+        await _db.initialize()
+        cursor = await _db.conn.execute("SELECT COUNT(*) FROM messages")
+        count_after = (await cursor.fetchone())[0]
+        await _db.close()
 
         assert count_before == count_after == 2
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_dry_run_reports_what_would_be_removed(self, temp_db: Path) -> None:
+    async def test_dry_run_reports_what_would_be_removed(self, temp_db: Path) -> None:
         """Test that dry-run accurately reports what would be removed."""
         messages = [
             {
@@ -789,42 +813,44 @@ class TestDryRunMode:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        dry_result = dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        dry_result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=True)
 
         # Now run for real
-        wet_result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
+        wet_result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         # Dry run and actual run should report same numbers
         assert dry_result.messages_removed == wet_result.messages_removed
         assert dry_result.messages_kept == wet_result.messages_kept
         assert dry_result.space_saved == wet_result.space_saved
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
 
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_empty_database(self, temp_db: Path) -> None:
+    async def test_empty_database(self, temp_db: Path) -> None:
         """Test with empty database."""
         create_v1_1_db_with_messages(temp_db, [])
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         assert len(duplicates) == 0
 
-        report = dedup.generate_report(duplicates)
+        report = await dedup.generate_report(duplicates)
         assert report.total_messages == 0
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_deduplicate_with_no_duplicates(self, temp_db: Path) -> None:
+    async def test_deduplicate_with_no_duplicates(self, temp_db: Path) -> None:
         """Test deduplication when no duplicates exist."""
         messages = [
             {
@@ -839,18 +865,19 @@ class TestEdgeCases:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
-        result = dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
+        result = await dedup.deduplicate(duplicates, strategy="newest", dry_run=False)
 
         assert result.messages_removed == 0
         assert result.messages_kept == 0
         assert result.space_saved == 0
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_invalid_strategy_raises_error(self, temp_db: Path) -> None:
+    async def test_invalid_strategy_raises_error(self, temp_db: Path) -> None:
         """Test that invalid strategy raises ValueError."""
         # Create database with duplicate messages so validation runs
         messages = [
@@ -874,34 +901,36 @@ class TestEdgeCases:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
-        duplicates = dedup.find_duplicates()
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
+        duplicates = await dedup.find_duplicates()
 
         with pytest.raises(ValueError, match="Invalid strategy"):
-            dedup.deduplicate(duplicates, strategy="invalid", dry_run=True)
+            await dedup.deduplicate(duplicates, strategy="invalid", dry_run=True)
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()
 
-    def test_context_manager(self, temp_db: Path) -> None:
+    async def test_context_manager(self, temp_db: Path) -> None:
         """Test context manager closes connection properly."""
         create_v1_1_db_with_messages(temp_db, [])
 
         db = DBManager(str(temp_db))
-        with MessageDeduplicator(db) as dedup:
-            duplicates = dedup.find_duplicates()
+        await db.initialize()
+        async with await MessageDeduplicator.create(db) as dedup:
+            duplicates = await dedup.find_duplicates()
             assert len(duplicates) == 0
 
         # Facade doesn't expose conn, just verify no exception on reuse attempt
         # (closed connections would raise on operations)
         # This is sufficient to test context manager cleanup
-        db.close()
+        await db.close()
 
 
 class TestPerformance:
     """Test performance with large datasets."""
 
-    def test_performance_with_1000_messages(self, temp_db: Path) -> None:
+    async def test_performance_with_1000_messages(self, temp_db: Path) -> None:
         """Test finding duplicates with 1000 messages."""
         import time
 
@@ -922,10 +951,11 @@ class TestPerformance:
         create_v1_1_db_with_messages(temp_db, messages)
 
         db = DBManager(str(temp_db))
-        dedup = MessageDeduplicator(db)
+        await db.initialize()
+        dedup = await MessageDeduplicator.create(db)
 
         start = time.time()
-        duplicates = dedup.find_duplicates()
+        duplicates = await dedup.find_duplicates()
         elapsed = time.time() - start
 
         # Should complete in reasonable time (< 1 second)
@@ -934,5 +964,5 @@ class TestPerformance:
         # Should find 10 duplicate groups
         assert len(duplicates) == 10
 
-        dedup.close()
-        db.close()
+        await dedup.close()
+        await db.close()

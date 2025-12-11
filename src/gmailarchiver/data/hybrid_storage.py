@@ -14,6 +14,7 @@ Key Features:
 
 from __future__ import annotations
 
+import asyncio
 import email
 import gzip
 import hashlib
@@ -105,18 +106,23 @@ class HybridStorage:
         self.db = db_manager
         self._staging_area = Path(tempfile.gettempdir()) / "gmailarchiver_staging"
         self._staging_area.mkdir(exist_ok=True)
+        self._preload_rfc_ids = preload_rfc_ids
+        self._known_rfc_ids: set[str] = set()
+        self._initialized = False
 
-        # Pre-load RFC Message-IDs for O(1) duplicate detection
-        # This avoids per-message database queries during batch archiving
-        if preload_rfc_ids:
-            self._known_rfc_ids: set[str] = self.db.get_all_rfc_message_ids()
-            logger.debug(f"Pre-loaded {len(self._known_rfc_ids):,} RFC Message-IDs")
-        else:
-            self._known_rfc_ids = set()
+    async def _ensure_initialized(self) -> None:
+        """Ensure async initialization is complete."""
+        if not self._initialized:
+            # Pre-load RFC Message-IDs for O(1) duplicate detection
+            # This avoids per-message database queries during batch archiving
+            if self._preload_rfc_ids:
+                self._known_rfc_ids = await self.db.get_all_rfc_message_ids()
+                logger.debug(f"Pre-loaded {len(self._known_rfc_ids):,} RFC Message-IDs")
+            self._initialized = True
 
     # ==================== BATCH ARCHIVE OPERATION ====================
 
-    def archive_messages_batch(
+    async def archive_messages_batch(
         self,
         messages: list[tuple[email.message.Message, str, str | None, str | None]],
         archive_file: Path,
@@ -154,6 +160,8 @@ class HybridStorage:
         Raises:
             HybridStorageError: If operation fails
         """
+        await self._ensure_initialized()
+
         if not messages:
             return {
                 "archived": 0,
@@ -238,7 +246,7 @@ class HybridStorage:
                     checksum = self._compute_checksum(email_message.as_bytes())
 
                     # Record in database (NO commit yet)
-                    self.db.record_archived_message(
+                    await self.db.record_archived_message(
                         gmail_id=gmail_id,
                         rfc_message_id=rfc_message_id,
                         archive_file=str(archive_file),  # Store final path (with compression)
@@ -268,10 +276,10 @@ class HybridStorage:
 
                     # Commit at interval
                     if archived_count % commit_interval == 0:
-                        self.db.commit()
+                        await self.db.commit()
                         # Update session progress if tracking
                         if session_id:
-                            self.db.update_session_progress(session_id, archived_count)
+                            await self.db.update_session_progress(session_id, archived_count)
                         logger.debug(f"Committed {archived_count} messages")
 
                 except Exception as e:
@@ -311,11 +319,11 @@ class HybridStorage:
                     os.fsync(sync_file.fileno())
 
             # Final commit
-            self.db.commit()
+            await self.db.commit()
 
             # Update session progress one final time
             if session_id and archived_count > 0:
-                self.db.update_session_progress(session_id, archived_count)
+                await self.db.update_session_progress(session_id, archived_count)
 
             # Determine final file path
             final_path = mbox_path
@@ -323,12 +331,12 @@ class HybridStorage:
             # Only finalize (validate/compress) if NOT interrupted
             if archived_count > 0 and not interrupted:
                 # Batch validation at end (not per-message)
-                self._validate_batch_consistency(batch_rfc_ids)
+                await self._validate_batch_consistency(batch_rfc_ids)
 
                 # Compress if requested
                 if compression:
                     logger.debug(f"Compressing with {compression}")
-                    self._compress_file(mbox_path, archive_file, compression)
+                    await self._compress_file(mbox_path, archive_file, compression)
                     # Remove uncompressed file AND lock
                     mbox_path.unlink()
                     if lock_file.exists():
@@ -337,10 +345,10 @@ class HybridStorage:
 
                 # Mark session as complete
                 if session_id:
-                    self.db.complete_session(session_id)
+                    await self.db.complete_session(session_id)
 
                 # Record in audit trail
-                self.db.record_archive_run(
+                await self.db.record_archive_run(
                     operation="archive",
                     messages_count=archived_count,
                     archive_file=str(final_path),
@@ -367,7 +375,7 @@ class HybridStorage:
             # Rollback database
             logger.error(f"Batch archive failed: {e}")
             try:
-                self.db.rollback()
+                await self.db.rollback()
                 logger.debug("Database rolled back")
             except Exception as rb_err:
                 logger.error(f"Rollback failed: {rb_err}")
@@ -392,7 +400,9 @@ class HybridStorage:
 
     # ==================== CONSOLIDATION PRIMITIVES ====================
 
-    def read_messages_from_archives(self, source_archives: list[Path]) -> list[dict[str, Any]]:
+    async def read_messages_from_archives(
+        self, source_archives: list[Path]
+    ) -> list[dict[str, Any]]:
         """
         Read all messages from source archives with metadata.
 
@@ -414,9 +424,9 @@ class HybridStorage:
         Raises:
             HybridStorageError: If reading fails
         """
-        return self._collect_messages(source_archives)
+        return await self._collect_messages(source_archives)
 
-    def bulk_write_messages(
+    async def bulk_write_messages(
         self,
         messages: list[dict[str, Any]],
         output_path: Path,
@@ -491,7 +501,7 @@ class HybridStorage:
             # Compress if requested
             if compression:
                 logger.debug(f"Compressing with {compression}")
-                self._compress_file(final_mbox, output_path, compression)
+                await self._compress_file(final_mbox, output_path, compression)
                 final_mbox.unlink()
                 # Clean up lock file
                 lock_file = Path(str(final_mbox) + ".lock")
@@ -522,7 +532,7 @@ class HybridStorage:
                 except Exception as e:
                     logger.warning(f"Failed to close staging mbox: {e}")
 
-    def bulk_update_archive_locations_with_dedup(
+    async def bulk_update_archive_locations_with_dedup(
         self,
         updates: list[dict[str, Any]],
         duplicate_gmail_ids: list[str] | None = None,
@@ -544,10 +554,10 @@ class HybridStorage:
             # Delete duplicates first
             if duplicate_gmail_ids:
                 for gmail_id in duplicate_gmail_ids:
-                    self.db.delete_message(gmail_id)
+                    await self.db.delete_message(gmail_id)
 
             # Update archive locations
-            self.db.bulk_update_archive_locations(updates)
+            await self.db.bulk_update_archive_locations(updates)
 
             # Note: Caller is responsible for commit/rollback
             logger.debug(
@@ -560,7 +570,7 @@ class HybridStorage:
 
     # ==================== CONSOLIDATION OPERATION ====================
 
-    def consolidate_archives(
+    async def consolidate_archives(
         self,
         source_archives: list[Path],
         output_archive: Path,
@@ -596,7 +606,7 @@ class HybridStorage:
         try:
             # Phase 1: Read and collect messages
             logger.info(f"Phase 1: Reading {len(source_archives)} source archives")
-            messages = self._collect_messages(source_archives)
+            messages = await self._collect_messages(source_archives)
             total_messages = len(messages)
             logger.info(f"Collected {total_messages} messages")
 
@@ -661,7 +671,7 @@ class HybridStorage:
             # Compress if requested
             if compression:
                 logger.info(f"Compressing with {compression}")
-                self._compress_file(final_mbox, output_archive, compression)
+                await self._compress_file(final_mbox, output_archive, compression)
                 final_mbox.unlink()
                 # Clean up lock file
                 lock_file = Path(str(final_mbox) + ".lock")
@@ -672,7 +682,7 @@ class HybridStorage:
             # For consolidation, validate that the output contains expected messages
             # (can't use _validate_archive_consistency yet as DB not updated)
             logger.info("Phase 5: Validating consolidated archive")
-            self._validate_consolidation_output(
+            await self._validate_consolidation_output(
                 output_archive, expected_message_ids=set(offset_map.keys())
             )
 
@@ -688,8 +698,8 @@ class HybridStorage:
                 for rfc_id, (gmail_id, offset, length) in offset_map.items()
             ]
 
-            self.db.bulk_update_archive_locations(updates)
-            self.db.commit()
+            await self.db.bulk_update_archive_locations(updates)
+            await self.db.commit()
 
             logger.info(f"Updated {len(updates)} database records")
 
@@ -710,7 +720,7 @@ class HybridStorage:
             # Re-raise IntegrityError as-is (critical data consistency issue)
             logger.error("Consolidation integrity check failed")
             try:
-                self.db.rollback()
+                await self.db.rollback()
                 logger.debug("Database rolled back")
             except Exception as rb_err:
                 logger.error(f"Rollback failed: {rb_err}")
@@ -728,7 +738,7 @@ class HybridStorage:
             # Rollback database
             logger.error(f"Consolidation failed: {e}")
             try:
-                self.db.rollback()
+                await self.db.rollback()
                 logger.debug("Database rolled back")
             except Exception as rb_err:
                 logger.error(f"Rollback failed: {rb_err}")
@@ -757,7 +767,7 @@ class HybridStorage:
 
     # ==================== VALIDATION ====================
 
-    def _validate_batch_consistency(self, rfc_message_ids: list[str]) -> None:
+    async def _validate_batch_consistency(self, rfc_message_ids: list[str]) -> None:
         """
         Validate that all batch messages exist in database.
 
@@ -772,12 +782,12 @@ class HybridStorage:
             IntegrityError: If any message not found in database
         """
         for rfc_id in rfc_message_ids:
-            if not self.db.get_message_by_rfc_message_id(rfc_id):
+            if not await self.db.get_message_by_rfc_message_id(rfc_id):
                 raise IntegrityError(
                     f"Batch validation failed: {rfc_id} not in database after commit"
                 )
 
-    def _validate_message_consistency(self, rfc_message_id: str) -> None:
+    async def _validate_message_consistency(self, rfc_message_id: str) -> None:
         """
         Validate that a message exists in both mbox and database.
 
@@ -788,7 +798,7 @@ class HybridStorage:
             IntegrityError: If inconsistent
         """
         # Get location from database
-        location = self.db.get_message_location(rfc_message_id)
+        location = await self.db.get_message_location(rfc_message_id)
         if not location:
             raise IntegrityError(f"Message {rfc_message_id} not in database")
 
@@ -804,7 +814,7 @@ class HybridStorage:
                 tmp_path = Path(tmp.name)
 
             try:
-                self._decompress_file(archive_path, tmp_path, compression)
+                await self._decompress_file(archive_path, tmp_path, compression)
                 validate_path = tmp_path
             except Exception as e:
                 if tmp_path.exists():
@@ -836,7 +846,7 @@ class HybridStorage:
             if compression and tmp_path.exists():
                 tmp_path.unlink()
 
-    def _validate_archive_consistency(self, archive_file: Path) -> None:
+    async def _validate_archive_consistency(self, archive_file: Path) -> None:
         """
         Validate entire archive against database.
 
@@ -852,7 +862,7 @@ class HybridStorage:
             IntegrityError: If inconsistent
         """
         # Get all messages for this archive from database
-        db_records = self.db.get_all_messages_for_archive(str(archive_file))
+        db_records = await self.db.get_all_messages_for_archive(str(archive_file))
         db_message_ids = {rec["rfc_message_id"] for rec in db_records}
 
         logger.debug(f"Database has {len(db_records)} records for {archive_file}")
@@ -864,7 +874,7 @@ class HybridStorage:
                 tmp_path = Path(tmp.name)
 
             try:
-                self._decompress_file(archive_file, tmp_path, compression)
+                await self._decompress_file(archive_file, tmp_path, compression)
                 validate_path = tmp_path
             except Exception as e:
                 if tmp_path.exists():
@@ -903,7 +913,7 @@ class HybridStorage:
             if tmp_path and tmp_path.exists():
                 tmp_path.unlink()
 
-    def _validate_consolidation_output(
+    async def _validate_consolidation_output(
         self, archive_file: Path, expected_message_ids: set[str]
     ) -> None:
         """
@@ -929,7 +939,7 @@ class HybridStorage:
                 tmp_path = Path(tmp.name)
 
             try:
-                self._decompress_file(archive_file, tmp_path, compression)
+                await self._decompress_file(archive_file, tmp_path, compression)
                 validate_path = tmp_path
             except Exception as e:
                 if tmp_path.exists():
@@ -974,7 +984,7 @@ class HybridStorage:
 
     # ==================== HELPER METHODS ====================
 
-    def _collect_messages(self, source_archives: list[Path]) -> list[dict[str, Any]]:
+    async def _collect_messages(self, source_archives: list[Path]) -> list[dict[str, Any]]:
         """
         Collect all messages from source archives.
 
@@ -990,7 +1000,7 @@ class HybridStorage:
             logger.debug(f"Reading archive: {archive_path}")
 
             # Get all database records for this archive
-            db_records = self.db.get_all_messages_for_archive(str(archive_path))
+            db_records = await self.db.get_all_messages_for_archive(str(archive_path))
 
             # Create lookup by rfc_message_id
             db_lookup = {rec["rfc_message_id"]: rec for rec in db_records}
@@ -1002,7 +1012,7 @@ class HybridStorage:
                     tmp_path = Path(tmp.name)
 
                 try:
-                    self._decompress_file(archive_path, tmp_path, compression)
+                    await self._decompress_file(archive_path, tmp_path, compression)
                     read_path = tmp_path
                 except Exception as e:
                     if tmp_path.exists():
@@ -1158,9 +1168,25 @@ class HybridStorage:
             return "zstd"
         return None
 
-    def _compress_file(self, source: Path, dest: Path, compression: str) -> None:
+    async def _compress_file(self, source: Path, dest: Path, compression: str) -> None:
         """
-        Compress file with specified format.
+        Compress file with specified format (async wrapper).
+
+        Args:
+            source: Source file path
+            dest: Destination file path
+            compression: Compression format ('gzip', 'lzma', 'zstd')
+
+        Raises:
+            ValueError: If compression format is unsupported
+        """
+        await asyncio.to_thread(self._compress_file_sync, source, dest, compression)
+
+    def _compress_file_sync(self, source: Path, dest: Path, compression: str) -> None:
+        """
+        Compress file with specified format (sync implementation).
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
 
         Args:
             source: Source file path
@@ -1185,9 +1211,25 @@ class HybridStorage:
         else:
             raise ValueError(f"Unsupported compression format: {compression}")
 
-    def _decompress_file(self, source: Path, dest: Path, compression: str) -> None:
+    async def _decompress_file(self, source: Path, dest: Path, compression: str) -> None:
         """
-        Decompress file with specified format.
+        Decompress file with specified format (async wrapper).
+
+        Args:
+            source: Source compressed file path
+            dest: Destination uncompressed file path
+            compression: Compression format ('gzip', 'lzma', 'zstd')
+
+        Raises:
+            ValueError: If compression format is unsupported
+        """
+        await asyncio.to_thread(self._decompress_file_sync, source, dest, compression)
+
+    def _decompress_file_sync(self, source: Path, dest: Path, compression: str) -> None:
+        """
+        Decompress file with specified format (sync implementation).
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
 
         Args:
             source: Source compressed file path
@@ -1214,7 +1256,7 @@ class HybridStorage:
 
     # ==================== READ OPERATIONS ====================
 
-    def search_messages(
+    async def search_messages(
         self,
         query: str = "",
         limit: int = 100,
@@ -1254,7 +1296,7 @@ class HybridStorage:
         fulltext = query if query else None
 
         # Get total count first (without limit)
-        all_results = self.db.search_messages(
+        all_results = await self.db.search_messages(
             fulltext=fulltext,
             from_addr=from_addr,
             to_addr=to_addr,
@@ -1295,7 +1337,7 @@ class HybridStorage:
             execution_time_ms=execution_time_ms,
         )
 
-    def get_message(self, gmail_id: str) -> dict[str, Any] | None:
+    async def get_message(self, gmail_id: str) -> dict[str, Any] | None:
         """
         Retrieve message metadata by Gmail ID.
 
@@ -1305,9 +1347,9 @@ class HybridStorage:
         Returns:
             Dictionary with message metadata, or None if not found
         """
-        return self.db.get_message_by_gmail_id(gmail_id)
+        return await self.db.get_message_by_gmail_id(gmail_id)
 
-    def get_message_by_rfc_id(self, rfc_message_id: str) -> dict[str, Any] | None:
+    async def get_message_by_rfc_id(self, rfc_message_id: str) -> dict[str, Any] | None:
         """
         Retrieve message metadata by RFC 2822 Message-ID.
 
@@ -1317,9 +1359,9 @@ class HybridStorage:
         Returns:
             Dictionary with message metadata, or None if not found
         """
-        return self.db.get_message_by_rfc_message_id(rfc_message_id)
+        return await self.db.get_message_by_rfc_message_id(rfc_message_id)
 
-    def extract_message_content(self, gmail_id: str) -> email.message.Message:
+    async def extract_message_content(self, gmail_id: str) -> email.message.Message:
         """
         Extract full message content from mbox archive.
 
@@ -1336,7 +1378,7 @@ class HybridStorage:
             HybridStorageError: If message not found or archive file missing
         """
         # Get message location from database
-        record = self.db.get_message_by_gmail_id(gmail_id)
+        record = await self.db.get_message_by_gmail_id(gmail_id)
         if not record:
             raise HybridStorageError(f"Message {gmail_id} not found in database")
 
@@ -1355,7 +1397,7 @@ class HybridStorage:
                 tmp_path = Path(tmp.name)
 
             try:
-                self._decompress_file(archive_file, tmp_path, compression)
+                await self._decompress_file(archive_file, tmp_path, compression)
                 read_path = tmp_path
             except Exception as e:
                 if tmp_path.exists():
@@ -1381,7 +1423,7 @@ class HybridStorage:
 
     # ==================== STATISTICS OPERATIONS ====================
 
-    def get_archive_stats(self) -> ArchiveStats:
+    async def get_archive_stats(self) -> ArchiveStats:
         """
         Get comprehensive statistics about archived messages.
 
@@ -1390,22 +1432,23 @@ class HybridStorage:
             database size, and recent runs
         """
         # Get total message count
-        total_messages = self.db.get_message_count()
+        total_messages = await self.db.get_message_count()
 
         # Get distinct archive files
-        cursor = self.db.conn.execute(
+        cursor = await self.db._conn.execute(
             "SELECT DISTINCT archive_file FROM messages ORDER BY archive_file"
         )
-        archive_files = [row[0] for row in cursor.fetchall()]
+        rows = await cursor.fetchall()
+        archive_files = [row[0] for row in rows]
 
         # Get schema version
-        schema_version = self.db.schema_version
+        schema_version = self.db.schema_version or "unknown"
 
         # Get database file size
         database_size_bytes = self.db.db_path.stat().st_size
 
         # Get recent runs
-        recent_runs = self.db.get_archive_runs(limit=10)
+        recent_runs = await self.db.get_archive_runs(limit=10)
 
         return ArchiveStats(
             total_messages=total_messages,
@@ -1415,7 +1458,7 @@ class HybridStorage:
             recent_runs=recent_runs,
         )
 
-    def get_message_ids_for_archive(self, archive_file: str) -> set[str]:
+    async def get_message_ids_for_archive(self, archive_file: str) -> set[str]:
         """
         Get all Gmail message IDs for a specific archive file.
 
@@ -1425,9 +1468,9 @@ class HybridStorage:
         Returns:
             Set of gmail_id values for the archive file
         """
-        return self.db.get_gmail_ids_for_archive(archive_file)
+        return await self.db.get_gmail_ids_for_archive(archive_file)
 
-    def get_recent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+    async def get_recent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
         """
         Get recent archive operation history.
 
@@ -1437,9 +1480,9 @@ class HybridStorage:
         Returns:
             List of archive run dictionaries, ordered by timestamp descending
         """
-        return self.db.get_archive_runs(limit=limit)
+        return await self.db.get_archive_runs(limit=limit)
 
-    def is_message_archived(self, gmail_id: str) -> bool:
+    async def is_message_archived(self, gmail_id: str) -> bool:
         """
         Check if a message is already archived.
 
@@ -1449,25 +1492,26 @@ class HybridStorage:
         Returns:
             True if message exists in database, False otherwise
         """
-        return self.db.is_archived(gmail_id)
+        return await self.db.is_archived(gmail_id)
 
-    def get_message_count(self) -> int:
+    async def get_message_count(self) -> int:
         """
         Get total number of archived messages.
 
         Returns:
             Total count of messages in the database
         """
-        return self.db.get_message_count()
+        return await self.db.get_message_count()
 
     # ==================== CONTEXT MANAGER ====================
 
-    def __enter__(self) -> HybridStorage:
-        """Context manager entry."""
+    async def __aenter__(self) -> HybridStorage:
+        """Async context manager entry."""
+        await self._ensure_initialized()
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit - cleanup staging area."""
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit - cleanup staging area."""
         self._cleanup_staging_area()
 
     def __del__(self) -> None:

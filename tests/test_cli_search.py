@@ -1,151 +1,190 @@
-"""Tests for CLI search command."""
+"""Tests for CLI search command.
+
+Fixtures used from conftest.py:
+- runner: CliRunner for CLI tests
+"""
 
 import json
 import sqlite3
 from datetime import datetime
 
 import pytest
-from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.data.migration import MigrationManager
-
-
-@pytest.fixture
-def runner():
-    """Create CLI test runner."""
-    return CliRunner()
 
 
 @pytest.fixture
 def v1_1_database_with_messages(tmp_path):
-    """Create a v1.1 database with sample messages for searching."""
+    """Create a v1.1 database with sample messages for searching.
+
+    Uses sync sqlite3 to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
     db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
+    conn = sqlite3.connect(str(db_path))
 
-    # Create v1.1 schema
-    manager._create_enhanced_schema(manager.conn)
+    try:
+        # Create v1.1 schema (must match production schema exactly!)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            );
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT NOT NULL,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                upgraded_at TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content='messages', content_rowid='rowid'
+            );
+            CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+            END;
+        """)
 
-    # Insert sample messages with varied content
-    messages = [
-        # Message 1: From Alice about meeting
-        (
-            "msg1",
-            "<msg1@example.com>",
-            "thread1",
-            "Team meeting tomorrow",
-            "alice@example.com",
-            "team@example.com",
-            None,
-            "2024-01-15 10:00:00",
-            "2024-02-01T12:00:00",
-            "archive_202402.mbox",
-            100,
-            500,
-            "Let us discuss the project update",
-            "checksum1",
-            500,
-            None,
-            "default",
-        ),
-        # Message 2: From Alice about invoice
-        (
-            "msg2",
-            "<msg2@example.com>",
-            "thread2",
-            "Invoice #1234 for January",
-            "alice@example.com",
-            "billing@example.com",
-            None,
-            "2024-02-10 14:30:00",
-            "2024-03-01T12:00:00",
-            "archive_202403.mbox",
-            200,
-            450,
-            "Please find attached the invoice for payment",
-            "checksum2",
-            450,
-            None,
-            "default",
-        ),
-        # Message 3: From Bob about invoice
-        (
-            "msg3",
-            "<msg3@example.com>",
-            "thread3",
-            "Invoice payment received",
-            "bob@example.com",
-            "alice@example.com",
-            None,
-            "2024-02-15 09:00:00",
-            "2024-03-01T12:00:00",
-            "archive_202403.mbox",
-            700,
-            380,
-            "Thank you for the prompt payment",
-            "checksum3",
-            380,
-            None,
-            "default",
-        ),
-        # Message 4: From Charlie about report
-        (
-            "msg4",
-            "<msg4@example.com>",
-            "thread4",
-            "Weekly status report",
-            "charlie@example.com",
-            "team@example.com",
-            None,
-            "2024-03-20 16:45:00",
-            "2024-04-01T12:00:00",
-            "archive_202404.mbox",
-            300,
-            520,
-            "Here is the weekly progress report",
-            "checksum4",
-            520,
-            None,
-            "default",
-        ),
-        # Message 5: From Alice about meeting (later date)
-        (
-            "msg5",
-            "<msg5@example.com>",
-            "thread5",
-            "Quarterly meeting agenda",
-            "alice@example.com",
-            "team@example.com",
-            None,
-            "2024-06-05 11:00:00",
-            "2024-07-01T12:00:00",
-            "archive_202407.mbox",
-            400,
-            600,
-            "Agenda items for the quarterly review meeting",
-            "checksum5",
-            600,
-            None,
-            "default",
-        ),
-    ]
+        # Insert sample messages with varied content
+        messages = [
+            # Message 1: From Alice about meeting
+            (
+                "msg1",
+                "<msg1@example.com>",
+                "thread1",
+                "Team meeting tomorrow",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-01-15 10:00:00",
+                "2024-02-01T12:00:00",
+                "archive_202402.mbox",
+                100,
+                500,
+                "Let us discuss the project update",
+                "checksum1",
+                500,
+                None,
+                "default",
+            ),
+            # Message 2: From Alice about invoice
+            (
+                "msg2",
+                "<msg2@example.com>",
+                "thread2",
+                "Invoice #1234 for January",
+                "alice@example.com",
+                "billing@example.com",
+                None,
+                "2024-02-10 14:30:00",
+                "2024-03-01T12:00:00",
+                "archive_202403.mbox",
+                200,
+                450,
+                "Please find attached the invoice for payment",
+                "checksum2",
+                450,
+                None,
+                "default",
+            ),
+            # Message 3: From Bob about invoice
+            (
+                "msg3",
+                "<msg3@example.com>",
+                "thread3",
+                "Invoice payment received",
+                "bob@example.com",
+                "alice@example.com",
+                None,
+                "2024-02-15 09:00:00",
+                "2024-03-01T12:00:00",
+                "archive_202403.mbox",
+                700,
+                380,
+                "Thank you for the prompt payment",
+                "checksum3",
+                380,
+                None,
+                "default",
+            ),
+            # Message 4: From Charlie about report
+            (
+                "msg4",
+                "<msg4@example.com>",
+                "thread4",
+                "Weekly status report",
+                "charlie@example.com",
+                "team@example.com",
+                None,
+                "2024-03-20 16:45:00",
+                "2024-04-01T12:00:00",
+                "archive_202404.mbox",
+                300,
+                520,
+                "Here is the weekly progress report",
+                "checksum4",
+                520,
+                None,
+                "default",
+            ),
+            # Message 5: From Alice about meeting (later date)
+            (
+                "msg5",
+                "<msg5@example.com>",
+                "thread5",
+                "Quarterly meeting agenda",
+                "alice@example.com",
+                "team@example.com",
+                None,
+                "2024-06-05 11:00:00",
+                "2024-07-01T12:00:00",
+                "archive_202407.mbox",
+                400,
+                600,
+                "Agenda items for the quarterly review meeting",
+                "checksum5",
+                600,
+                None,
+                "default",
+            ),
+        ]
 
-    for msg in messages:
-        manager.conn.execute(
-            """
-            INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            msg,
+        for msg in messages:
+            conn.execute(
+                "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                msg,
+            )
+
+        # Set schema version
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
         )
 
-    # Set schema version
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-    )
-
-    manager.conn.commit()
-    manager._close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return db_path
 

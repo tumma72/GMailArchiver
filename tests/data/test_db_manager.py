@@ -10,6 +10,9 @@ import pytest
 
 from gmailarchiver.data.db_manager import DBManager
 
+# Mark all tests in this module as async
+pytestmark = pytest.mark.asyncio
+
 # ============================================================================
 # Test Fixtures
 # ============================================================================
@@ -46,48 +49,53 @@ def sample_message_data() -> dict[str, Any]:
 class TestDBManagerInitialization:
     """Tests for DBManager initialization."""
 
-    def test_connect_to_existing_database(self, v11_db: str) -> None:
+    async def test_connect_to_existing_database(self, v11_db: str) -> None:
         """Test connecting to an existing v1.1 database."""
 
         db = DBManager(v11_db)
+        await db.initialize()
         assert db.conn is not None
         assert db.schema_version == "1.1"
-        db.close()
+        await db.close()
 
-    def test_connect_to_missing_database(self, temp_db_path: str) -> None:
+    async def test_connect_to_missing_database(self, temp_db_path: str) -> None:
         """Test connecting to a non-existent database path."""
         # Should raise error when database doesn't exist
         with pytest.raises(FileNotFoundError):
-            DBManager(temp_db_path, auto_create=False)
+            db = DBManager(temp_db_path, auto_create=False)
+            await db.initialize()
 
-    def test_validate_schema_on_init(self, v11_db: str) -> None:
+    async def test_validate_schema_on_init(self, v11_db: str) -> None:
         """Test that schema is validated on initialization."""
 
         db = DBManager(v11_db)
+        await db.initialize()
 
         # Should detect all required tables
-        cursor = db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = {row[0] for row in cursor.fetchall()}
+        cursor = await db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        rows = await cursor.fetchall()
+        tables = {row[0] for row in rows}
 
         assert "messages" in tables
         assert "archive_runs" in tables
         assert "messages_fts" in tables
         assert "schema_version" in tables
 
-        db.close()
+        await db.close()
 
-    def test_invalid_database_path(self) -> None:
+    async def test_invalid_database_path(self) -> None:
         """Test handling of invalid database path."""
 
         with pytest.raises((FileNotFoundError, ValueError)):
-            DBManager("/invalid/path/to/database.db", auto_create=False)
+            db = DBManager("/invalid/path/to/database.db", auto_create=False)
+            await db.initialize()
 
-    def test_context_manager_interface(self, v11_db: str) -> None:
+    async def test_context_manager_interface(self, v11_db: str) -> None:
         """Test using DBManager as a context manager."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             assert db.conn is not None
-            db.conn.execute("SELECT COUNT(*) FROM messages")
+            await db.conn.execute("SELECT COUNT(*) FROM messages")
 
         # Connection should be closed after context
         # Verify by creating new connection
@@ -106,19 +114,19 @@ class TestDBManagerInitialization:
 class TestMessageOperations:
     """Tests for message CRUD operations."""
 
-    def test_record_archived_message_success(
+    async def test_record_archived_message_success(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test recording a new archived message."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
             # Verify message was stored
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT * FROM messages WHERE gmail_id = ?", (sample_message_data["gmail_id"],)
             )
-            row = cursor.fetchone()
+            row = await cursor.fetchone()
 
             assert row is not None
             # Verify key fields
@@ -126,112 +134,114 @@ class TestMessageOperations:
             assert row[1] == sample_message_data["rfc_message_id"]
             assert row[3] == sample_message_data["subject"]
 
-    def test_record_duplicate_gmail_id_fails(
+    async def test_record_duplicate_gmail_id_fails(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that duplicate gmail_id raises error."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert first message
-            db.record_archived_message(**sample_message_data)
+            await db.record_archived_message(**sample_message_data)
 
             # Try to insert duplicate gmail_id with different rfc_message_id
             duplicate_data = sample_message_data.copy()
             duplicate_data["rfc_message_id"] = "<different@example.com>"
 
             with pytest.raises(sqlite3.IntegrityError):
-                db.record_archived_message(**duplicate_data)
+                await db.record_archived_message(**duplicate_data)
 
-    def test_record_duplicate_rfc_message_id_fails(
+    async def test_record_duplicate_rfc_message_id_fails(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that duplicate rfc_message_id raises error."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert first message
-            db.record_archived_message(**sample_message_data)
+            await db.record_archived_message(**sample_message_data)
 
             # Try to insert duplicate rfc_message_id with different gmail_id
             duplicate_data = sample_message_data.copy()
             duplicate_data["gmail_id"] = "msg456"
 
             with pytest.raises(sqlite3.IntegrityError):
-                db.record_archived_message(**duplicate_data)
+                await db.record_archived_message(**duplicate_data)
 
-    def test_record_message_creates_archive_run(
+    async def test_record_message_creates_archive_run(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that recording a message also creates an archive_run entry."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
             # Verify archive_run was created
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT COUNT(*) FROM archive_runs WHERE archive_file = ?",
                 (sample_message_data["archive_file"],),
             )
-            count = cursor.fetchone()[0]
+            count = (await cursor.fetchone())[0]
             assert count > 0
 
-    def test_get_message_by_gmail_id_found(
+    async def test_get_message_by_gmail_id_found(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test retrieving a message by gmail_id."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
-            message = db.get_message_by_gmail_id(sample_message_data["gmail_id"])
+            message = await db.get_message_by_gmail_id(sample_message_data["gmail_id"])
 
             assert message is not None
             assert message["gmail_id"] == sample_message_data["gmail_id"]
             assert message["subject"] == sample_message_data["subject"]
             assert message["archive_file"] == sample_message_data["archive_file"]
 
-    def test_get_message_by_gmail_id_not_found(self, v11_db: str) -> None:
+    async def test_get_message_by_gmail_id_not_found(self, v11_db: str) -> None:
         """Test retrieving a non-existent message."""
 
-        with DBManager(v11_db) as db:
-            message = db.get_message_by_gmail_id("nonexistent123")
+        async with DBManager(v11_db) as db:
+            message = await db.get_message_by_gmail_id("nonexistent123")
             assert message is None
 
-    def test_get_message_location(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_get_message_location(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
         """Test getting message location (file, offset, length)."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
             # v1.2: get_message_location uses rfc_message_id (primary key)
-            location = db.get_message_location(sample_message_data["rfc_message_id"])
+            location = await db.get_message_location(sample_message_data["rfc_message_id"])
 
             assert location is not None
             assert location[0] == sample_message_data["archive_file"]
             assert location[1] == sample_message_data["mbox_offset"]
             assert location[2] == sample_message_data["mbox_length"]
 
-    def test_get_all_messages_for_archive(
+    async def test_get_all_messages_for_archive(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test retrieving all messages for a specific archive file."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert multiple messages to same archive
             for i in range(3):
                 data = sample_message_data.copy()
                 data["gmail_id"] = f"msg{i}"
                 data["rfc_message_id"] = f"<unique{i}@example.com>"
                 data["mbox_offset"] = i * 1000
-                db.record_archived_message(**data)
+                await db.record_archived_message(**data)
 
             # Insert message to different archive
             other_data = sample_message_data.copy()
             other_data["gmail_id"] = "msg999"
             other_data["rfc_message_id"] = "<unique999@example.com>"
             other_data["archive_file"] = "other.mbox"
-            db.record_archived_message(**other_data)
+            await db.record_archived_message(**other_data)
 
-            messages = db.get_all_messages_for_archive(sample_message_data["archive_file"])
+            messages = await db.get_all_messages_for_archive(sample_message_data["archive_file"])
 
             assert len(messages) == 3
             assert all(
@@ -247,14 +257,14 @@ class TestMessageOperations:
 class TestDeduplication:
     """Tests for duplicate detection and removal."""
 
-    def test_find_duplicates_none(self, v11_db: str) -> None:
+    async def test_find_duplicates_none(self, v11_db: str) -> None:
         """Test finding duplicates when there are none."""
 
-        with DBManager(v11_db) as db:
-            duplicates = db.find_duplicates()
+        async with DBManager(v11_db) as db:
+            duplicates = await db.find_duplicates()
             assert len(duplicates) == 0
 
-    def test_find_duplicates_by_rfc_message_id(self, v11_db: str) -> None:
+    async def test_find_duplicates_by_rfc_message_id(self, v11_db: str) -> None:
         """Test finding duplicates by RFC Message-ID (migration scenario)."""
 
         # Simulate legacy database by recreating schema without UNIQUE constraint
@@ -333,14 +343,14 @@ class TestDeduplication:
         conn.commit()
         conn.close()
 
-        with DBManager(v11_db, validate_schema=False) as db:
-            duplicates = db.find_duplicates()
+        async with DBManager(v11_db, validate_schema=False) as db:
+            duplicates = await db.find_duplicates()
             assert len(duplicates) > 0
             # Should find the duplicate RFC Message-ID
             # duplicates is list[tuple[rfc_message_id, list[gmail_ids]]]
             assert any(dup[0] == "<same@example.com>" for dup in duplicates)
 
-    def test_remove_duplicate_records(self, v11_db: str) -> None:
+    async def test_remove_duplicate_records(self, v11_db: str) -> None:
         """Test removing duplicate records (migration scenario)."""
 
         # Recreate schema without UNIQUE constraint
@@ -397,21 +407,21 @@ class TestDeduplication:
         conn.commit()
         conn.close()
 
-        with DBManager(v11_db, validate_schema=False) as db:
+        async with DBManager(v11_db, validate_schema=False) as db:
             # Find and remove duplicates
-            duplicates = db.find_duplicates()
-            removed = db.remove_duplicate_records(duplicates)
+            duplicates = await db.find_duplicates()
+            removed = await db.remove_duplicate_records(duplicates)
 
             assert removed > 0
 
             # Verify only one record remains
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE rfc_message_id = ?", ("<dup@example.com>",)
             )
-            count = cursor.fetchone()[0]
+            count = (await cursor.fetchone())[0]
             assert count == 1
 
-    def test_remove_duplicates_creates_archive_run(self, v11_db: str) -> None:
+    async def test_remove_duplicates_creates_archive_run(self, v11_db: str) -> None:
         """Test that removing duplicates records in archive_runs (migration scenario)."""
 
         # Recreate schema without UNIQUE constraint
@@ -467,15 +477,15 @@ class TestDeduplication:
         conn.commit()
         conn.close()
 
-        with DBManager(v11_db, validate_schema=False) as db:
-            duplicates = db.find_duplicates()
-            db.remove_duplicate_records(duplicates)
+        async with DBManager(v11_db, validate_schema=False) as db:
+            duplicates = await db.find_duplicates()
+            await db.remove_duplicate_records(duplicates)
 
             # Verify archive_run entry
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT COUNT(*) FROM archive_runs WHERE operation_type = ?", ("deduplicate",)
             )
-            count = cursor.fetchone()[0]
+            count = (await cursor.fetchone())[0]
             assert count > 0
 
 
@@ -487,16 +497,16 @@ class TestDeduplication:
 class TestConsolidation:
     """Tests for archive file consolidation operations."""
 
-    def test_update_archive_location_single(
+    async def test_update_archive_location_single(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test updating archive location for a single message."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
             # Update location
-            db.update_archive_location(
+            await db.update_archive_location(
                 gmail_id=sample_message_data["gmail_id"],
                 new_archive_file="new_archive.mbox",
                 new_mbox_offset=5000,
@@ -504,17 +514,17 @@ class TestConsolidation:
             )
 
             # Verify update
-            message = db.get_message_by_gmail_id(sample_message_data["gmail_id"])
+            message = await db.get_message_by_gmail_id(sample_message_data["gmail_id"])
             assert message["archive_file"] == "new_archive.mbox"
             assert message["mbox_offset"] == 5000
             assert message["mbox_length"] == 2000
 
-    def test_bulk_update_archive_locations(
+    async def test_bulk_update_archive_locations(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test bulk updating archive locations for multiple messages."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert multiple messages
             message_ids = []
             for i in range(5):
@@ -522,7 +532,7 @@ class TestConsolidation:
                 data["gmail_id"] = f"msg{i}"
                 data["rfc_message_id"] = f"<unique{i}@example.com>"
                 data["mbox_offset"] = i * 1000
-                db.record_archived_message(**data)
+                await db.record_archived_message(**data)
                 message_ids.append(data["gmail_id"])
 
             # Bulk update
@@ -535,27 +545,27 @@ class TestConsolidation:
                 }
                 for i in range(5)
             ]
-            db.bulk_update_archive_locations(updates)
+            await db.bulk_update_archive_locations(updates)
 
             # Verify all updates
             for i in range(5):
-                message = db.get_message_by_gmail_id(f"msg{i}")
+                message = await db.get_message_by_gmail_id(f"msg{i}")
                 assert message["archive_file"] == "consolidated.mbox"
                 assert message["mbox_offset"] == i * 2000
                 assert message["mbox_length"] == 1500
 
-    def test_bulk_update_creates_archive_run(
+    async def test_bulk_update_creates_archive_run(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that bulk update records in archive_runs."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages
             for i in range(3):
                 data = sample_message_data.copy()
                 data["gmail_id"] = f"msg{i}"
                 data["rfc_message_id"] = f"<unique{i}@example.com>"
-                db.record_archived_message(**data)
+                await db.record_archived_message(**data)
 
             # Bulk update
             updates = [
@@ -567,13 +577,13 @@ class TestConsolidation:
                 }
                 for i in range(3)
             ]
-            db.bulk_update_archive_locations(updates)
+            await db.bulk_update_archive_locations(updates)
 
             # Verify archive_run entry
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT COUNT(*) FROM archive_runs WHERE operation_type = ?", ("consolidate",)
             )
-            count = cursor.fetchone()[0]
+            count = (await cursor.fetchone())[0]
             assert count > 0
 
 
@@ -585,29 +595,29 @@ class TestConsolidation:
 class TestDatabaseIntegrity:
     """Tests for database integrity verification and repair."""
 
-    def test_verify_integrity_clean_database(self, v11_db: str) -> None:
+    async def test_verify_integrity_clean_database(self, v11_db: str) -> None:
         """Test integrity verification on a clean database."""
 
-        with DBManager(v11_db) as db:
-            issues = db.verify_database_integrity()
+        async with DBManager(v11_db) as db:
+            issues = await db.verify_database_integrity()
             assert len(issues) == 0
 
-    def test_verify_integrity_invalid_offsets(
+    async def test_verify_integrity_invalid_offsets(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test detection of invalid mbox offsets."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert message with negative offset
             data = sample_message_data.copy()
             data["mbox_offset"] = -100
-            db.record_archived_message(**data)
+            await db.record_archived_message(**data)
 
-            issues = db.verify_database_integrity()
+            issues = await db.verify_database_integrity()
             # Should detect invalid offset
             assert any("invalid" in issue.lower() and "offset" in issue.lower() for issue in issues)
 
-    def test_verify_integrity_duplicate_message_ids(self, v11_db: str) -> None:
+    async def test_verify_integrity_duplicate_message_ids(self, v11_db: str) -> None:
         """Test detection of duplicate RFC Message-IDs (migration scenario)."""
 
         # Recreate schema without UNIQUE constraint
@@ -663,55 +673,55 @@ class TestDatabaseIntegrity:
         conn.commit()
         conn.close()
 
-        with DBManager(v11_db, validate_schema=False) as db:
-            issues = db.verify_database_integrity()
+        async with DBManager(v11_db, validate_schema=False) as db:
+            issues = await db.verify_database_integrity()
             # Should detect duplicate RFC Message-IDs
             assert any("duplicate" in issue.lower() for issue in issues)
 
     @patch("pathlib.Path.exists")
-    def test_verify_integrity_missing_archive_files(
+    async def test_verify_integrity_missing_archive_files(
         self, mock_exists: Mock, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test detection of missing archive files."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
             # Mock file system to report file doesn't exist
             mock_exists.return_value = False
 
-            issues = db.verify_database_integrity()
+            issues = await db.verify_database_integrity()
             # Should detect missing archive file
             assert any("missing" in issue.lower() and "file" in issue.lower() for issue in issues)
 
-    def test_get_messages_with_invalid_offsets(
+    async def test_get_messages_with_invalid_offsets(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test finding messages with invalid mbox offsets."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert valid message
             data1 = sample_message_data.copy()
             data1["gmail_id"] = "msg1"
             data1["rfc_message_id"] = "<msg1@example.com>"
             data1["mbox_offset"] = 0
-            db.record_archived_message(**data1)
+            await db.record_archived_message(**data1)
 
             # Insert message with negative offset
             data2 = sample_message_data.copy()
             data2["gmail_id"] = "msg2"
             data2["rfc_message_id"] = "<msg2@example.com>"
             data2["mbox_offset"] = -100
-            db.record_archived_message(**data2)
+            await db.record_archived_message(**data2)
 
             # Insert message with negative length
             data3 = sample_message_data.copy()
             data3["gmail_id"] = "msg3"
             data3["rfc_message_id"] = "<msg3@example.com>"
             data3["mbox_length"] = -50
-            db.record_archived_message(**data3)
+            await db.record_archived_message(**data3)
 
-            invalid = db.get_messages_with_invalid_offsets()
+            invalid = await db.get_messages_with_invalid_offsets()
 
             # Should find msg2 and msg3
             assert len(invalid) == 2
@@ -729,13 +739,13 @@ class TestDatabaseIntegrity:
 class TestTransactions:
     """Tests for transaction handling."""
 
-    def test_transaction_commit_on_success(
+    async def test_transaction_commit_on_success(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that transactions commit on success."""
 
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
             # Context manager should auto-commit
 
         # Verify commit by opening new connection
@@ -747,14 +757,14 @@ class TestTransactions:
         assert count == 1
         conn.close()
 
-    def test_transaction_rollback_on_error(
+    async def test_transaction_rollback_on_error(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that transactions rollback on error."""
 
         try:
-            with DBManager(v11_db) as db:
-                db.record_archived_message(**sample_message_data)
+            async with DBManager(v11_db) as db:
+                await db.record_archived_message(**sample_message_data)
                 # Force an error
                 raise ValueError("Test error")
         except ValueError:
@@ -767,39 +777,43 @@ class TestTransactions:
         assert count == 0
         conn.close()
 
-    def test_explicit_commit(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_explicit_commit(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
         """Test explicit commit functionality."""
 
         db = DBManager(v11_db)
-        db.record_archived_message(**sample_message_data)
+        await db.initialize()
+        await db.record_archived_message(**sample_message_data)
 
         # Explicit commit
-        db.commit()
+        await db.commit()
 
         # Verify
-        cursor = db.conn.execute(
+        cursor = await db.conn.execute(
             "SELECT COUNT(*) FROM messages WHERE gmail_id = ?", (sample_message_data["gmail_id"],)
         )
-        count = cursor.fetchone()[0]
+        count = (await cursor.fetchone())[0]
         assert count == 1
 
-        db.close()
+        await db.close()
 
-    def test_explicit_rollback(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_explicit_rollback(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
         """Test explicit rollback functionality."""
 
         db = DBManager(v11_db)
-        db.record_archived_message(**sample_message_data)
+        await db.initialize()
+        await db.record_archived_message(**sample_message_data)
 
         # Explicit rollback
-        db.rollback()
+        await db.rollback()
 
         # Verify rollback
-        cursor = db.conn.execute("SELECT COUNT(*) FROM messages")
-        count = cursor.fetchone()[0]
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM messages")
+        count = (await cursor.fetchone())[0]
         assert count == 0
 
-        db.close()
+        await db.close()
 
 
 # ============================================================================
@@ -810,12 +824,12 @@ class TestTransactions:
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
-    def test_record_message_with_null_optional_fields(self, v11_db: str) -> None:
+    async def test_record_message_with_null_optional_fields(self, v11_db: str) -> None:
         """Test recording message with minimal required fields."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Only provide required fields
-            db.record_archived_message(
+            await db.record_archived_message(
                 gmail_id="msg123",
                 rfc_message_id="<msg123@example.com>",
                 archive_file="archive.mbox",
@@ -824,25 +838,25 @@ class TestEdgeCases:
             )
 
             # Verify record was created
-            message = db.get_message_by_gmail_id("msg123")
+            message = await db.get_message_by_gmail_id("msg123")
             assert message is not None
             assert message["gmail_id"] == "msg123"
 
-    def test_bulk_update_empty_list(self, v11_db: str) -> None:
+    async def test_bulk_update_empty_list(self, v11_db: str) -> None:
         """Test bulk update with empty list."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Should handle empty list gracefully
-            db.bulk_update_archive_locations([])
+            await db.bulk_update_archive_locations([])
 
-    def test_bulk_update_partial_failure(
+    async def test_bulk_update_partial_failure(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test bulk update with some invalid IDs."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert one valid message
-            db.record_archived_message(**sample_message_data)
+            await db.record_archived_message(**sample_message_data)
 
             # Try to update valid and invalid IDs
             updates = [
@@ -863,12 +877,12 @@ class TestEdgeCases:
             # Should handle partial failure gracefully
             # (either skip invalid or raise informative error)
             try:
-                db.bulk_update_archive_locations(updates)
+                await db.bulk_update_archive_locations(updates)
             except ValueError as e:
                 # Acceptable to raise error for invalid IDs
                 assert "nonexistent" in str(e)
 
-    def test_find_duplicates_large_dataset(self, v11_db: str) -> None:
+    async def test_find_duplicates_large_dataset(self, v11_db: str) -> None:
         """Test duplicate finding with large number of records."""
 
         # Insert many records
@@ -901,61 +915,67 @@ class TestEdgeCases:
         conn.commit()
         conn.close()
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Should handle large dataset efficiently
-            duplicates = db.find_duplicates()
+            duplicates = await db.find_duplicates()
             assert len(duplicates) == 0
 
-    def test_unicode_handling(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_unicode_handling(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
         """Test handling of Unicode characters in message data."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Use Unicode characters
             data = sample_message_data.copy()
             data["subject"] = "测试 Test こんにちは 🎉"
             data["from_addr"] = "user@例え.jp"
             data["body_preview"] = "Тест текст with émojis 🚀"
 
-            db.record_archived_message(**data)
+            await db.record_archived_message(**data)
 
             # Verify Unicode is preserved
-            message = db.get_message_by_gmail_id(data["gmail_id"])
+            message = await db.get_message_by_gmail_id(data["gmail_id"])
             assert message["subject"] == data["subject"]
             assert message["from_addr"] == data["from_addr"]
             assert message["body_preview"] == data["body_preview"]
 
-    def test_very_long_field_values(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_very_long_field_values(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
         """Test handling of very long field values."""
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Use very long values
             data = sample_message_data.copy()
             data["subject"] = "A" * 10000
             data["body_preview"] = "B" * 50000
 
-            db.record_archived_message(**data)
+            await db.record_archived_message(**data)
 
             # Verify long values are stored
-            message = db.get_message_by_gmail_id(data["gmail_id"])
+            message = await db.get_message_by_gmail_id(data["gmail_id"])
             assert len(message["subject"]) == 10000
             assert len(message["body_preview"]) == 50000
 
-    def test_concurrent_access(self, v11_db: str) -> None:
+    async def test_concurrent_access(self, v11_db: str) -> None:
         """Test handling of concurrent database access."""
 
         # Open two connections
         db1 = DBManager(v11_db)
+        await db1.initialize()
         db2 = DBManager(v11_db)
+        await db2.initialize()
 
         try:
             # Both should be able to read
-            count1 = db1.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            count2 = db2.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            cursor1 = await db1.conn.execute("SELECT COUNT(*) FROM messages")
+            count1 = (await cursor1.fetchone())[0]
+            cursor2 = await db2.conn.execute("SELECT COUNT(*) FROM messages")
+            count2 = (await cursor2.fetchone())[0]
             assert count1 == count2 == 0
 
         finally:
-            db1.close()
-            db2.close()
+            await db1.close()
+            await db2.close()
 
 
 # ============================================================================
@@ -966,7 +986,7 @@ class TestEdgeCases:
 class TestSchemaValidation:
     """Tests for schema validation error paths."""
 
-    def test_missing_messages_table(self, temp_db_path: str) -> None:
+    async def test_missing_messages_table(self, temp_db_path: str) -> None:
         """Test schema validation when messages table is missing."""
         # Create database without messages table
         conn = sqlite3.connect(temp_db_path)
@@ -978,12 +998,13 @@ class TestSchemaValidation:
         conn.commit()
         conn.close()
 
-        # Should raise SchemaValidationError
+        # Should raise SchemaValidationError during initialize()
         with pytest.raises(Exception) as exc_info:
-            DBManager(temp_db_path, validate_schema=True)
+            db = DBManager(temp_db_path, validate_schema=True)
+            await db.initialize()
         assert "messages" in str(exc_info.value).lower()
 
-    def test_missing_required_columns(self, temp_db_path: str) -> None:
+    async def test_missing_required_columns(self, temp_db_path: str) -> None:
         """Test schema validation when required columns are missing."""
         # Create messages table without required columns
         conn = sqlite3.connect(temp_db_path)
@@ -1000,16 +1021,17 @@ class TestSchemaValidation:
         conn.commit()
         conn.close()
 
-        # Should raise SchemaValidationError
+        # Should raise SchemaValidationError during initialize()
         with pytest.raises(Exception) as exc_info:
-            DBManager(temp_db_path, validate_schema=True)
+            db = DBManager(temp_db_path, validate_schema=True)
+            await db.initialize()
         assert "missing columns" in str(exc_info.value).lower()
 
 
 class TestExceptionHandling:
     """Tests for exception handling and error paths."""
 
-    def test_init_with_nonexistent_file(self, temp_db_path: str) -> None:
+    async def test_init_with_nonexistent_file(self, temp_db_path: str) -> None:
         """Test handling of nonexistent database file."""
         import os
 
@@ -1018,6 +1040,7 @@ class TestExceptionHandling:
             os.remove(temp_db_path)
 
         # Should raise FileNotFoundError when auto_create=False
+        # This happens during __init__ before initialize()
         with pytest.raises(FileNotFoundError):
             DBManager(temp_db_path, validate_schema=False, auto_create=False)
 
@@ -1025,16 +1048,16 @@ class TestExceptionHandling:
 class TestRepairDatabaseCoverage:
     """Tests for repair_database method coverage."""
 
-    def test_repair_database_with_no_issues(self, v11_db: str) -> None:
+    async def test_repair_database_with_no_issues(self, v11_db: str) -> None:
         """Test repair_database when there are no issues to fix."""
-        with DBManager(v11_db, validate_schema=False) as db:
+        async with DBManager(v11_db, validate_schema=False) as db:
             # Dry run on clean database
-            repairs = db.repair_database(dry_run=True)
+            repairs = await db.repair_database(dry_run=True)
             assert repairs["orphaned_fts_removed"] == 0
             assert repairs["missing_fts_added"] == 0
 
             # Actual run on clean database
-            repairs = db.repair_database(dry_run=False)
+            repairs = await db.repair_database(dry_run=False)
             assert repairs["orphaned_fts_removed"] == 0
             assert repairs["missing_fts_added"] == 0
 
@@ -1042,21 +1065,21 @@ class TestRepairDatabaseCoverage:
 class TestGetMessageLocation:
     """Test get_message_location error paths."""
 
-    def test_get_message_location_not_found(self, v11_db: str) -> None:
+    async def test_get_message_location_not_found(self, v11_db: str) -> None:
         """Test get_message_location with nonexistent rfc_message_id."""
-        with DBManager(v11_db) as db:
-            result = db.get_message_location("nonexistent")
+        async with DBManager(v11_db) as db:
+            result = await db.get_message_location("nonexistent")
             assert result is None
 
 
 class TestUpdateArchiveLocation:
     """Test update_archive_location error paths."""
 
-    def test_update_archive_location_not_found(self, v11_db: str) -> None:
+    async def test_update_archive_location_not_found(self, v11_db: str) -> None:
         """Test update_archive_location with nonexistent gmail_id."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Should not raise exception, just update nothing
-            db.update_archive_location(
+            await db.update_archive_location(
                 gmail_id="nonexistent",
                 new_archive_file="new.mbox",
                 new_mbox_offset=0,
@@ -1067,24 +1090,24 @@ class TestUpdateArchiveLocation:
 class TestRemoveDuplicateRecords:
     """Test remove_duplicate_records error paths."""
 
-    def test_remove_duplicates_empty_list(self, v11_db: str) -> None:
+    async def test_remove_duplicates_empty_list(self, v11_db: str) -> None:
         """Test remove_duplicate_records with empty list."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Should handle empty list gracefully
-            removed = db.remove_duplicate_records([])
+            removed = await db.remove_duplicate_records([])
             assert removed == 0
 
 
 class TestTransactionContextManager:
     """Test transaction context manager error handling."""
 
-    def test_transaction_exception_handling(self, v11_db: str) -> None:
+    async def test_transaction_exception_handling(self, v11_db: str) -> None:
         """Test transaction rollback on exception."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             try:
-                with db._transaction():
+                async with db._transaction():
                     # Insert a record
-                    db.conn.execute(
+                    await db.conn.execute(
                         """INSERT INTO messages
                         (gmail_id, rfc_message_id, archived_timestamp, archive_file,
                          mbox_offset, mbox_length)
@@ -1104,10 +1127,10 @@ class TestTransactionContextManager:
                 pass  # Expected
 
             # Verify the record was rolled back
-            cursor = db.conn.execute(
+            cursor = await db.conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE gmail_id = ?", ("test_exc",)
             )
-            assert cursor.fetchone()[0] == 0
+            assert (await cursor.fetchone())[0] == 0
 
 
 # ============================================================================
@@ -1118,16 +1141,16 @@ class TestTransactionContextManager:
 class TestSessionManagement:
     """Tests for archive session management methods."""
 
-    def test_get_session_returns_session_when_found(self, v11_db: str) -> None:
+    async def test_get_session_returns_session_when_found(self, v11_db: str) -> None:
         """Test get_session returns session dict when session exists."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create a session first
             session_id = "test-session-123"
             target_file = "archive.mbox"
             query = "before:2024/01/01"
             message_ids = ["msg1", "msg2", "msg3"]
 
-            db.create_session(
+            await db.create_session(
                 session_id=session_id,
                 target_file=target_file,
                 query=query,
@@ -1137,7 +1160,7 @@ class TestSessionManagement:
             )
 
             # Get the session
-            session = db.get_session(session_id)
+            session = await db.get_session(session_id)
 
             assert session is not None
             assert session["session_id"] == session_id
@@ -1148,19 +1171,19 @@ class TestSessionManagement:
             assert session["total_count"] == 3
             assert session["processed_count"] == 0
 
-    def test_get_session_returns_none_when_not_found(self, v11_db: str) -> None:
+    async def test_get_session_returns_none_when_not_found(self, v11_db: str) -> None:
         """Test get_session returns None when session doesn't exist."""
-        with DBManager(v11_db) as db:
-            session = db.get_session("nonexistent-session-id")
+        async with DBManager(v11_db) as db:
+            session = await db.get_session("nonexistent-session-id")
             assert session is None
 
-    def test_get_session_by_file_returns_in_progress_session(self, v11_db: str) -> None:
+    async def test_get_session_by_file_returns_in_progress_session(self, v11_db: str) -> None:
         """Test get_session_by_file returns the most recent in_progress session."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             target_file = "archive.mbox"
 
             # Create an in_progress session
-            db.create_session(
+            await db.create_session(
                 session_id="session-1",
                 target_file=target_file,
                 query="query1",
@@ -1170,18 +1193,18 @@ class TestSessionManagement:
             )
 
             # Get the session by file
-            session = db.get_session_by_file(target_file)
+            session = await db.get_session_by_file(target_file)
 
             assert session is not None
             assert session["session_id"] == "session-1"
             assert session["target_file"] == target_file
             assert session["message_ids"] == ["msg1"]
 
-    def test_get_session_by_file_returns_none_when_no_in_progress(self, v11_db: str) -> None:
+    async def test_get_session_by_file_returns_none_when_no_in_progress(self, v11_db: str) -> None:
         """Test get_session_by_file returns None when no in_progress session exists."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create and complete a session
-            db.create_session(
+            await db.create_session(
                 session_id="session-1",
                 target_file="archive.mbox",
                 query="query1",
@@ -1189,17 +1212,17 @@ class TestSessionManagement:
                 compression=None,
                 account_id="default",
             )
-            db.complete_session("session-1")
+            await db.complete_session("session-1")
 
             # Now there's no in_progress session for this file
-            session = db.get_session_by_file("archive.mbox")
+            session = await db.get_session_by_file("archive.mbox")
             assert session is None
 
-    def test_get_session_by_file_returns_none_for_different_file(self, v11_db: str) -> None:
+    async def test_get_session_by_file_returns_none_for_different_file(self, v11_db: str) -> None:
         """Test get_session_by_file returns None for different target file."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create session for one file
-            db.create_session(
+            await db.create_session(
                 session_id="session-1",
                 target_file="archive1.mbox",
                 query="query1",
@@ -1209,15 +1232,15 @@ class TestSessionManagement:
             )
 
             # Query for different file
-            session = db.get_session_by_file("archive2.mbox")
+            session = await db.get_session_by_file("archive2.mbox")
             assert session is None
 
-    def test_get_all_partial_sessions_returns_all_in_progress(self, v11_db: str) -> None:
+    async def test_get_all_partial_sessions_returns_all_in_progress(self, v11_db: str) -> None:
         """Test get_all_partial_sessions returns all in_progress sessions."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create multiple in_progress sessions
             for i in range(3):
-                db.create_session(
+                await db.create_session(
                     session_id=f"session-{i}",
                     target_file=f"archive{i}.mbox",
                     query=f"query{i}",
@@ -1227,7 +1250,7 @@ class TestSessionManagement:
                 )
 
             # Get all partial sessions
-            sessions = db.get_all_partial_sessions()
+            sessions = await db.get_all_partial_sessions()
 
             assert len(sessions) == 3
             session_ids = {s["session_id"] for s in sessions}
@@ -1238,11 +1261,11 @@ class TestSessionManagement:
                 assert isinstance(session["message_ids"], list)
                 assert len(session["message_ids"]) == 2
 
-    def test_get_all_partial_sessions_excludes_completed(self, v11_db: str) -> None:
+    async def test_get_all_partial_sessions_excludes_completed(self, v11_db: str) -> None:
         """Test get_all_partial_sessions excludes completed sessions."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create sessions with different statuses
-            db.create_session(
+            await db.create_session(
                 session_id="session-in-progress",
                 target_file="archive1.mbox",
                 query="query1",
@@ -1250,7 +1273,7 @@ class TestSessionManagement:
                 compression=None,
                 account_id="default",
             )
-            db.create_session(
+            await db.create_session(
                 session_id="session-completed",
                 target_file="archive2.mbox",
                 query="query2",
@@ -1258,28 +1281,28 @@ class TestSessionManagement:
                 compression=None,
                 account_id="default",
             )
-            db.complete_session("session-completed")
+            await db.complete_session("session-completed")
 
             # Get all partial sessions
-            sessions = db.get_all_partial_sessions()
+            sessions = await db.get_all_partial_sessions()
 
             assert len(sessions) == 1
             assert sessions[0]["session_id"] == "session-in-progress"
 
-    def test_get_all_partial_sessions_returns_empty_when_none(self, v11_db: str) -> None:
+    async def test_get_all_partial_sessions_returns_empty_when_none(self, v11_db: str) -> None:
         """Test get_all_partial_sessions returns empty list when no sessions exist."""
-        with DBManager(v11_db) as db:
-            sessions = db.get_all_partial_sessions()
+        async with DBManager(v11_db) as db:
+            sessions = await db.get_all_partial_sessions()
             assert sessions == []
 
-    def test_get_all_partial_sessions_ordered_by_started_at_desc(self, v11_db: str) -> None:
+    async def test_get_all_partial_sessions_ordered_by_started_at_desc(self, v11_db: str) -> None:
         """Test get_all_partial_sessions returns sessions ordered by started_at DESC."""
         import time
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create sessions with slight delay to ensure different timestamps
             for i in range(3):
-                db.create_session(
+                await db.create_session(
                     session_id=f"session-{i}",
                     target_file=f"archive{i}.mbox",
                     query=f"query{i}",
@@ -1289,17 +1312,17 @@ class TestSessionManagement:
                 )
                 time.sleep(0.01)  # Small delay to ensure different timestamps
 
-            sessions = db.get_all_partial_sessions()
+            sessions = await db.get_all_partial_sessions()
 
             # Most recent should be first (session-2)
             assert sessions[0]["session_id"] == "session-2"
             assert sessions[-1]["session_id"] == "session-0"
 
-    def test_abort_session_changes_status_to_aborted(self, v11_db: str) -> None:
+    async def test_abort_session_changes_status_to_aborted(self, v11_db: str) -> None:
         """Test abort_session marks session as aborted."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create a session
-            db.create_session(
+            await db.create_session(
                 session_id="session-to-abort",
                 target_file="archive.mbox",
                 query="query",
@@ -1309,18 +1332,18 @@ class TestSessionManagement:
             )
 
             # Abort the session
-            db.abort_session("session-to-abort")
+            await db.abort_session("session-to-abort")
 
             # Verify status changed
-            session = db.get_session("session-to-abort")
+            session = await db.get_session("session-to-abort")
             assert session is not None
             assert session["status"] == "aborted"
 
-    def test_delete_session_removes_session(self, v11_db: str) -> None:
+    async def test_delete_session_removes_session(self, v11_db: str) -> None:
         """Test delete_session removes session from database."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Create a session
-            db.create_session(
+            await db.create_session(
                 session_id="session-to-delete",
                 target_file="archive.mbox",
                 query="query",
@@ -1330,49 +1353,49 @@ class TestSessionManagement:
             )
 
             # Delete the session
-            db.delete_session("session-to-delete")
+            await db.delete_session("session-to-delete")
 
             # Verify session is gone
-            session = db.get_session("session-to-delete")
+            session = await db.get_session("session-to-delete")
             assert session is None
 
-    def test_delete_messages_for_file_removes_all_messages(
+    async def test_delete_messages_for_file_removes_all_messages(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test delete_messages_for_file removes all messages for a file."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages for target file
             for i in range(3):
                 data = sample_message_data.copy()
                 data["gmail_id"] = f"msg{i}"
                 data["rfc_message_id"] = f"<msg{i}@example.com>"
                 data["archive_file"] = "target.mbox"
-                db.record_archived_message(**data)
+                await db.record_archived_message(**data)
 
             # Insert message for different file
             other_data = sample_message_data.copy()
             other_data["gmail_id"] = "msg_other"
             other_data["rfc_message_id"] = "<msg_other@example.com>"
             other_data["archive_file"] = "other.mbox"
-            db.record_archived_message(**other_data)
+            await db.record_archived_message(**other_data)
 
             # Delete messages for target file
-            deleted = db.delete_messages_for_file("target.mbox")
+            deleted = await db.delete_messages_for_file("target.mbox")
 
             assert deleted == 3
 
             # Verify messages are gone from target file
-            messages = db.get_all_messages_for_archive("target.mbox")
+            messages = await db.get_all_messages_for_archive("target.mbox")
             assert len(messages) == 0
 
             # Verify other file's messages still exist
-            messages = db.get_all_messages_for_archive("other.mbox")
+            messages = await db.get_all_messages_for_archive("other.mbox")
             assert len(messages) == 1
 
-    def test_delete_messages_for_file_returns_zero_when_none(self, v11_db: str) -> None:
+    async def test_delete_messages_for_file_returns_zero_when_none(self, v11_db: str) -> None:
         """Test delete_messages_for_file returns 0 when no messages exist."""
-        with DBManager(v11_db) as db:
-            deleted = db.delete_messages_for_file("nonexistent.mbox")
+        async with DBManager(v11_db) as db:
+            deleted = await db.delete_messages_for_file("nonexistent.mbox")
             assert deleted == 0
 
 
@@ -1388,60 +1411,64 @@ class TestDBManagerExceptionHandling:
     low-level SQLite errors into DBManagerError.
     """
 
-    def test_delete_message_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
+    async def test_delete_message_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
         """Test delete_message wraps exceptions in DBManagerError.
 
         Covers lines 598-599: Exception handler in delete_message.
         """
         from gmailarchiver.data.db_manager import DBManagerError
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Mock conn.execute to raise an error
             with patch.object(db, "conn") as mock_conn:
                 mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
 
                 with pytest.raises(DBManagerError) as exc_info:
-                    db.delete_message("msg123")
+                    await db.delete_message("msg123")
 
                 assert "Failed to delete message msg123" in str(exc_info.value)
                 assert "database is locked" in str(exc_info.value)
 
-    def test_remove_duplicate_records_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
+    async def test_remove_duplicate_records_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
         """Test remove_duplicate_records wraps exceptions in DBManagerError.
 
         Covers lines 644-645: Exception handler in remove_duplicate_records.
         """
         from gmailarchiver.data.db_manager import DBManagerError
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Mock conn.execute to raise an error during deletion
             with patch.object(db, "conn") as mock_conn:
                 mock_conn.execute.side_effect = sqlite3.OperationalError("disk I/O error")
 
                 duplicates = [("rfc123", ["msg1", "msg2"])]
                 with pytest.raises(DBManagerError) as exc_info:
-                    db.remove_duplicate_records(duplicates)
+                    await db.remove_duplicate_records(duplicates)
 
                 assert "Failed to remove duplicate records" in str(exc_info.value)
 
-    def test_update_archive_location_raises_db_manager_error_on_failure(self, v11_db: str) -> None:
+    async def test_update_archive_location_raises_db_manager_error_on_failure(
+        self, v11_db: str
+    ) -> None:
         """Test update_archive_location wraps exceptions in DBManagerError.
 
         Covers lines 681-682: Exception handler in update_archive_location.
         """
         from gmailarchiver.data.db_manager import DBManagerError
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Mock conn.execute to raise an error
             with patch.object(db, "conn") as mock_conn:
                 mock_conn.execute.side_effect = sqlite3.IntegrityError("constraint violation")
 
                 with pytest.raises(DBManagerError) as exc_info:
-                    db.update_archive_location("msg123", "new.mbox", 1000, 500)
+                    await db.update_archive_location("msg123", "new.mbox", 1000, 500)
 
                 assert "Failed to update location for msg123" in str(exc_info.value)
 
-    def test_bulk_update_archive_locations_raises_db_manager_error_on_failure(
+    async def test_bulk_update_archive_locations_raises_db_manager_error_on_failure(
         self, v11_db: str
     ) -> None:
         """Test bulk_update_archive_locations wraps exceptions in DBManagerError.
@@ -1450,7 +1477,7 @@ class TestDBManagerExceptionHandling:
         """
         from gmailarchiver.data.db_manager import DBManagerError
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Mock conn.executemany to raise an error
             with patch.object(db, "conn") as mock_conn:
                 mock_conn.executemany.side_effect = sqlite3.DatabaseError("no such table: messages")
@@ -1464,11 +1491,11 @@ class TestDBManagerExceptionHandling:
                     }
                 ]
                 with pytest.raises(DBManagerError) as exc_info:
-                    db.bulk_update_archive_locations(updates)
+                    await db.bulk_update_archive_locations(updates)
 
                 assert "Failed to bulk update locations" in str(exc_info.value)
 
-    def test_record_archived_message_wraps_non_integrity_exceptions(
+    async def test_record_archived_message_wraps_non_integrity_exceptions(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test record_archived_message wraps non-IntegrityError exceptions.
@@ -1478,7 +1505,7 @@ class TestDBManagerExceptionHandling:
         """
         from gmailarchiver.data.db_manager import DBManagerError
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Mock conn.execute to raise a non-IntegrityError
             with patch.object(db, "conn") as mock_conn:
                 mock_conn.execute.side_effect = sqlite3.OperationalError(
@@ -1486,7 +1513,7 @@ class TestDBManagerExceptionHandling:
                 )
 
                 with pytest.raises(DBManagerError) as exc_info:
-                    db.record_archived_message(**sample_message_data)
+                    await db.record_archived_message(**sample_message_data)
 
                 assert "Failed to record message" in str(exc_info.value)
                 assert "malformed" in str(exc_info.value)
@@ -1500,137 +1527,137 @@ class TestDBManagerExceptionHandling:
 class TestSearchMessages:
     """Tests for search_messages method (FTS5 + metadata search)."""
 
-    def test_search_messages_fulltext_search(
+    async def test_search_messages_fulltext_search(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test fulltext search using FTS5."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert test messages
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["subject"] = "Python programming tips"
             msg1["body_preview"] = "Learn about Python decorators and generators"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["subject"] = "Java tutorials"
             msg2["body_preview"] = "Introduction to Java streams"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Search for "Python"
-            results = db.search_messages(fulltext="Python")
+            results = await db.search_messages(fulltext="Python")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg1"
             assert results[0]["subject"] == "Python programming tips"
 
-    def test_search_messages_from_filter(
+    async def test_search_messages_from_filter(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test filtering by from_addr."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages from different senders
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["from_addr"] = "alice@example.com"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["from_addr"] = "bob@example.com"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Filter by from_addr
-            results = db.search_messages(from_addr="alice@example.com")
+            results = await db.search_messages(from_addr="alice@example.com")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg1"
             assert results[0]["from_addr"] == "alice@example.com"
 
-    def test_search_messages_to_filter(
+    async def test_search_messages_to_filter(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test filtering by to_addr."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages to different recipients
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["to_addr"] = "alice@example.com"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["to_addr"] = "bob@example.com"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Filter by to_addr
-            results = db.search_messages(to_addr="alice@example.com")
+            results = await db.search_messages(to_addr="alice@example.com")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg1"
             assert results[0]["to_addr"] == "alice@example.com"
 
-    def test_search_messages_subject_filter(
+    async def test_search_messages_subject_filter(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test filtering by subject."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages with different subjects
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["subject"] = "Meeting notes"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["subject"] = "Project update"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Filter by subject (partial match)
-            results = db.search_messages(subject="Meeting")
+            results = await db.search_messages(subject="Meeting")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg1"
             assert results[0]["subject"] == "Meeting notes"
 
-    def test_search_messages_date_range_filter(
+    async def test_search_messages_date_range_filter(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test filtering by date range."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages with different dates
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["date"] = "2024-01-01T00:00:00"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["date"] = "2024-06-01T00:00:00"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Filter by date range (after 2024-05-01)
-            results = db.search_messages(date_start="2024-05-01")
+            results = await db.search_messages(date_start="2024-05-01")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg2"
 
-    def test_search_messages_combined_filters(
+    async def test_search_messages_combined_filters(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test combining fulltext search with metadata filters."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert test messages
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
@@ -1638,7 +1665,7 @@ class TestSearchMessages:
             msg1["from_addr"] = "alice@example.com"
             msg1["subject"] = "Python tips"
             msg1["body_preview"] = "Advanced Python techniques"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
@@ -1646,45 +1673,45 @@ class TestSearchMessages:
             msg2["from_addr"] = "bob@example.com"
             msg2["subject"] = "Python basics"
             msg2["body_preview"] = "Introduction to Python"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             # Search for "Python" from alice only
-            results = db.search_messages(fulltext="Python", from_addr="alice@example.com")
+            results = await db.search_messages(fulltext="Python", from_addr="alice@example.com")
 
             assert len(results) == 1
             assert results[0]["gmail_id"] == "msg1"
             assert results[0]["from_addr"] == "alice@example.com"
 
-    def test_search_messages_empty_results(self, v11_db: str) -> None:
+    async def test_search_messages_empty_results(self, v11_db: str) -> None:
         """Test search with no matching results."""
-        with DBManager(v11_db) as db:
-            results = db.search_messages(fulltext="nonexistent")
+        async with DBManager(v11_db) as db:
+            results = await db.search_messages(fulltext="nonexistent")
 
             assert len(results) == 0
             assert results == []
 
-    def test_search_messages_empty_database(self, v11_db: str) -> None:
+    async def test_search_messages_empty_database(self, v11_db: str) -> None:
         """Test search on empty database."""
-        with DBManager(v11_db) as db:
-            results = db.search_messages(fulltext="anything")
+        async with DBManager(v11_db) as db:
+            results = await db.search_messages(fulltext="anything")
 
             assert len(results) == 0
 
-    def test_search_messages_limit_parameter(
+    async def test_search_messages_limit_parameter(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test limiting search results."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert multiple messages
             for i in range(5):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
                 msg["subject"] = "Test message"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
             # Search with limit
-            results = db.search_messages(subject="Test", limit=3)
+            results = await db.search_messages(subject="Test", limit=3)
 
             assert len(results) == 3
 
@@ -1692,59 +1719,59 @@ class TestSearchMessages:
 class TestGetGmailIdsForArchive:
     """Tests for get_gmail_ids_for_archive method."""
 
-    def test_get_gmail_ids_for_archive_single_file(
+    async def test_get_gmail_ids_for_archive_single_file(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test getting gmail_ids for specific archive file."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages to different archives
             msg1 = sample_message_data.copy()
             msg1["gmail_id"] = "msg1"
             msg1["rfc_message_id"] = "<msg1@example.com>"
             msg1["archive_file"] = "archive1.mbox"
-            db.record_archived_message(**msg1)
+            await db.record_archived_message(**msg1)
 
             msg2 = sample_message_data.copy()
             msg2["gmail_id"] = "msg2"
             msg2["rfc_message_id"] = "<msg2@example.com>"
             msg2["archive_file"] = "archive1.mbox"
-            db.record_archived_message(**msg2)
+            await db.record_archived_message(**msg2)
 
             msg3 = sample_message_data.copy()
             msg3["gmail_id"] = "msg3"
             msg3["rfc_message_id"] = "<msg3@example.com>"
             msg3["archive_file"] = "archive2.mbox"
-            db.record_archived_message(**msg3)
+            await db.record_archived_message(**msg3)
 
             # Get IDs for archive1.mbox
-            ids = db.get_gmail_ids_for_archive("archive1.mbox")
+            ids = await db.get_gmail_ids_for_archive("archive1.mbox")
 
             assert len(ids) == 2
             assert "msg1" in ids
             assert "msg2" in ids
             assert "msg3" not in ids
 
-    def test_get_gmail_ids_for_archive_empty_file(self, v11_db: str) -> None:
+    async def test_get_gmail_ids_for_archive_empty_file(self, v11_db: str) -> None:
         """Test getting gmail_ids for archive with no messages."""
-        with DBManager(v11_db) as db:
-            ids = db.get_gmail_ids_for_archive("nonexistent.mbox")
+        async with DBManager(v11_db) as db:
+            ids = await db.get_gmail_ids_for_archive("nonexistent.mbox")
 
             assert len(ids) == 0
             assert ids == set()
 
-    def test_get_gmail_ids_for_archive_returns_set(
+    async def test_get_gmail_ids_for_archive_returns_set(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that method returns a set (not list)."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert message
             msg = sample_message_data.copy()
             msg["gmail_id"] = "msg1"
             msg["rfc_message_id"] = "<msg1@example.com>"
             msg["archive_file"] = "test.mbox"
-            db.record_archived_message(**msg)
+            await db.record_archived_message(**msg)
 
-            ids = db.get_gmail_ids_for_archive("test.mbox")
+            ids = await db.get_gmail_ids_for_archive("test.mbox")
 
             assert isinstance(ids, set)
             assert ids == {"msg1"}
@@ -1753,54 +1780,56 @@ class TestGetGmailIdsForArchive:
 class TestGetMessageCount:
     """Tests for get_message_count method."""
 
-    def test_get_message_count_zero(self, v11_db: str) -> None:
+    async def test_get_message_count_zero(self, v11_db: str) -> None:
         """Test message count on empty database."""
-        with DBManager(v11_db) as db:
-            count = db.get_message_count()
+        async with DBManager(v11_db) as db:
+            count = await db.get_message_count()
 
             assert count == 0
 
-    def test_get_message_count_one(self, v11_db: str, sample_message_data: dict[str, Any]) -> None:
+    async def test_get_message_count_one(
+        self, v11_db: str, sample_message_data: dict[str, Any]
+    ) -> None:
         """Test message count with one message."""
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
-            count = db.get_message_count()
+            count = await db.get_message_count()
 
             assert count == 1
 
-    def test_get_message_count_multiple(
+    async def test_get_message_count_multiple(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test message count with multiple messages."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert 10 messages
             for i in range(10):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
-            count = db.get_message_count()
+            count = await db.get_message_count()
 
             assert count == 10
 
-    def test_get_message_count_after_deletion(
+    async def test_get_message_count_after_deletion(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test message count updates after deletion."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert 3 messages
             for i in range(3):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
             # Delete one message
-            db.delete_message("msg1")
+            await db.delete_message("msg1")
 
-            count = db.get_message_count()
+            count = await db.get_message_count()
 
             assert count == 2
 
@@ -1808,81 +1837,81 @@ class TestGetMessageCount:
 class TestGetArchiveRuns:
     """Tests for get_archive_runs method."""
 
-    def test_get_archive_runs_empty_database(self, v11_db: str) -> None:
+    async def test_get_archive_runs_empty_database(self, v11_db: str) -> None:
         """Test getting archive runs from empty database."""
-        with DBManager(v11_db) as db:
-            runs = db.get_archive_runs(limit=10)
+        async with DBManager(v11_db) as db:
+            runs = await db.get_archive_runs(limit=10)
 
             assert len(runs) == 0
             assert runs == []
 
-    def test_get_archive_runs_default_limit(
+    async def test_get_archive_runs_default_limit(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test getting archive runs with default limit."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages to create archive runs
             for i in range(5):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
                 msg["archive_file"] = f"archive{i}.mbox"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
             # Get runs (default limit should be reasonable, e.g., 10)
-            runs = db.get_archive_runs()
+            runs = await db.get_archive_runs()
 
             assert len(runs) == 5  # Should return all 5 runs if limit >= 5
 
-    def test_get_archive_runs_with_limit(
+    async def test_get_archive_runs_with_limit(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test limiting number of archive runs returned."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert 10 messages to create 10 runs
             for i in range(10):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
                 msg["archive_file"] = f"archive{i}.mbox"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
             # Get only 3 runs
-            runs = db.get_archive_runs(limit=3)
+            runs = await db.get_archive_runs(limit=3)
 
             assert len(runs) == 3
 
-    def test_get_archive_runs_ordered_by_timestamp_desc(
+    async def test_get_archive_runs_ordered_by_timestamp_desc(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that archive runs are ordered by timestamp descending (most recent first)."""
         import time
 
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert messages with slight delay to ensure different timestamps
             for i in range(3):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
                 msg["archive_file"] = f"archive{i}.mbox"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
                 time.sleep(0.01)  # Small delay
 
-            runs = db.get_archive_runs(limit=10)
+            runs = await db.get_archive_runs(limit=10)
 
             # Most recent run (archive2.mbox) should be first
             assert runs[0]["archive_file"].endswith("archive2.mbox")
             assert runs[-1]["archive_file"].endswith("archive0.mbox")
 
-    def test_get_archive_runs_returns_dict_with_required_fields(
+    async def test_get_archive_runs_returns_dict_with_required_fields(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that each run dict contains required fields."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert a message
-            db.record_archived_message(**sample_message_data)
+            await db.record_archived_message(**sample_message_data)
 
-            runs = db.get_archive_runs(limit=1)
+            runs = await db.get_archive_runs(limit=1)
 
             assert len(runs) == 1
             run = runs[0]
@@ -1897,45 +1926,45 @@ class TestGetArchiveRuns:
 class TestIsArchived:
     """Tests for is_archived method."""
 
-    def test_is_archived_true_for_existing_message(
+    async def test_is_archived_true_for_existing_message(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test that is_archived returns True for archived message."""
-        with DBManager(v11_db) as db:
-            db.record_archived_message(**sample_message_data)
+        async with DBManager(v11_db) as db:
+            await db.record_archived_message(**sample_message_data)
 
-            is_archived = db.is_archived(sample_message_data["gmail_id"])
+            is_archived = await db.is_archived(sample_message_data["gmail_id"])
 
             assert is_archived is True
 
-    def test_is_archived_false_for_nonexistent_message(self, v11_db: str) -> None:
+    async def test_is_archived_false_for_nonexistent_message(self, v11_db: str) -> None:
         """Test that is_archived returns False for non-archived message."""
-        with DBManager(v11_db) as db:
-            is_archived = db.is_archived("nonexistent_id")
+        async with DBManager(v11_db) as db:
+            is_archived = await db.is_archived("nonexistent_id")
 
             assert is_archived is False
 
-    def test_is_archived_false_on_empty_database(self, v11_db: str) -> None:
+    async def test_is_archived_false_on_empty_database(self, v11_db: str) -> None:
         """Test that is_archived returns False on empty database."""
-        with DBManager(v11_db) as db:
-            is_archived = db.is_archived("any_id")
+        async with DBManager(v11_db) as db:
+            is_archived = await db.is_archived("any_id")
 
             assert is_archived is False
 
-    def test_is_archived_multiple_messages(
+    async def test_is_archived_multiple_messages(
         self, v11_db: str, sample_message_data: dict[str, Any]
     ) -> None:
         """Test is_archived with multiple messages in database."""
-        with DBManager(v11_db) as db:
+        async with DBManager(v11_db) as db:
             # Insert multiple messages
             for i in range(5):
                 msg = sample_message_data.copy()
                 msg["gmail_id"] = f"msg{i}"
                 msg["rfc_message_id"] = f"<msg{i}@example.com>"
-                db.record_archived_message(**msg)
+                await db.record_archived_message(**msg)
 
             # Check archived messages
-            assert db.is_archived("msg0") is True
-            assert db.is_archived("msg3") is True
+            assert await db.is_archived("msg0") is True
+            assert await db.is_archived("msg3") is True
             # Check non-archived message
-            assert db.is_archived("msg999") is False
+            assert await db.is_archived("msg999") is False

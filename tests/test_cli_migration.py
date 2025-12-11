@@ -1,20 +1,16 @@
-"""Tests for CLI migration commands."""
+"""Tests for CLI migration commands.
+
+Fixtures used from conftest.py:
+- runner: CliRunner for CLI tests
+"""
 
 import sqlite3
 from datetime import datetime
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.data.migration import MigrationManager
-
-
-@pytest.fixture
-def runner():
-    """Create CLI test runner."""
-    return CliRunner()
 
 
 @pytest.fixture
@@ -72,58 +68,164 @@ def v1_0_database(tmp_path):
 
 @pytest.fixture
 def v1_1_database(tmp_path):
-    """Create a v1.1 database for testing."""
+    """Create a v1.1 database for testing.
+
+    Uses sync sqlite3 to avoid event loop conflicts with pytest-asyncio.
+    """
     db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
+    conn = sqlite3.connect(str(db_path))
 
-    # Create v1.1 schema
-    manager._create_enhanced_schema(manager.conn)
+    try:
+        # Create v1.1 schema (messages table with all columns)
+        conn.execute("""
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TEXT,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER,
+                mbox_length INTEGER,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        """)
 
-    # Insert sample data
-    manager.conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
-         'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
-         'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
-    """)
+        # Create FTS table
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content=messages, content_rowid=rowid
+            )
+        """)
 
-    # Set schema version
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-    )
+        # Create archive_runs table
+        conn.execute("""
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+        """)
 
-    manager.conn.commit()
-    manager._close()
+        # Create schema_version table
+        conn.execute("""
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+        """)
+
+        # Insert sample data
+        conn.execute("""
+            INSERT INTO messages VALUES
+            ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+             'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
+        """)
+
+        # Set schema version
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
 
     return db_path
 
 
 @pytest.fixture
 def v1_2_database(tmp_path):
-    """Create a v1.2 database (current version) for testing."""
+    """Create a v1.2 database (current version) for testing.
+
+    Uses sync sqlite3 to avoid event loop conflicts with pytest-asyncio.
+    """
     db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
+    conn = sqlite3.connect(str(db_path))
 
-    # Create v1.1 schema (v1.2 uses same structure)
-    manager._create_enhanced_schema(manager.conn)
+    try:
+        # Create v1.2 schema (same structure as v1.1)
+        conn.execute("""
+            CREATE TABLE messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TEXT,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER,
+                mbox_length INTEGER,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        """)
 
-    # Insert sample data
-    manager.conn.execute("""
-        INSERT INTO messages VALUES
-        ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
-         'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
-         'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
-    """)
+        # Create FTS table
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content=messages, content_rowid=rowid
+            )
+        """)
 
-    # Set schema version to current (1.2)
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.2", datetime.now().isoformat())
-    )
+        # Create archive_runs table
+        conn.execute("""
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+        """)
 
-    manager.conn.commit()
-    manager._close()
+        # Create schema_version table
+        conn.execute("""
+            CREATE TABLE schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+        """)
+
+        # Insert sample data
+        conn.execute("""
+            INSERT INTO messages VALUES
+            ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+             'archive1.mbox', 100, 500, 'Test body', 'abc123', 500, NULL, 'default')
+        """)
+
+        # Set schema version to current (1.2)
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.2", datetime.now().isoformat())
+        )
+
+        conn.commit()
+    finally:
+        conn.close()
 
     return db_path
 
@@ -145,8 +247,11 @@ class TestMigrateCommand:
         assert "Backup created" in result.stdout
 
         # Verify database was migrated to current version (1.2)
-        manager = MigrationManager(v1_0_database)
-        version = manager.detect_schema_version()
+        # Use sync sqlite3 to avoid event loop conflicts with pytest-asyncio
+        conn = sqlite3.connect(str(v1_0_database))
+        cursor = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+        version = cursor.fetchone()[0]
+        conn.close()
         assert version == "1.2"
 
     def test_migrate_already_migrated_database(self, runner, v1_2_database, tmp_path, monkeypatch):
@@ -179,10 +284,16 @@ class TestMigrateCommand:
         assert result.exit_code == 0
         assert "cancelled" in result.stdout.lower() or "aborted" in result.stdout.lower()
 
-        # Verify database was NOT migrated
-        manager = MigrationManager(v1_0_database)
-        version = manager.detect_schema_version()
-        assert version == "1.0"
+        # Verify database was NOT migrated (v1.0 has no schema_version table)
+        # Use sync sqlite3 to avoid event loop conflicts with pytest-asyncio
+        conn = sqlite3.connect(str(v1_0_database))
+        # Check for archived_messages table (v1.0 signature)
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+        )
+        has_v1_0_table = cursor.fetchone() is not None
+        conn.close()
+        assert has_v1_0_table, "v1.0 archived_messages table should still exist"
 
     def test_migrate_default_database_path(self, runner, tmp_path, monkeypatch):
         """Test migrate command uses default database path."""
@@ -310,10 +421,14 @@ class TestRollbackCommand:
         assert result.exit_code == 0
         assert "Rollback completed successfully" in result.stdout
 
-        # Verify database was restored
-        manager = MigrationManager(v1_1_database)
-        version = manager.detect_schema_version()
-        assert version == "1.0"
+        # Verify database was restored (v1.0 has archived_messages table)
+        conn = sqlite3.connect(str(v1_1_database))
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
+        )
+        has_v1_0_table = cursor.fetchone() is not None
+        conn.close()
+        assert has_v1_0_table, "v1.0 archived_messages table should exist after rollback"
 
     def test_rollback_missing_backup(self, runner, tmp_path, monkeypatch):
         """Test rollback with missing backup file."""

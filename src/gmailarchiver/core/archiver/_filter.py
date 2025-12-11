@@ -23,7 +23,7 @@ class MessageFilter:
         """
         self.db_manager = db_manager
 
-    def filter_archived(
+    async def filter_archived(
         self,
         message_ids: list[str],
         incremental: bool = True,
@@ -42,11 +42,15 @@ class MessageFilter:
 
         # Check database for existing messages
         try:
-            # Get only non-NULL gmail_ids (NULL means message deleted from Gmail)
-            cursor = self.db_manager.conn.execute(
-                "SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL"
-            )
-            archived_ids = {row[0] for row in cursor.fetchall()}
+            if self.db_manager.conn is None:
+                archived_ids: set[str] = set()
+            else:
+                # Get only non-NULL gmail_ids (NULL means message deleted from Gmail)
+                cursor = await self.db_manager.conn.execute(
+                    "SELECT gmail_id FROM messages WHERE gmail_id IS NOT NULL"
+                )
+                rows = await cursor.fetchall()
+                archived_ids = {row[0] for row in rows}
         except Exception:
             # If query fails, database might be empty or table doesn't exist yet
             archived_ids = set()

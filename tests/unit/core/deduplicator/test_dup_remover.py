@@ -78,76 +78,89 @@ def test_db() -> Path:
     db_path.unlink()
 
 
+@pytest.mark.unit
 class TestDuplicateRemover:
     """Test duplicate message removal."""
 
-    def test_remove_messages_dry_run(self, test_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_messages_dry_run(self, test_db: Path) -> None:
         """Test dry run mode doesn't actually delete."""
         messages = [
             MessageInfo("gid1", "archive.mbox", 0, 1024, 1024, "2024-01-01"),
             MessageInfo("gid2", "archive.mbox", 1024, 1024, 1024, "2024-01-02"),
         ]
 
-        db = DBManager(str(test_db))
+        db = DBManager(str(test_db), validate_schema=False)
+        await db.initialize()
         remover = DuplicateRemover(db)
-        count = remover.remove_messages(messages, dry_run=True)
+        count = await remover.remove_messages(messages, dry_run=True)
 
         assert count == 2
 
         # Verify messages still exist
-        cursor = db.conn.execute(
+        cursor = await db.conn.execute(
             "SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2")
         )
-        assert cursor.fetchone()[0] == 2
-        db.close()
+        row = await cursor.fetchone()
+        assert row[0] == 2
+        await db.close()
 
-    def test_remove_messages_actual(self, test_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_messages_actual(self, test_db: Path) -> None:
         """Test actual removal deletes from database."""
         messages = [
             MessageInfo("gid1", "archive.mbox", 0, 1024, 1024, "2024-01-01"),
             MessageInfo("gid2", "archive.mbox", 1024, 1024, 1024, "2024-01-02"),
         ]
 
-        db = DBManager(str(test_db))
+        db = DBManager(str(test_db), validate_schema=False)
+        await db.initialize()
         remover = DuplicateRemover(db)
-        count = remover.remove_messages(messages, dry_run=False)
+        count = await remover.remove_messages(messages, dry_run=False)
 
         assert count == 2
 
         # Verify messages were deleted
-        cursor = db.conn.execute(
+        cursor = await db.conn.execute(
             "SELECT COUNT(*) FROM messages WHERE gmail_id IN (?, ?)", ("gid1", "gid2")
         )
-        assert cursor.fetchone()[0] == 0
-        db.close()
+        row = await cursor.fetchone()
+        assert row[0] == 0
+        await db.close()
 
-    def test_remove_empty_list(self, test_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_empty_list(self, test_db: Path) -> None:
         """Test removing empty list returns 0."""
-        db = DBManager(str(test_db))
+        db = DBManager(str(test_db), validate_schema=False)
+        await db.initialize()
         remover = DuplicateRemover(db)
-        count = remover.remove_messages([], dry_run=False)
+        count = await remover.remove_messages([], dry_run=False)
 
         assert count == 0
-        db.close()
+        await db.close()
 
-    def test_remove_single_message(self, test_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_single_message(self, test_db: Path) -> None:
         """Test removing single message."""
         messages = [
             MessageInfo("gid3", "archive.mbox", 2048, 1024, 1024, "2024-01-03"),
         ]
 
-        db = DBManager(str(test_db))
+        db = DBManager(str(test_db), validate_schema=False)
+        await db.initialize()
         remover = DuplicateRemover(db)
-        count = remover.remove_messages(messages, dry_run=False)
+        count = await remover.remove_messages(messages, dry_run=False)
 
         assert count == 1
 
         # Verify only gid3 was deleted
-        cursor = db.conn.execute("SELECT COUNT(*) FROM messages")
-        assert cursor.fetchone()[0] == 4  # 5 - 1 = 4
-        db.close()
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM messages")
+        row = await cursor.fetchone()
+        assert row[0] == 4  # 5 - 1 = 4
+        await db.close()
 
-    def test_remove_uses_parameterized_query(self, test_db: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_remove_uses_parameterized_query(self, test_db: Path) -> None:
         """Test that removal uses parameterized queries (SQL injection safe)."""
         # This test ensures the remover doesn't build SQL strings manually
         malicious_id = "gid1'; DROP TABLE messages; --"
@@ -155,16 +168,18 @@ class TestDuplicateRemover:
             MessageInfo(malicious_id, "archive.mbox", 0, 1024, 1024, "2024-01-01"),
         ]
 
-        db = DBManager(str(test_db))
+        db = DBManager(str(test_db), validate_schema=False)
+        await db.initialize()
         remover = DuplicateRemover(db)
         # Returns count of messages in list, even if they don't exist
-        count = remover.remove_messages(messages, dry_run=False)
+        count = await remover.remove_messages(messages, dry_run=False)
 
         # Count reflects messages in the list (even if not in DB)
         assert count == 1
 
         # Verify table still exists and has all 5 messages
         # (malicious ID doesn't exist, so nothing was deleted)
-        cursor = db.conn.execute("SELECT COUNT(*) FROM messages")
-        assert cursor.fetchone()[0] == 5
-        db.close()
+        cursor = await db.conn.execute("SELECT COUNT(*) FROM messages")
+        row = await cursor.fetchone()
+        assert row[0] == 5
+        await db.close()

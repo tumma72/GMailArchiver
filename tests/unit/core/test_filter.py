@@ -4,13 +4,14 @@ This module contains fast, isolated unit tests with no I/O or external
 dependencies. DBManager is mocked to avoid database access.
 """
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from gmailarchiver.core.archiver._filter import MessageFilter
 
 
+@pytest.mark.unit
 class TestMessageFilter:
     """Unit tests for MessageFilter internal module."""
 
@@ -20,9 +21,10 @@ class TestMessageFilter:
         db = Mock()
         cursor = Mock()
         # Simulate database with msg001 and msg002 already archived
-        cursor.fetchall.return_value = [("msg001",), ("msg002",)]
-        db.conn.execute.return_value = cursor
-        db.close = Mock()
+        cursor.fetchall = AsyncMock(return_value=[("msg001",), ("msg002",)])
+        db.conn = Mock()
+        db.conn.execute = AsyncMock(return_value=cursor)
+        db.close = AsyncMock()
         return db
 
     @pytest.fixture
@@ -30,22 +32,22 @@ class TestMessageFilter:
         """Create MessageFilter instance."""
         return MessageFilter(db_manager=mock_db_manager)
 
-    @pytest.mark.unit
-    def test_filter_with_incremental_false(self, filter_module):
+    @pytest.mark.asyncio
+    async def test_filter_with_incremental_false(self, filter_module):
         """Test that incremental=False returns all messages."""
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = filter_module.filter_archived(message_ids, incremental=False)
+        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=False)
 
         assert filtered == message_ids
         assert skipped == 0
 
-    @pytest.mark.unit
-    def test_filter_with_incremental_true(self, filter_module, mock_db_manager):
+    @pytest.mark.asyncio
+    async def test_filter_with_incremental_true(self, filter_module, mock_db_manager):
         """Test filtering out already-archived messages."""
         message_ids = ["msg001", "msg002", "msg003", "msg004"]
 
-        filtered, skipped = filter_module.filter_archived(message_ids, incremental=True)
+        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
 
         # msg001 and msg002 should be filtered out
         assert filtered == ["msg003", "msg004"]
@@ -57,65 +59,68 @@ class TestMessageFilter:
         assert "SELECT gmail_id FROM messages" in query
         assert "gmail_id IS NOT NULL" in query
 
-    @pytest.mark.unit
-    def test_filter_with_no_archived_messages(self):
+    @pytest.mark.asyncio
+    async def test_filter_with_no_archived_messages(self):
         """Test filtering when no messages are archived."""
         mock_db = Mock()
         cursor = Mock()
-        cursor.fetchall.return_value = []
-        mock_db.conn.execute.return_value = cursor
+        cursor.fetchall = AsyncMock(return_value=[])
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(return_value=cursor)
 
         filter_module = MessageFilter(db_manager=mock_db)
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = filter_module.filter_archived(message_ids, incremental=True)
+        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
 
         assert filtered == message_ids
         assert skipped == 0
 
-    @pytest.mark.unit
-    def test_filter_with_all_archived(self):
+    @pytest.mark.asyncio
+    async def test_filter_with_all_archived(self):
         """Test filtering when all messages are already archived."""
         mock_db = Mock()
         cursor = Mock()
-        cursor.fetchall.return_value = [("msg001",), ("msg002",), ("msg003",)]
-        mock_db.conn.execute.return_value = cursor
+        cursor.fetchall = AsyncMock(return_value=[("msg001",), ("msg002",), ("msg003",)])
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(return_value=cursor)
 
         filter_module = MessageFilter(db_manager=mock_db)
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = filter_module.filter_archived(message_ids, incremental=True)
+        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
 
         assert filtered == []
         assert skipped == 3
 
-    @pytest.mark.unit
-    def test_filter_handles_database_error(self):
+    @pytest.mark.asyncio
+    async def test_filter_handles_database_error(self):
         """Test that database errors are handled gracefully."""
         mock_db = Mock()
-        mock_db.conn.execute.side_effect = Exception("Database error")
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(side_effect=Exception("Database error"))
 
         filter_module = MessageFilter(db_manager=mock_db)
         message_ids = ["msg001", "msg002", "msg003"]
 
         # Should return all messages if database fails
-        filtered, skipped = filter_module.filter_archived(message_ids, incremental=True)
+        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
 
         assert filtered == message_ids
         assert skipped == 0
 
-    @pytest.mark.unit
-    def test_filter_with_empty_message_list(self, filter_module):
+    @pytest.mark.asyncio
+    async def test_filter_with_empty_message_list(self, filter_module):
         """Test filtering with empty message list."""
-        filtered, skipped = filter_module.filter_archived([], incremental=True)
+        filtered, skipped = await filter_module.filter_archived([], incremental=True)
 
         assert filtered == []
         assert skipped == 0
 
-    @pytest.mark.unit
-    def test_filter_excludes_null_gmail_ids(self, filter_module):
+    @pytest.mark.asyncio
+    async def test_filter_excludes_null_gmail_ids(self, filter_module):
         """Test that query excludes NULL gmail_ids (deleted messages)."""
-        filter_module.filter_archived(["msg003"], incremental=True)
+        await filter_module.filter_archived(["msg003"], incremental=True)
 
         # Should include WHERE clause to exclude NULL gmail_ids
         query = filter_module.db_manager.conn.execute.call_args[0][0]

@@ -11,6 +11,8 @@ import pytest
 from gmailarchiver.core.consolidator import ArchiveConsolidator, ConsolidationResult
 from gmailarchiver.data.db_manager import DBManager
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def temp_dir():
@@ -105,18 +107,11 @@ def state_db(temp_dir):
 
 
 @pytest.fixture
-def db_manager(state_db):
-    """Create a DBManager instance for tests."""
-    from gmailarchiver.data.db_manager import DBManager
+async def sample_mbox_1(temp_dir, state_db):
+    """Create first sample mbox archive.
 
-    manager = DBManager(str(state_db), validate_schema=False)
-    yield manager
-    manager.close()
-
-
-@pytest.fixture
-def sample_mbox_1(temp_dir, state_db):
-    """Create first sample mbox archive."""
+    Uses async fixture to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
     mbox_path = temp_dir / "archive1.mbox"
     mbox = mailbox.mbox(str(mbox_path))
 
@@ -133,36 +128,37 @@ def sample_mbox_1(temp_dir, state_db):
 
     mbox.close()
 
-    # Add to database with v1.1 schema
-    db = DBManager(str(state_db), validate_schema=False)
-    for i in range(3):
-        db.record_archived_message(
-            gmail_id=f"gmail{i}",
-            rfc_message_id=f"<msg{i}@example.com>",
-            archive_file=str(mbox_path),
-            mbox_offset=0,  # placeholder offset
-            mbox_length=100,  # placeholder length
-            subject=f"Test Message {i}",
-            from_addr=f"sender{i}@example.com",
-            to_addr="recipient@example.com",
-            date=f"2024-01-{10 + i}T12:00:00+00:00",
-            thread_id=f"thread{i}",
-            cc_addr=None,
-            body_preview=f"Body of message {i}",
-            checksum="abc123",
-            size_bytes=100,
-            labels="[]",
-            record_run=False,
-        )
-    db.conn.commit()
-    db.close()
+    # Add to database with v1.1 schema using async DBManager
+    async with DBManager(str(state_db), validate_schema=False) as db:
+        for i in range(3):
+            await db.record_archived_message(
+                gmail_id=f"gmail{i}",
+                rfc_message_id=f"<msg{i}@example.com>",
+                archive_file=str(mbox_path),
+                mbox_offset=0,  # placeholder offset
+                mbox_length=100,  # placeholder length
+                subject=f"Test Message {i}",
+                from_addr=f"sender{i}@example.com",
+                to_addr="recipient@example.com",
+                date=f"2024-01-{10 + i}T12:00:00+00:00",
+                thread_id=f"thread{i}",
+                cc_addr=None,
+                body_preview=f"Body of message {i}",
+                checksum="abc123",
+                size_bytes=100,
+                labels="[]",
+                record_run=False,
+            )
 
     return mbox_path
 
 
 @pytest.fixture
-def sample_mbox_2(temp_dir, state_db):
-    """Create second sample mbox archive."""
+async def sample_mbox_2(temp_dir, state_db):
+    """Create second sample mbox archive.
+
+    Uses async fixture to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
     mbox_path = temp_dir / "archive2.mbox"
     mbox = mailbox.mbox(str(mbox_path))
 
@@ -179,36 +175,37 @@ def sample_mbox_2(temp_dir, state_db):
 
     mbox.close()
 
-    # Add to database with v1.1 schema
-    db = DBManager(str(state_db), validate_schema=False)
-    for i in range(3, 6):
-        db.record_archived_message(
-            gmail_id=f"gmail{i}",
-            rfc_message_id=f"<msg{i}@example.com>",
-            archive_file=str(mbox_path),
-            mbox_offset=0,  # placeholder offset
-            mbox_length=100,  # placeholder length
-            subject=f"Test Message {i}",
-            from_addr=f"sender{i}@example.com",
-            to_addr="recipient@example.com",
-            date=f"2024-01-{10 + i}T12:00:00+00:00",
-            thread_id=f"thread{i}",
-            cc_addr=None,
-            body_preview=f"Body of message {i}",
-            checksum="abc123",
-            size_bytes=100,
-            labels="[]",
-            record_run=False,
-        )
-    db.conn.commit()
-    db.close()
+    # Add to database with v1.1 schema using async DBManager
+    async with DBManager(str(state_db), validate_schema=False) as db:
+        for i in range(3, 6):
+            await db.record_archived_message(
+                gmail_id=f"gmail{i}",
+                rfc_message_id=f"<msg{i}@example.com>",
+                archive_file=str(mbox_path),
+                mbox_offset=0,  # placeholder offset
+                mbox_length=100,  # placeholder length
+                subject=f"Test Message {i}",
+                from_addr=f"sender{i}@example.com",
+                to_addr="recipient@example.com",
+                date=f"2024-01-{10 + i}T12:00:00+00:00",
+                thread_id=f"thread{i}",
+                cc_addr=None,
+                body_preview=f"Body of message {i}",
+                checksum="abc123",
+                size_bytes=100,
+                labels="[]",
+                record_run=False,
+            )
 
     return mbox_path
 
 
 @pytest.fixture
-def mbox_with_duplicates(temp_dir, state_db):
-    """Create mbox archives with duplicate messages."""
+async def mbox_with_duplicates(temp_dir, state_db):
+    """Create mbox archives with duplicate messages.
+
+    Uses async fixture to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
     mbox1_path = temp_dir / "dup_archive1.mbox"
     mbox2_path = temp_dir / "dup_archive2.mbox"
 
@@ -250,71 +247,67 @@ def mbox_with_duplicates(temp_dir, state_db):
 
     mbox2.close()
 
-    # Add to database with v1.1 schema
-    db = DBManager(str(state_db), validate_schema=False)
+    # Add to database with v1.1 schema using async DBManager
+    async with DBManager(str(state_db), validate_schema=False) as db:
+        # From archive1
+        for i in range(2):
+            await db.record_archived_message(
+                gmail_id=f"gmail_dup{i}",
+                rfc_message_id=f"<dup{i}@example.com>",
+                archive_file=str(mbox1_path),
+                mbox_offset=0,
+                mbox_length=100,
+                subject=f"Duplicate Test {i}",
+                from_addr=f"sender{i}@example.com",
+                to_addr="recipient@example.com",
+                date=f"2024-02-0{5 + i}T10:00:00+00:00",
+                thread_id=f"thread_dup{i}",
+                cc_addr=None,
+                body_preview=f"First version of message {i}",
+                checksum="abc123",
+                size_bytes=100,
+                labels="[]",
+                record_run=False,
+            )
 
-    # From archive1
-    for i in range(2):
-        db.record_archived_message(
-            gmail_id=f"gmail_dup{i}",
-            rfc_message_id=f"<dup{i}@example.com>",
-            archive_file=str(mbox1_path),
+        # From archive2 (duplicate has different gmail_id)
+        await db.record_archived_message(
+            gmail_id="gmail_dup1_v2",
+            rfc_message_id="<dup1@example.com>",
+            archive_file=str(mbox2_path),
             mbox_offset=0,
             mbox_length=100,
-            subject=f"Duplicate Test {i}",
-            from_addr=f"sender{i}@example.com",
+            subject="Duplicate Test 1",
+            from_addr="sender1@example.com",
             to_addr="recipient@example.com",
-            date=f"2024-02-0{5 + i}T10:00:00+00:00",
-            thread_id=f"thread_dup{i}",
+            date="2024-02-07T10:00:00+00:00",
+            thread_id="thread_dup1",
             cc_addr=None,
-            body_preview=f"First version of message {i}",
+            body_preview="Second version of message 1 (newer)",
             checksum="abc123",
             size_bytes=100,
             labels="[]",
             record_run=False,
         )
 
-    # From archive2 (duplicate has different gmail_id)
-    db.record_archived_message(
-        gmail_id="gmail_dup1_v2",
-        rfc_message_id="<dup1@example.com>",
-        archive_file=str(mbox2_path),
-        mbox_offset=0,
-        mbox_length=100,
-        subject="Duplicate Test 1",
-        from_addr="sender1@example.com",
-        to_addr="recipient@example.com",
-        date="2024-02-07T10:00:00+00:00",
-        thread_id="thread_dup1",
-        cc_addr=None,
-        body_preview="Second version of message 1 (newer)",
-        checksum="abc123",
-        size_bytes=100,
-        labels="[]",
-        record_run=False,
-    )
-
-    db.record_archived_message(
-        gmail_id="gmail_unique",
-        rfc_message_id="<unique@example.com>",
-        archive_file=str(mbox2_path),
-        mbox_offset=0,
-        mbox_length=100,
-        subject="Unique Message",
-        from_addr="sender2@example.com",
-        to_addr="recipient@example.com",
-        date="2024-02-08T10:00:00+00:00",
-        thread_id="thread_unique",
-        cc_addr=None,
-        body_preview="This message is unique",
-        checksum="abc123",
-        size_bytes=100,
-        labels="[]",
-        record_run=False,
-    )
-
-    db.conn.commit()
-    db.close()
+        await db.record_archived_message(
+            gmail_id="gmail_unique",
+            rfc_message_id="<unique@example.com>",
+            archive_file=str(mbox2_path),
+            mbox_offset=0,
+            mbox_length=100,
+            subject="Unique Message",
+            from_addr="sender2@example.com",
+            to_addr="recipient@example.com",
+            date="2024-02-08T10:00:00+00:00",
+            thread_id="thread_unique",
+            cc_addr=None,
+            body_preview="This message is unique",
+            checksum="abc123",
+            size_bytes=100,
+            labels="[]",
+            record_run=False,
+        )
 
     return mbox1_path, mbox2_path
 
@@ -322,193 +315,181 @@ def mbox_with_duplicates(temp_dir, state_db):
 class TestArchiveConsolidatorInit:
     """Tests for ArchiveConsolidator initialization."""
 
-    def test_init_with_valid_db(self, db_manager):
+    async def test_init_with_valid_db(self, state_db):
         """Test initialization with valid database manager."""
+        db_manager = DBManager(str(state_db), validate_schema=False)
+        await db_manager.initialize()
         consolidator = ArchiveConsolidator(db_manager)
         assert consolidator.db_manager is db_manager
+        await db_manager.close()
 
-    def test_init_with_nonexistent_db(self, temp_dir):
+    async def test_init_with_nonexistent_db(self, temp_dir):
         """Test initialization with nonexistent database path."""
-        from gmailarchiver.data.db_manager import DBManager
-
         db_path = temp_dir / "nonexistent.db"
-        manager = DBManager(str(db_path), validate_schema=False)
-        try:
+        async with DBManager(str(db_path), validate_schema=False) as manager:
             consolidator = ArchiveConsolidator(manager)
             assert consolidator.db_manager is manager
-        finally:
-            manager.close()
 
 
 class TestBasicConsolidation:
     """Tests for basic archive consolidation."""
 
-    def test_consolidate_two_archives(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    async def test_consolidate_two_archives(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
         """Test consolidating two archives merges all messages."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2],
+                output_archive=output_path,
+                sort_by_date=False,
+                deduplicate=False,
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path,
-            sort_by_date=False,
-            deduplicate=False,
-        )
+            assert isinstance(result, ConsolidationResult)
+            assert result.output_file == str(output_path)
+            assert result.total_messages == 6
+            assert result.messages_consolidated == 6
+            assert result.duplicates_removed == 0
+            assert output_path.exists()
 
-        assert isinstance(result, ConsolidationResult)
-        assert result.output_file == str(output_path)
-        assert result.total_messages == 6
-        assert result.messages_consolidated == 6
-        assert result.duplicates_removed == 0
-        assert output_path.exists()
+            # Verify all messages in output
+            mbox = mailbox.mbox(str(output_path))
+            assert len(mbox) == 6
+            mbox.close()
 
-        # Verify all messages in output
-        mbox = mailbox.mbox(str(output_path))
-        assert len(mbox) == 6
-        mbox.close()
-
-    def test_consolidate_with_result_fields(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    async def test_consolidate_with_result_fields(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
         """Test ConsolidationResult contains all required fields."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
-        )
+            assert result.output_file == str(output_path)
+            assert len(result.source_files) == 2
+            assert result.total_messages > 0
+            assert result.duplicates_removed >= 0
+            assert result.messages_consolidated > 0
+            assert result.execution_time_ms > 0
+            assert isinstance(result.sort_applied, bool)
+            assert result.compression_used is None or isinstance(result.compression_used, str)
 
-        assert result.output_file == str(output_path)
-        assert len(result.source_files) == 2
-        assert result.total_messages > 0
-        assert result.duplicates_removed >= 0
-        assert result.messages_consolidated > 0
-        assert result.execution_time_ms > 0
-        assert isinstance(result.sort_applied, bool)
-        assert result.compression_used is None or isinstance(result.compression_used, str)
-
-    def test_consolidate_empty_archives(self, temp_dir, state_db):
+    async def test_consolidate_empty_archives(self, temp_dir, state_db):
         """Test consolidating empty archives handles gracefully."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
+            # Create empty mbox files
+            empty1 = temp_dir / "empty1.mbox"
+            empty2 = temp_dir / "empty2.mbox"
+            empty1.touch()
+            empty2.touch()
 
-        # Create empty mbox files
-        empty1 = temp_dir / "empty1.mbox"
-        empty2 = temp_dir / "empty2.mbox"
-        empty1.touch()
-        empty2.touch()
+            output_path = temp_dir / "consolidated.mbox"
 
-        output_path = temp_dir / "consolidated.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[empty1, empty2], output_archive=output_path
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[empty1, empty2], output_archive=output_path
-        )
+            assert result.total_messages == 0
+            assert result.messages_consolidated == 0
 
-        assert result.total_messages == 0
-        assert result.messages_consolidated == 0
-
-    def test_consolidate_single_archive(self, temp_dir, state_db, sample_mbox_1):
+    async def test_consolidate_single_archive(self, temp_dir, state_db, sample_mbox_1):
         """Test consolidating single archive works."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1], output_archive=output_path
-        )
+            assert result.total_messages == 3
+            assert result.messages_consolidated == 3
 
-        assert result.total_messages == 3
-        assert result.messages_consolidated == 3
-
-    def test_consolidate_preserves_message_content(self, temp_dir, state_db, sample_mbox_1):
+    async def test_consolidate_preserves_message_content(self, temp_dir, state_db, sample_mbox_1):
         """Test consolidation preserves message headers and body."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path, sort_by_date=False
+            )
 
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1], output_archive=output_path, sort_by_date=False
-        )
+            # Compare original and consolidated
+            orig_mbox = mailbox.mbox(str(sample_mbox_1))
+            cons_mbox = mailbox.mbox(str(output_path))
 
-        # Compare original and consolidated
-        orig_mbox = mailbox.mbox(str(sample_mbox_1))
-        cons_mbox = mailbox.mbox(str(output_path))
+            orig_msg = orig_mbox[0]
+            cons_msg = cons_mbox[0]
 
-        orig_msg = orig_mbox[0]
-        cons_msg = cons_mbox[0]
+            assert orig_msg["Subject"] == cons_msg["Subject"]
+            assert orig_msg["From"] == cons_msg["From"]
+            assert orig_msg["Message-ID"] == cons_msg["Message-ID"]
+            assert orig_msg.get_payload() == cons_msg.get_payload()
 
-        assert orig_msg["Subject"] == cons_msg["Subject"]
-        assert orig_msg["From"] == cons_msg["From"]
-        assert orig_msg["Message-ID"] == cons_msg["Message-ID"]
-        assert orig_msg.get_payload() == cons_msg.get_payload()
-
-        orig_mbox.close()
-        cons_mbox.close()
+            orig_mbox.close()
+            cons_mbox.close()
 
 
 class TestSorting:
     """Tests for chronological sorting."""
 
-    def test_sort_by_date_chronological(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    async def test_sort_by_date_chronological(
+        self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
+    ):
         """Test sorting produces chronological order."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "sorted.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "sorted.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_2, sample_mbox_1],  # Reversed order
+                output_archive=output_path,
+                sort_by_date=True,
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_2, sample_mbox_1],  # Reversed order
-            output_archive=output_path,
-            sort_by_date=True,
-        )
+            assert result.sort_applied is True
 
-        assert result.sort_applied is True
+            # Verify chronological order
+            mbox = mailbox.mbox(str(output_path))
+            dates = []
+            for msg in mbox:
+                dates.append(msg["Date"])
+            mbox.close()
 
-        # Verify chronological order
-        mbox = mailbox.mbox(str(output_path))
-        dates = []
-        for msg in mbox:
-            dates.append(msg["Date"])
-        mbox.close()
+            # Should be in ascending order by date
+            assert dates[0].startswith("Wed, 10 Jan")
+            assert dates[-1].startswith("Wed, 15 Jan")
 
-        # Should be in ascending order by date
-        assert dates[0].startswith("Wed, 10 Jan")
-        assert dates[-1].startswith("Wed, 15 Jan")
-
-    def test_no_sort_preserves_order(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
+    async def test_no_sort_preserves_order(self, temp_dir, state_db, sample_mbox_1, sample_mbox_2):
         """Test without sorting preserves original order."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "unsorted.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "unsorted.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_2, sample_mbox_1],  # archive2 first
+                output_archive=output_path,
+                sort_by_date=False,
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_2, sample_mbox_1],  # archive2 first
-            output_archive=output_path,
-            sort_by_date=False,
-        )
+            assert result.sort_applied is False
 
-        assert result.sort_applied is False
+            # First 3 messages should be from archive2 (msg3, msg4, msg5)
+            mbox = mailbox.mbox(str(output_path))
+            first_msg = mbox[0]
+            assert first_msg["Message-ID"] == "<msg3@example.com>"
+            mbox.close()
 
-        # First 3 messages should be from archive2 (msg3, msg4, msg5)
-        mbox = mailbox.mbox(str(output_path))
-        first_msg = mbox[0]
-        assert first_msg["Message-ID"] == "<msg3@example.com>"
-        mbox.close()
-
-    def test_sort_handles_malformed_dates(self, temp_dir, state_db):
+    async def test_sort_handles_malformed_dates(self, temp_dir, state_db):
         """Test sorting handles messages with malformed dates."""
         # Create mbox with bad dates
         mbox_path = temp_dir / "bad_dates.mbox"
@@ -528,93 +509,85 @@ class TestSorting:
 
         mbox.close()
 
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "sorted_with_bad.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "sorted_with_bad.mbox"
+            # Should not crash
+            result = await consolidator.consolidate(
+                source_archives=[mbox_path], output_archive=output_path, sort_by_date=True
+            )
 
-        # Should not crash
-        result = consolidator.consolidate(
-            source_archives=[mbox_path], output_archive=output_path, sort_by_date=True
-        )
-
-        assert result.total_messages == 2
+            assert result.total_messages == 2
 
 
 class TestDeduplication:
     """Tests for duplicate message handling."""
 
-    def test_deduplicate_removes_duplicates(self, temp_dir, state_db, mbox_with_duplicates):
+    async def test_deduplicate_removes_duplicates(self, temp_dir, state_db, mbox_with_duplicates):
         """Test deduplication removes duplicate messages."""
         mbox1, mbox2 = mbox_with_duplicates
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "deduped.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "deduped.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[mbox1, mbox2],
+                output_archive=output_path,
+                deduplicate=True,
+                dedupe_strategy="newest",
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[mbox1, mbox2],
-            output_archive=output_path,
-            deduplicate=True,
-            dedupe_strategy="newest",
-        )
+            assert result.duplicates_removed == 1
+            assert result.messages_consolidated == 3  # 2 from mbox1 + 2 from mbox2 - 1 dup
 
-        assert result.duplicates_removed == 1
-        assert result.messages_consolidated == 3  # 2 from mbox1 + 2 from mbox2 - 1 dup
+            # Verify only 3 messages in output
+            mbox = mailbox.mbox(str(output_path))
+            assert len(mbox) == 3
+            mbox.close()
 
-        # Verify only 3 messages in output
-        mbox = mailbox.mbox(str(output_path))
-        assert len(mbox) == 3
-        mbox.close()
-
-    def test_deduplicate_newest_strategy(self, temp_dir, state_db, mbox_with_duplicates):
+    async def test_deduplicate_newest_strategy(self, temp_dir, state_db, mbox_with_duplicates):
         """Test newest strategy keeps the newer message."""
         mbox1, mbox2 = mbox_with_duplicates
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "deduped_newest.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "deduped_newest.mbox"
+            await consolidator.consolidate(
+                source_archives=[mbox1, mbox2],
+                output_archive=output_path,
+                deduplicate=True,
+                dedupe_strategy="newest",
+            )
 
-        consolidator.consolidate(
-            source_archives=[mbox1, mbox2],
-            output_archive=output_path,
-            deduplicate=True,
-            dedupe_strategy="newest",
-        )
+            # Find the kept message with Message-ID <dup1@example.com>
+            mbox = mailbox.mbox(str(output_path))
+            kept_msg = None
+            for msg in mbox:
+                if msg["Message-ID"] == "<dup1@example.com>":
+                    kept_msg = msg
+                    break
+            mbox.close()
 
-        # Find the kept message with Message-ID <dup1@example.com>
-        mbox = mailbox.mbox(str(output_path))
-        kept_msg = None
-        for msg in mbox:
-            if msg["Message-ID"] == "<dup1@example.com>":
-                kept_msg = msg
-                break
-        mbox.close()
+            assert kept_msg is not None
+            # Newer version has different body
+            assert "newer" in kept_msg.get_payload()
 
-        assert kept_msg is not None
-        # Newer version has different body
-        assert "newer" in kept_msg.get_payload()
-
-    def test_no_deduplicate_keeps_all(self, temp_dir, state_db, mbox_with_duplicates):
+    async def test_no_deduplicate_keeps_all(self, temp_dir, state_db, mbox_with_duplicates):
         """Test without deduplication keeps all messages."""
         mbox1, mbox2 = mbox_with_duplicates
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "no_dedup.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "no_dedup.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=False
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=False
-        )
+            assert result.duplicates_removed == 0
+            assert result.total_messages == 4  # All messages kept
 
-        assert result.duplicates_removed == 0
-        assert result.total_messages == 4  # All messages kept
-
-    def test_deduplicate_largest_strategy(self, temp_dir, state_db):
+    async def test_deduplicate_largest_strategy(self, temp_dir, state_db):
         """Test largest strategy keeps the bigger message."""
         # Create archives with same Message-ID but different sizes
         mbox1_path = temp_dir / "small.mbox"
@@ -636,42 +609,38 @@ class TestDeduplication:
         mbox2.add(msg_large)
         mbox2.close()
 
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "deduped_largest.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "deduped_largest.mbox"
+            await consolidator.consolidate(
+                source_archives=[mbox1_path, mbox2_path],
+                output_archive=output_path,
+                deduplicate=True,
+                dedupe_strategy="largest",
+            )
 
-        consolidator.consolidate(
-            source_archives=[mbox1_path, mbox2_path],
-            output_archive=output_path,
-            deduplicate=True,
-            dedupe_strategy="largest",
-        )
-
-        # Verify larger message kept
-        mbox = mailbox.mbox(str(output_path))
-        kept_msg = mbox[0]
-        assert "much more content" in kept_msg.get_payload()
-        mbox.close()
+            # Verify larger message kept
+            mbox = mailbox.mbox(str(output_path))
+            kept_msg = mbox[0]
+            assert "much more content" in kept_msg.get_payload()
+            mbox.close()
 
 
 class TestDatabaseUpdate:
     """Tests for database updates after consolidation."""
 
-    def test_database_updated_with_new_archive_file(
+    async def test_database_updated_with_new_archive_file(
         self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
     ):
         """Test database updated with new archive file path."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
-        )
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
+            )
 
         # Check database
         with sqlite3.connect(str(state_db)) as conn:
@@ -683,15 +652,15 @@ class TestDatabaseUpdate:
         # All messages should point to consolidated archive
         assert str(output_path) in archive_files
 
-    def test_database_updated_with_mbox_offsets(self, temp_dir, state_db, sample_mbox_1):
+    async def test_database_updated_with_mbox_offsets(self, temp_dir, state_db, sample_mbox_1):
         """Test database updated with correct mbox offsets."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
-        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path
+            )
 
         # Check offsets are updated
         with sqlite3.connect(str(state_db)) as conn:
@@ -711,23 +680,24 @@ class TestDatabaseUpdate:
             assert offset >= 0
             assert length > 0
 
-    def test_database_removes_duplicate_entries(self, temp_dir, state_db, mbox_with_duplicates):
+    async def test_database_removes_duplicate_entries(
+        self, temp_dir, state_db, mbox_with_duplicates
+    ):
         """Test database removes entries for duplicate messages."""
         mbox1, mbox2 = mbox_with_duplicates
-        from gmailarchiver.data.db_manager import DBManager
-
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "deduped.mbox"
 
         # Count before
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_before = cursor.fetchone()[0]
 
-        consolidator.consolidate(
-            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
-        )
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "deduped.mbox"
+
+            await consolidator.consolidate(
+                source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
+            )
 
         # Count after
         with sqlite3.connect(str(state_db)) as conn:
@@ -737,14 +707,8 @@ class TestDatabaseUpdate:
         # Should have 1 less entry (duplicate removed)
         assert count_after == count_before - 1
 
-    def test_database_preserves_metadata(self, temp_dir, state_db, sample_mbox_1):
+    async def test_database_preserves_metadata(self, temp_dir, state_db, sample_mbox_1):
         """Test consolidation preserves message metadata in database."""
-        from gmailarchiver.data.db_manager import DBManager
-
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
         # Get original metadata
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
@@ -757,7 +721,13 @@ class TestDatabaseUpdate:
             )
             original_metadata = cursor.fetchall()
 
-        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
+
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path
+            )
 
         # Get new metadata
         with sqlite3.connect(str(state_db)) as conn:
@@ -782,109 +752,99 @@ class TestDatabaseUpdate:
 class TestCompression:
     """Tests for compression support."""
 
-    def test_consolidate_with_gzip_compression(
+    async def test_consolidate_with_gzip_compression(
         self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
     ):
         """Test consolidation with gzip compression."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox.gz"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox.gz"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2],
+                output_archive=output_path,
+                compress="gzip",
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path,
-            compress="gzip",
-        )
+            assert result.compression_used == "gzip"
+            assert output_path.exists()
 
-        assert result.compression_used == "gzip"
-        assert output_path.exists()
+            # Verify it's actually compressed
+            with open(output_path, "rb") as f:
+                magic = f.read(2)
+                assert magic == b"\x1f\x8b"  # gzip magic number
 
-        # Verify it's actually compressed
-        with open(output_path, "rb") as f:
-            magic = f.read(2)
-            assert magic == b"\x1f\x8b"  # gzip magic number
-
-    def test_consolidate_without_compression(self, temp_dir, state_db, sample_mbox_1):
+    async def test_consolidate_without_compression(self, temp_dir, state_db, sample_mbox_1):
         """Test consolidation without compression."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path, compress=None
+            )
 
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1], output_archive=output_path, compress=None
-        )
-
-        assert result.compression_used is None
-        assert output_path.exists()
+            assert result.compression_used is None
+            assert output_path.exists()
 
 
 class TestErrorHandling:
     """Tests for error handling."""
 
-    def test_consolidate_missing_source_file(self, temp_dir, state_db):
+    async def test_consolidate_missing_source_file(self, temp_dir, state_db):
         """Test error when source file doesn't exist."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
+            missing_path = temp_dir / "nonexistent.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-        missing_path = temp_dir / "nonexistent.mbox"
+            with pytest.raises(FileNotFoundError):
+                await consolidator.consolidate(
+                    source_archives=[missing_path], output_archive=output_path
+                )
 
-        with pytest.raises(FileNotFoundError):
-            consolidator.consolidate(source_archives=[missing_path], output_archive=output_path)
-
-    def test_consolidate_empty_source_list(self, temp_dir, state_db):
+    async def test_consolidate_empty_source_list(self, temp_dir, state_db):
         """Test error with empty source archives list."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
+            with pytest.raises(ValueError):
+                await consolidator.consolidate(source_archives=[], output_archive=output_path)
 
-        with pytest.raises(ValueError):
-            consolidator.consolidate(source_archives=[], output_archive=output_path)
-
-    def test_consolidate_invalid_dedupe_strategy(self, temp_dir, state_db, sample_mbox_1):
+    async def test_consolidate_invalid_dedupe_strategy(self, temp_dir, state_db, sample_mbox_1):
         """Test error with invalid deduplication strategy."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
-        with pytest.raises(ValueError):
-            consolidator.consolidate(
-                source_archives=[sample_mbox_1],
-                output_archive=output_path,
-                deduplicate=True,
-                dedupe_strategy="invalid_strategy",
-            )
+            with pytest.raises(ValueError):
+                await consolidator.consolidate(
+                    source_archives=[sample_mbox_1],
+                    output_archive=output_path,
+                    deduplicate=True,
+                    dedupe_strategy="invalid_strategy",
+                )
 
 
 class TestAtomicConsolidation:
     """Tests for atomic consolidation using HybridStorage."""
 
-    def test_atomic_consolidation_both_succeed(
+    async def test_atomic_consolidation_both_succeed(
         self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
     ):
         """Test that both mbox and database are updated atomically."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
-        # Perform consolidation
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path,
-            sort_by_date=False,
-            deduplicate=False,
-        )
+            # Perform consolidation
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2],
+                output_archive=output_path,
+                sort_by_date=False,
+                deduplicate=False,
+            )
 
         # Verify mbox exists and has correct count
         assert output_path.exists()
@@ -902,16 +862,16 @@ class TestAtomicConsolidation:
         # Both should match
         assert db_count == 6
 
-    def test_atomic_consolidation_updates_offsets(self, temp_dir, state_db, sample_mbox_1):
+    async def test_atomic_consolidation_updates_offsets(self, temp_dir, state_db, sample_mbox_1):
         """Test that database offsets are updated correctly."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
-        # Perform consolidation
-        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
+            # Perform consolidation
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path
+            )
 
         # Verify offsets are updated and valid
         with sqlite3.connect(str(state_db)) as conn:
@@ -939,25 +899,23 @@ class TestAtomicConsolidation:
             _, offset2, _ = rows[i + 1]
             assert offset1 + length1 <= offset2, "Overlapping offsets detected"
 
-    def test_consolidation_creates_audit_trail(
+    async def test_consolidation_creates_audit_trail(
         self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
     ):
         """Test that consolidation is recorded in archive_runs."""
-        from gmailarchiver.data.db_manager import DBManager
-
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
         # Count archive_runs before
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM archive_runs")
             runs_before = cursor.fetchone()[0]
 
-        # Perform consolidation
-        consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
-        )
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
+
+            # Perform consolidation
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2], output_archive=output_path
+            )
 
         # Verify audit trail created
         with sqlite3.connect(str(state_db)) as conn:
@@ -967,21 +925,19 @@ class TestAtomicConsolidation:
         # Should have at least one new entry
         assert runs_after > runs_before
 
-    def test_consolidation_with_compression_atomic(
+    async def test_consolidation_with_compression_atomic(
         self, temp_dir, state_db, sample_mbox_1, sample_mbox_2
     ):
         """Test atomic consolidation with compression."""
-        from gmailarchiver.data.db_manager import DBManager
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox.gz"
 
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox.gz"
-
-        result = consolidator.consolidate(
-            source_archives=[sample_mbox_1, sample_mbox_2],
-            output_archive=output_path,
-            compress="gzip",
-        )
+            result = await consolidator.consolidate(
+                source_archives=[sample_mbox_1, sample_mbox_2],
+                output_archive=output_path,
+                compress="gzip",
+            )
 
         # Verify compressed file exists
         assert output_path.exists()
@@ -997,26 +953,25 @@ class TestAtomicConsolidation:
 
         assert str(output_path) in db_files
 
-    def test_deduplication_updates_database_atomically(
+    async def test_deduplication_updates_database_atomically(
         self, temp_dir, state_db, mbox_with_duplicates
     ):
         """Test that deduplication updates database correctly."""
         mbox1, mbox2 = mbox_with_duplicates
-        from gmailarchiver.data.db_manager import DBManager
-
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "deduped.mbox"
 
         # Count messages before
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute("SELECT COUNT(*) FROM messages")
             count_before = cursor.fetchone()[0]
 
-        # Perform consolidation with deduplication
-        result = consolidator.consolidate(
-            source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
-        )
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "deduped.mbox"
+
+            # Perform consolidation with deduplication
+            result = await consolidator.consolidate(
+                source_archives=[mbox1, mbox2], output_archive=output_path, deduplicate=True
+            )
 
         # Count messages after
         with sqlite3.connect(str(state_db)) as conn:
@@ -1027,14 +982,8 @@ class TestAtomicConsolidation:
         assert count_before - count_after == result.duplicates_removed
         assert result.duplicates_removed == 1
 
-    def test_consolidation_preserves_metadata(self, temp_dir, state_db, sample_mbox_1):
+    async def test_consolidation_preserves_metadata(self, temp_dir, state_db, sample_mbox_1):
         """Test that consolidation preserves all message metadata."""
-        from gmailarchiver.data.db_manager import DBManager
-
-        db = DBManager(str(state_db), validate_schema=False)
-        consolidator = ArchiveConsolidator(db)
-        output_path = temp_dir / "consolidated.mbox"
-
         # Get original metadata
         with sqlite3.connect(str(state_db)) as conn:
             cursor = conn.execute(
@@ -1047,8 +996,14 @@ class TestAtomicConsolidation:
             )
             original_metadata = {row[0]: row for row in cursor.fetchall()}
 
-        # Perform consolidation
-        consolidator.consolidate(source_archives=[sample_mbox_1], output_archive=output_path)
+        async with DBManager(str(state_db), validate_schema=False) as db:
+            consolidator = ArchiveConsolidator(db)
+            output_path = temp_dir / "consolidated.mbox"
+
+            # Perform consolidation
+            await consolidator.consolidate(
+                source_archives=[sample_mbox_1], output_archive=output_path
+            )
 
         # Get new metadata
         with sqlite3.connect(str(state_db)) as conn:

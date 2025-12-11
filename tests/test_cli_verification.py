@@ -1,18 +1,13 @@
-"""Tests for CLI verification commands."""
+"""Fixtures for CLI verification commands testing.
+
+Fixtures used from conftest.py:
+- runner: CliRunner for CLI tests
+"""
 
 import sqlite3
 from datetime import datetime
 
 import pytest
-from typer.testing import CliRunner
-
-from gmailarchiver.data.migration import MigrationManager
-
-
-@pytest.fixture
-def runner():
-    """Create CLI test runner."""
-    return CliRunner()
 
 
 @pytest.fixture
@@ -85,35 +80,76 @@ Test body
 
 @pytest.fixture
 def v1_1_database(tmp_path, test_mbox):
-    """Create a v1.1 database for testing with accurate offsets."""
+    """Create a v1.1 database for testing with accurate offsets.
+
+    Uses sync sqlite3 to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
     db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
+    conn = sqlite3.connect(str(db_path))
 
-    # Create v1.1 schema
-    manager._create_enhanced_schema(manager.conn)
+    try:
+        # Create v1.1 schema (must match production schema exactly!)
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            );
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT NOT NULL,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            );
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                upgraded_at TEXT NOT NULL
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject, from_addr, to_addr, body_preview,
+                content='messages', content_rowid='rowid'
+            );
+        """)
 
-    # Get actual message size from mbox
-    message_size = test_mbox.stat().st_size
+        # Get actual message size from mbox
+        message_size = test_mbox.stat().st_size
 
-    # Insert sample data with accurate mbox_offset and length
-    # Use the full path to archive file since validator uses self.archive_path
-    manager.conn.execute(
-        """
-        INSERT INTO messages VALUES
-        ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
-         'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
-         ?, 0, ?, 'Test body', 'abc123', ?, NULL, 'default')
-    """,
-        (str(test_mbox), message_size, message_size),
-    )
+        # Insert sample data with accurate mbox_offset and length
+        # Use the full path to archive file since validator uses self.archive_path
+        conn.execute(
+            """
+            INSERT INTO messages VALUES
+            ('msg1', '<msg1@test.com>', 'thread1', 'Test 1', 'test@example.com',
+             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+             ?, 0, ?, 'Test body', 'abc123', ?, NULL, 'default')
+        """,
+            (str(test_mbox), message_size, message_size),
+        )
 
-    # Set schema version
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-    )
+        # Set schema version
+        conn.execute(
+            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
+        )
 
-    manager.conn.commit()
-    manager._close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return db_path

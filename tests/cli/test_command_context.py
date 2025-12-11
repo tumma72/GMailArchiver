@@ -2,7 +2,7 @@
 
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import typer
@@ -331,6 +331,8 @@ class TestWithContextDecorator:
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
             mock_db = MagicMock()
+            mock_db.initialize = AsyncMock()  # initialize is async
+            mock_db.close = AsyncMock()  # close is async
             MockDB.return_value = mock_db
             mock_storage = MagicMock()
             MockStorage.return_value = mock_storage
@@ -480,6 +482,8 @@ class TestWithContextDecorator:
             mock_output = MagicMock(spec=OutputManager)
             MockOutput.return_value = mock_output
             mock_db = MagicMock()
+            mock_db.initialize = AsyncMock()  # initialize is async
+            mock_db.close = AsyncMock()  # close is async
             MockDB.return_value = mock_db
             mock_storage = MagicMock()
             MockStorage.return_value = mock_storage

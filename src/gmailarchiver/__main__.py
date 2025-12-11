@@ -1,5 +1,6 @@
 """Gmail Archiver CLI application."""
 
+import asyncio
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime
@@ -17,7 +18,7 @@ from .core.compressor.facade import ArchiveCompressor
 from .core.consolidator.facade import ArchiveConsolidator
 from .core.deduplicator.facade import DeduplicatorFacade
 from .core.doctor.facade import Doctor
-from .core.extractor.facade import MessageExtractor
+from .core.extractor.facade import ExtractStats, MessageExtractor
 from .core.importer.facade import ImporterFacade
 from .core.search.facade import SearchFacade
 from .core.validator.facade import ValidatorFacade
@@ -128,11 +129,33 @@ def archive(
     # Phase 1: Authentication
     gmail_client = ctx.authenticate_gmail(credentials=credentials)
     assert gmail_client is not None  # required=True ensures this
-    archiver = ArchiverFacade(
-        gmail_client=gmail_client,
-        state_db_path="archive_state.db",
-        output_manager=out,
-    )
+
+    # Async helper to create ArchiverFacade
+    async def _create_archiver() -> ArchiverFacade:
+        return await ArchiverFacade.create(
+            gmail_client=gmail_client,
+            state_db_path="archive_state.db",
+            output_manager=out,
+        )
+
+    archiver = asyncio.run(_create_archiver())
+
+    # Async helpers for async methods
+    async def _filter_already_archived(ids: list[str], inc: bool) -> tuple[list[str], int]:
+        return await archiver.filter_already_archived(ids, incremental=inc)
+
+    async def _archive_messages(
+        msg_ids: list[str],
+        out_file: str,
+        compr: str | None,
+        op: Any,
+    ) -> dict[str, Any]:
+        return await archiver.archive_messages(
+            message_ids=msg_ids,
+            output_file=out_file,
+            compress=compr,
+            operation=op,
+        )
 
     # Phase 2: Discovery and Archiving (multi-task sequence)
     message_list: list[dict[str, str]] = []
@@ -143,7 +166,7 @@ def archive(
     scan_count: int = 0  # Track messages scanned during listing
 
     with ctx.ui.task_sequence(show_logs=True) as seq:
-        # Task 1: Scan messages from Gmail
+        # Task 1: Scan messages from Gmail (sync - uses Gmail API)
         with seq.task("Scanning messages from Gmail") as task:
             try:
                 # Progress callback to update counter during scanning
@@ -170,8 +193,8 @@ def archive(
             with seq.task("Checking for already archived") as task:
                 try:
                     all_ids = [msg["id"] for msg in message_list]
-                    messages_to_archive, skipped_count = archiver.filter_already_archived(
-                        all_ids, incremental=incremental
+                    messages_to_archive, skipped_count = asyncio.run(
+                        _filter_already_archived(all_ids, incremental)
                     )
 
                     if skipped_count > 0:
@@ -190,11 +213,8 @@ def archive(
         if messages_to_archive and not archive_error and not dry_run:
             with seq.task("Archiving messages", total=len(messages_to_archive)) as task:
                 try:
-                    result = archiver.archive_messages(
-                        message_ids=messages_to_archive,
-                        output_file=output,
-                        compress=compress,
-                        operation=task,
+                    result = asyncio.run(
+                        _archive_messages(messages_to_archive, output, compress, task)
                     )
 
                     if result.get("interrupted"):
@@ -278,11 +298,11 @@ def archive(
     # Get the actual message IDs that were archived
     # (ctx.storage is guaranteed by requires_storage=True)
     assert ctx.storage is not None
-    archived_ids = ctx.storage.get_message_ids_for_archive(actual_file)
+    archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(actual_file))
 
     # Validate using ValidatorFacade directly
     validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
-    validation_results = validator.validate_comprehensive(archived_ids)
+    validation_results: dict[str, Any] = validator.validate_comprehensive(archived_ids)
 
     # Show validation report using new panel method
     out.show_validation_report(validation_results, title="Archive Validation")
@@ -409,7 +429,7 @@ def validate(
         with seq.task("Loading database information") as t:
             try:
                 assert ctx.storage is not None, "Storage should be initialized by @with_context"
-                expected_ids = ctx.storage.get_message_ids_for_archive(archive_file)
+                expected_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(archive_file))
                 t.complete(f"Found {len(expected_ids):,} messages")
             except Exception as e:
                 t.fail("Database error", reason=str(e))
@@ -500,7 +520,7 @@ def retry_delete_cmd(
     try:
         # 1. Get archived message IDs from database
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        message_ids = list(ctx.storage.get_message_ids_for_archive(archive_file))
+        message_ids = list(asyncio.run(ctx.storage.get_message_ids_for_archive(archive_file)))
 
         if not message_ids:
             ctx.fail_and_exit(
@@ -525,7 +545,7 @@ def retry_delete_cmd(
         assert client is not None  # required=True ensures this
 
         # Create archiver (for deletion functionality)
-        archiver = ArchiverFacade(client, state_db, output_manager=ctx.output)
+        archiver = ArchiverFacade(client, ctx.storage.db, ctx.storage, output_manager=ctx.output)
 
         # 6. Delete messages with appropriate confirmation
         if permanent:
@@ -602,7 +622,7 @@ def status(
     # Detect schema version
     manager = MigrationManager(db_path)
     try:
-        version = manager.detect_schema_version()
+        version = asyncio.run(manager.detect_schema_version())
         db_size = db_path.stat().st_size
 
         # Direct database access to support both v1.0 and v1.1+ schemas
@@ -693,7 +713,7 @@ def status(
             suggestion="Check database file integrity or run 'gmailarchiver doctor'",
         )
     finally:
-        manager._close()
+        asyncio.run(manager._close())
 
 
 @app.command()
@@ -757,10 +777,10 @@ def cleanup(
 
     try:
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        ctx.storage.db.ensure_sessions_table()
+        asyncio.run(ctx.storage.db.ensure_sessions_table())
 
         # Get all partial sessions
-        sessions = ctx.storage.db.get_all_partial_sessions()
+        sessions = asyncio.run(ctx.storage.db.get_all_partial_sessions())
 
         if list_sessions:
             if not sessions:
@@ -825,6 +845,19 @@ def cleanup(
                 ctx.info("Cleanup cancelled")
                 raise typer.Exit(0)
 
+        # Async helper for cleanup operations
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        storage_db = ctx.storage.db  # Capture for async closures
+
+        async def _delete_messages_for_file(file_path: str) -> int:
+            return await storage_db.delete_messages_for_file(file_path)
+
+        async def _delete_session(session_id: str) -> None:
+            await storage_db.delete_session(session_id)
+
+        async def _close_db() -> None:
+            await storage_db.close()
+
         # Perform cleanup
         cleaned_count = 0
         for session in sessions_to_clean:
@@ -837,16 +870,16 @@ def cleanup(
                 ctx.info(f"Deleted partial file: {partial_file.name}")
 
             # Delete messages associated with the partial file
-            deleted_msgs = ctx.storage.db.delete_messages_for_file(str(partial_file))
+            deleted_msgs = asyncio.run(_delete_messages_for_file(str(partial_file)))
             if deleted_msgs > 0:
                 ctx.info(f"Removed {deleted_msgs} message records")
 
             # Delete session record
-            ctx.storage.db.delete_session(session["session_id"])
+            asyncio.run(_delete_session(session["session_id"]))
             ctx.success(f"Cleaned session: {session['session_id'][:12]}...")
             cleaned_count += 1
 
-        ctx.storage.db.close()
+        asyncio.run(_close_db())
 
         ctx.success(f"Cleaned up {cleaned_count} partial session(s)")
 
@@ -890,12 +923,12 @@ def migrate(
 
     # Use centralized SchemaManager for version detection
     schema_mgr = SchemaManager(db_path)
-    current_version = schema_mgr.detect_version()
+    current_version = asyncio.run(schema_mgr.detect_version())
     manager: MigrationManager | None = None
 
     try:
         # Check if migration is needed
-        if not schema_mgr.needs_migration():
+        if not asyncio.run(schema_mgr.needs_migration()):
             ctx.success(f"Database is already at version {current_version.value} (up to date)")
             return
 
@@ -906,7 +939,7 @@ def migrate(
                 suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
             )
 
-        if not schema_mgr.can_auto_migrate():
+        if not asyncio.run(schema_mgr.can_auto_migrate()):
             ctx.fail_and_exit(
                 title="Cannot Migrate",
                 message=f"Cannot auto-migrate from version {current_version.value}",
@@ -933,20 +966,22 @@ def migrate(
         with ctx.output.progress_context("Creating backup", total=3) as progress:
             task = progress.add_task("Migration", total=3) if progress else None
 
-            backup_path = manager.create_backup()
+            backup_path = asyncio.run(manager.create_backup())
             if progress and task:
                 progress.update(task, advance=1, refresh=True)
 
             ctx.success(f"Backup created: {backup_path}")
 
             # Run migration using SchemaManager
-            schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+            asyncio.run(
+                schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+            )
             if progress and task:
                 progress.update(task, advance=1, refresh=True)
 
             # Validate migration using SchemaManager
             schema_mgr.invalidate_cache()
-            final_version = schema_mgr.detect_version()
+            final_version = asyncio.run(schema_mgr.detect_version())
             if final_version != SchemaManager.CURRENT_VERSION:
                 raise RuntimeError(
                     f"Migration validation failed: expected {SchemaManager.CURRENT_VERSION.value}, "
@@ -980,7 +1015,7 @@ def migrate(
         )
     finally:
         if manager is not None:
-            manager._close()
+            asyncio.run(manager._close())
 
 
 @utilities_app.command()
@@ -1075,7 +1110,7 @@ def rollback(
 
     try:
         manager = MigrationManager(db_path)
-        manager.rollback_migration(backup_path)
+        asyncio.run(manager.rollback_migration(backup_path))
 
         ctx.success("Rollback completed successfully!")
 
@@ -1134,27 +1169,43 @@ def dedupe(
         )
 
     try:
-        # Initialize deduplicator (validates v1.1 schema)
         # Use the DBManager from the context (created by @with_context decorator)
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        with DeduplicatorFacade(ctx.storage.db) as dedup:
-            with ctx.ui.task_sequence() as seq:
-                # Task 1: Find duplicates
-                with seq.task("Finding duplicates") as t:
-                    duplicates = dedup.find_duplicates()
-                    if not duplicates:
-                        t.complete("No duplicates found")
-                        ctx.success("No duplicate messages found!")
-                        return
-                    t.complete(f"Found {len(duplicates):,} duplicate message IDs")
+        db = ctx.storage.db
 
-                # Task 2: Analyze duplicates
-                with seq.task("Analyzing duplicates") as t:
-                    report = dedup.generate_report(duplicates)
-                    t.complete(
-                        f"{report.messages_to_remove:,} messages to remove, "
-                        f"{format_bytes(report.space_recoverable)} recoverable"
-                    )
+        # Async helper functions - each uses proper async context manager
+        async def _find_duplicates() -> dict[str, Any]:
+            async with await DeduplicatorFacade.create(db) as dedup:
+                return await dedup.find_duplicates()
+
+        async def _generate_report(dups: dict[str, Any]) -> Any:
+            async with await DeduplicatorFacade.create(db) as dedup:
+                return await dedup.generate_report(dups)
+
+        async def _deduplicate(dups: dict[str, Any], strat: str, is_dry_run: bool) -> Any:
+            async with await DeduplicatorFacade.create(db) as dedup:
+                return await dedup.deduplicate(dups, strategy=strat, dry_run=is_dry_run)
+
+        async def _verify_integrity() -> list[str]:
+            return await db.verify_database_integrity()
+
+        with ctx.ui.task_sequence() as seq:
+            # Task 1: Find duplicates
+            with seq.task("Finding duplicates") as t:
+                duplicates = asyncio.run(_find_duplicates())
+                if not duplicates:
+                    t.complete("No duplicates found")
+                    ctx.success("No duplicate messages found!")
+                    return
+                t.complete(f"Found {len(duplicates):,} duplicate message IDs")
+
+            # Task 2: Analyze duplicates
+            with seq.task("Analyzing duplicates") as t:
+                report = asyncio.run(_generate_report(duplicates))
+                t.complete(
+                    f"{report.messages_to_remove:,} messages to remove, "
+                    f"{format_bytes(report.space_recoverable)} recoverable"
+                )
 
                 report_data = {
                     "Strategy": strategy,
@@ -1168,7 +1219,7 @@ def dedupe(
 
                     # Task 3: Preview deduplication (dry run)
                     with seq.task("Previewing deduplication") as t:
-                        result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=True)
+                        result = asyncio.run(_deduplicate(duplicates, strategy, True))
                         t.complete(
                             f"Would remove {result.messages_removed:,} messages, "
                             f"keep {result.messages_kept:,} messages"
@@ -1206,7 +1257,7 @@ def dedupe(
 
                     # Task 3: Perform deduplication
                     with seq.task("Removing duplicates") as t:
-                        result = dedup.deduplicate(duplicates, strategy=strategy, dry_run=False)
+                        result = asyncio.run(_deduplicate(duplicates, strategy, False))
                         t.complete(
                             f"Removed {result.messages_removed:,} messages, "
                             f"kept {result.messages_kept:,} messages"
@@ -1235,7 +1286,7 @@ def dedupe(
 
                         with seq.task("Verifying database integrity") as t:
                             try:
-                                issues = ctx.storage.db.verify_database_integrity()
+                                issues = asyncio.run(_verify_integrity())
 
                                 if not issues:
                                     t.complete("No issues found")
@@ -1316,7 +1367,7 @@ def verify_offsets_cmd(
 
         with ctx.ui.task_sequence() as seq:
             with seq.task("Verifying offsets") as t:
-                result = validator.verify_offsets()
+                result = asyncio.run(validator.verify_offsets())
 
                 if result.skipped:
                     t.complete("Skipped (v1.0 schema)")
@@ -1417,7 +1468,7 @@ def verify_consistency_cmd(
 
         with ctx.ui.task_sequence() as seq:
             with seq.task("Running consistency checks") as t:
-                report = validator.verify_consistency()
+                report = asyncio.run(validator.verify_consistency())
 
                 if report.passed:
                     t.complete("All checks passed")
@@ -1439,7 +1490,7 @@ def verify_consistency_cmd(
 
         # Use SchemaManager to check capabilities instead of hardcoded version strings
         schema_mgr = SchemaManager(state_db)
-        if schema_mgr.has_capability(SchemaCapability.FTS_SEARCH):
+        if asyncio.run(schema_mgr.has_capability(SchemaCapability.FTS_SEARCH)):
             report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
             report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
@@ -1588,11 +1639,15 @@ def search(
             display_search_results_rich,
         )
         from gmailarchiver.cli.output import SearchResultEntry
+        from gmailarchiver.core.search._types import SearchResults
 
         start_time = time.perf_counter()
 
-        with SearchFacade(state_db) as search:
-            results = search.search(query, limit=limit)
+        async def _search() -> SearchResults:
+            async with await SearchFacade.create(state_db) as search:
+                return await search.search(query, limit=limit)
+
+        results = asyncio.run(_search())
 
         execution_time_ms = (time.perf_counter() - start_time) * 1000
 
@@ -1697,20 +1752,23 @@ def search(
             ctx.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
 
             assert ctx.storage is not None, "Storage should be initialized by @with_context"
-            with MessageExtractor(ctx.storage.db) as extractor:
-                with ctx.output.progress_context(
-                    "Extracting messages", total=len(selected_ids)
-                ) as progress:
-                    task = (
-                        progress.add_task("Extracting", total=len(selected_ids))
-                        if progress
-                        else None
-                    )
+            storage_db = ctx.storage.db  # Capture for async closure
 
-                    stats = extractor.batch_extract(selected_ids, Path(output_dir_str))
+            async def _batch_extract() -> ExtractStats:
+                async with MessageExtractor(storage_db) as extractor:
+                    return await extractor.batch_extract(selected_ids, Path(output_dir_str))
 
-                    if progress and task:
-                        progress.update(task, completed=len(selected_ids))
+            with ctx.output.progress_context(
+                "Extracting messages", total=len(selected_ids)
+            ) as progress:
+                task = (
+                    progress.add_task("Extracting", total=len(selected_ids)) if progress else None
+                )
+
+                stats = asyncio.run(_batch_extract())
+
+                if progress and task:
+                    progress.update(task, completed=len(selected_ids))
 
             # Show extraction summary
             extraction_report = {
@@ -1738,19 +1796,21 @@ def search(
             gmail_ids = [r.gmail_id for r in results.results]
 
             assert ctx.storage is not None, "Storage should be initialized by @with_context"
+            storage_db = ctx.storage.db  # Capture for async closure
 
-            with MessageExtractor(ctx.storage.db) as extractor:
-                with ctx.output.progress_context(
-                    "Extracting messages", total=len(gmail_ids)
-                ) as progress:
-                    task = (
-                        progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
-                    )
+            async def _batch_extract_search() -> ExtractStats:
+                async with MessageExtractor(storage_db) as extractor:
+                    return await extractor.batch_extract(gmail_ids, Path(output_dir))
 
-                    stats = extractor.batch_extract(gmail_ids, Path(output_dir))
+            with ctx.output.progress_context(
+                "Extracting messages", total=len(gmail_ids)
+            ) as progress:
+                task = progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
 
-                    if progress and task:
-                        progress.update(task, completed=len(gmail_ids))
+                stats = asyncio.run(_batch_extract_search())
+
+                if progress and task:
+                    progress.update(task, completed=len(gmail_ids))
 
             # Show extraction summary
             extraction_report = {
@@ -1812,21 +1872,25 @@ def extract(
 
     try:
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        storage_db = ctx.storage.db  # Capture for async closure
 
-        with MessageExtractor(ctx.storage.db) as extractor:
-            # Try extracting by gmail_id first, then by rfc_message_id
-            try:
-                message_bytes = extractor.extract_by_gmail_id(message_id, output_file)
-            except ExtractorError:
-                # Not found by gmail_id, try rfc_message_id
+        async def _extract_message() -> bytes:
+            async with MessageExtractor(storage_db) as extractor:
+                # Try extracting by gmail_id first, then by rfc_message_id
                 try:
-                    message_bytes = extractor.extract_by_rfc_message_id(message_id, output_file)
+                    return await extractor.extract_by_gmail_id(message_id, output_file)
                 except ExtractorError:
-                    ctx.fail_and_exit(
-                        "Message Not Found",
-                        f"Message not found: {message_id}",
-                        suggestion="Verify the message ID or search with: gmailarchiver search",
-                    )
+                    # Not found by gmail_id, try rfc_message_id
+                    return await extractor.extract_by_rfc_message_id(message_id, output_file)
+
+        try:
+            message_bytes = asyncio.run(_extract_message())
+        except ExtractorError:
+            ctx.fail_and_exit(
+                "Message Not Found",
+                f"Message not found: {message_id}",
+                suggestion="Verify the message ID or search with: gmailarchiver search",
+            )
 
         # Show success
         if output_file:
@@ -1899,7 +1963,7 @@ def import_cmd(
     # Handle database schema using centralized SchemaManager
     if db_path.exists():
         schema_mgr = SchemaManager(db_path)
-        version = schema_mgr.detect_version()
+        version = asyncio.run(schema_mgr.detect_version())
 
         if version == SchemaVersion.NONE:
             # Empty database file exists - delete it and let DBManager create a fresh one
@@ -1912,20 +1976,22 @@ def import_cmd(
                     f"Failed to delete empty database: {e}",
                     suggestion="Check file permissions and try again",
                 )
-        elif not schema_mgr.is_supported():
+        elif not asyncio.run(schema_mgr.is_supported()):
             ctx.fail_and_exit(
                 "Unsupported Database",
                 f"Unsupported database schema version: {version.value}",
                 suggestion="Delete the database or use --state-db with a different path",
             )
-        elif schema_mgr.needs_migration():
+        elif asyncio.run(schema_mgr.needs_migration()):
             # Auto-migrate to current version
             ctx.warning(
                 f"Detected v{version.value} database, "
                 f"auto-migrating to v{SchemaManager.CURRENT_VERSION.value}..."
             )
             try:
-                schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+                asyncio.run(
+                    schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+                )
                 ctx.success("Migration completed successfully")
             except Exception as e:
                 ctx.fail_and_exit(
@@ -1959,6 +2025,20 @@ def import_cmd(
     importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
     results: list[Any] = []
     start_time = time.perf_counter()
+
+    # Async helper for import_archive
+    async def _import_archive(
+        file_path: str,
+        acct_id: str,
+        skip_dups: bool,
+        progress_cb: Callable[[int, int, str], None] | None,
+    ) -> Any:
+        return await importer.import_archive(
+            file_path,
+            account_id=acct_id,
+            skip_duplicates=skip_dups,
+            progress_callback=progress_cb,
+        )
 
     # Use fluent UI builder for task sequence
     total_messages = 0
@@ -1997,11 +2077,13 @@ def import_cmd(
                     return callback
 
                 try:
-                    result = importer.import_archive(
-                        file_path,
-                        account_id=account_id,
-                        skip_duplicates=skip_duplicates,
-                        progress_callback=make_progress_callback(current_task_pos, import_task),
+                    result = asyncio.run(
+                        _import_archive(
+                            file_path,
+                            account_id,
+                            skip_duplicates,
+                            make_progress_callback(current_task_pos, import_task),
+                        )
                     )
                     results.append(result)
                     current_task_pos += file_message_counts[file_idx]
@@ -2077,7 +2159,7 @@ def import_cmd(
     if auto_verify and total_failed == 0:
         ctx.info("\nRunning verification...")
         try:
-            issues = ctx.storage.db.verify_database_integrity()
+            issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
             if not issues:
                 ctx.success("Verification complete - no issues found")
@@ -2197,13 +2279,15 @@ def consolidate(
                 # Convert file paths to list[str | Path] for type compatibility
                 source_paths: list[str | Path] = [Path(f) for f in all_files]
 
-                result = consolidator.consolidate(
-                    source_archives=source_paths,
-                    output_archive=output_file,
-                    sort_by_date=sort,
-                    deduplicate=dedupe,
-                    dedupe_strategy=dedupe_strategy,
-                    compress=compress,
+                result = asyncio.run(
+                    consolidator.consolidate(
+                        source_archives=source_paths,
+                        output_archive=output_file,
+                        sort_by_date=sort,
+                        deduplicate=dedupe,
+                        dedupe_strategy=dedupe_strategy,
+                        compress=compress,
+                    )
                 )
                 t.complete(
                     f"Consolidated {result.messages_consolidated:,} messages from "
@@ -2214,7 +2298,7 @@ def consolidate(
             if auto_verify:
                 with seq.task("Verifying database integrity") as t:
                     try:
-                        issues = ctx.storage.db.verify_database_integrity()
+                        issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
                         if not issues:
                             t.complete("No issues found")
@@ -2439,7 +2523,7 @@ def consolidate(
         )
     finally:
         if ctx.storage:
-            ctx.storage.db.close()
+            asyncio.run(ctx.storage.db.close())
 
 
 @utilities_app.command(name="verify-integrity")
@@ -2481,7 +2565,7 @@ def verify_integrity_cmd(
             with seq.task("Running integrity checks") as t:
                 # Access DBManager directly for low-level database operations
                 assert ctx.storage is not None
-                issues = ctx.storage.db.verify_database_integrity()
+                issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
                 if not issues:
                     t.complete("No issues found")
@@ -2590,24 +2674,29 @@ def repair(
             ctx.info("Phase 1: Checking FTS synchronization...")
             # Access DBManager directly for low-level database operations
             assert ctx.storage is not None
-            repairs = ctx.storage.db.repair_database(dry_run=dry_run)
+            repairs = asyncio.run(ctx.storage.db.repair_database(dry_run=dry_run))
             if progress and task:
                 progress.update(task, completed=1)
 
             # Phase 2: Backfill invalid offsets if requested
             if backfill:
                 ctx.info("Phase 2: Checking for invalid offsets...")
-                invalid_msgs = ctx.storage.db.get_messages_with_invalid_offsets()
+                invalid_msgs = asyncio.run(ctx.storage.db.get_messages_with_invalid_offsets())
 
                 if invalid_msgs:
                     ctx.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
 
                     if not dry_run:
                         # Use MigrationManager logic to scan mbox and backfill
-                        migrator = MigrationManager(db_path)
-                        backfilled = migrator.backfill_offsets_from_mbox(invalid_msgs)
+                        async def run_backfill(msgs: list[Any]) -> int:
+                            migrator = MigrationManager(db_path)
+                            try:
+                                return await migrator.backfill_offsets_from_mbox(msgs)
+                            finally:
+                                await migrator._close()
+
+                        backfilled = asyncio.run(run_backfill(invalid_msgs))
                         repairs["invalid_offsets_fixed"] = backfilled
-                        migrator._close()
                     else:
                         repairs["invalid_offsets_would_fix"] = len(invalid_msgs)
                 else:
@@ -2718,7 +2807,7 @@ def check(
 
     # Use centralized SchemaManager for version detection
     schema_mgr = SchemaManager(db_path)
-    schema_version = schema_mgr.detect_version()
+    schema_version = asyncio.run(schema_mgr.detect_version())
 
     if schema_version == SchemaVersion.NONE:
         ctx.fail_and_exit(
@@ -2741,7 +2830,7 @@ def check(
         # ==================== CHECK 1: Database Integrity ====================
         with seq.task("Checking database integrity") as t:
             try:
-                issues = ctx.storage.db.verify_database_integrity()
+                issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
                 if not issues:
                     check_results["database_integrity"]["passed"] = True
@@ -2768,22 +2857,28 @@ def check(
         # ==================== CHECK 2: Database Consistency ====================
         with seq.task("Checking database consistency") as t:
             try:
-                cursor = ctx.storage.db.conn.execute(
-                    "SELECT DISTINCT archive_file FROM messages LIMIT 1"
-                )
-                has_archives = cursor.fetchone() is not None
+                assert ctx.storage is not None, "Storage should be initialized by @with_context"
+                storage_db = ctx.storage.db  # Capture for async closure
 
-                if has_archives:
-                    cursor = ctx.storage.db.conn.execute(
+                # Helper function for async database query
+                async def get_first_archive_file() -> str | None:
+                    if storage_db.conn is None:
+                        return None
+                    cursor = await storage_db.conn.execute(
                         "SELECT DISTINCT archive_file FROM messages LIMIT 1"
                     )
-                    archive_file = cursor.fetchone()[0]
+                    row = await cursor.fetchone()
+                    return row[0] if row else None
 
+                archive_file = asyncio.run(get_first_archive_file())
+                has_archives = archive_file is not None
+
+                if has_archives and archive_file is not None:
                     if Path(archive_file).exists():
                         from .core.validator import ValidatorFacade
 
                         validator = ValidatorFacade(archive_file, state_db)
-                        report = validator.verify_consistency()
+                        report = asyncio.run(validator.verify_consistency())
                         check_results["database_consistency"]["checked"] = True
                         check_results["database_consistency"]["report"] = report
                         check_results["database_consistency"]["passed"] = report.passed
@@ -2807,19 +2902,16 @@ def check(
 
         # ==================== CHECK 3: Offset Accuracy ====================
         with seq.task("Checking offset accuracy") as t:
-            if schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS):
+            if asyncio.run(schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS)):
                 try:
-                    cursor = ctx.storage.db.conn.execute(
-                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
-                    )
-                    row = cursor.fetchone()
+                    # Reuse async helper from CHECK 2
+                    archive_file_for_offset = asyncio.run(get_first_archive_file())
 
-                    if row and Path(row[0]).exists():
+                    if archive_file_for_offset and Path(archive_file_for_offset).exists():
                         from .core.validator import ValidatorFacade
 
-                        archive_file = row[0]
-                        validator = ValidatorFacade(archive_file, state_db)
-                        result = validator.verify_offsets()
+                        validator = ValidatorFacade(archive_file_for_offset, state_db)
+                        result = asyncio.run(validator.verify_offsets())
 
                         check_results["offset_accuracy"]["checked"] = True
                         check_results["offset_accuracy"]["result"] = result
@@ -2923,7 +3015,7 @@ def check(
         ctx.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
 
         try:
-            repairs = ctx.storage.db.repair_database(dry_run=False)
+            repairs = asyncio.run(ctx.storage.db.repair_database(dry_run=False))
 
             # Show repair results
             total_repairs = sum(repairs.values())
@@ -2933,7 +3025,7 @@ def check(
                 # Re-run checks to verify repairs
                 ctx.info("\nRe-checking after repairs...")
 
-                post_repair_issues = ctx.storage.db.verify_database_integrity()
+                post_repair_issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
                 if not post_repair_issues:
                     ctx.success("All issues resolved!")
@@ -3543,12 +3635,14 @@ def compress(
         ) as progress:
             task = progress.add_task("Compress", total=len(expanded_files)) if progress else None
 
-            result = compressor.compress(
-                files=expanded_files,
-                format=format,
-                in_place=in_place,
-                dry_run=dry_run,
-                keep_original=keep_original,
+            result = asyncio.run(
+                compressor.compress(
+                    files=expanded_files,
+                    format=format,
+                    in_place=in_place,
+                    dry_run=dry_run,
+                    keep_original=keep_original,
+                )
             )
 
             if progress and task:
@@ -3645,7 +3739,7 @@ def compress(
         )
     finally:
         if ctx.storage:
-            ctx.storage.db.close()
+            asyncio.run(ctx.storage.db.close())
 
 
 @app.command()
@@ -3684,13 +3778,23 @@ def doctor(
     """
     from gmailarchiver.core.doctor._diagnostics import CheckSeverity
 
+    # Async helper functions
+    async def _create_doctor() -> Doctor:
+        return await Doctor.create(state_db, validate_schema=False, auto_create=False)
+
+    async def _run_diagnostics(doctor: Doctor) -> Any:
+        return await doctor.run_diagnostics()
+
+    async def _run_auto_fix(doctor: Doctor) -> list[Any]:
+        return await doctor.run_auto_fix()
+
     # Initialize doctor
-    doctor_instance = Doctor(state_db, validate_schema=False, auto_create=False)
+    doctor_instance = asyncio.run(_create_doctor())
 
     # Run diagnostics
     with ctx.ui.task_sequence() as seq:
         with seq.task("Running diagnostic checks") as t:
-            report = doctor_instance.run_diagnostics()
+            report = asyncio.run(_run_diagnostics(doctor_instance))
 
             if report.overall_status == CheckSeverity.OK:
                 t.complete(f"{report.checks_passed}/{len(report.checks)} passed")
@@ -3750,7 +3854,7 @@ def doctor(
     if fix and report.fixable_issues:
         with ctx.ui.task_sequence() as seq:
             with seq.task("Running auto-fix", total=len(report.fixable_issues)) as t:
-                fix_results = doctor_instance.run_auto_fix()
+                fix_results = asyncio.run(_run_auto_fix(doctor_instance))
                 fixed_count = sum(1 for r in fix_results if r.success)
                 failed_count = len(fix_results) - fixed_count
 
@@ -3794,7 +3898,7 @@ def doctor(
             with ctx.ui.task_sequence() as seq:
                 with seq.task("Running internal checks") as t:
                     try:
-                        issues = ctx.storage.db.verify_database_integrity()
+                        issues = asyncio.run(ctx.storage.db.verify_database_integrity())
 
                         if not issues:
                             t.complete("All internal checks passed")
@@ -3911,8 +4015,18 @@ def backfill_gmail_ids_cmd(
 
         # 2. Find messages needing Gmail ID lookup
         ctx.info("Scanning database for messages needing backfill...")
-        cursor = ctx.storage.db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
-        all_messages = cursor.fetchall()
+
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        storage_db = ctx.storage.db  # Capture for async closure
+
+        async def get_all_messages() -> list[tuple[str | None, str]]:
+            if storage_db.conn is None:
+                return []
+            cursor = await storage_db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
+            rows = await cursor.fetchall()
+            return [(row[0], row[1]) for row in rows]
+
+        all_messages = asyncio.run(get_all_messages())
 
         # Messages needing backfill: NULL gmail_id OR synthetic pattern
         messages_needing_backfill: list[tuple[str | None, str]] = []
@@ -4012,12 +4126,20 @@ def backfill_gmail_ids_cmd(
                     ctx.info(f"  {rfc_display} -> {status}")
         else:
             ctx.info(f"\nUpdating database with {len(updates):,} changes...")
-            for new_gmail_id, rfc_message_id in updates:
-                ctx.storage.db.conn.execute(
-                    "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
-                    (new_gmail_id, rfc_message_id),
-                )
-            ctx.storage.db.conn.commit()
+
+            async def update_gmail_ids(
+                updates_list: list[tuple[str | None, str]],
+            ) -> None:
+                if storage_db.conn is None:
+                    raise RuntimeError("Database connection not initialized")
+                for new_gmail_id, rfc_message_id in updates_list:
+                    await storage_db.conn.execute(
+                        "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
+                        (new_gmail_id, rfc_message_id),
+                    )
+                await storage_db.conn.commit()
+
+            asyncio.run(update_gmail_ids(updates))
             ctx.success("Database updated!")
 
         # Summary

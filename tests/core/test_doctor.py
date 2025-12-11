@@ -7,12 +7,16 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import pytest
+
 from gmailarchiver.core.doctor import (
     CheckResult,
     CheckSeverity,
     Doctor,
     DoctorReport,
 )
+
+pytestmark = pytest.mark.asyncio
 
 # ============================================================================
 # Test Fixtures
@@ -23,14 +27,14 @@ from gmailarchiver.core.doctor import (
 # ============================================================================
 
 
-def test_check_severity_levels() -> None:
+async def test_check_severity_levels() -> None:
     """Test CheckSeverity enum values."""
     assert CheckSeverity.OK.value == "OK"
     assert CheckSeverity.WARNING.value == "WARNING"
     assert CheckSeverity.ERROR.value == "ERROR"
 
 
-def test_check_result_creation() -> None:
+async def test_check_result_creation() -> None:
     """Test CheckResult dataclass creation."""
     result = CheckResult(
         name="Test Check",
@@ -46,7 +50,7 @@ def test_check_result_creation() -> None:
     assert result.details is None
 
 
-def test_check_result_with_details() -> None:
+async def test_check_result_with_details() -> None:
     """Test CheckResult with optional details."""
     result = CheckResult(
         name="Test Check",
@@ -64,27 +68,27 @@ def test_check_result_with_details() -> None:
 # ============================================================================
 
 
-def test_check_database_schema_v11(v11_db: str) -> None:
+async def test_check_database_schema_v11(v11_db: str) -> None:
     """Test database schema check for v1.1 database."""
-    doctor = Doctor(v11_db)
-    result = doctor.check_database_schema()
+    doctor = await Doctor.create(v11_db)
+    result = await doctor.check_database_schema()
 
     assert result.severity == CheckSeverity.OK
     assert "v1.1" in result.message
     assert result.fixable is False
 
 
-def test_check_database_schema_missing_database() -> None:
+async def test_check_database_schema_missing_database() -> None:
     """Test database schema check when database doesn't exist."""
-    doctor = Doctor("/nonexistent/database.db", auto_create=False)
-    result = doctor.check_database_schema()
+    doctor = await Doctor.create("/nonexistent/database.db", auto_create=False)
+    result = await doctor.check_database_schema()
 
     assert result.severity == CheckSeverity.ERROR
     assert "not found" in result.message.lower()
     assert result.fixable is True  # Can create new database
 
 
-def test_check_database_schema_v10() -> None:
+async def test_check_database_schema_v10() -> None:
     """Test database schema check for v1.0 database (needs migration)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "v10.db"
@@ -106,8 +110,8 @@ def test_check_database_schema_v10() -> None:
         conn.commit()
         conn.close()
 
-        doctor = Doctor(str(db_path), auto_create=False)
-        result = doctor.check_database_schema()
+        doctor = await Doctor.create(str(db_path), auto_create=False)
+        result = await doctor.check_database_schema()
 
         assert result.severity == CheckSeverity.WARNING
         assert "v1.0" in result.message
@@ -115,16 +119,16 @@ def test_check_database_schema_v10() -> None:
         assert result.fixable is True
 
 
-def test_check_database_integrity_ok(v11_db: str) -> None:
+async def test_check_database_integrity_ok(v11_db: str) -> None:
     """Test database integrity check on healthy database."""
-    doctor = Doctor(v11_db)
-    result = doctor.check_database_integrity()
+    doctor = await Doctor.create(v11_db)
+    result = await doctor.check_database_integrity()
 
     assert result.severity == CheckSeverity.OK
     assert "healthy" in result.message.lower() or "ok" in result.message.lower()
 
 
-def test_check_database_integrity_corrupted() -> None:
+async def test_check_database_integrity_corrupted() -> None:
     """Test database integrity check on corrupted database."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "corrupted.db"
@@ -139,23 +143,23 @@ def test_check_database_integrity_corrupted() -> None:
         with open(db_path, "wb") as f:
             f.write(b"corrupted")
 
-        doctor = Doctor(str(db_path), validate_schema=False, auto_create=False)
-        result = doctor.check_database_integrity()
+        doctor = await Doctor.create(str(db_path), validate_schema=False, auto_create=False)
+        result = await doctor.check_database_integrity()
 
         assert result.severity == CheckSeverity.ERROR
         assert result.fixable is False  # Corruption not auto-fixable
 
 
-def test_check_orphaned_fts_none(v11_db: str) -> None:
+async def test_check_orphaned_fts_none(v11_db: str) -> None:
     """Test check for orphaned FTS records when none exist."""
-    doctor = Doctor(v11_db)
-    result = doctor.check_orphaned_fts()
+    doctor = await Doctor.create(v11_db)
+    result = await doctor.check_orphaned_fts()
 
     assert result.severity == CheckSeverity.OK
     assert "no orphaned" in result.message.lower() or result.message == "FTS index is clean"
 
 
-def test_check_archive_files_exist(v11_db: str) -> None:
+async def test_check_archive_files_exist(v11_db: str) -> None:
     """Test check that archive files referenced in database exist."""
     # Create a temporary archive file
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -176,14 +180,14 @@ def test_check_archive_files_exist(v11_db: str) -> None:
         conn.commit()
         conn.close()
 
-        doctor = Doctor(v11_db)
-        result = doctor.check_archive_files_exist()
+        doctor = await Doctor.create(v11_db)
+        result = await doctor.check_archive_files_exist()
 
         assert result.severity == CheckSeverity.OK
         assert "exist" in result.message.lower()
 
 
-def test_check_archive_files_missing(v11_db: str) -> None:
+async def test_check_archive_files_missing(v11_db: str) -> None:
     """Test check when archive files are missing."""
     # Insert message referencing non-existent archive
     conn = sqlite3.connect(v11_db)
@@ -201,8 +205,8 @@ def test_check_archive_files_missing(v11_db: str) -> None:
     conn.commit()
     conn.close()
 
-    doctor = Doctor(v11_db)
-    result = doctor.check_archive_files_exist()
+    doctor = await Doctor.create(v11_db)
+    result = await doctor.check_archive_files_exist()
 
     assert result.severity == CheckSeverity.WARNING
     assert "missing" in result.message.lower()
@@ -215,9 +219,9 @@ def test_check_archive_files_missing(v11_db: str) -> None:
 # ============================================================================
 
 
-def test_check_python_version_ok() -> None:
+async def test_check_python_version_ok() -> None:
     """Test Python version check when version is sufficient."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_python_version()
 
     # We're running Python 3.14+ in this environment
@@ -226,9 +230,9 @@ def test_check_python_version_ok() -> None:
 
 
 @patch("sys.version_info", (3, 12, 0, "final", 0))
-def test_check_python_version_too_old() -> None:
+async def test_check_python_version_too_old() -> None:
     """Test Python version check when version is too old."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_python_version()
 
     assert result.severity == CheckSeverity.WARNING
@@ -236,9 +240,9 @@ def test_check_python_version_too_old() -> None:
     assert result.fixable is False  # Can't auto-upgrade Python
 
 
-def test_check_dependencies_installed() -> None:
+async def test_check_dependencies_installed() -> None:
     """Test that required dependencies are installed."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_dependencies()
 
     assert result.severity == CheckSeverity.OK
@@ -246,11 +250,11 @@ def test_check_dependencies_installed() -> None:
 
 
 @patch("importlib.import_module")
-def test_check_dependencies_missing(mock_import: Mock) -> None:
+async def test_check_dependencies_missing(mock_import: Mock) -> None:
     """Test dependency check when packages are missing."""
     mock_import.side_effect = ImportError("No module named 'google'")
 
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_dependencies()
 
     assert result.severity == CheckSeverity.ERROR
@@ -258,14 +262,14 @@ def test_check_dependencies_missing(mock_import: Mock) -> None:
     assert result.fixable is True  # Can run pip install
 
 
-def test_check_oauth_token_missing() -> None:
+async def test_check_oauth_token_missing() -> None:
     """Test OAuth token check when token doesn't exist."""
     with tempfile.TemporaryDirectory() as tmpdir:
         fake_token_path = Path(tmpdir) / "nonexistent_token.json"
 
         token_patch = "gmailarchiver.core.doctor._diagnostics._get_default_token_path"
         with patch(token_patch, return_value=fake_token_path):
-            doctor = Doctor(":memory:")
+            doctor = await Doctor.create(":memory:")
             result = doctor.check_oauth_token()
 
             assert result.severity == CheckSeverity.WARNING
@@ -273,7 +277,7 @@ def test_check_oauth_token_missing() -> None:
             assert result.fixable is True  # Can re-authenticate
 
 
-def test_check_oauth_token_valid() -> None:
+async def test_check_oauth_token_valid() -> None:
     """Test OAuth token check when token exists and is valid."""
     with tempfile.TemporaryDirectory() as tmpdir:
         token_path = Path(tmpdir) / "token.json"
@@ -300,14 +304,14 @@ def test_check_oauth_token_valid() -> None:
                 mock_creds_instance.expired = False
                 mock_creds.from_authorized_user_info.return_value = mock_creds_instance
 
-                doctor = Doctor(":memory:")
+                doctor = await Doctor.create(":memory:")
                 result = doctor.check_oauth_token()
 
                 assert result.severity == CheckSeverity.OK
                 assert "valid" in result.message.lower()
 
 
-def test_check_oauth_token_expired() -> None:
+async def test_check_oauth_token_expired() -> None:
     """Test OAuth token check when token is expired."""
     with tempfile.TemporaryDirectory() as tmpdir:
         token_path = Path(tmpdir) / "token.json"
@@ -334,7 +338,7 @@ def test_check_oauth_token_expired() -> None:
                 mock_creds_instance.expired = True
                 mock_creds.from_authorized_user_info.return_value = mock_creds_instance
 
-                doctor = Doctor(":memory:")
+                doctor = await Doctor.create(":memory:")
                 result = doctor.check_oauth_token()
 
                 assert result.severity == CheckSeverity.WARNING
@@ -342,9 +346,9 @@ def test_check_oauth_token_expired() -> None:
                 assert result.fixable is True
 
 
-def test_check_credentials_file_exists() -> None:
+async def test_check_credentials_file_exists() -> None:
     """Test credentials file check when bundled credentials exist."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_credentials_file()
 
     # Bundled credentials should exist
@@ -357,24 +361,24 @@ def test_check_credentials_file_exists() -> None:
 # ============================================================================
 
 
-def test_check_disk_space_sufficient() -> None:
+async def test_check_disk_space_sufficient() -> None:
     """Test disk space check when sufficient space available."""
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=1024 * 1024 * 1024)  # 1 GB
 
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_disk_space()
 
         assert result.severity == CheckSeverity.OK
         assert "GB" in result.message or "MB" in result.message
 
 
-def test_check_disk_space_low_warning() -> None:
+async def test_check_disk_space_low_warning() -> None:
     """Test disk space check with low space (warning level)."""
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=300 * 1024 * 1024)  # 300 MB (< 500 MB)
 
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_disk_space()
 
         assert result.severity == CheckSeverity.WARNING
@@ -382,57 +386,57 @@ def test_check_disk_space_low_warning() -> None:
         assert result.fixable is False  # Can't auto-fix disk space
 
 
-def test_check_disk_space_critical_error() -> None:
+async def test_check_disk_space_critical_error() -> None:
     """Test disk space check with critically low space."""
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=50 * 1024 * 1024)  # 50 MB (< 100 MB)
 
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_disk_space()
 
         assert result.severity == CheckSeverity.ERROR
         assert "50" in result.message
 
 
-def test_check_write_permissions_ok() -> None:
+async def test_check_write_permissions_ok() -> None:
     """Test write permissions check when directory is writable."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
         result = doctor.check_write_permissions()
 
         assert result.severity == CheckSeverity.OK
         assert "writable" in result.message.lower()
 
 
-def test_check_write_permissions_denied() -> None:
+async def test_check_write_permissions_denied() -> None:
     """Test write permissions check when directory is not writable."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
         with patch("pathlib.Path.is_dir", return_value=True):
             with patch("os.access", return_value=False):
-                doctor = Doctor(str(db_path))
+                doctor = await Doctor.create(str(db_path))
                 result = doctor.check_write_permissions()
 
                 assert result.severity == CheckSeverity.ERROR
                 assert "not writable" in result.message.lower()
 
 
-def test_check_stale_lock_files_none() -> None:
+async def test_check_stale_lock_files_none() -> None:
     """Test stale lock file check when no lock files exist."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
         result = doctor.check_stale_locks()
 
         assert result.severity == CheckSeverity.OK
         assert "no stale" in result.message.lower()
 
 
-def test_check_stale_lock_files_found() -> None:
+async def test_check_stale_lock_files_found() -> None:
     """Test stale lock file check when lock files exist."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -441,7 +445,7 @@ def test_check_stale_lock_files_found() -> None:
         (Path(tmpdir) / "archive.mbox.lock").touch()
         (Path(tmpdir) / "archive.mbox.lock.lock").touch()
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
         result = doctor.check_stale_locks()
 
         assert result.severity == CheckSeverity.WARNING
@@ -450,20 +454,20 @@ def test_check_stale_lock_files_found() -> None:
         assert result.fixable is True  # Can remove stale locks
 
 
-def test_check_temp_directory_accessible() -> None:
+async def test_check_temp_directory_accessible() -> None:
     """Test temp directory accessibility check."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_temp_directory()
 
     assert result.severity == CheckSeverity.OK
     assert "accessible" in result.message.lower()
 
 
-def test_check_temp_directory_not_accessible() -> None:
+async def test_check_temp_directory_not_accessible() -> None:
     """Test temp directory check when not accessible."""
     with patch("tempfile.gettempdir", return_value="/nonexistent/tmp"):
         with patch("os.access", return_value=False):
-            doctor = Doctor(":memory:")
+            doctor = await Doctor.create(":memory:")
             result = doctor.check_temp_directory()
 
             assert result.severity == CheckSeverity.ERROR
@@ -475,7 +479,7 @@ def test_check_temp_directory_not_accessible() -> None:
 # ============================================================================
 
 
-def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
+async def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
     """Test run_diagnostics when all checks pass.
 
     This test uses a patched OAuth token check so it does not depend on
@@ -495,8 +499,8 @@ def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
                 fixable=False,
             )
 
-            doctor = Doctor(v11_db)
-            report = doctor.run_diagnostics()
+            doctor = await Doctor.create(v11_db)
+            report = await doctor.run_diagnostics()
 
         assert isinstance(report, DoctorReport)
         assert report.overall_status == CheckSeverity.OK
@@ -506,32 +510,32 @@ def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
         assert all(check.severity == CheckSeverity.OK for check in report.checks)
 
 
-def test_run_diagnostics_with_warnings(v11_db: str) -> None:
+async def test_run_diagnostics_with_warnings(v11_db: str) -> None:
     """Test run_diagnostics when some checks have warnings."""
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=300 * 1024 * 1024)  # 300 MB - WARNING
 
-        doctor = Doctor(v11_db)
-        report = doctor.run_diagnostics()
+        doctor = await Doctor.create(v11_db)
+        report = await doctor.run_diagnostics()
 
         assert report.overall_status == CheckSeverity.WARNING
         assert report.warnings >= 1
         assert report.errors == 0
 
 
-def test_run_diagnostics_with_errors(v11_db: str) -> None:
+async def test_run_diagnostics_with_errors(v11_db: str) -> None:
     """Test run_diagnostics when some checks have errors."""
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=50 * 1024 * 1024)  # 50 MB - ERROR
 
-        doctor = Doctor(v11_db)
-        report = doctor.run_diagnostics()
+        doctor = await Doctor.create(v11_db)
+        report = await doctor.run_diagnostics()
 
         assert report.overall_status == CheckSeverity.ERROR
         assert report.errors >= 1
 
 
-def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
+async def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
     """Test that diagnostics correctly counts OK/WARNING/ERROR results."""
     # Insert orphaned FTS record (WARNING) + low disk space (WARNING)
     conn = sqlite3.connect(v11_db)
@@ -545,8 +549,8 @@ def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
     with patch("shutil.disk_usage") as mock_usage:
         mock_usage.return_value = Mock(free=300 * 1024 * 1024)  # 300 MB - WARNING
 
-        doctor = Doctor(v11_db)
-        report = doctor.run_diagnostics()
+        doctor = await Doctor.create(v11_db)
+        report = await doctor.run_diagnostics()
 
         assert report.warnings >= 1  # At least disk space warning
         assert report.checks_passed >= 0  # Some checks should pass
@@ -557,7 +561,7 @@ def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
 # ============================================================================
 
 
-def test_auto_fix_orphaned_fts(v11_db: str) -> None:
+async def test_auto_fix_orphaned_fts(v11_db: str) -> None:
     """Test auto-fix for orphaned FTS records."""
     # Insert orphaned FTS record
     conn = sqlite3.connect(v11_db)
@@ -568,8 +572,8 @@ def test_auto_fix_orphaned_fts(v11_db: str) -> None:
     conn.commit()
     conn.close()
 
-    doctor = Doctor(v11_db)
-    result = doctor.fix_orphaned_fts()
+    doctor = await Doctor.create(v11_db)
+    result = await doctor.fix_orphaned_fts()
 
     assert result.success is True
     assert "removed" in result.message.lower() or "cleaned" in result.message.lower()
@@ -581,7 +585,7 @@ def test_auto_fix_orphaned_fts(v11_db: str) -> None:
     assert count == 0
 
 
-def test_auto_fix_stale_locks() -> None:
+async def test_auto_fix_stale_locks() -> None:
     """Test auto-fix for stale lock files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -592,7 +596,7 @@ def test_auto_fix_stale_locks() -> None:
         lock1.touch()
         lock2.touch()
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
         result = doctor.fix_stale_locks()
 
         assert result.success is True
@@ -600,13 +604,13 @@ def test_auto_fix_stale_locks() -> None:
         assert not lock2.exists()
 
 
-def test_auto_fix_create_missing_database() -> None:
+async def test_auto_fix_create_missing_database() -> None:
     """Test auto-fix creates missing database."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "new.db"
 
-        doctor = Doctor(str(db_path), auto_create=False)
-        result = doctor.fix_missing_database()
+        doctor = await Doctor.create(str(db_path), auto_create=False)
+        result = await doctor.fix_missing_database()
 
         assert result.success is True
         assert db_path.exists()
@@ -618,7 +622,7 @@ def test_auto_fix_create_missing_database() -> None:
         assert version == 11
 
 
-def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
+async def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
     """Test that run_auto_fix fixes all fixable issues."""
     # Create multiple fixable issues
     # 1. Orphaned FTS record
@@ -635,22 +639,22 @@ def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
     lock_file = db_dir / "stale.lock"
     lock_file.touch()
 
-    doctor = Doctor(v11_db)
+    doctor = await Doctor.create(v11_db)
 
     # Run diagnostics first
-    report_before = doctor.run_diagnostics()
+    report_before = await doctor.run_diagnostics()
     fixable_count = sum(
         1 for check in report_before.checks if check.fixable and check.severity != CheckSeverity.OK
     )
 
     # Run auto-fix
-    fix_results = doctor.run_auto_fix()
+    fix_results = await doctor.run_auto_fix()
 
     assert len(fix_results) >= 1  # At least orphaned FTS should be fixed
     assert all(result.success for result in fix_results)
 
     # Run diagnostics again - should have fewer issues
-    report_after = doctor.run_diagnostics()
+    report_after = await doctor.run_diagnostics()
     assert report_after.warnings <= report_before.warnings
     assert report_after.errors <= report_before.errors
 
@@ -660,7 +664,7 @@ def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
 # ============================================================================
 
 
-def test_doctor_report_creation() -> None:
+async def test_doctor_report_creation() -> None:
     """Test DoctorReport dataclass creation."""
     checks = [
         CheckResult("Check 1", CheckSeverity.OK, "All good", False),
@@ -683,7 +687,7 @@ def test_doctor_report_creation() -> None:
     assert report.errors == 1
 
 
-def test_doctor_report_to_dict() -> None:
+async def test_doctor_report_to_dict() -> None:
     """Test DoctorReport conversion to dict for JSON output."""
     checks = [
         CheckResult("Check 1", CheckSeverity.OK, "All good", False),
@@ -712,34 +716,34 @@ def test_doctor_report_to_dict() -> None:
 # ============================================================================
 
 
-def test_doctor_with_memory_database() -> None:
+async def test_doctor_with_memory_database() -> None:
     """Test doctor can run diagnostics on :memory: database."""
-    doctor = Doctor(":memory:")
-    report = doctor.run_diagnostics()
+    doctor = await Doctor.create(":memory:")
+    report = await doctor.run_diagnostics()
 
     # Should handle gracefully - some checks will skip/warn
     assert isinstance(report, DoctorReport)
 
 
-def test_doctor_handles_permission_errors() -> None:
+async def test_doctor_handles_permission_errors() -> None:
     """Test doctor handles permission errors gracefully."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
         with patch("pathlib.Path.exists", return_value=True):
             with patch("sqlite3.connect", side_effect=PermissionError("Access denied")):
-                doctor = Doctor(str(db_path), validate_schema=False, auto_create=False)
+                doctor = await Doctor.create(str(db_path), validate_schema=False, auto_create=False)
                 # Should not raise, handle gracefully
-                result = doctor.check_database_integrity()
+                result = await doctor.check_database_integrity()
                 assert result.severity == CheckSeverity.ERROR
 
 
-def test_multiple_diagnostics_runs_independent(v11_db: str) -> None:
+async def test_multiple_diagnostics_runs_independent(v11_db: str) -> None:
     """Test that multiple diagnostic runs are independent."""
-    doctor = Doctor(v11_db)
+    doctor = await Doctor.create(v11_db)
 
-    report1 = doctor.run_diagnostics()
-    report2 = doctor.run_diagnostics()
+    report1 = await doctor.run_diagnostics()
+    report2 = await doctor.run_diagnostics()
 
     # Both should produce same results
     assert report1.overall_status == report2.overall_status
@@ -752,18 +756,18 @@ def test_multiple_diagnostics_runs_independent(v11_db: str) -> None:
 
 
 @patch("sys.platform", "win32")
-def test_doctor_on_windows() -> None:
+async def test_doctor_on_windows() -> None:
     """Test doctor handles Windows-specific paths."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     # Should not crash on Windows
     result = doctor.check_temp_directory()
     assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
 
 
 @patch("sys.platform", "darwin")
-def test_doctor_on_macos() -> None:
+async def test_doctor_on_macos() -> None:
     """Test doctor handles macOS-specific behavior."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_temp_directory()
     assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
 
@@ -773,7 +777,7 @@ def test_doctor_on_macos() -> None:
 # ============================================================================
 
 
-def test_check_database_schema_unknown_version() -> None:
+async def test_check_database_schema_unknown_version() -> None:
     """Test database schema check with unknown version (lines 256-261)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "unknown_version.db"
@@ -811,26 +815,28 @@ def test_check_database_schema_unknown_version() -> None:
         conn.commit()
         conn.close()
 
-        doctor = Doctor(str(db_path), validate_schema=False, auto_create=False)
-        result = doctor.check_database_schema()
+        doctor = await Doctor.create(str(db_path), validate_schema=False, auto_create=False)
+        result = await doctor.check_database_schema()
 
         assert result.severity == CheckSeverity.WARNING
         assert "unknown" in result.message.lower() or "99.99" in result.message
         assert result.fixable is False
 
 
-def test_check_database_schema_error(v11_db: str) -> None:
+async def test_check_database_schema_error(v11_db: str) -> None:
     """Test database schema check handles SQL errors (line 262-268)."""
     # Create a doctor with an invalid database path to trigger SQL error
-    doctor = Doctor("/nonexistent/path/invalid.db", validate_schema=False, auto_create=False)
-    result = doctor.check_database_schema()
+    doctor = await Doctor.create(
+        "/nonexistent/path/invalid.db", validate_schema=False, auto_create=False
+    )
+    result = await doctor.check_database_schema()
 
     # Should result in error since path doesn't exist and can't be accessed
     assert result.severity == CheckSeverity.ERROR
     assert result.fixable is False or result.fixable is True
 
 
-def test_check_orphaned_fts_not_found() -> None:
+async def test_check_orphaned_fts_not_found() -> None:
     """Test orphaned FTS check when FTS table doesn't exist (line 229)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "no_fts.db"
@@ -868,14 +874,14 @@ def test_check_orphaned_fts_not_found() -> None:
         conn.commit()
         conn.close()
 
-        doctor = Doctor(str(db_path), validate_schema=False, auto_create=False)
-        result = doctor.check_orphaned_fts()
+        doctor = await Doctor.create(str(db_path), validate_schema=False, auto_create=False)
+        result = await doctor.check_orphaned_fts()
 
         # Should handle gracefully
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
 
 
-def test_check_archive_files_exist_with_missing_files(v11_db: str) -> None:
+async def test_check_archive_files_exist_with_missing_files(v11_db: str) -> None:
     """Test archive files check with missing archive files (lines 362-370)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -939,16 +945,16 @@ def test_check_archive_files_exist_with_missing_files(v11_db: str) -> None:
         conn.commit()
         conn.close()
 
-        doctor = Doctor(str(db_path), validate_schema=False, auto_create=False)
-        result = doctor.check_archive_files_exist()
+        doctor = await Doctor.create(str(db_path), validate_schema=False, auto_create=False)
+        result = await doctor.check_archive_files_exist()
 
         # Should detect missing files
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
 
 
-def test_check_python_version_compatibility() -> None:
+async def test_check_python_version_compatibility() -> None:
     """Test Python version check (lines 256-263)."""
-    doctor = Doctor(":memory:")
+    doctor = await Doctor.create(":memory:")
     result = doctor.check_python_version()
 
     assert result.severity == CheckSeverity.OK
@@ -956,50 +962,50 @@ def test_check_python_version_compatibility() -> None:
     assert result.fixable is False
 
 
-def test_check_dependencies_import_failures() -> None:
+async def test_check_dependencies_import_failures() -> None:
     """Test dependencies check with import failures (line 293, 312)."""
     with patch("importlib.import_module", side_effect=ImportError("Not found")):
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_dependencies()
 
         # Should identify missing dependencies
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
 
 
-def test_check_oauth_token_file_missing() -> None:
+async def test_check_oauth_token_file_missing() -> None:
     """Test OAuth token check when token is missing (lines 560-568)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Use temp dir that doesn't have token
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_oauth_token()
 
         # Token missing is OK if not configured
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
 
 
-def test_check_credentials_file_missing() -> None:
+async def test_check_credentials_file_missing() -> None:
     """Test credentials file check (lines 591-598)."""
     with patch("pathlib.Path.exists", return_value=False):
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_credentials_file()
 
         # Missing credentials is acceptable
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
 
 
-def test_check_disk_space_insufficient() -> None:
+async def test_check_disk_space_insufficient() -> None:
     """Test disk space check identifies low space (lines 645-646)."""
     with patch("shutil.disk_usage") as mock_disk:
         # Return very low available space (< 100MB)
         mock_disk.return_value = (1000000000, 500000000, 50000000)  # 50MB free
-        doctor = Doctor(":memory:")
+        doctor = await Doctor.create(":memory:")
         result = doctor.check_disk_space()
 
         # Should warn about low space
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
 
 
-def test_check_write_permissions_readonly_file() -> None:
+async def test_check_write_permissions_readonly_file() -> None:
     """Test write permissions check (lines 680-681)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         test_dir = Path(tmpdir)
@@ -1010,7 +1016,7 @@ def test_check_write_permissions_readonly_file() -> None:
         test_file.chmod(0o444)
 
         try:
-            doctor = Doctor(":memory:")
+            doctor = await Doctor.create(":memory:")
             # Should handle permissions check gracefully
             result = doctor.check_write_permissions()
             assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
@@ -1018,7 +1024,7 @@ def test_check_write_permissions_readonly_file() -> None:
             test_file.chmod(0o644)
 
 
-def test_check_stale_locks_found() -> None:
+async def test_check_stale_locks_found() -> None:
     """Test stale locks check (lines 714-715, 741-742)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a stale lock file
@@ -1029,30 +1035,30 @@ def test_check_stale_locks_found() -> None:
 
         # Mock temp directory to return our temp dir
         with patch("tempfile.gettempdir", return_value=str(lock_dir.parent)):
-            doctor = Doctor(":memory:")
+            doctor = await Doctor.create(":memory:")
             result = doctor.check_stale_locks()
 
             # Should detect locks
             assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
 
 
-def test_fix_missing_database() -> None:
+async def test_fix_missing_database() -> None:
     """Test fix for missing database (lines 753-785)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "new.db"
         assert not db_path.exists()
 
-        doctor = Doctor(str(db_path))
-        result = doctor.fix_missing_database()
+        doctor = await Doctor.create(str(db_path))
+        result = await doctor.fix_missing_database()
 
         assert result.success is True
         assert db_path.exists()
 
 
-def test_run_diagnostics_full_report(v11_db: str) -> None:
+async def test_run_diagnostics_full_report(v11_db: str) -> None:
     """Test run_diagnostics returns complete report (lines 118, 194, 196)."""
-    doctor = Doctor(v11_db)
-    report = doctor.run_diagnostics()
+    doctor = await Doctor.create(v11_db)
+    report = await doctor.run_diagnostics()
 
     assert len(report.checks) > 0
     assert report.overall_status in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
@@ -1062,7 +1068,7 @@ def test_run_diagnostics_full_report(v11_db: str) -> None:
     assert "Database schema" in check_names
 
 
-def test_doctor_report_dict_conversion() -> None:
+async def test_doctor_report_dict_conversion() -> None:
     """Test DoctorReport to_dict conversion."""
     checks = [
         CheckResult("Test 1", CheckSeverity.OK, "All good", False),
@@ -1082,17 +1088,17 @@ def test_doctor_report_dict_conversion() -> None:
     assert len(result_dict["checks"]) == 2
 
 
-def test_get_connection_returns_none_for_missing_db() -> None:
+async def test_get_connection_returns_none_for_missing_db() -> None:
     """Test _get_db_manager returns None for missing database (line 118)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "nonexistent.db"
-        doctor = Doctor(str(db_path), auto_create=False)
+        doctor = await Doctor.create(str(db_path), auto_create=False)
 
         db_manager = doctor._get_db_manager()
         assert db_manager is None
 
 
-def test_check_database_schema_connection_failure() -> None:
+async def test_check_database_schema_connection_failure() -> None:
     """Test check_database_schema handles connection failure (lines 229, 262-263)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -1101,19 +1107,19 @@ def test_check_database_schema_connection_failure() -> None:
         with open(db_path, "wb") as f:
             f.write(b"corrupted database content")
 
-        doctor = Doctor(str(db_path))
-        result = doctor.check_database_schema()
+        doctor = await Doctor.create(str(db_path))
+        result = await doctor.check_database_schema()
 
         # Should detect error
         assert result.severity == CheckSeverity.ERROR
         assert "cannot connect" in result.message.lower() or "failed" in result.message.lower()
 
 
-def test_check_disk_space_exception() -> None:
+async def test_check_disk_space_exception() -> None:
     """Test check_disk_space handles exceptions (lines 680-681)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Mock disk_usage to raise exception
         with patch("shutil.disk_usage", side_effect=OSError("Disk error")):
@@ -1123,11 +1129,11 @@ def test_check_disk_space_exception() -> None:
             assert "failed" in result.message.lower()
 
 
-def test_check_write_permissions_exception() -> None:
+async def test_check_write_permissions_exception() -> None:
     """Test check_write_permissions handles exceptions (lines 714-715)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Mock os.access to raise exception
         with patch("os.access", side_effect=OSError("Permission error")):
@@ -1137,11 +1143,11 @@ def test_check_write_permissions_exception() -> None:
             assert "failed" in result.message.lower()
 
 
-def test_check_stale_locks_exception() -> None:
+async def test_check_stale_locks_exception() -> None:
     """Test check_stale_locks handles exceptions (lines 741-742)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Mock glob to raise exception
         with patch.object(Path, "glob", side_effect=OSError("Glob error")):
@@ -1151,11 +1157,11 @@ def test_check_stale_locks_exception() -> None:
             assert "failed" in result.message.lower()
 
 
-def test_check_temp_directory_exception() -> None:
+async def test_check_temp_directory_exception() -> None:
     """Test check_temp_directory handles exceptions (lines 779-780)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Mock os.access to raise exception
         with patch("os.access", side_effect=OSError("Temp error")):
@@ -1165,19 +1171,19 @@ def test_check_temp_directory_exception() -> None:
             assert "failed" in result.message.lower()
 
 
-def test_fix_orphaned_fts_connection_failure() -> None:
+async def test_fix_orphaned_fts_connection_failure() -> None:
     """Test fix_orphaned_fts handles connection failure (lines 835)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "missing.db"
-        doctor = Doctor(str(db_path), auto_create=False)
+        doctor = await Doctor.create(str(db_path), auto_create=False)
 
-        result = doctor.fix_orphaned_fts()
+        result = await doctor.fix_orphaned_fts()
 
         assert result.success is False
         assert "cannot connect" in result.message.lower()
 
 
-def test_fix_stale_locks_exception() -> None:
+async def test_fix_stale_locks_exception() -> None:
     """Test fix_stale_locks handles exceptions (lines 846-847, 854-855)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -1186,7 +1192,7 @@ def test_fix_stale_locks_exception() -> None:
         lock_file = Path(tmpdir) / "test.lock"
         lock_file.touch()
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Mock unlink to raise permission error
         with patch.object(Path, "unlink", side_effect=PermissionError("Cannot delete")):
@@ -1197,32 +1203,32 @@ def test_fix_stale_locks_exception() -> None:
             assert "0 lock" in result.message.lower()
 
 
-def test_check_database_schema_for_connection_failures() -> None:
+async def test_check_database_schema_for_connection_failures() -> None:
     """Test check_database_schema when connection fails (line 229)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "nonexistent.db"
 
-        doctor = Doctor(str(db_path), auto_create=False)
-        result = doctor.check_database_schema()
+        doctor = await Doctor.create(str(db_path), auto_create=False)
+        result = await doctor.check_database_schema()
 
         # Should detect error when auto_create=False
         assert result.severity == CheckSeverity.ERROR
         assert "not found" in result.message.lower() or "missing" in result.message.lower()
 
 
-def test_run_diagnostics_detects_fixable_issues() -> None:
+async def test_run_diagnostics_detects_fixable_issues() -> None:
     """Test run_diagnostics identifies fixable issues (lines 194, 196)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "missing.db"
 
-        doctor = Doctor(str(db_path), auto_create=False)
-        report = doctor.run_diagnostics()
+        doctor = await Doctor.create(str(db_path), auto_create=False)
+        report = await doctor.run_diagnostics()
 
         # Should have detected fixable issue (missing database when auto_create=False)
         assert len(report.fixable_issues) > 0
 
 
-def test_fix_stale_locks_handles_glob_error() -> None:
+async def test_fix_stale_locks_handles_glob_error() -> None:
     """Test fix_stale_locks handles errors gracefully (lines 854-855)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
@@ -1231,7 +1237,7 @@ def test_fix_stale_locks_handles_glob_error() -> None:
         conn = sqlite3.connect(str(db_path))
         conn.close()
 
-        doctor = Doctor(str(db_path))
+        doctor = await Doctor.create(str(db_path))
 
         # Even if glob has issues, should handle gracefully
         result = doctor.fix_stale_locks()

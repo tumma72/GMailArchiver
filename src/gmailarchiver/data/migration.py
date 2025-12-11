@@ -1,15 +1,16 @@
 """Database schema migration system for Gmail Archiver."""
 
+import asyncio
 import email
 import hashlib
 import shutil
-import sqlite3
 from contextlib import closing
 from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
@@ -41,9 +42,9 @@ class MigrationManager:
             db_path: Path to SQLite database file
         """
         self.db_path = Path(db_path).resolve()
-        self.conn: sqlite3.Connection | None = None
+        self.conn: aiosqlite.Connection | None = None
 
-    def _connect(self) -> sqlite3.Connection:
+    async def _connect(self) -> aiosqlite.Connection:
         """
         Get database connection.
 
@@ -51,18 +52,18 @@ class MigrationManager:
             SQLite connection
         """
         if self.conn is None:
-            self.conn = sqlite3.connect(str(self.db_path))
+            self.conn = await aiosqlite.connect(str(self.db_path))
             # Enable foreign key support
-            self.conn.execute("PRAGMA foreign_keys = ON")
+            await self.conn.execute("PRAGMA foreign_keys = ON")
         return self.conn
 
-    def _close(self) -> None:
+    async def _close(self) -> None:
         """Close database connection."""
         if self.conn:
-            self.conn.close()
+            await self.conn.close()
             self.conn = None
 
-    def detect_schema_version(self) -> str:
+    async def detect_schema_version(self) -> str:
         """
         Detect current database schema version.
 
@@ -72,44 +73,44 @@ class MigrationManager:
         if not self.db_path.exists():
             return "none"
 
-        conn = self._connect()
-        cursor = conn.execute(
+        conn = await self._connect()
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
         )
 
-        if cursor.fetchone():
+        if await cursor.fetchone():
             # Schema version table exists - read version
-            version_cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
-            row = version_cursor.fetchone()
+            version_cursor = await conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = await version_cursor.fetchone()
             return row[0] if row else "1.0"
 
         # Check for v1.0 schema (archived_messages table)
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
         )
-        if cursor.fetchone():
+        if await cursor.fetchone():
             return "1.0"
 
         # Check for v1.1 schema (messages table)
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
         )
-        if cursor.fetchone():
+        if await cursor.fetchone():
             return "1.1"
 
         return "none"
 
-    def needs_migration(self) -> bool:
+    async def needs_migration(self) -> bool:
         """
         Check if database needs migration to v1.1.
 
         Returns:
             True if migration is needed
         """
-        version = self.detect_schema_version()
+        version = await self.detect_schema_version()
         return version in ("1.0", "none")
 
-    def create_backup(self) -> Path:
+    async def create_backup(self) -> Path:
         """
         Create backup of database before migration.
 
@@ -127,13 +128,14 @@ class MigrationManager:
 
         try:
             console.print(f"[cyan]Creating backup: {backup_path}[/cyan]")
-            shutil.copy2(self.db_path, backup_path)
+            # File copy is CPU-bound, wrap in thread
+            await asyncio.to_thread(shutil.copy2, self.db_path, backup_path)
             console.print("[green]✓ Backup created successfully[/green]")
             return backup_path
         except Exception as e:
             raise MigrationError(f"Failed to create backup: {e}") from e
 
-    def _create_enhanced_schema(self, conn: sqlite3.Connection) -> None:
+    async def _create_enhanced_schema(self, conn: aiosqlite.Connection) -> None:
         """
         Create enhanced v1.1.0 schema.
 
@@ -141,7 +143,7 @@ class MigrationManager:
             conn: SQLite connection
         """
         # Create messages table (enhanced schema)
-        conn.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 gmail_id TEXT PRIMARY KEY,
                 rfc_message_id TEXT UNIQUE NOT NULL,
@@ -173,10 +175,10 @@ class MigrationManager:
             "CREATE INDEX IF NOT EXISTS idx_subject ON messages(subject)",
         ]
         for index_sql in indexes:
-            conn.execute(index_sql)
+            await conn.execute(index_sql)
 
         # Create FTS5 virtual table for full-text search
-        conn.execute("""
+        await conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 subject,
                 from_addr,
@@ -189,14 +191,14 @@ class MigrationManager:
         """)
 
         # Create auto-sync triggers for FTS5
-        conn.execute("""
+        await conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
                 INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
                 VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
             END
         """)
 
-        conn.execute("""
+        await conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
                 UPDATE messages_fts
                 SET subject = new.subject,
@@ -207,14 +209,14 @@ class MigrationManager:
             END
         """)
 
-        conn.execute("""
+        await conn.execute("""
             CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
                 DELETE FROM messages_fts WHERE rowid = old.rowid;
             END
         """)
 
         # Create accounts table (for future multi-account support)
-        conn.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS accounts (
                 account_id TEXT PRIMARY KEY,
                 email TEXT NOT NULL UNIQUE,
@@ -226,7 +228,7 @@ class MigrationManager:
         """)
 
         # Insert default account
-        conn.execute(
+        await conn.execute(
             """
             INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp)
             VALUES ('default', 'default', ?)
@@ -235,7 +237,7 @@ class MigrationManager:
         )
 
         # Keep archive_runs table (already exists, just ensure it's there)
-        conn.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS archive_runs (
                 run_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_timestamp TEXT NOT NULL,
@@ -248,14 +250,14 @@ class MigrationManager:
         """)
 
         # Create schema_version table
-        conn.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT NOT NULL
             )
         """)
 
-        conn.commit()
+        await conn.commit()
 
     def _extract_rfc_message_id(self, msg: email.message.Message) -> str:
         """
@@ -334,7 +336,7 @@ class MigrationManager:
 
         return None
 
-    def migrate_v1_to_v1_1(self, progress_callback: Any = None) -> None:
+    async def migrate_v1_to_v1_1(self, progress_callback: Any = None) -> None:
         """
         Migrate database from v1.0 to v1.1 schema.
 
@@ -348,27 +350,27 @@ class MigrationManager:
         """
         import mailbox
 
-        conn = self._connect()
+        conn = await self._connect()
 
         try:
             console.print("[cyan]Starting migration from v1.0 to v1.1...[/cyan]")
 
             # 1. Rename old table
             console.print("[cyan]Renaming archived_messages to archived_messages_old...[/cyan]")
-            conn.execute("ALTER TABLE archived_messages RENAME TO archived_messages_old")
+            await conn.execute("ALTER TABLE archived_messages RENAME TO archived_messages_old")
 
             # 2. Create new schema
             console.print("[cyan]Creating enhanced schema with mbox_offset tracking...[/cyan]")
-            self._create_enhanced_schema(conn)
+            await self._create_enhanced_schema(conn)
 
             # 2a. Add audit trail columns to archive_runs if they don't exist (v1.1 enhancement)
             # Check if operation_type column exists
-            cursor = conn.execute("PRAGMA table_info(archive_runs)")
-            columns = {row[1] for row in cursor.fetchall()}
+            cursor = await conn.execute("PRAGMA table_info(archive_runs)")
+            columns = {row[1] for row in await cursor.fetchall()}
 
             if "operation_type" not in columns:
                 console.print("[cyan]Adding operation_type column to archive_runs...[/cyan]")
-                conn.execute("""
+                await conn.execute("""
                     ALTER TABLE archive_runs
                     ADD COLUMN operation_type TEXT DEFAULT 'archive'
                 """)
@@ -378,21 +380,22 @@ class MigrationManager:
             # we need to add it
             if "account_id" not in columns:
                 console.print("[cyan]Adding account_id column to archive_runs...[/cyan]")
-                conn.execute("""
+                await conn.execute("""
                     ALTER TABLE archive_runs
                     ADD COLUMN account_id TEXT DEFAULT 'default'
                 """)
 
             # 3. Migrate data with progress tracking
             console.print("[cyan]Scanning mbox files and extracting metadata...[/cyan]")
-            cursor = conn.execute("SELECT COUNT(*) FROM archived_messages_old")
-            total_messages = cursor.fetchone()[0]
+            cursor = await conn.execute("SELECT COUNT(*) FROM archived_messages_old")
+            row = await cursor.fetchone()
+            total_messages = row[0] if row else 0
 
             console.print(f"[cyan]Processing {total_messages} messages...[/cyan]")
 
             # Group messages by archive file for efficient processing
-            cursor = conn.execute("SELECT DISTINCT archive_file FROM archived_messages_old")
-            archive_files = [row[0] for row in cursor.fetchall()]
+            cursor = await conn.execute("SELECT DISTINCT archive_file FROM archived_messages_old")
+            archive_files = [row[0] for row in await cursor.fetchall()]
 
             migrated_count = 0
             skipped_count = 0
@@ -415,17 +418,18 @@ class MigrationManager:
                             f"[yellow]Warning: Archive file not found: {archive_path}[/yellow]"
                         )
                         # Count messages that will be skipped
-                        cursor = conn.execute(
+                        cursor = await conn.execute(
                             "SELECT COUNT(*) FROM archived_messages_old WHERE archive_file = ?",
                             (archive_file,),
                         )
-                        skip_count = cursor.fetchone()[0]
+                        row = await cursor.fetchone()
+                        skip_count = row[0] if row else 0
                         skipped_count += skip_count
                         progress.update(task, advance=skip_count)
                         continue
 
                     # Get all messages from v1.0 for this archive
-                    cursor = conn.execute(
+                    cursor = await conn.execute(
                         """SELECT gmail_id, archived_timestamp, subject, from_addr,
                                   message_date, checksum
                            FROM archived_messages_old
@@ -440,7 +444,7 @@ class MigrationManager:
                             "message_date": row[4],
                             "checksum": row[5],
                         }
-                        for row in cursor.fetchall()
+                        for row in await cursor.fetchall()
                     }
 
                     # Scan mbox file once and process all messages
@@ -491,7 +495,7 @@ class MigrationManager:
                                         checksum = hashlib.sha256(message_bytes).hexdigest()
 
                                         # Insert with real metadata
-                                        conn.execute(
+                                        await conn.execute(
                                             """
                                             INSERT INTO messages
                                             (gmail_id, rfc_message_id, thread_id,
@@ -554,21 +558,21 @@ class MigrationManager:
 
             # 4. Drop old table
             console.print("[cyan]Dropping old table...[/cyan]")
-            conn.execute("DROP TABLE archived_messages_old")
+            await conn.execute("DROP TABLE archived_messages_old")
 
             # 5. Set schema version
             console.print("[cyan]Setting schema version to 1.1...[/cyan]")
-            conn.execute(
+            await conn.execute(
                 "INSERT OR REPLACE INTO schema_version VALUES (?, ?)",
                 (self.SCHEMA_VERSION_1_1, datetime.now().isoformat()),
             )
 
             # Commit the transaction before VACUUM
-            conn.commit()
+            await conn.commit()
 
             # 6. Run VACUUM to reclaim space (must be outside transaction)
             console.print("[cyan]Running VACUUM to reclaim space...[/cyan]")
-            conn.execute("VACUUM")
+            await conn.execute("VACUUM")
 
             status_msg = f"✓ Migration completed! Migrated {migrated_count} messages"
             if skipped_count > 0:
@@ -576,10 +580,10 @@ class MigrationManager:
             console.print(f"[green]{status_msg}[/green]")
 
         except Exception as e:
-            conn.rollback()
+            await conn.rollback()
             raise MigrationError(f"Migration failed: {e}") from e
 
-    def validate_migration(self) -> bool:
+    async def validate_migration(self) -> bool:
         """
         Validate migration was successful.
 
@@ -589,32 +593,33 @@ class MigrationManager:
         Raises:
             MigrationError: If validation fails
         """
-        conn = self._connect()
+        conn = await self._connect()
 
         try:
             # Check schema version
-            cursor = conn.execute("SELECT version FROM schema_version LIMIT 1")
-            row = cursor.fetchone()
+            cursor = await conn.execute("SELECT version FROM schema_version LIMIT 1")
+            row = await cursor.fetchone()
             if not row or row[0] != self.SCHEMA_VERSION_1_1:
                 raise MigrationError("Schema version not set to 1.1")
 
             # Check messages table exists
-            cursor = conn.execute(
+            cursor = await conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
             )
-            if not cursor.fetchone():
+            if not await cursor.fetchone():
                 raise MigrationError("messages table not found")
 
             # Check FTS5 table exists
-            cursor = conn.execute(
+            cursor = await conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
             )
-            if not cursor.fetchone():
+            if not await cursor.fetchone():
                 raise MigrationError("messages_fts table not found")
 
             # Check message count
-            cursor = conn.execute("SELECT COUNT(*) FROM messages")
-            message_count = cursor.fetchone()[0]
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            message_count = row[0] if row else 0
 
             msg = f"✓ Validation passed: {message_count} messages in database"
             console.print(f"[green]{msg}[/green]")
@@ -623,7 +628,7 @@ class MigrationManager:
         except Exception as e:
             raise MigrationError(f"Validation failed: {e}") from e
 
-    def rollback_migration(self, backup_path: Path) -> None:
+    async def rollback_migration(self, backup_path: Path) -> None:
         """
         Rollback migration by restoring from backup.
 
@@ -640,21 +645,21 @@ class MigrationManager:
             console.print(f"[yellow]Rolling back migration from {backup_path}...[/yellow]")
 
             # Close connection
-            self._close()
+            await self._close()
 
             # Remove current database
             if self.db_path.exists():
                 self.db_path.unlink()
 
             # Restore from backup
-            shutil.copy2(backup_path, self.db_path)
+            await asyncio.to_thread(shutil.copy2, backup_path, self.db_path)
 
             console.print("[green]✓ Rollback completed successfully[/green]")
 
         except Exception as e:
             raise MigrationError(f"Rollback failed: {e}") from e
 
-    def backfill_offsets_from_mbox(self, invalid_messages: list[dict[str, Any]]) -> int:
+    async def backfill_offsets_from_mbox(self, invalid_messages: list[dict[str, Any]]) -> int:
         """
         Backfill invalid offsets by scanning mbox files.
 
@@ -677,7 +682,7 @@ class MigrationManager:
         if not invalid_messages:
             return 0
 
-        conn = self._connect()
+        conn = await self._connect()
 
         # Group messages by archive file for efficient scanning
         by_archive: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -729,7 +734,7 @@ class MigrationManager:
                                     # Update database with real offsets
                                     gmail_id = msg_lookup[rfc_message_id]["gmail_id"]
 
-                                    conn.execute(
+                                    await conn.execute(
                                         """
                                         UPDATE messages
                                         SET mbox_offset = ?, mbox_length = ?
@@ -753,22 +758,22 @@ class MigrationManager:
                     continue
 
             # Commit all updates
-            conn.commit()
+            await conn.commit()
 
             console.print(f"[green]✓ Backfilled {backfilled} messages[/green]")
             return backfilled
 
         except Exception as e:
-            conn.rollback()
+            await conn.rollback()
             raise MigrationError(f"Backfill failed: {e}") from e
 
-    def __enter__(self) -> MigrationManager:
+    async def __aenter__(self) -> MigrationManager:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Context manager exit."""
-        self._close()
+        await self._close()
 
     def __del__(self) -> None:
         """Ensure database connection is closed on garbage collection.
@@ -777,4 +782,18 @@ class MigrationManager:
         is used without an explicit context manager or _close() call in tests
         or CLI code paths.
         """
-        self._close()
+        # For async connections, we need to handle cleanup carefully
+        # If there's an open connection, try to close it synchronously
+        if self.conn is not None:
+            try:
+                # Try to run the async close in a new event loop if needed
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If a loop is already running, we can't close synchronously
+                    # The connection will be cleaned up by the garbage collector
+                    pass
+                else:
+                    loop.run_until_complete(self._close())
+            except RuntimeError:
+                # No event loop, or other issues - connection will be GC'd
+                pass

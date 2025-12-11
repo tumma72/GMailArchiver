@@ -34,6 +34,8 @@ Each ADR follows this structure:
 | [003](003-web-ui-technology-stack.md) | Web UI Technology Stack (Svelte 5 + FastAPI) | ✅ Accepted | 2025-11-14 |
 | [004](004-message-deduplication.md) | Message Deduplication Strategy (Message-ID Exact Matching) | ✅ Accepted | 2025-11-14 |
 | [005](005-distribution-strategy.md) | Distribution Strategy (Multi-Tiered Approach) | ✅ Accepted | 2025-11-14 |
+| [006](006-async-first-architecture.md) | Async-First Architecture | ✅ Accepted | 2025-12-10 |
+| [007](007-strict-dependency-injection.md) | Strict Dependency Injection | ✅ Accepted | 2025-12-10 |
 
 ## Quick Reference by Topic
 
@@ -51,6 +53,10 @@ Each ADR follows this structure:
 
 ### Distribution & Installation
 - **[ADR-005: Distribution Strategy](005-distribution-strategy.md)** - Multi-tiered approach (PyPI, install script, standalone executables)
+
+### Code Architecture
+- **[ADR-006: Async-First Architecture](006-async-first-architecture.md)** - Why we use async/await throughout the data and core layers
+- **[ADR-007: Strict Dependency Injection](007-strict-dependency-injection.md)** - Why HybridStorage is the single data gateway
 
 ## Decision-Making Process
 

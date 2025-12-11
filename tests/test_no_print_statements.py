@@ -69,9 +69,15 @@ class TestNoPrintStatements:
         """Test that ArchiverFacade doesn't use bare print() statements."""
         mock_client = Mock()
         mock_client.delete_messages_permanent.return_value = 5
+        mock_db = Mock()
+        mock_storage = Mock()
 
         # Test without OutputManager - should work without print
-        archiver = ArchiverFacade(mock_client)
+        archiver = ArchiverFacade(
+            gmail_client=mock_client,
+            db_manager=mock_db,
+            storage=mock_storage,
+        )
 
         # Patch print to detect if it's called
         with patch("builtins.print") as mock_print:
@@ -138,9 +144,15 @@ class TestBackwardCompatibility:
         """Test that archiver works when no OutputManager is provided."""
         mock_client = Mock()
         mock_client.delete_messages_permanent.return_value = 5
+        mock_db = Mock()
+        mock_storage = Mock()
 
         # No OutputManager provided (backward compat)
-        archiver = ArchiverFacade(mock_client)
+        archiver = ArchiverFacade(
+            gmail_client=mock_client,
+            db_manager=mock_db,
+            storage=mock_storage,
+        )
 
         # Should complete successfully even without OutputManager
         count = archiver.delete_archived_messages(["msg1"], permanent=True)

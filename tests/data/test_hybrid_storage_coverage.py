@@ -17,6 +17,8 @@ import pytest
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def temp_dir():
@@ -75,9 +77,10 @@ def v11_db(temp_dir):
 class TestHybridStorageInterruptHandling:
     """Tests for interrupt event handling (lines 194-197)."""
 
-    def test_archive_messages_batch_with_interrupt(self, temp_dir, v11_db):
+    async def test_archive_messages_batch_with_interrupt(self, temp_dir, v11_db):
         """Test batch archiving with interrupt event set."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         # Create test messages
@@ -95,7 +98,7 @@ class TestHybridStorageInterruptHandling:
 
         # Archive with interrupt
         archive_file = temp_dir / "test.mbox"
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=archive_file,
             compression=None,
@@ -106,9 +109,10 @@ class TestHybridStorageInterruptHandling:
         assert result["interrupted"] is True
         assert result["archived"] == 0  # Should stop before archiving any
 
-    def test_archive_messages_batch_interrupt_mid_batch(self, temp_dir, v11_db):
+    async def test_archive_messages_batch_interrupt_mid_batch(self, temp_dir, v11_db):
         """Test interrupt occurring during batch processing."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         # Create messages
@@ -132,7 +136,7 @@ class TestHybridStorageInterruptHandling:
                 interrupt_event.set()
 
         archive_file = temp_dir / "test.mbox"
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=archive_file,
             compression=None,
@@ -149,9 +153,10 @@ class TestHybridStorageInterruptHandling:
 class TestHybridStorageProgressCallbacks:
     """Tests for progress callback handling (lines 208, 267, 283)."""
 
-    def test_progress_callback_on_skip(self, temp_dir, v11_db):
+    async def test_progress_callback_on_skip(self, temp_dir, v11_db):
         """Test progress callback called when skipping duplicate (line 208)."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=True)
 
         # Pre-archive a message
@@ -161,7 +166,7 @@ class TestHybridStorageProgressCallbacks:
         msg1.set_content("Body 1")
 
         archive_file = temp_dir / "test.mbox"
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg1, "gmail_1", "thread_1", None)],
             archive_file=archive_file,
             compression=None,
@@ -178,7 +183,7 @@ class TestHybridStorageProgressCallbacks:
         def progress_callback(gmail_id, subject, status):
             callback_calls.append((gmail_id, subject, status))
 
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg2, "gmail_2", "thread_2", None)],
             archive_file=archive_file,
             compression=None,
@@ -190,9 +195,10 @@ class TestHybridStorageProgressCallbacks:
         assert callback_calls[0][0] == "gmail_2"
         assert callback_calls[0][2] == "skipped"
 
-    def test_progress_callback_on_success(self, temp_dir, v11_db):
+    async def test_progress_callback_on_success(self, temp_dir, v11_db):
         """Test progress callback called on successful archive (line 267)."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -206,7 +212,7 @@ class TestHybridStorageProgressCallbacks:
             callback_calls.append((gmail_id, subject, status))
 
         archive_file = temp_dir / "test.mbox"
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg, "gmail_1", "thread_1", None)],
             archive_file=archive_file,
             compression=None,
@@ -218,11 +224,12 @@ class TestHybridStorageProgressCallbacks:
         assert callback_calls[0][0] == "gmail_1"
         assert callback_calls[0][2] == "success"
 
-    def test_progress_callback_on_error(self, temp_dir, v11_db):
+    async def test_progress_callback_on_error(self, temp_dir, v11_db):
         """Test progress callback called on error (line 283)."""
         from unittest.mock import patch
 
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -238,7 +245,7 @@ class TestHybridStorageProgressCallbacks:
         # Mock record_archived_message to fail
         with patch.object(db, "record_archived_message", side_effect=Exception("DB error")):
             archive_file = temp_dir / "test.mbox"
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=[(msg, "gmail_1", "thread_1", None)],
                 archive_file=archive_file,
                 compression=None,
@@ -254,9 +261,10 @@ class TestHybridStorageProgressCallbacks:
 class TestHybridStorageFallbackPaths:
     """Tests for fallback paths when mbox._file is not available (lines 219-222, 233)."""
 
-    def test_offset_calculation_without_mbox_file(self, temp_dir, v11_db):
+    async def test_offset_calculation_without_mbox_file(self, temp_dir, v11_db):
         """Test offset calculation when mbox._file is None (line 219-222)."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -270,21 +278,22 @@ class TestHybridStorageFallbackPaths:
         mbox_obj.close()
 
         # Archive message (should use fallback path)
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg, "gmail_1", "thread_1", None)],
             archive_file=archive_file,
             compression=None,
         )
 
         # Verify message was archived
-        messages = db.get_all_messages_for_archive(str(archive_file))
+        messages = await db.get_all_messages_for_archive(str(archive_file))
         assert len(messages) == 1
 
-    def test_length_calculation_fallback(self, temp_dir, v11_db):
+    async def test_length_calculation_fallback(self, temp_dir, v11_db):
         """Test length calculation fallback (line 233)."""
         from unittest.mock import patch
 
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -304,7 +313,7 @@ class TestHybridStorageFallbackPaths:
             mock_mbox.return_value = mock_instance
 
             # Should use fallback length calculation
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=[(msg, "gmail_1", "thread_1", None)],
                 archive_file=archive_file,
                 compression=None,
@@ -317,11 +326,12 @@ class TestHybridStorageFallbackPaths:
 class TestHybridStorageCleanupPaths:
     """Tests for cleanup exception handling (lines 302-303, 335, 386-391, 508-509, 518-519)."""
 
-    def test_unlock_exception_handling(self, temp_dir, v11_db):
+    async def test_unlock_exception_handling(self, temp_dir, v11_db):
         """Test exception handling during unlock (line 296, 386)."""
         from unittest.mock import patch
 
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -342,7 +352,7 @@ class TestHybridStorageCleanupPaths:
             mock_mbox.return_value = mock_instance
 
             # Should handle unlock exception gracefully
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=[(msg, "gmail_1", "thread_1", None)],
                 archive_file=archive_file,
                 compression=None,
@@ -351,11 +361,12 @@ class TestHybridStorageCleanupPaths:
             # Should have attempted unlock
             assert mock_instance.unlock.called
 
-    def test_close_exception_handling(self, temp_dir, v11_db):
+    async def test_close_exception_handling(self, temp_dir, v11_db):
         """Test exception handling during close (lines 302-303, 389-391)."""
         from unittest.mock import patch
 
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -381,7 +392,7 @@ class TestHybridStorageCleanupPaths:
             mock_mbox.return_value = mock_instance
 
             # Should handle close exception gracefully
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=[(msg, "gmail_1", "thread_1", None)],
                 archive_file=archive_file,
                 compression=None,
@@ -390,9 +401,10 @@ class TestHybridStorageCleanupPaths:
             # Should have attempted close
             assert mock_file.close.called
 
-    def test_lock_file_cleanup_on_compression(self, temp_dir, v11_db):
+    async def test_lock_file_cleanup_on_compression(self, temp_dir, v11_db):
         """Test lock file cleanup during compression (line 335)."""
         db = DBManager(str(v11_db), validate_schema=False)
+        await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
         msg = email.message.EmailMessage()
@@ -407,7 +419,7 @@ class TestHybridStorageCleanupPaths:
         lock_file.touch()
 
         # Archive with compression
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg, "gmail_1", "thread_1", None)],
             archive_file=archive_file,
             compression="zstd",

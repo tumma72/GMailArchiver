@@ -28,7 +28,9 @@ class MessageExtractor:
         self.db_manager = db_manager
         self.locator = MessageLocator(self.db_manager)
 
-    def extract_by_gmail_id(self, gmail_id: str, output_path: str | Path | None = None) -> bytes:
+    async def extract_by_gmail_id(
+        self, gmail_id: str, output_path: str | Path | None = None
+    ) -> bytes:
         """Extract message by Gmail ID.
 
         Args:
@@ -42,7 +44,7 @@ class MessageExtractor:
             ExtractorError: If message not found or extraction fails
         """
         # Get message location from database
-        location = self.locator.locate_by_gmail_id(gmail_id)
+        location = await self.locator.locate_by_gmail_id(gmail_id)
         if not location:
             raise ExtractorError(f"Message not found in database: {gmail_id}")
 
@@ -53,7 +55,7 @@ class MessageExtractor:
             output_path,
         )
 
-    def extract_by_rfc_message_id(
+    async def extract_by_rfc_message_id(
         self, rfc_message_id: str, output_path: str | Path | None = None
     ) -> bytes:
         """Extract message by RFC 2822 Message-ID.
@@ -69,7 +71,7 @@ class MessageExtractor:
             ExtractorError: If message not found or extraction fails
         """
         # Get message location from database
-        location = self.locator.locate_by_rfc_message_id(rfc_message_id)
+        location = await self.locator.locate_by_rfc_message_id(rfc_message_id)
         if not location:
             raise ExtractorError(f"Message not found in database: {rfc_message_id}")
 
@@ -80,7 +82,7 @@ class MessageExtractor:
             output_path,
         )
 
-    def batch_extract(self, gmail_ids: list[str], output_dir: Path) -> ExtractStats:
+    async def batch_extract(self, gmail_ids: list[str], output_dir: Path) -> ExtractStats:
         """Extract multiple messages to directory.
 
         Args:
@@ -101,7 +103,7 @@ class MessageExtractor:
                 output_file = output_dir / f"{gmail_id}.eml"
 
                 # Extract message
-                self.extract_by_gmail_id(gmail_id, output_file)
+                await self.extract_by_gmail_id(gmail_id, output_file)
                 stats["extracted"] += 1
 
             except Exception as e:
@@ -110,17 +112,17 @@ class MessageExtractor:
 
         return stats
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database connection."""
-        self.db_manager.close()
+        await self.db_manager.close()
 
-    def __enter__(self) -> MessageExtractor:
-        """Context manager entry."""
+    async def __aenter__(self) -> MessageExtractor:
+        """Async context manager entry."""
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Context manager exit."""
-        self.close()
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit."""
+        await self.close()
 
     # Delegation methods for private methods used by tests
     def _get_compression_format(self, archive_path: Path) -> str | None:

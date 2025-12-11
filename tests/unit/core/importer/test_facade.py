@@ -5,7 +5,7 @@ Uses mocks for all dependencies.
 """
 
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -104,13 +104,14 @@ class TestImporterFacadeCountMessages:
 class TestImporterFacadeImportArchive:
     """Tests for import_archive method."""
 
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.importer.facade.FileScanner")
     @patch("gmailarchiver.core.importer.facade.MboxReader")
     @patch("gmailarchiver.core.importer.facade.GmailLookup")
     @patch("gmailarchiver.core.importer.facade.DatabaseWriter")
     @patch("gmailarchiver.core.importer.facade.time")
     @patch("gmailarchiver.core.importer.facade.Path.exists")
-    def test_import_archive_basic_flow(
+    async def test_import_archive_basic_flow(
         self,
         mock_exists: Mock,
         mock_time: Mock,
@@ -151,15 +152,17 @@ class TestImporterFacadeImportArchive:
         from gmailarchiver.core.importer._writer import WriteResult
 
         mock_writer = Mock()
-        mock_writer.load_existing_ids.return_value = set()
+        mock_writer.load_existing_ids = AsyncMock(return_value=set())
         mock_writer.is_duplicate.return_value = False
-        mock_writer.write_message.return_value = WriteResult.IMPORTED
+        mock_writer.write_message = AsyncMock(return_value=WriteResult.IMPORTED)
+        mock_writer.record_archive_run = AsyncMock()
         mock_writer_class.return_value = mock_writer
 
         # Import
         mock_db = Mock()
+        mock_db.commit = AsyncMock()
         facade = ImporterFacade(db_manager=mock_db)
-        result = facade.import_archive("/tmp/test.mbox")
+        result = await facade.import_archive("/tmp/test.mbox")
 
         assert isinstance(result, ImportResult)
         assert result.archive_file == "/tmp/test.mbox"
@@ -168,8 +171,9 @@ class TestImporterFacadeImportArchive:
         assert result.messages_failed == 0
         assert result.execution_time_ms == 1000.0
 
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.importer.facade.Path.exists")
-    def test_import_archive_file_not_found(self, mock_exists: Mock) -> None:
+    async def test_import_archive_file_not_found(self, mock_exists: Mock) -> None:
         """Test import when file doesn't exist."""
         mock_exists.return_value = False
 
@@ -177,16 +181,19 @@ class TestImporterFacadeImportArchive:
         facade = ImporterFacade(db_manager=mock_db)
 
         with pytest.raises(FileNotFoundError, match="Archive not found"):
-            facade.import_archive("/tmp/missing.mbox")
+            await facade.import_archive("/tmp/missing.mbox")
 
 
 @pytest.mark.unit
 class TestImporterFacadeImportMultiple:
     """Tests for import_multiple method."""
 
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.importer.facade.FileScanner")
     @patch("gmailarchiver.core.importer.facade.ImporterFacade.import_archive")
-    def test_import_multiple_success(self, mock_import: Mock, mock_scanner_class: Mock) -> None:
+    async def test_import_multiple_success(
+        self, mock_import: AsyncMock, mock_scanner_class: Mock
+    ) -> None:
         """Test importing multiple archives."""
         mock_scanner = Mock()
         mock_scanner.scan_pattern.return_value = [
@@ -213,7 +220,7 @@ class TestImporterFacadeImportMultiple:
 
         mock_db = Mock()
         facade = ImporterFacade(db_manager=mock_db)
-        multi_result = facade.import_multiple("/tmp/*.mbox")
+        multi_result = await facade.import_multiple("/tmp/*.mbox")
 
         assert multi_result.total_files == 2
         assert multi_result.total_messages_imported == 15
@@ -221,8 +228,9 @@ class TestImporterFacadeImportMultiple:
         assert multi_result.total_messages_failed == 0
         assert len(multi_result.file_results) == 2
 
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.importer.facade.FileScanner")
-    def test_import_multiple_no_matches(self, mock_scanner_class: Mock) -> None:
+    async def test_import_multiple_no_matches(self, mock_scanner_class: Mock) -> None:
         """Test importing when glob pattern matches no files."""
         mock_scanner = Mock()
         mock_scanner.scan_pattern.return_value = []
@@ -230,7 +238,7 @@ class TestImporterFacadeImportMultiple:
 
         mock_db = Mock()
         facade = ImporterFacade(db_manager=mock_db)
-        multi_result = facade.import_multiple("/tmp/*.mbox")
+        multi_result = await facade.import_multiple("/tmp/*.mbox")
 
         assert multi_result.total_files == 0
         assert multi_result.total_messages_imported == 0

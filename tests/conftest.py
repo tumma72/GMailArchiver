@@ -12,11 +12,14 @@ All fixtures use proper context managers and cleanup to avoid ResourceWarnings.
 
 import gzip
 import lzma
+import mailbox
 import sqlite3
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
+
+from typer.testing import CliRunner
 
 # =============================================================================
 # Test-only SQLite connection wrapper
@@ -360,7 +363,7 @@ def v11_db_factory(temp_dir: Path):
 def temp_db(temp_dir: Path) -> Generator[Path]:
     """Create temporary v1.1 database with automatic cleanup.
 
-    Ensures DBManager connections are properly closed to avoid ResourceWarnings.
+    Uses sync sqlite3 for setup to avoid event loop conflicts with pytest-asyncio.
 
     Args:
         temp_dir: Temporary directory fixture
@@ -370,23 +373,84 @@ def temp_db(temp_dir: Path) -> Generator[Path]:
     """
     db_path = temp_dir / "test.db"
 
-    # Create database and immediately close to ensure proper initialization
-    db = DBManager(str(db_path))
-    db.close()
+    # Create database using sync sqlite3 to avoid asyncio.run() conflicts
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Minimal schema for v1.1
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject,
+                from_addr,
+                to_addr,
+                body_preview,
+                content=messages,
+                content_rowid=rowid,
+                tokenize='porter unicode61 remove_diacritics 1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("PRAGMA user_version = 11")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, migrated_timestamp) VALUES (?, ?)",
+            ("1.1", "1970-01-01T00:00:00"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     yield db_path
-
-    # Cleanup: ensure no dangling connections
-    # The database file will be deleted with temp_dir
 
 
 @pytest.fixture
 def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
     """Create temporary v1.1 database with test messages and archive files.
 
-    This fixture populates the database with test messages and creates the
-    corresponding archive files (both compressed and uncompressed) that the
-    database records reference. All connections are properly closed.
+    Uses sync sqlite3 for setup to avoid event loop conflicts with pytest-asyncio.
 
     Args:
         temp_dir: Temporary directory fixture
@@ -395,6 +459,8 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
     Yields:
         Path to populated database file
     """
+    from datetime import datetime
+
     db_path = temp_dir / "test.db"
 
     # Create archive files first
@@ -422,60 +488,135 @@ def populated_db(temp_dir: Path, sample_message: bytes) -> Generator[Path]:
     with gzip.open(gzip_path, "wb") as f:
         f.write(msg3)
 
-    # Create database with v1.1 schema and insert records within a
-    # context manager so changes are committed on success.
-    with DBManager(str(db_path)) as db:
-        # Add test messages that reference the created archive files
+    # Create database using sync sqlite3 to avoid asyncio.run() conflicts
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Create v1.1 schema
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject,
+                from_addr,
+                to_addr,
+                body_preview,
+                content=messages,
+                content_rowid=rowid,
+                tokenize='porter unicode61 remove_diacritics 1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert
+            AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("PRAGMA user_version = 11")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, migrated_timestamp) VALUES (?, ?)",
+            ("1.1", "1970-01-01T00:00:00"),
+        )
+
+        # Insert test messages
+        now = datetime.now().isoformat()
         test_messages = [
-            {
-                "gmail_id": "msg001",
-                "rfc_message_id": "<test001@example.com>",
-                "archive_file": str(mbox_path),
-                "mbox_offset": 0,
-                "mbox_length": len(msg1),
-                "subject": "Test Message 1",
-                "from_addr": "alice@example.com",
-                "to_addr": "bob@example.com",
-            },
-            {
-                "gmail_id": "msg002",
-                "rfc_message_id": "<test002@example.com>",
-                "archive_file": str(mbox_path),
-                "mbox_offset": len(msg1),
-                "mbox_length": len(msg2),
-                "subject": "Test Message 2",
-                "from_addr": "bob@example.com",
-                "to_addr": "alice@example.com",
-            },
-            {
-                "gmail_id": "msg003",
-                "rfc_message_id": "<test003@example.com>",
-                "archive_file": str(gzip_path),
-                "mbox_offset": 0,
-                "mbox_length": len(msg3),
-                "subject": "Test Message 3",
-                "from_addr": "charlie@example.com",
-                "to_addr": "alice@example.com",
-            },
+            (
+                "msg001",
+                "<test001@example.com>",
+                str(mbox_path),
+                0,
+                len(msg1),
+                "Test Message 1",
+                "alice@example.com",
+                "bob@example.com",
+                now,
+            ),
+            (
+                "msg002",
+                "<test002@example.com>",
+                str(mbox_path),
+                len(msg1),
+                len(msg2),
+                "Test Message 2",
+                "bob@example.com",
+                "alice@example.com",
+                now,
+            ),
+            (
+                "msg003",
+                "<test003@example.com>",
+                str(gzip_path),
+                0,
+                len(msg3),
+                "Test Message 3",
+                "charlie@example.com",
+                "alice@example.com",
+                now,
+            ),
         ]
 
         for msg in test_messages:
-            db.record_archived_message(
-                gmail_id=msg["gmail_id"],
-                rfc_message_id=msg["rfc_message_id"],
-                archive_file=msg["archive_file"],
-                mbox_offset=msg["mbox_offset"],
-                mbox_length=msg["mbox_length"],
-                subject=msg["subject"],
-                from_addr=msg["from_addr"],
-                to_addr=msg["to_addr"],
-                record_run=False,
+            conn.execute(
+                """
+                INSERT INTO messages (gmail_id, rfc_message_id, archive_file, mbox_offset,
+                    mbox_length, subject, from_addr, to_addr, archived_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                msg,
             )
 
-    yield db_path
+        conn.commit()
+    finally:
+        conn.close()
 
-    # Cleanup: ensure no dangling connections
-    # The database file and archive files will be deleted with temp_dir
+    yield db_path
 
 
 # ============================================================================
@@ -578,21 +719,21 @@ def compressed_mbox_lzma(temp_dir: Path, sample_message: bytes) -> Path:
 def db_connection(populated_db: Path) -> Generator[DBManager]:
     """Create managed database connection with automatic cleanup.
 
-    This fixture provides a DBManager instance that is properly closed
-    at the end of the test to avoid ResourceWarnings.
+    NOTE: This fixture provides an uninitialized DBManager. Tests using this
+    fixture should call `await db.initialize()` if they need a connection,
+    and use async context manager (`async with DBManager(...) as db:`) for
+    proper lifecycle management.
 
     Args:
         populated_db: Populated database fixture
 
     Yields:
-        DBManager instance connected to the test database
+        DBManager instance (not yet connected - call initialize() first)
     """
-    db = DBManager(str(populated_db))
-    try:
-        yield db
-    finally:
-        # Always close to avoid ResourceWarnings
-        db.close()
+    # Note: DBManager.close() is async, so we can't call it from sync fixture.
+    # Since we don't call initialize(), there's no connection to close.
+    # Tests should use async context manager for proper cleanup.
+    yield DBManager(str(populated_db))
 
 
 @pytest.fixture
@@ -631,3 +772,220 @@ def mock_db_path(temp_dir: Path) -> Path:
         Path to a database file (not created, just the path)
     """
     return temp_dir / "mock_test.db"
+
+
+# ============================================================================
+# CLI Test Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    """Create CLI test runner.
+
+    This is the SINGLE source for CliRunner across all CLI tests.
+    Do NOT define local runner fixtures in individual test files.
+    """
+    return CliRunner()
+
+
+@pytest.fixture
+def v1_1_database(tmp_path: Path) -> Generator[Path]:
+    """Create a v1.1 database for CLI testing.
+
+    Uses sync sqlite3 to avoid asyncio.run() conflicts with pytest-asyncio.
+    This is the SINGLE source for CLI database fixtures.
+    Do NOT define local v1_1_database fixtures in individual test files.
+
+    Yields:
+        Path to a v1.1 database file
+    """
+    db_path = tmp_path / "archive_state.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # Create v1.1 schema (same as v11_db but for CLI tests)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE NOT NULL,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TIMESTAMP,
+                archived_timestamp TIMESTAMP NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER NOT NULL,
+                mbox_length INTEGER NOT NULL,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+            """
+        )
+
+        # FTS5 table
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                subject,
+                from_addr,
+                to_addr,
+                body_preview,
+                content=messages,
+                content_rowid=rowid,
+                tokenize='porter unicode61 remove_diacritics 1'
+            )
+            """
+        )
+
+        # FTS triggers
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_fts_insert
+            AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                VALUES (new.rowid, new.subject, new.from_addr, new.to_addr, new.body_preview);
+            END
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_fts_update
+            AFTER UPDATE ON messages BEGIN
+                UPDATE messages_fts
+                SET subject = new.subject,
+                    from_addr = new.from_addr,
+                    to_addr = new.to_addr,
+                    body_preview = new.body_preview
+                WHERE rowid = new.rowid;
+            END
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS messages_fts_delete
+            AFTER DELETE ON messages BEGIN
+                DELETE FROM messages_fts WHERE rowid = old.rowid;
+            END
+            """
+        )
+
+        # archive_runs table
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT NOT NULL,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT DEFAULT 'archive'
+            )
+            """
+        )
+
+        # schema_version table
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                migrated_timestamp TEXT NOT NULL
+            )
+            """
+        )
+
+        # accounts table (required for v1.1+)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS accounts (
+                account_id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                provider TEXT DEFAULT 'gmail',
+                added_timestamp TEXT,
+                last_sync_timestamp TEXT
+            )
+            """
+        )
+
+        # Insert default account
+        conn.execute(
+            "INSERT OR IGNORE INTO accounts (account_id, email, added_timestamp) "
+            "VALUES ('default', 'default', '1970-01-01T00:00:00')"
+        )
+
+        # Set schema version
+        conn.execute("PRAGMA user_version = 11")
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, migrated_timestamp) "
+            "VALUES ('1.1', '1970-01-01T00:00:00')"
+        )
+
+        conn.commit()
+        yield db_path
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def sample_mbox(tmp_path: Path) -> Path:
+    """Create a sample mbox file with test messages.
+
+    This is the SINGLE source for sample mbox fixtures.
+    Do NOT define local sample_mbox fixtures in individual test files.
+
+    Returns:
+        Path to mbox file with 3 test messages
+    """
+    mbox_path = tmp_path / "test_archive.mbox"
+    mbox_obj = mailbox.mbox(str(mbox_path))
+
+    # Add 3 test messages
+    for i in range(1, 4):
+        msg = mailbox.mboxMessage()
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Test Message {i}"
+        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = f"<msg{i}@example.com>"
+        msg.set_payload(f"This is test message {i}")
+        mbox_obj.add(msg)
+
+    mbox_obj.close()
+    return mbox_path
+
+
+@pytest.fixture
+def sample_mbox_with_duplicates(tmp_path: Path) -> Path:
+    """Create mbox file with duplicate Message-IDs.
+
+    This is the SINGLE source for duplicate mbox fixtures.
+    Do NOT define local sample_mbox_with_duplicates fixtures in individual test files.
+
+    Returns:
+        Path to mbox file with duplicate messages
+    """
+    mbox_path = tmp_path / "duplicates.mbox"
+    mbox_obj = mailbox.mbox(str(mbox_path))
+
+    # Add 2 messages with same Message-ID
+    for i in range(1, 3):
+        msg = mailbox.mboxMessage()
+        msg["From"] = f"sender{i}@example.com"
+        msg["To"] = "recipient@example.com"
+        msg["Subject"] = f"Duplicate Message {i}"
+        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
+        msg["Message-ID"] = "<duplicate@example.com>"
+        msg.set_payload(f"Duplicate message {i}")
+        mbox_obj.add(msg)
+
+    mbox_obj.close()
+    return mbox_path

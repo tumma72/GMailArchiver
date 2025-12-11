@@ -17,7 +17,7 @@ class MessageMerger:
         """
         self.storage = storage
 
-    def merge_archives(self, source_paths: list[Path]) -> list[dict[str, Any]]:
+    async def merge_archives(self, source_paths: list[Path]) -> list[dict[str, Any]]:
         """Read and merge messages from multiple archives.
 
         Args:
@@ -35,4 +35,4 @@ class MessageMerger:
                 raise FileNotFoundError(f"Source archive not found: {source_path}")
 
         # Use HybridStorage primitive to read messages
-        return self.storage.read_messages_from_archives(source_paths)
+        return await self.storage.read_messages_from_archives(source_paths)

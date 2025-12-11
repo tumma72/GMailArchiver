@@ -10,27 +10,30 @@ import pytest
 
 from gmailarchiver.data.migration import MigrationError, MigrationManager
 
+# Mark all tests in this module as async
+pytestmark = pytest.mark.asyncio
+
 
 class TestMigrationManagerInit:
     """Test MigrationManager initialization."""
 
-    def test_init_with_path_string(self, tmp_path):
+    async def test_init_with_path_string(self, tmp_path):
         """Test initialization with string path."""
         db_path = str(tmp_path / "test.db")
         manager = MigrationManager(db_path)
         assert manager.db_path == Path(db_path).resolve()
         assert manager.conn is None
 
-    def test_init_with_path_object(self, tmp_path):
+    async def test_init_with_path_object(self, tmp_path):
         """Test initialization with Path object."""
         db_path = tmp_path / "test.db"
         manager = MigrationManager(db_path)
         assert manager.db_path == db_path.resolve()
 
-    def test_context_manager(self, tmp_path):
+    async def test_context_manager(self, tmp_path):
         """Test context manager behavior."""
         db_path = tmp_path / "test.db"
-        with MigrationManager(db_path) as manager:
+        async with MigrationManager(db_path) as manager:
             assert isinstance(manager, MigrationManager)
         # Connection should be closed after context exit
         assert manager.conn is None
@@ -39,14 +42,14 @@ class TestMigrationManagerInit:
 class TestSchemaVersionDetection:
     """Test schema version detection."""
 
-    def test_detect_none_for_nonexistent_db(self, tmp_path):
+    async def test_detect_none_for_nonexistent_db(self, tmp_path):
         """Test detection returns 'none' for nonexistent database."""
         db_path = tmp_path / "nonexistent.db"
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         assert version == "none"
 
-    def test_detect_v1_0_with_archived_messages_table(self, tmp_path):
+    async def test_detect_v1_0_with_archived_messages_table(self, tmp_path):
         """Test detection of v1.0 schema."""
         db_path = tmp_path / "v1.db"
 
@@ -67,10 +70,10 @@ class TestSchemaVersionDetection:
         conn.close()
 
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         assert version == "1.0"
 
-    def test_detect_v1_1_with_messages_table(self, tmp_path):
+    async def test_detect_v1_1_with_messages_table(self, tmp_path):
         """Test detection of v1.1 schema."""
         db_path = tmp_path / "v1.1.db"
 
@@ -88,10 +91,10 @@ class TestSchemaVersionDetection:
         conn.close()
 
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         assert version == "1.1"
 
-    def test_detect_version_from_schema_version_table(self, tmp_path):
+    async def test_detect_version_from_schema_version_table(self, tmp_path):
         """Test reading version from schema_version table."""
         db_path = tmp_path / "versioned.db"
 
@@ -109,14 +112,14 @@ class TestSchemaVersionDetection:
         conn.close()
 
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         assert version == "1.1"
 
 
 class TestNeedsMigration:
     """Test needs_migration() method."""
 
-    def test_needs_migration_for_v1_0(self, tmp_path):
+    async def test_needs_migration_for_v1_0(self, tmp_path):
         """Test that v1.0 schema needs migration."""
         db_path = tmp_path / "v1.db"
 
@@ -130,15 +133,15 @@ class TestNeedsMigration:
         conn.close()
 
         manager = MigrationManager(db_path)
-        assert manager.needs_migration() is True
+        assert await manager.needs_migration() is True
 
-    def test_needs_migration_for_none(self, tmp_path):
+    async def test_needs_migration_for_none(self, tmp_path):
         """Test that nonexistent DB needs migration."""
         db_path = tmp_path / "nonexistent.db"
         manager = MigrationManager(db_path)
-        assert manager.needs_migration() is True
+        assert await manager.needs_migration() is True
 
-    def test_no_migration_needed_for_v1_1(self, tmp_path):
+    async def test_no_migration_needed_for_v1_1(self, tmp_path):
         """Test that v1.1 schema doesn't need migration."""
         db_path = tmp_path / "v1.1.db"
 
@@ -152,13 +155,13 @@ class TestNeedsMigration:
         conn.close()
 
         manager = MigrationManager(db_path)
-        assert manager.needs_migration() is False
+        assert await manager.needs_migration() is False
 
 
 class TestBackupCreation:
     """Test database backup functionality."""
 
-    def test_create_backup_success(self, tmp_path):
+    async def test_create_backup_success(self, tmp_path):
         """Test successful backup creation."""
         db_path = tmp_path / "test.db"
 
@@ -169,7 +172,7 @@ class TestBackupCreation:
         conn.close()
 
         manager = MigrationManager(db_path)
-        backup_path = manager.create_backup()
+        backup_path = await manager.create_backup()
 
         assert backup_path.exists()
         assert backup_path.name.startswith("test.db.backup.")
@@ -183,15 +186,15 @@ class TestBackupCreation:
         assert cursor.fetchone() is not None
         backup_conn.close()
 
-    def test_create_backup_nonexistent_db_fails(self, tmp_path):
+    async def test_create_backup_nonexistent_db_fails(self, tmp_path):
         """Test that backing up nonexistent DB fails."""
         db_path = tmp_path / "nonexistent.db"
         manager = MigrationManager(db_path)
 
         with pytest.raises(MigrationError, match="Database not found"):
-            manager.create_backup()
+            await manager.create_backup()
 
-    def test_create_backup_fails_with_permission_error(self, tmp_path):
+    async def test_create_backup_fails_with_permission_error(self, tmp_path):
         """Test that backup creation fails gracefully with permission errors."""
         import os
         import stat
@@ -211,7 +214,7 @@ class TestBackupCreation:
 
             manager = MigrationManager(db_path)
             with pytest.raises(MigrationError, match="Failed to create backup"):
-                manager.create_backup()
+                await manager.create_backup()
         finally:
             # Restore permissions
             os.chmod(tmp_path, original_mode)
@@ -220,17 +223,17 @@ class TestBackupCreation:
 class TestEnhancedSchemaCreation:
     """Test creation of enhanced v1.1 schema."""
 
-    def test_create_enhanced_schema(self, tmp_path):
+    async def test_create_enhanced_schema(self, tmp_path):
         """Test that enhanced schema creates all required tables."""
         db_path = tmp_path / "test.db"
         manager = MigrationManager(db_path)
 
-        conn = manager._connect()
-        manager._create_enhanced_schema(conn)
+        conn = await manager._connect()
+        await manager._create_enhanced_schema(conn)
 
         # Check messages table exists with correct columns
-        cursor = conn.execute("PRAGMA table_info(messages)")
-        columns = {row[1] for row in cursor.fetchall()}
+        cursor = await conn.execute("PRAGMA table_info(messages)")
+        columns = {row[1] for row in await cursor.fetchall()}
         required_columns = {
             "gmail_id",
             "rfc_message_id",
@@ -253,14 +256,14 @@ class TestEnhancedSchemaCreation:
         assert required_columns.issubset(columns)
 
         # Check FTS5 table exists
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
         )
-        assert cursor.fetchone() is not None
+        assert await cursor.fetchone() is not None
 
         # Check indexes exist
-        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
-        index_names = {row[0] for row in cursor.fetchall()}
+        cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        index_names = {row[0] for row in await cursor.fetchall()}
         expected_indexes = {
             "idx_rfc_message_id",
             "idx_thread_id",
@@ -272,18 +275,18 @@ class TestEnhancedSchemaCreation:
         assert expected_indexes.issubset(index_names)
 
         # Check accounts table exists
-        cursor = conn.execute(
+        cursor = await conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'"
         )
-        assert cursor.fetchone() is not None
+        assert await cursor.fetchone() is not None
 
-        conn.close()
+        await conn.close()
 
 
 class TestExtractRfcMessageId:
     """Test RFC Message-ID extraction."""
 
-    def test_extract_existing_message_id(self):
+    async def test_extract_existing_message_id(self):
         """Test extraction of existing Message-ID header."""
         msg = email.message.EmailMessage()
         msg["Message-ID"] = "<unique123@example.com>"
@@ -293,7 +296,7 @@ class TestExtractRfcMessageId:
         result = manager._extract_rfc_message_id(msg)
         assert result == "<unique123@example.com>"
 
-    def test_generate_fallback_message_id(self):
+    async def test_generate_fallback_message_id(self):
         """Test fallback Message-ID generation."""
         msg = email.message.EmailMessage()
         msg["Subject"] = "Test Subject"
@@ -307,7 +310,7 @@ class TestExtractRfcMessageId:
         assert result.endswith("@generated>")
         assert len(result) > 20  # SHA256 hash is long
 
-    def test_handles_empty_message_id(self):
+    async def test_handles_empty_message_id(self):
         """Test handling of empty Message-ID."""
         msg = email.message.EmailMessage()
         msg["Message-ID"] = "  "  # Whitespace only
@@ -323,7 +326,7 @@ class TestExtractRfcMessageId:
 class TestExtractBodyPreview:
     """Test body preview extraction."""
 
-    def test_extract_from_plain_text(self):
+    async def test_extract_from_plain_text(self):
         """Test extraction from plain text message."""
         msg = email.message.EmailMessage()
         msg.set_content("This is a test message body.")
@@ -332,7 +335,7 @@ class TestExtractBodyPreview:
         result = manager._extract_body_preview(msg, max_chars=10)
         assert result == "This is a "
 
-    def test_extract_from_multipart(self):
+    async def test_extract_from_multipart(self):
         """Test extraction from multipart message."""
         msg = email.message.EmailMessage()
         msg.set_content("Plain text body")
@@ -342,7 +345,7 @@ class TestExtractBodyPreview:
         result = manager._extract_body_preview(msg)
         assert "Plain text body" in result
 
-    def test_max_chars_limit(self):
+    async def test_max_chars_limit(self):
         """Test that preview respects max_chars limit."""
         long_text = "A" * 2000
         msg = email.message.EmailMessage()
@@ -353,7 +356,7 @@ class TestExtractBodyPreview:
         assert len(result) == 1000
         assert result == "A" * 1000
 
-    def test_handles_binary_payload(self):
+    async def test_handles_binary_payload(self):
         """Test handling of messages with binary payload."""
         msg = email.message.EmailMessage()
         msg.set_content(b"Binary content", maintype="application", subtype="octet-stream")
@@ -368,7 +371,7 @@ class TestExtractBodyPreview:
 class TestMigrationWorkflow:
     """Test the complete migration workflow."""
 
-    def test_migrate_v1_to_v1_1_success(self, tmp_path):
+    async def test_migrate_v1_to_v1_1_success(self, tmp_path):
         """Test successful migration from v1.0 to v1.1 with real mbox scanning."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -429,7 +432,7 @@ class TestMigrationWorkflow:
 
         # Perform migration
         manager = MigrationManager(db_path)
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
 
         # Verify migration
         conn = sqlite3.connect(str(db_path))
@@ -474,7 +477,7 @@ class TestMigrationWorkflow:
 
         conn.close()
 
-    def test_migrate_with_missing_mbox_file(self, tmp_path):
+    async def test_migrate_with_missing_mbox_file(self, tmp_path):
         """Test migration gracefully handles missing mbox files."""
         db_path = tmp_path / "test.db"
         nonexistent_mbox = tmp_path / "missing.mbox"
@@ -520,7 +523,7 @@ class TestMigrationWorkflow:
 
         # Migration should complete but skip messages from missing files
         manager = MigrationManager(db_path)
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
 
         # Verify migration completed
         conn = sqlite3.connect(str(db_path))
@@ -531,7 +534,7 @@ class TestMigrationWorkflow:
         cursor = conn.execute("SELECT COUNT(*) FROM messages")
         assert cursor.fetchone()[0] == 0, "Should skip messages from missing mbox files"
 
-    def test_extract_body_preview_multipart_decode_error(self):
+    async def test_extract_body_preview_multipart_decode_error(self):
         """Test body preview extraction handles decode errors in multipart messages."""
         import email.mime.multipart
         import email.mime.text
@@ -550,7 +553,7 @@ class TestMigrationWorkflow:
             # Should return empty string when all parts fail
             assert result == ""
 
-    def test_extract_body_preview_non_multipart_decode_error(self):
+    async def test_extract_body_preview_non_multipart_decode_error(self):
         """Test body preview extraction handles decode errors in non-multipart messages."""
         from unittest.mock import patch
 
@@ -566,7 +569,7 @@ class TestMigrationWorkflow:
             # Should return empty string on error
             assert result == ""
 
-    def test_migrate_extracts_full_metadata(self, tmp_path):
+    async def test_migrate_extracts_full_metadata(self, tmp_path):
         """Test migration extracts all v1.1 metadata fields."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -628,7 +631,7 @@ class TestMigrationWorkflow:
 
         # Perform migration
         manager = MigrationManager(db_path)
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
 
         # Verify all metadata was extracted
         conn = sqlite3.connect(str(db_path))
@@ -669,7 +672,7 @@ class TestMigrationWorkflow:
 class TestValidateMigration:
     """Test migration validation."""
 
-    def test_validate_migration_success(self, tmp_path):
+    async def test_validate_migration_success(self, tmp_path):
         """Test successful migration validation."""
         db_path = tmp_path / "test.db"
 
@@ -695,9 +698,9 @@ class TestValidateMigration:
         conn.close()
 
         manager = MigrationManager(db_path)
-        assert manager.validate_migration() is True
+        assert await manager.validate_migration() is True
 
-    def test_validate_migration_fails_wrong_version(self, tmp_path):
+    async def test_validate_migration_fails_wrong_version(self, tmp_path):
         """Test validation fails with wrong schema version."""
         db_path = tmp_path / "test.db"
 
@@ -714,9 +717,9 @@ class TestValidateMigration:
 
         manager = MigrationManager(db_path)
         with pytest.raises(MigrationError, match="Schema version not set to 1.1"):
-            manager.validate_migration()
+            await manager.validate_migration()
 
-    def test_validate_migration_fails_missing_messages_table(self, tmp_path):
+    async def test_validate_migration_fails_missing_messages_table(self, tmp_path):
         """Test validation fails if messages table missing."""
         db_path = tmp_path / "test.db"
 
@@ -733,13 +736,13 @@ class TestValidateMigration:
 
         manager = MigrationManager(db_path)
         with pytest.raises(MigrationError, match="messages table not found"):
-            manager.validate_migration()
+            await manager.validate_migration()
 
 
 class TestRollbackMigration:
     """Test migration rollback."""
 
-    def test_rollback_success(self, tmp_path):
+    async def test_rollback_success(self, tmp_path):
         """Test successful rollback from backup."""
         db_path = tmp_path / "test.db"
         backup_path = tmp_path / "test.db.backup.20240101"
@@ -759,7 +762,7 @@ class TestRollbackMigration:
 
         # Perform rollback
         manager = MigrationManager(db_path)
-        manager.rollback_migration(backup_path)
+        await manager.rollback_migration(backup_path)
 
         # Verify rollback
         conn = sqlite3.connect(str(db_path))
@@ -773,20 +776,20 @@ class TestRollbackMigration:
 
         conn.close()
 
-    def test_rollback_fails_missing_backup(self, tmp_path):
+    async def test_rollback_fails_missing_backup(self, tmp_path):
         """Test that rollback fails with missing backup."""
         db_path = tmp_path / "test.db"
         backup_path = tmp_path / "nonexistent.db"
 
         manager = MigrationManager(db_path)
         with pytest.raises(MigrationError, match="Backup file not found"):
-            manager.rollback_migration(backup_path)
+            await manager.rollback_migration(backup_path)
 
 
 class TestExtractThreadId:
     """Test thread ID extraction from email headers."""
 
-    def test_extract_from_gmail_thrid_header(self):
+    async def test_extract_from_gmail_thrid_header(self):
         """Test extraction from X-GM-THRID header."""
         msg = email.message.EmailMessage()
         msg["X-GM-THRID"] = "1234567890"
@@ -796,7 +799,7 @@ class TestExtractThreadId:
         result = manager._extract_thread_id(msg)
         assert result == "1234567890"
 
-    def test_extract_from_references_header(self):
+    async def test_extract_from_references_header(self):
         """Test fallback to References header."""
         msg = email.message.EmailMessage()
         msg["References"] = "<ref1@example.com> <ref2@example.com>"
@@ -806,7 +809,7 @@ class TestExtractThreadId:
         result = manager._extract_thread_id(msg)
         assert result == "<ref1@example.com>"
 
-    def test_returns_none_without_thread_headers(self):
+    async def test_returns_none_without_thread_headers(self):
         """Test returns None when no thread headers present."""
         msg = email.message.EmailMessage()
         msg["Subject"] = "Test"
@@ -815,7 +818,7 @@ class TestExtractThreadId:
         result = manager._extract_thread_id(msg)
         assert result is None
 
-    def test_handles_empty_references_header(self):
+    async def test_handles_empty_references_header(self):
         """Test handles empty References header."""
         msg = email.message.EmailMessage()
         msg["References"] = "   "  # Whitespace only
@@ -829,7 +832,7 @@ class TestExtractThreadId:
 class TestValidationEdgeCases:
     """Test validation edge cases."""
 
-    def test_validate_migration_fails_missing_fts_table(self, tmp_path):
+    async def test_validate_migration_fails_missing_fts_table(self, tmp_path):
         """Test validation fails if FTS table missing."""
         db_path = tmp_path / "test.db"
 
@@ -851,13 +854,13 @@ class TestValidationEdgeCases:
 
         manager = MigrationManager(db_path)
         with pytest.raises(MigrationError, match="messages_fts table not found"):
-            manager.validate_migration()
+            await manager.validate_migration()
 
 
 class TestSchemaVersionEdgeCases:
     """Test schema version detection edge cases."""
 
-    def test_detect_none_for_empty_schema_version_table(self, tmp_path):
+    async def test_detect_none_for_empty_schema_version_table(self, tmp_path):
         """Test detection returns 1.0 when schema_version table exists but empty."""
         db_path = tmp_path / "test.db"
 
@@ -873,11 +876,11 @@ class TestSchemaVersionEdgeCases:
         conn.close()
 
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         # When schema_version table exists but has no rows, it returns "1.0"
         assert version == "1.0"
 
-    def test_detect_none_for_unrecognized_schema(self, tmp_path):
+    async def test_detect_none_for_unrecognized_schema(self, tmp_path):
         """Test detection returns 'none' for database with unrecognized schema."""
         db_path = tmp_path / "test.db"
 
@@ -893,7 +896,7 @@ class TestSchemaVersionEdgeCases:
         conn.close()
 
         manager = MigrationManager(db_path)
-        version = manager.detect_schema_version()
+        version = await manager.detect_schema_version()
         # Database exists but has no recognized schema - should return "none"
         assert version == "none"
 
@@ -901,20 +904,20 @@ class TestSchemaVersionEdgeCases:
 class TestCloseConnection:
     """Test database connection closing."""
 
-    def test_close_when_connection_exists(self, tmp_path):
+    async def test_close_when_connection_exists(self, tmp_path):
         """Test closing an active connection."""
         db_path = tmp_path / "test.db"
         manager = MigrationManager(db_path)
 
         # Connect to database
-        conn = manager._connect()
+        conn = await manager._connect()
         assert manager.conn is not None
 
         # Close connection
-        manager._close()
+        await manager._close()
         assert manager.conn is None
 
-    def test_close_when_no_connection(self, tmp_path):
+    async def test_close_when_no_connection(self, tmp_path):
         """Test closing when no connection exists."""
         db_path = tmp_path / "test.db"
         manager = MigrationManager(db_path)
@@ -923,14 +926,14 @@ class TestCloseConnection:
         assert manager.conn is None
 
         # Should not raise error
-        manager._close()
+        await manager._close()
         assert manager.conn is None
 
 
 class TestBodyPreviewExceptions:
     """Test body preview extraction with malformed data."""
 
-    def test_extract_body_handles_decode_error_multipart(self):
+    async def test_extract_body_handles_decode_error_multipart(self):
         """Test that decode errors in multipart messages are handled gracefully."""
         import email.mime.multipart
         import email.mime.text
@@ -949,7 +952,7 @@ class TestBodyPreviewExceptions:
         # Should extract from the valid part
         assert "Valid text" in result
 
-    def test_extract_body_handles_decode_error_plain(self):
+    async def test_extract_body_handles_decode_error_plain(self):
         """Test that decode errors in plain messages are handled gracefully."""
         # Create a message with payload that might cause decode issues
         msg = email.message.EmailMessage()
@@ -966,7 +969,7 @@ class TestBodyPreviewExceptions:
 class TestMigrationErrorHandling:
     """Test migration error handling scenarios."""
 
-    def test_migrate_handles_corrupt_mbox_file(self, tmp_path):
+    async def test_migrate_handles_corrupt_mbox_file(self, tmp_path):
         """Test migration gracefully handles corrupt mbox files."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "corrupt.mbox"
@@ -1016,7 +1019,7 @@ class TestMigrationErrorHandling:
         # Migration should handle the error gracefully
         manager = MigrationManager(db_path)
         # Should not raise exception, just skip corrupt files
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
 
         # Verify migration completed despite corrupt mbox
         conn = sqlite3.connect(str(db_path))
@@ -1024,7 +1027,7 @@ class TestMigrationErrorHandling:
         assert cursor.fetchone()[0] == "1.1"
         conn.close()
 
-    def test_migrate_handles_multiple_mbox_files_with_failures(self, tmp_path):
+    async def test_migrate_handles_multiple_mbox_files_with_failures(self, tmp_path):
         """Test migration continues when some mbox files fail."""
         db_path = tmp_path / "test.db"
         good_mbox_path = tmp_path / "good.mbox"
@@ -1101,7 +1104,7 @@ class TestMigrationErrorHandling:
 
         # Migration should handle partial failures
         manager = MigrationManager(db_path)
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
 
         # Verify good message was migrated, bad was skipped
         conn = sqlite3.connect(str(db_path))
@@ -1118,7 +1121,7 @@ class TestMigrationErrorHandling:
 # ============================================================================
 
 
-def test_migration_with_corrupted_database(temp_dir: Path) -> None:
+async def test_migration_with_corrupted_database(temp_dir: Path) -> None:
     """Test migration handles corrupted database gracefully (lines 297-298)."""
     db_path = temp_dir / "corrupted.db"
 
@@ -1129,13 +1132,13 @@ def test_migration_with_corrupted_database(temp_dir: Path) -> None:
 
     # Should handle corruption gracefully
     try:
-        manager.migrate_v1_to_v1_1()
+        await manager.migrate_v1_to_v1_1()
     except Exception as e:
         # Should get a clear error, not a mysterious crash
         assert "database" in str(e).lower() or "corrupt" in str(e).lower()
 
 
-def test_migration_completes_successfully_simple(temp_dir: Path) -> None:
+async def test_migration_completes_successfully_simple(temp_dir: Path) -> None:
     """Test migration completes on empty v1.0 database (lines 304-305)."""
     db_path = temp_dir / "test.db"
 
@@ -1161,7 +1164,7 @@ def test_migration_completes_successfully_simple(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify database still exists and is accessible
     assert db_path.exists()
@@ -1173,7 +1176,7 @@ def test_migration_completes_successfully_simple(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_schema_update_transaction(temp_dir: Path) -> None:
+async def test_migration_schema_update_transaction(temp_dir: Path) -> None:
     """Test migration schema updates happen transactionally (lines 461-462)."""
     db_path = temp_dir / "test.db"
 
@@ -1218,7 +1221,7 @@ def test_migration_schema_update_transaction(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify new schema exists
     conn = sqlite3.connect(str(db_path))
@@ -1238,7 +1241,7 @@ def test_migration_schema_update_transaction(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_backfill_with_missing_offsets(temp_dir: Path) -> None:
+async def test_migration_backfill_with_missing_offsets(temp_dir: Path) -> None:
     """Test migration backfill handles messages with missing offsets (lines 522-527)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "archive.mbox"
@@ -1294,7 +1297,7 @@ def test_migration_backfill_with_missing_offsets(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify offsets were backfilled
     conn = sqlite3.connect(str(db_path))
@@ -1309,7 +1312,7 @@ def test_migration_backfill_with_missing_offsets(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_fts_index_creation(temp_dir: Path) -> None:
+async def test_migration_fts_index_creation(temp_dir: Path) -> None:
     """Test migration creates FTS5 index (lines 538-543)."""
     db_path = temp_dir / "test.db"
 
@@ -1339,7 +1342,7 @@ def test_migration_fts_index_creation(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify FTS5 table exists
     conn = sqlite3.connect(str(db_path))
@@ -1352,7 +1355,7 @@ def test_migration_fts_index_creation(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_handles_duplicate_message_ids(temp_dir: Path) -> None:
+async def test_migration_handles_duplicate_message_ids(temp_dir: Path) -> None:
     """Test migration handles duplicate message IDs (lines 568-570)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "archive.mbox"
@@ -1423,7 +1426,7 @@ def test_migration_handles_duplicate_message_ids(temp_dir: Path) -> None:
 
     manager = MigrationManager(str(db_path))
     # Should handle gracefully (might keep one, might keep both)
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Database should be valid after migration
     conn = sqlite3.connect(str(db_path))
@@ -1434,7 +1437,7 @@ def test_migration_handles_duplicate_message_ids(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_preserves_data_integrity(temp_dir: Path) -> None:
+async def test_migration_preserves_data_integrity(temp_dir: Path) -> None:
     """Test migration preserves all message data (lines 644-645)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "archive.mbox"
@@ -1492,7 +1495,7 @@ def test_migration_preserves_data_integrity(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify data preserved in new schema
     conn = sqlite3.connect(str(db_path))
@@ -1509,7 +1512,7 @@ def test_migration_preserves_data_integrity(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_schema_version_updated(temp_dir: Path) -> None:
+async def test_migration_schema_version_updated(temp_dir: Path) -> None:
     """Test migration updates schema_version correctly (lines 671, 688-691)."""
     db_path = temp_dir / "test.db"
 
@@ -1535,7 +1538,7 @@ def test_migration_schema_version_updated(temp_dir: Path) -> None:
     conn.close()
 
     manager = MigrationManager(str(db_path))
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify schema_version table exists and is updated
     conn = sqlite3.connect(str(db_path))
@@ -1547,7 +1550,7 @@ def test_migration_schema_version_updated(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_handles_message_processing_error(temp_dir: Path) -> None:
+async def test_migration_handles_message_processing_error(temp_dir: Path) -> None:
     """Test migration handles errors processing individual messages (lines 528-536)."""
     db_path = temp_dir / "test.db"
 
@@ -1592,7 +1595,7 @@ def test_migration_handles_message_processing_error(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Migration should handle the error and skip the message
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed despite error
     conn = sqlite3.connect(str(db_path))
@@ -1603,7 +1606,7 @@ def test_migration_handles_message_processing_error(temp_dir: Path) -> None:
     assert version == "1.1"
 
 
-def test_migration_handles_mbox_scan_failure(temp_dir: Path) -> None:
+async def test_migration_handles_mbox_scan_failure(temp_dir: Path) -> None:
     """Test migration handles mbox scan failures (lines 547-552)."""
     db_path = temp_dir / "test.db"
 
@@ -1643,7 +1646,7 @@ def test_migration_handles_mbox_scan_failure(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Should handle missing mbox file
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -1654,7 +1657,7 @@ def test_migration_handles_mbox_scan_failure(temp_dir: Path) -> None:
     assert version == "1.1"
 
 
-def test_backfill_offsets_missing_archive(temp_dir: Path) -> None:
+async def test_backfill_offsets_missing_archive(temp_dir: Path) -> None:
     """Test backfill_offsets_from_mbox handles missing archives (lines 680, 697-700)."""
     db_path = temp_dir / "test.db"
 
@@ -1696,12 +1699,12 @@ def test_backfill_offsets_missing_archive(temp_dir: Path) -> None:
     ]
 
     # Should handle missing file gracefully
-    backfilled = manager.backfill_offsets_from_mbox(invalid_messages)
+    backfilled = await manager.backfill_offsets_from_mbox(invalid_messages)
 
     assert backfilled == 0
 
 
-def test_backfill_offsets_message_processing_error(temp_dir: Path) -> None:
+async def test_backfill_offsets_message_processing_error(temp_dir: Path) -> None:
     """Test backfill handles message processing errors (lines 745-757)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "test.mbox"
@@ -1743,13 +1746,13 @@ def test_backfill_offsets_message_processing_error(temp_dir: Path) -> None:
     ]
 
     # Should handle corruption gracefully
-    backfilled = manager.backfill_offsets_from_mbox(invalid_messages)
+    backfilled = await manager.backfill_offsets_from_mbox(invalid_messages)
 
     # No messages backfilled due to corruption
     assert backfilled == 0
 
 
-def test_rollback_migration_missing_backup(temp_dir: Path) -> None:
+async def test_rollback_migration_missing_backup(temp_dir: Path) -> None:
     """Test rollback_migration raises error for missing backup (lines 653-654)."""
     db_path = temp_dir / "test.db"
     backup_path = temp_dir / "missing_backup.db"
@@ -1757,12 +1760,12 @@ def test_rollback_migration_missing_backup(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     with pytest.raises(Exception) as exc_info:  # MigrationError
-        manager.rollback_migration(backup_path)
+        await manager.rollback_migration(backup_path)
 
     assert "not found" in str(exc_info.value).lower()
 
 
-def test_migration_multipart_message_handling(temp_dir: Path) -> None:
+async def test_migration_multipart_message_handling(temp_dir: Path) -> None:
     """Test migration handles multipart messages (lines 297-298)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "test.mbox"
@@ -1818,7 +1821,7 @@ def test_migration_multipart_message_handling(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Should handle multipart message
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -1831,7 +1834,7 @@ def test_migration_multipart_message_handling(temp_dir: Path) -> None:
     assert len(row[0]) > 0
 
 
-def test_migration_non_multipart_message_handling(temp_dir: Path) -> None:
+async def test_migration_non_multipart_message_handling(temp_dir: Path) -> None:
     """Test migration handles non-multipart messages (lines 304-305)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "test.mbox"
@@ -1882,7 +1885,7 @@ def test_migration_non_multipart_message_handling(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Should handle non-multipart message
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -1895,7 +1898,7 @@ def test_migration_non_multipart_message_handling(temp_dir: Path) -> None:
     assert "Simple body text" in row[0]
 
 
-def test_migration_handles_missing_archive_file(temp_dir: Path) -> None:
+async def test_migration_handles_missing_archive_file(temp_dir: Path) -> None:
     """Test migration handles missing archive files gracefully (lines 461-462)."""
     db_path = temp_dir / "test.db"
 
@@ -1934,7 +1937,7 @@ def test_migration_handles_missing_archive_file(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Should handle missing file gracefully
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -1945,7 +1948,7 @@ def test_migration_handles_missing_archive_file(temp_dir: Path) -> None:
     assert version == "1.1"
 
 
-def test_migration_remaining_messages_warning(temp_dir: Path) -> None:
+async def test_migration_remaining_messages_warning(temp_dir: Path) -> None:
     """Test migration warns about remaining messages (lines 547-552)."""
     db_path = temp_dir / "test.db"
     mbox_path = temp_dir / "test.mbox"
@@ -1999,7 +2002,7 @@ def test_migration_remaining_messages_warning(temp_dir: Path) -> None:
     manager = MigrationManager(db_path)
 
     # Should handle mismatch and complete migration
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -2010,7 +2013,7 @@ def test_migration_remaining_messages_warning(temp_dir: Path) -> None:
     assert version == "1.1"
 
 
-def test_migration_handles_malformed_messages(temp_dir: Path) -> None:
+async def test_migration_handles_malformed_messages(temp_dir: Path) -> None:
     """Test migration handles malformed/corrupted messages gracefully (lines 297, 528-536).
 
     When an mbox contains a message that raises an exception during parsing,
@@ -2113,7 +2116,7 @@ def test_migration_handles_malformed_messages(temp_dir: Path) -> None:
 
     # Run migration - should complete despite corrupted message
     manager = MigrationManager(db_path)
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify migration completed
     conn = sqlite3.connect(str(db_path))
@@ -2138,7 +2141,7 @@ def test_migration_handles_malformed_messages(temp_dir: Path) -> None:
     conn.close()
 
 
-def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
+async def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
     """Test correct length calculation for last message in mbox (line 461).
 
     The last message has no following message, so length = file_size - message_offset.
@@ -2199,7 +2202,7 @@ def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
 
     # Run migration with backfill
     manager = MigrationManager(db_path)
-    manager.migrate_v1_to_v1_1()
+    await manager.migrate_v1_to_v1_1()
 
     # Verify last message length = file_size - offset
     conn = sqlite3.connect(str(db_path))
@@ -2232,7 +2235,7 @@ def test_migration_last_message_length_calculation(temp_dir: Path) -> None:
 class TestMigrationErrorPaths:
     """Test error handling during migration."""
 
-    def test_migrate_message_processing_error(self, tmp_path):
+    async def test_migrate_message_processing_error(self, tmp_path):
         """Test migration handles individual message processing errors (lines 528-536)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2321,7 +2324,7 @@ class TestMigrationErrorPaths:
 
         with patch("mailbox.mbox", side_effect=lambda p: ErrorMbox(p)):
             # Migration should complete despite message errors
-            manager.migrate_v1_to_v1_1()
+            await manager.migrate_v1_to_v1_1()
 
         # Verify migration completed (message skipped due to error)
         conn = sqlite3.connect(str(db_path))
@@ -2333,7 +2336,7 @@ class TestMigrationErrorPaths:
         assert cursor.fetchone()[0] == 0
         conn.close()
 
-    def test_migrate_mbox_scan_failure(self, tmp_path):
+    async def test_migrate_mbox_scan_failure(self, tmp_path):
         """Test migration handles mbox scan failures (lines 547-552)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2394,7 +2397,7 @@ class TestMigrationErrorPaths:
 
         with patch("mailbox.mbox", side_effect=Exception("Failed to open mbox")):
             # Migration should complete but skip failed archive
-            manager.migrate_v1_to_v1_1()
+            await manager.migrate_v1_to_v1_1()
 
         # Verify migration completed
         conn = sqlite3.connect(str(db_path))
@@ -2402,7 +2405,7 @@ class TestMigrationErrorPaths:
         assert cursor.fetchone()[0] == "1.1"
         conn.close()
 
-    def test_rollback_migration_error(self, tmp_path):
+    async def test_rollback_migration_error(self, tmp_path):
         """Test rollback handles errors (lines 653-654)."""
         db_path = tmp_path / "test.db"
         backup_path = tmp_path / "backup.db"
@@ -2424,9 +2427,9 @@ class TestMigrationErrorPaths:
 
         with patch("shutil.copy2", side_effect=PermissionError("Cannot copy")):
             with pytest.raises(MigrationError, match="Rollback failed"):
-                manager.rollback_migration(backup_path)
+                await manager.rollback_migration(backup_path)
 
-    def test_backfill_empty_invalid_messages(self, tmp_path):
+    async def test_backfill_empty_invalid_messages(self, tmp_path):
         """Test backfill returns 0 for empty list (line 680)."""
         db_path = tmp_path / "test.db"
 
@@ -2445,10 +2448,10 @@ class TestMigrationErrorPaths:
         conn.close()
 
         manager = MigrationManager(db_path)
-        result = manager.backfill_offsets_from_mbox([])
+        result = await manager.backfill_offsets_from_mbox([])
         assert result == 0
 
-    def test_backfill_message_processing_error(self, tmp_path):
+    async def test_backfill_message_processing_error(self, tmp_path):
         """Test backfill handles message processing errors (lines 745-751)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2522,11 +2525,11 @@ class TestMigrationErrorPaths:
 
         with patch("mailbox.mbox", side_effect=lambda p: ErrorMbox(p)):
             # Should continue despite error
-            result = manager.backfill_offsets_from_mbox(invalid_msgs)
+            result = await manager.backfill_offsets_from_mbox(invalid_msgs)
             # No messages backfilled due to error
             assert result == 0
 
-    def test_backfill_mbox_scan_error(self, tmp_path):
+    async def test_backfill_mbox_scan_error(self, tmp_path):
         """Test backfill handles mbox scan failures (lines 753-757)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2575,10 +2578,10 @@ class TestMigrationErrorPaths:
         ]
 
         with patch("mailbox.mbox", side_effect=Exception("Scan error")):
-            result = manager.backfill_offsets_from_mbox(invalid_msgs)
+            result = await manager.backfill_offsets_from_mbox(invalid_msgs)
             assert result == 0
 
-    def test_backfill_rollback_on_error(self, tmp_path):
+    async def test_backfill_rollback_on_error(self, tmp_path):
         """Test backfill rolls back on database errors (lines 765-767)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2626,21 +2629,21 @@ class TestMigrationErrorPaths:
         # Patch commit to raise an error to trigger lines 765-767
         from unittest.mock import patch
 
-        def failing_commit():
+        async def failing_commit():
             raise sqlite3.OperationalError("Database commit failed")
 
         # Get the connection and patch its commit method
-        conn = manager._connect()
-        original_commit = conn.commit
+        async_conn = await manager._connect()
+        original_commit = async_conn.commit
 
         try:
-            with patch.object(conn, "commit", side_effect=failing_commit):
+            with patch.object(async_conn, "commit", side_effect=failing_commit):
                 with pytest.raises(MigrationError, match="Backfill failed"):
-                    manager.backfill_offsets_from_mbox(invalid_msgs)
+                    await manager.backfill_offsets_from_mbox(invalid_msgs)
         finally:
-            conn.commit = original_commit
+            async_conn.commit = original_commit
 
-    def test_backfill_multiple_messages_offset_calculation(self, tmp_path):
+    async def test_backfill_multiple_messages_offset_calculation(self, tmp_path):
         """Test backfill calculates offsets correctly for multiple messages (lines 726-727)."""
         db_path = tmp_path / "test.db"
         mbox_path = tmp_path / "archive.mbox"
@@ -2702,7 +2705,7 @@ class TestMigrationErrorPaths:
         ]
 
         # Backfill should work for both messages
-        result = manager.backfill_offsets_from_mbox(invalid_msgs)
+        result = await manager.backfill_offsets_from_mbox(invalid_msgs)
         assert result == 2
 
         # Verify both messages have valid offsets

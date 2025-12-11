@@ -10,13 +10,17 @@ from compression import zstd
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from gmailarchiver.core.validator import ValidatorFacade
+
+pytestmark = pytest.mark.asyncio
 
 
 class TestValidatorFacadeInit:
     """Tests for ValidatorFacade initialization."""
 
-    def test_init(self) -> None:
+    async def test_init(self) -> None:
         """Test initialization."""
         validator = ValidatorFacade("archive.mbox", "state.db")
         assert validator.archive_path == Path("archive.mbox")
@@ -27,7 +31,7 @@ class TestValidatorFacadeInit:
 class TestGetMboxPath:
     """Tests for _get_mbox_path method."""
 
-    def test_get_mbox_path_uncompressed(self) -> None:
+    async def test_get_mbox_path_uncompressed(self) -> None:
         """Test getting path for uncompressed mbox."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -41,7 +45,7 @@ class TestGetMboxPath:
         finally:
             mbox_path.unlink()
 
-    def test_get_mbox_path_gzip(self) -> None:
+    async def test_get_mbox_path_gzip(self) -> None:
         """Test decompressing gzip archive."""
         # Create a test mbox
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -71,7 +75,7 @@ class TestGetMboxPath:
             test_mbox.unlink()
             gz_path.unlink()
 
-    def test_get_mbox_path_lzma(self) -> None:
+    async def test_get_mbox_path_lzma(self) -> None:
         """Test decompressing lzma archive."""
         # Create a test mbox
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -101,7 +105,7 @@ class TestGetMboxPath:
             test_mbox.unlink()
             xz_path.unlink()
 
-    def test_get_mbox_path_zstd(self) -> None:
+    async def test_get_mbox_path_zstd(self) -> None:
         """Test decompressing zstd archive."""
         # Create a test mbox
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -131,7 +135,7 @@ class TestGetMboxPath:
             test_mbox.unlink()
             zst_path.unlink()
 
-    def test_get_mbox_path_unknown_extension(self) -> None:
+    async def test_get_mbox_path_unknown_extension(self) -> None:
         """Test handling unknown file extension."""
         with tempfile.NamedTemporaryFile(suffix=".unknown", delete=False) as f:
             unknown_path = Path(f.name)
@@ -150,7 +154,7 @@ class TestGetMboxPath:
 class TestValidateComprehensive:
     """Tests for validate_comprehensive method."""
 
-    def test_validate_comprehensive_success(self) -> None:
+    async def test_validate_comprehensive_success(self) -> None:
         """Test successful comprehensive validation."""
         # Create test mbox with 2 messages
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -231,7 +235,7 @@ class TestValidateComprehensive:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_validate_comprehensive_count_mismatch(self) -> None:
+    async def test_validate_comprehensive_count_mismatch(self) -> None:
         """Test validation with count mismatch."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -289,7 +293,7 @@ class TestValidateComprehensive:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_validate_comprehensive_db_not_found(self) -> None:
+    async def test_validate_comprehensive_db_not_found(self) -> None:
         """Test validation when database doesn't exist."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -310,7 +314,7 @@ class TestValidateComprehensive:
         finally:
             mbox_path.unlink()
 
-    def test_validate_comprehensive_invalid_mbox(self) -> None:
+    async def test_validate_comprehensive_invalid_mbox(self) -> None:
         """Test validation with invalid mbox file."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -327,7 +331,7 @@ class TestValidateComprehensive:
         finally:
             mbox_path.unlink()
 
-    def test_validate_comprehensive_empty_expected_ids(self) -> None:
+    async def test_validate_comprehensive_empty_expected_ids(self) -> None:
         """Test validation with empty expected IDs (spot check skipped)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -373,7 +377,7 @@ class TestValidateComprehensive:
 class TestValidateCount:
     """Tests for validate_count method."""
 
-    def test_validate_count_match(self) -> None:
+    async def test_validate_count_match(self) -> None:
         """Test count validation with matching count."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -393,7 +397,7 @@ class TestValidateCount:
         finally:
             mbox_path.unlink()
 
-    def test_validate_count_mismatch(self) -> None:
+    async def test_validate_count_mismatch(self) -> None:
         """Test count validation with mismatching count."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -412,7 +416,7 @@ class TestValidateCount:
         finally:
             mbox_path.unlink()
 
-    def test_validate_count_invalid_file(self) -> None:
+    async def test_validate_count_invalid_file(self) -> None:
         """Test count validation with invalid file."""
         validator = ValidatorFacade("/nonexistent/file.mbox")
         assert validator.validate_count(10) is False
@@ -422,7 +426,7 @@ class TestValidateCount:
 class TestComputeChecksum:
     """Tests for compute_checksum method."""
 
-    def test_compute_checksum(self) -> None:
+    async def test_compute_checksum(self) -> None:
         """Test checksum computation."""
         validator = ValidatorFacade("dummy.mbox")
         data = b"test data"
@@ -432,7 +436,7 @@ class TestComputeChecksum:
 
         assert checksum == expected
 
-    def test_compute_checksum_different_data(self) -> None:
+    async def test_compute_checksum_different_data(self) -> None:
         """Test that different data produces different checksum."""
         validator = ValidatorFacade("dummy.mbox")
         checksum1 = validator.compute_checksum(b"data1")
@@ -445,7 +449,7 @@ class TestReport:
     """Tests for report method."""
 
     @patch("builtins.print")
-    def test_report_success(self, mock_print: patch) -> None:
+    async def test_report_success(self, mock_print: patch) -> None:
         """Test report with successful validation."""
         validator = ValidatorFacade("archive.mbox")
         results = {
@@ -467,7 +471,7 @@ class TestReport:
         assert "PASSED" in full_output
 
     @patch("builtins.print")
-    def test_report_failure(self, mock_print: patch) -> None:
+    async def test_report_failure(self, mock_print: patch) -> None:
         """Test report with failed validation."""
         validator = ValidatorFacade("archive.mbox")
         results = {
@@ -493,7 +497,7 @@ class TestReport:
 class TestOffsetVerification:
     """Tests for offset verification (v1.1 schema)."""
 
-    def test_verify_offsets_valid_offsets(self) -> None:
+    async def test_verify_offsets_valid_offsets(self) -> None:
         """Test verify_offsets with valid offsets (all pass)."""
         # Create test mbox with 2 messages
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -587,7 +591,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             assert result.total_checked == 2
             assert result.successful_reads == 2
@@ -599,7 +603,7 @@ class TestOffsetVerification:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_offsets_compressed_archive(self) -> None:
+    async def test_verify_offsets_compressed_archive(self) -> None:
         """Test verify_offsets with a gzip-compressed archive."""
         # Create uncompressed mbox and corresponding compressed archive
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
@@ -655,7 +659,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(gz_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             assert result.total_checked == 1
             assert result.successful_reads == 1
@@ -668,7 +672,7 @@ class TestOffsetVerification:
             db_path.unlink()
             gz_path.unlink()
 
-    def test_verify_offsets_corrupted_offset(self) -> None:
+    async def test_verify_offsets_corrupted_offset(self) -> None:
         """Test verify_offsets with corrupted offset (fails gracefully)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -708,7 +712,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             assert result.total_checked == 1
             assert result.successful_reads == 0
@@ -720,7 +724,7 @@ class TestOffsetVerification:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_offsets_wrong_message_id(self) -> None:
+    async def test_verify_offsets_wrong_message_id(self) -> None:
         """Test verify_offsets with wrong Message-ID (detects mismatch)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -766,7 +770,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             assert result.total_checked == 1
             assert result.successful_reads == 0
@@ -777,7 +781,7 @@ class TestOffsetVerification:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_offsets_v10_schema(self) -> None:
+    async def test_verify_offsets_v10_schema(self) -> None:
         """Test verify_offsets with v1.0 schema (skips gracefully)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -807,7 +811,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             # Should skip verification for v1.0 schema
             assert result.total_checked == 0
@@ -819,7 +823,7 @@ class TestOffsetVerification:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_offsets_length_mismatch(self) -> None:
+    async def test_verify_offsets_length_mismatch(self) -> None:
         """Test verify_offsets with incorrect mbox_length."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -872,7 +876,7 @@ class TestOffsetVerification:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            result = validator.verify_offsets()
+            result = await validator.verify_offsets()
 
             assert result.total_checked == 1
             assert result.failed_reads == 1
@@ -886,7 +890,7 @@ class TestOffsetVerification:
 class TestConsistencyChecks:
     """Tests for deep database consistency checks."""
 
-    def test_verify_consistency_perfect_database(self) -> None:
+    async def test_verify_consistency_perfect_database(self) -> None:
         """Test verify_consistency with perfect database (all checks pass)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -968,7 +972,7 @@ class TestConsistencyChecks:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             assert report.orphaned_records == 0
             assert report.missing_records == 0
@@ -981,7 +985,7 @@ class TestConsistencyChecks:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_consistency_orphaned_records(self) -> None:
+    async def test_verify_consistency_orphaned_records(self) -> None:
         """Test verify_consistency with orphaned records (detects)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -1026,7 +1030,7 @@ class TestConsistencyChecks:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             assert report.orphaned_records == 1
             assert report.passed is False
@@ -1035,7 +1039,7 @@ class TestConsistencyChecks:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_consistency_missing_records(self) -> None:
+    async def test_verify_consistency_missing_records(self) -> None:
         """Test verify_consistency with missing records (detects)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -1079,7 +1083,7 @@ class TestConsistencyChecks:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             assert report.missing_records == 1
             assert report.passed is False
@@ -1088,7 +1092,7 @@ class TestConsistencyChecks:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_consistency_fts_desync(self) -> None:
+    async def test_verify_consistency_fts_desync(self) -> None:
         """Test verify_consistency with FTS5 desync (detects)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -1136,7 +1140,7 @@ class TestConsistencyChecks:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             assert report.fts_synced is False
             assert report.passed is False
@@ -1145,7 +1149,7 @@ class TestConsistencyChecks:
             mbox_path.unlink()
             db_path.unlink()
 
-    def test_verify_consistency_v10_schema(self) -> None:
+    async def test_verify_consistency_v10_schema(self) -> None:
         """Test verify_consistency with v1.0 schema (limited checks)."""
         with tempfile.NamedTemporaryFile(suffix=".mbox", delete=False) as f:
             mbox_path = Path(f.name)
@@ -1191,7 +1195,7 @@ class TestConsistencyChecks:
             conn.close()
 
             validator = ValidatorFacade(str(mbox_path), str(db_path))
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             # Should have limited checks for v1.0 schema
             assert report.schema_version == "v1.0"  # Facade returns "v1.0"
@@ -1205,7 +1209,7 @@ class TestConsistencyChecks:
 class TestValidatorSimpleCases:
     """Additional validator test cases."""
 
-    def test_validate_comprehensive_with_integrity_failure(self) -> None:
+    async def test_validate_comprehensive_with_integrity_failure(self) -> None:
         """Test validate_comprehensive handles integrity check failure (lines 153-157)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "empty.mbox"
@@ -1220,7 +1224,7 @@ class TestValidatorSimpleCases:
 
             assert "readable messages" in " ".join(results["errors"]).lower()
 
-    def test_validate_comprehensive_spot_check_pass(self) -> None:
+    async def test_validate_comprehensive_spot_check_pass(self) -> None:
         """Test spot check when messages are found (lines 191-192, 236-237)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1253,7 +1257,7 @@ class TestValidatorSimpleCases:
             # spot_check should pass
             assert results["spot_check"] is True or results["passed"] is True
 
-    def test_validate_all_exception(self) -> None:
+    async def test_validate_all_exception(self) -> None:
         """Test validate_all handles exceptions (lines 281-283)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "corrupt.mbox"
@@ -1274,7 +1278,7 @@ class TestValidatorSimpleCases:
 class TestValidatorMissingCoverage:
     """Tests targeting specific uncovered lines."""
 
-    def test_comprehensive_validation_db_fallback_v10(self) -> None:
+    async def test_comprehensive_validation_db_fallback_v10(self) -> None:
         """Test database check fallback to v1.0 schema (lines 166-176)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1303,7 +1307,7 @@ class TestValidatorMissingCoverage:
             # Should handle v1.0 schema
             assert "database_check" in results
 
-    def test_validate_count_exception(self) -> None:
+    async def test_validate_count_exception(self) -> None:
         """Test validate_count handles exceptions properly (line 211)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "missing.mbox"
@@ -1315,7 +1319,7 @@ class TestValidatorMissingCoverage:
 
             assert result is False
 
-    def test_validate_all_empty_archive(self) -> None:
+    async def test_validate_all_empty_archive(self) -> None:
         """Test validate_all detects empty archive (lines 272-273)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "empty.mbox"
@@ -1332,7 +1336,7 @@ class TestValidatorMissingCoverage:
             assert "empty" in " ".join(validator.errors).lower()
 
 
-def test_validator_empty_archive_integrity_check() -> None:
+async def test_validator_empty_archive_integrity_check() -> None:
     """Test that validate detects empty/corrupt archives (lines 153-157).
 
     When an archive has 0 readable messages, integrity_check should be False
@@ -1361,7 +1365,7 @@ def test_validator_empty_archive_integrity_check() -> None:
         )
 
 
-def test_validator_log_with_output_manager() -> None:
+async def test_validator_log_with_output_manager() -> None:
     """Test validator._log uses OutputManager methods when available (lines 76-78).
 
     When validator has an OutputManager, it should use output.warning/error/success/info
@@ -1388,7 +1392,7 @@ def test_validator_log_with_output_manager() -> None:
         # If we got here without crashes, the paths are covered
 
 
-def test_validator_log_fallback_without_output_manager() -> None:
+async def test_validator_log_fallback_without_output_manager() -> None:
     """Test validator._log falls back to print when no OutputManager (lines 76, 78).
 
     When validator has no OutputManager (output=None), it should use print
@@ -1416,7 +1420,7 @@ def test_validator_log_fallback_without_output_manager() -> None:
             sys.stdout = old_stdout
 
 
-def test_validator_comprehensive_with_corrupt_archive() -> None:
+async def test_validator_comprehensive_with_corrupt_archive() -> None:
     """Test validate_comprehensive handles corrupt archive gracefully (lines 181-185).
 
     When archive reading raises an exception, error should be captured and
@@ -1444,7 +1448,7 @@ def test_validator_comprehensive_with_corrupt_archive() -> None:
         )
 
 
-def test_validator_comprehensive_empty_message_list() -> None:
+async def test_validator_comprehensive_empty_message_list() -> None:
     """Test validate_comprehensive handles empty message list (lines 181-185).
 
     When mbox parsing succeeds but contains 0 messages, should detect this
@@ -1471,7 +1475,7 @@ def test_validator_comprehensive_empty_message_list() -> None:
         assert "no readable messages" in error_text
 
 
-def test_validator_comprehensive_database_missing() -> None:
+async def test_validator_comprehensive_database_missing() -> None:
     """Test validate_comprehensive handles missing database (lines 219-220).
 
     When state database doesn't exist, database_check should be skipped
@@ -1511,7 +1515,7 @@ def test_validator_comprehensive_database_missing() -> None:
 class TestValidatorErrorHandling:
     """Test error handling paths in validator."""
 
-    def test_integrity_check_inner_exception(self) -> None:
+    async def test_integrity_check_inner_exception(self) -> None:
         """Test integrity check handles inner exceptions (lines 181-182)."""
         import tempfile
         from unittest.mock import MagicMock, patch
@@ -1539,7 +1543,7 @@ class TestValidatorErrorHandling:
                 assert "errors" in results
                 assert any("Integrity check failed" in err for err in results["errors"])
 
-    def test_spot_check_exception(self) -> None:
+    async def test_spot_check_exception(self) -> None:
         """Test spot check handles exceptions (lines 309-311)."""
         import email.message
         import mailbox
@@ -1599,7 +1603,7 @@ class TestValidatorErrorHandling:
                 # May have spot check error
                 errors_text = " ".join(results["errors"])
 
-    def test_compute_checksum_exception(self) -> None:
+    async def test_compute_checksum_exception(self) -> None:
         """Test compute_checksum handles exceptions (line 403)."""
         validator = ValidatorFacade("/nonexistent/archive.mbox")
 
@@ -1609,17 +1613,17 @@ class TestValidatorErrorHandling:
         # Should return a valid checksum (empty data has a checksum)
         assert checksum is not None
 
-    def test_verify_offsets_read_error(self) -> None:
+    async def test_verify_offsets_read_error(self) -> None:
         """Test verify_offsets handles read errors (lines 484-486)."""
         # Skip - method has internal exception handling that prevents raising
         pass
 
-    def test_verify_consistency_no_database(self) -> None:
+    async def test_verify_consistency_no_database(self) -> None:
         """Test verify_consistency with no database (line 618)."""
         # This line is covered by existing tests - validator creates default db
         pass
 
-    def test_validate_mismatch_error(self) -> None:
+    async def test_validate_mismatch_error(self) -> None:
         """Test database count mismatch detection (lines 264-265)."""
         import email.message
         import mailbox
@@ -1665,7 +1669,7 @@ class TestValidatorErrorHandling:
             # DB has 2, mbox has 1
             assert "mismatch" in errors_text.lower() or "count" in errors_text.lower()
 
-    def test_checksum_content_error(self) -> None:
+    async def test_checksum_content_error(self) -> None:
         """Test content checksum verification with error (line 279)."""
         import sqlite3
         import tempfile
@@ -1698,7 +1702,7 @@ class TestValidatorErrorHandling:
 
             # Validation should pass (checksum mismatch is not critical in comprehensive)
 
-    def test_validate_all_nonexistent_file_returns_false(self) -> None:
+    async def test_validate_all_nonexistent_file_returns_false(self) -> None:
         """Test validate_all returns False for nonexistent archive (lines 307-309).
 
         When the archive file doesn't exist, validation should fail gracefully
@@ -1717,7 +1721,7 @@ class TestValidatorErrorHandling:
             # Nonexistent files report as "Archive is empty"
             assert "empty" in validator.errors[0].lower()
 
-    def test_validate_all_corrupted_mbox_returns_false(self) -> None:
+    async def test_validate_all_corrupted_mbox_returns_false(self) -> None:
         """Test validate_all returns False for corrupted mbox file.
 
         A corrupted mbox should fail gracefully and return False with errors.
@@ -1737,7 +1741,7 @@ class TestValidatorErrorHandling:
             # A binary file might be read as having 0 messages (empty)
             assert isinstance(result, bool)
 
-    def test_consistency_check_with_no_database_returns_error(self) -> None:
+    async def test_consistency_check_with_no_database_returns_error(self) -> None:
         """Test verify_consistency returns error when no database (lines 527-529).
 
         When schema version is 'none', the consistency check should fail
@@ -1760,7 +1764,7 @@ class TestValidatorErrorHandling:
 
             validator = ValidatorFacade(str(archive_path), state_db_path=str(db_path))
 
-            result = validator.verify_consistency()
+            result = await validator.verify_consistency()
 
             assert result.passed is False
             assert len(result.errors) > 0
@@ -1771,7 +1775,7 @@ class TestValidatorErrorHandling:
 class TestValidatorExceptionHandling:
     """Tests for exception handling paths in ValidatorFacade."""
 
-    def test_validate_all_with_compressed_temp_cleanup(self) -> None:
+    async def test_validate_all_with_compressed_temp_cleanup(self) -> None:
         """Test validate_all properly cleans up temp files for compressed archives.
 
         Covers line 277: Cleanup of temp file after decompression.
@@ -1797,7 +1801,7 @@ class TestValidatorExceptionHandling:
             assert len([f for f in temp_files if not str(f).endswith(".gz")]) == 0
             assert result is True
 
-    def test_verify_consistency_with_compressed_archive(self) -> None:
+    async def test_verify_consistency_with_compressed_archive(self) -> None:
         """Test verify_consistency handles compressed archives and cleans up temp files.
 
         Covers line 617: Cleanup of temp file after verify_consistency.
@@ -1846,7 +1850,7 @@ class TestValidatorExceptionHandling:
             validator = ValidatorFacade(str(archive_path), state_db_path=str(db_path))
 
             # verify_consistency should work with compressed archive
-            report = validator.verify_consistency()
+            report = await validator.verify_consistency()
 
             # Should return a ConsistencyReport
             assert report is not None

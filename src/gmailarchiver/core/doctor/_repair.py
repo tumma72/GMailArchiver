@@ -33,20 +33,23 @@ class RepairManager:
         self.db_path = db_path
         self.db_manager = db_manager
 
-    def fix_missing_database(self) -> FixResult:
+    async def fix_missing_database(self) -> FixResult:
         """Create missing database with v1.1 schema."""
         try:
             from gmailarchiver.data.db_manager import DBManager
 
             # Create new database with v1.1 schema
             db = DBManager(str(self.db_path), validate_schema=False, auto_create=True)
+            await db.initialize()
 
             # Ensure PRAGMA user_version reflects v1.1 for external tools
             try:
-                db.conn.execute("PRAGMA user_version = 11")
-                db.conn.commit()
+                if db.conn is None:
+                    raise RuntimeError("Database connection not initialized")
+                await db.conn.execute("PRAGMA user_version = 11")
+                await db.conn.commit()
             finally:
-                db.close()
+                await db.close()
 
             return FixResult(
                 check_name="Database schema",
@@ -60,7 +63,7 @@ class RepairManager:
                 message=f"Failed to create database: {e}",
             )
 
-    def fix_orphaned_fts(self) -> FixResult:
+    async def fix_orphaned_fts(self) -> FixResult:
         """Remove orphaned FTS records."""
         if not self.db_manager:
             return FixResult(
@@ -70,8 +73,12 @@ class RepairManager:
             )
 
         try:
+            if self.db_manager.conn is None:
+                raise RuntimeError("Database connection not initialized")
+            conn = self.db_manager.conn  # Type narrowed
+
             # Delete orphaned FTS records
-            cursor = self.db_manager.conn.execute(
+            cursor = await conn.execute(
                 """
                 DELETE FROM messages_fts
                 WHERE rowid NOT IN (SELECT rowid FROM messages)
@@ -81,7 +88,7 @@ class RepairManager:
 
             if removed == 0:
                 # Heuristic fallback for test scenarios
-                cursor = self.db_manager.conn.execute(
+                cursor = await conn.execute(
                     """
                     DELETE FROM messages_fts
                     WHERE rowid > (SELECT IFNULL(MAX(rowid), 0) FROM messages)
@@ -89,7 +96,7 @@ class RepairManager:
                 )
                 removed = cursor.rowcount
 
-            self.db_manager.conn.commit()
+            await conn.commit()
 
             return FixResult(
                 check_name="FTS index",

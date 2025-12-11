@@ -36,7 +36,7 @@ class DuplicateScanner:
         """
         self.db = db
 
-    def find_duplicates(self) -> dict[str, list[MessageInfo]]:
+    async def find_duplicates(self) -> dict[str, list[MessageInfo]]:
         """
         Find all duplicate messages grouped by rfc_message_id.
 
@@ -47,8 +47,12 @@ class DuplicateScanner:
             Dict mapping rfc_message_id to list of MessageInfo (locations)
             Messages in each group are sorted by archived_timestamp DESC
         """
+        if self.db.conn is None:
+            return {}
+        conn = self.db.conn  # Type narrowed
+
         # Find all rfc_message_ids that appear more than once
-        cursor = self.db.conn.execute("""
+        cursor = await conn.execute("""
             SELECT rfc_message_id, COUNT(*) as count
             FROM messages
             WHERE rfc_message_id IS NOT NULL
@@ -56,7 +60,8 @@ class DuplicateScanner:
             HAVING COUNT(*) > 1
         """)
 
-        duplicate_ids = [row[0] for row in cursor.fetchall()]
+        rows = await cursor.fetchall()
+        duplicate_ids = [row[0] for row in rows]
 
         if not duplicate_ids:
             return {}
@@ -65,7 +70,7 @@ class DuplicateScanner:
         duplicates: dict[str, list[MessageInfo]] = {}
 
         for rfc_id in duplicate_ids:
-            cursor = self.db.conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT gmail_id, archive_file, mbox_offset, mbox_length,
                        size_bytes, archived_timestamp
@@ -76,8 +81,9 @@ class DuplicateScanner:
                 (rfc_id,),
             )
 
+            rows = await cursor.fetchall()
             messages = []
-            for row in cursor.fetchall():
+            for row in rows:
                 # Handle NULL size_bytes by using mbox_length as fallback
                 size = row[4] if row[4] is not None else row[3]
 

@@ -22,6 +22,7 @@ Example:
         ctx.success("Validation complete")
 """
 
+import asyncio
 import functools
 import inspect
 import logging
@@ -567,7 +568,7 @@ def with_context(
                     if requires_schema:
                         required_version = SchemaVersion.from_string(requires_schema)
                         try:
-                            schema_mgr.require_version(required_version)
+                            asyncio.run(schema_mgr.require_version(required_version))
                         except SchemaVersionError as e:
                             ctx.fail_and_exit(
                                 "Schema Version Mismatch",
@@ -577,6 +578,7 @@ def with_context(
 
                     # Initialize DBManager (skip validation since SchemaManager already checked)
                     db = DBManager(str(db_path), validate_schema=False)
+                    asyncio.run(db.initialize())
 
                     # Wrap DBManager with HybridStorage
                     # Only preload RFC IDs if we've validated the schema supports it (v1.1+)
@@ -622,7 +624,7 @@ def with_context(
                 # so we close the underlying DBManager directly
                 if db is not None:
                     try:
-                        db.close()
+                        asyncio.run(db.close())
                     except Exception:
                         pass
 

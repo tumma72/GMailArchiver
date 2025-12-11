@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from gmailarchiver.core.doctor._diagnostics import CheckResult, CheckSeverity, DiagnosticsRunner
 from gmailarchiver.core.doctor._repair import FixResult, RepairManager
@@ -45,46 +45,74 @@ class Doctor:
     """System diagnostics and auto-repair for Gmail Archiver."""
 
     def __init__(
-        self, db_path: str, validate_schema: bool = True, auto_create: bool = True
+        self,
+        db_path: Path,
+        db_manager: DBManager | None,
+        validate_schema: bool = True,
+        auto_create: bool = True,
     ) -> None:
-        """Initialize doctor with database path.
+        """Initialize doctor (internal - use create() instead).
+
+        Args:
+            db_path: Path to SQLite database file
+            db_manager: Pre-initialized DBManager instance (or None if not available)
+            validate_schema: Whether to validate schema on init
+            auto_create: Whether to auto-create database if missing
+        """
+        self.db_path = db_path
+        self.validate_schema = validate_schema
+        self.auto_create = auto_create
+        self._db_manager = db_manager
+
+    @classmethod
+    async def create(
+        cls,
+        db_path: str,
+        validate_schema: bool = True,
+        auto_create: bool = True,
+    ) -> Self:
+        """Create and initialize Doctor instance.
 
         Args:
             db_path: Path to SQLite database file
             validate_schema: Whether to validate schema on init
             auto_create: Whether to auto-create database if missing
+
+        Returns:
+            Initialized Doctor instance
         """
-        self.db_path = Path(db_path) if db_path != ":memory:" else Path(":memory:")
-        self.validate_schema = validate_schema
-        self.auto_create = auto_create
-        self._db_manager: DBManager | None = None
+        path = Path(db_path) if db_path != ":memory:" else Path(":memory:")
+        db_manager = await cls._create_db_manager(path, auto_create)
+        return cls(path, db_manager, validate_schema, auto_create)
 
-    def _get_db_manager(self) -> DBManager | None:
-        """Get or create DBManager instance, handling errors gracefully."""
-        if self._db_manager:
-            return self._db_manager
-
+    @staticmethod
+    async def _create_db_manager(db_path: Path, auto_create: bool) -> DBManager | None:
+        """Create DBManager instance, handling errors gracefully."""
         try:
-            if str(self.db_path) == ":memory:":
-                self._db_manager = DBManager(":memory:", validate_schema=False, auto_create=True)
-            elif self.db_path.exists():
+            if str(db_path) == ":memory:":
+                db = DBManager(":memory:", validate_schema=False, auto_create=True)
+                await db.initialize()
+                return db
+            elif db_path.exists():
                 # For diagnostics, we don't want to fail on schema validation
                 # Doctor needs to be able to inspect databases with any schema version
-                self._db_manager = DBManager(
-                    str(self.db_path), validate_schema=False, auto_create=False
-                )
-            elif self.auto_create:
-                self._db_manager = DBManager(
-                    str(self.db_path), validate_schema=False, auto_create=True
-                )
+                db = DBManager(str(db_path), validate_schema=False, auto_create=False)
+                await db.initialize()
+                return db
+            elif auto_create:
+                db = DBManager(str(db_path), validate_schema=False, auto_create=True)
+                await db.initialize()
+                return db
             else:
                 return None
-
-            return self._db_manager
         except Exception:
             return None
 
-    def run_diagnostics(self) -> DoctorReport:
+    def _get_db_manager(self) -> DBManager | None:
+        """Get cached DBManager instance."""
+        return self._db_manager
+
+    async def run_diagnostics(self) -> DoctorReport:
         """Run all diagnostic checks.
 
         Returns:
@@ -96,10 +124,10 @@ class Doctor:
         checks: list[CheckResult] = []
 
         # Database checks
-        checks.append(diagnostics.check_database_schema())
-        checks.append(diagnostics.check_database_integrity())
-        checks.append(diagnostics.check_orphaned_fts())
-        checks.append(diagnostics.check_archive_files_exist())
+        checks.append(await diagnostics.check_database_schema())
+        checks.append(await diagnostics.check_database_integrity())
+        checks.append(await diagnostics.check_orphaned_fts())
+        checks.append(await diagnostics.check_archive_files_exist())
 
         # Environment checks
         checks.append(diagnostics.check_python_version())
@@ -140,7 +168,7 @@ class Doctor:
             fixable_issues=fixable_issues,
         )
 
-    def run_auto_fix(self) -> list[FixResult]:
+    async def run_auto_fix(self) -> list[FixResult]:
         """Run auto-fix for all fixable issues.
 
         Returns:
@@ -149,7 +177,7 @@ class Doctor:
         results: list[FixResult] = []
 
         # Run diagnostics to find fixable issues
-        report = self.run_diagnostics()
+        report = await self.run_diagnostics()
 
         # Initialize repair manager
         db_manager = self._get_db_manager()
@@ -159,9 +187,9 @@ class Doctor:
             if check.fixable and check.severity != CheckSeverity.OK:
                 # Attempt to fix based on check name
                 if "schema" in check.name.lower() and "not found" in check.message.lower():
-                    results.append(repair.fix_missing_database())
+                    results.append(await repair.fix_missing_database())
                 elif "orphaned" in check.name.lower():
-                    results.append(repair.fix_orphaned_fts())
+                    results.append(await repair.fix_orphaned_fts())
                 elif "lock" in check.name.lower():
                     results.append(repair.fix_stale_locks())
                 # Note: Some issues like expired token require user action (re-auth)
@@ -169,25 +197,25 @@ class Doctor:
         return results
 
     # Delegation methods for direct access to diagnostics/repair
-    def check_database_schema(self) -> CheckResult:
+    async def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
         db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_database_schema()
+        return await DiagnosticsRunner(self.db_path, db_manager).check_database_schema()
 
-    def check_database_integrity(self) -> CheckResult:
+    async def check_database_integrity(self) -> CheckResult:
         """Check database integrity."""
         db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_database_integrity()
+        return await DiagnosticsRunner(self.db_path, db_manager).check_database_integrity()
 
-    def check_orphaned_fts(self) -> CheckResult:
+    async def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
         db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_orphaned_fts()
+        return await DiagnosticsRunner(self.db_path, db_manager).check_orphaned_fts()
 
-    def check_archive_files_exist(self) -> CheckResult:
+    async def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files exist."""
         db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_archive_files_exist()
+        return await DiagnosticsRunner(self.db_path, db_manager).check_archive_files_exist()
 
     def check_python_version(self) -> CheckResult:
         """Check Python version."""
@@ -229,23 +257,23 @@ class Doctor:
         db_manager = self._get_db_manager()
         return DiagnosticsRunner(self.db_path, db_manager).check_temp_directory()
 
-    def fix_missing_database(self) -> FixResult:
+    async def fix_missing_database(self) -> FixResult:
         """Fix missing database."""
         db_manager = self._get_db_manager()
-        return RepairManager(self.db_path, db_manager).fix_missing_database()
+        return await RepairManager(self.db_path, db_manager).fix_missing_database()
 
-    def fix_orphaned_fts(self) -> FixResult:
+    async def fix_orphaned_fts(self) -> FixResult:
         """Fix orphaned FTS records."""
         db_manager = self._get_db_manager()
-        return RepairManager(self.db_path, db_manager).fix_orphaned_fts()
+        return await RepairManager(self.db_path, db_manager).fix_orphaned_fts()
 
     def fix_stale_locks(self) -> FixResult:
         """Fix stale locks."""
         db_manager = self._get_db_manager()
         return RepairManager(self.db_path, db_manager).fix_stale_locks()
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close database manager if owned."""
         if self._db_manager:
-            self._db_manager.close()
+            await self._db_manager.close()
             self._db_manager = None

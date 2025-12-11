@@ -1,76 +1,17 @@
-"""Tests for CLI import command."""
+"""Tests for CLI import command.
+
+Fixtures used from conftest.py:
+- runner: CliRunner for CLI tests
+- v1_1_database: v1.1 database path
+- sample_mbox: mbox file with 3 test messages
+- sample_mbox_with_duplicates: mbox file with duplicate Message-IDs
+"""
 
 import mailbox
 import sqlite3
 from datetime import datetime
 
-import pytest
-from typer.testing import CliRunner
-
 from gmailarchiver.__main__ import app
-from gmailarchiver.data.migration import MigrationManager
-
-
-@pytest.fixture
-def runner():
-    """Create CLI test runner."""
-    return CliRunner()
-
-
-@pytest.fixture
-def v1_1_database(tmp_path):
-    """Create a v1.2 database for testing (auto-upgraded from v1.1)."""
-    db_path = tmp_path / "archive_state.db"
-
-    # Use DBManager to create a fresh v1.2 database
-    from gmailarchiver.data.db_manager import DBManager
-
-    db = DBManager(str(db_path), validate_schema=False, auto_create=True)
-    db.close()
-
-    return db_path
-
-
-@pytest.fixture
-def sample_mbox(tmp_path):
-    """Create a sample mbox file with test messages."""
-    mbox_path = tmp_path / "test_archive.mbox"
-    mbox = mailbox.mbox(str(mbox_path))
-
-    # Add 3 test messages
-    for i in range(1, 4):
-        msg = mailbox.mboxMessage()
-        msg["From"] = f"sender{i}@example.com"
-        msg["To"] = "recipient@example.com"
-        msg["Subject"] = f"Test Message {i}"
-        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
-        msg["Message-ID"] = f"<msg{i}@example.com>"
-        msg.set_payload(f"This is test message {i}")
-        mbox.add(msg)
-
-    mbox.close()
-    return mbox_path
-
-
-@pytest.fixture
-def sample_mbox_with_duplicates(tmp_path):
-    """Create mbox file with duplicate Message-IDs."""
-    mbox_path = tmp_path / "duplicates.mbox"
-    mbox = mailbox.mbox(str(mbox_path))
-
-    # Add 2 messages with same Message-ID
-    for i in range(1, 3):
-        msg = mailbox.mboxMessage()
-        msg["From"] = f"sender{i}@example.com"
-        msg["To"] = "recipient@example.com"
-        msg["Subject"] = f"Duplicate Message {i}"
-        msg["Date"] = f"Mon, {i} Jan 2024 12:00:00 +0000"
-        msg["Message-ID"] = "<duplicate@example.com>"
-        msg.set_payload(f"Duplicate message {i}")
-        mbox.add(msg)
-
-    mbox.close()
-    return mbox_path
 
 
 class TestImportCommand:
@@ -250,16 +191,54 @@ class TestImportCommand:
         """Test import uses default database path when not specified."""
         monkeypatch.chdir(tmp_path)
 
-        # Create v1.1 database at default location
+        # Create v1.1 database at default location using sync sqlite3
         default_db = tmp_path / "archive_state.db"
-        manager = MigrationManager(default_db)
-        manager._connect()
-        manager._create_enhanced_schema(manager.conn)
-        manager.conn.execute(
-            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-        )
-        manager.conn.commit()
-        manager._close()
+        conn = sqlite3.connect(str(default_db))
+        try:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                );
+                CREATE TABLE IF NOT EXISTS archive_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_timestamp TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    messages_archived INTEGER NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    account_id TEXT DEFAULT 'default',
+                    operation_type TEXT DEFAULT 'archive'
+                );
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    subject, from_addr, to_addr, body_preview,
+                    content='messages', content_rowid='rowid'
+                );
+            """)
+            conn.execute(
+                "INSERT INTO schema_version VALUES (?, ?)", ("1.2", datetime.now().isoformat())
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
         result = runner.invoke(app, ["import", str(sample_mbox)])
 
@@ -309,32 +288,70 @@ class TestImportCommand:
         """Test import with --auto-verify when verification finds issues."""
         monkeypatch.chdir(tmp_path)
 
-        # Create a database with orphaned FTS records
+        # Create a database with orphaned FTS records using sync sqlite3
         db_path = tmp_path / "archive_state.db"
-        manager = MigrationManager(db_path)
-        manager._connect()
-        manager._create_enhanced_schema(manager.conn)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                );
+                CREATE TABLE IF NOT EXISTS archive_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_timestamp TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    messages_archived INTEGER NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    account_id TEXT DEFAULT 'default',
+                    operation_type TEXT DEFAULT 'archive'
+                );
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version TEXT PRIMARY KEY,
+                    migrated_timestamp TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    subject, from_addr, to_addr, body_preview,
+                    content='messages', content_rowid='rowid'
+                );
+            """)
 
-        # Add message to messages table
-        manager.conn.execute("""
-            INSERT INTO messages VALUES
-            ('gmail1', '<msg1@example.com>', 'thread1', 'Message 1', 'sender@example.com',
-             'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
-             'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
-        """)
+            # Add message to messages table
+            conn.execute("""
+                INSERT INTO messages VALUES
+                ('gmail1', '<msg1@example.com>', 'thread1', 'Message 1', 'sender@example.com',
+                 'recipient@example.com', NULL, '2024-01-01 10:00:00', '2025-01-01T12:00:00',
+                 'archive1.mbox', 100, 500, 'Body 1', 'checksum1', 500, NULL, 'default')
+            """)
 
-        # Add orphaned FTS record (rowid that doesn't exist in messages)
-        manager.conn.execute("""
-            INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
-            VALUES (999, 'Orphan', 'orphan@example.com', 'test@example.com', 'Orphaned record')
-        """)
+            # Add orphaned FTS record (rowid that doesn't exist in messages)
+            conn.execute("""
+                INSERT INTO messages_fts(rowid, subject, from_addr, to_addr, body_preview)
+                VALUES (999, 'Orphan', 'orphan@example.com', 'test@example.com', 'Orphaned record')
+            """)
 
-        manager.conn.execute(
-            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-        )
+            conn.execute(
+                "INSERT INTO schema_version VALUES (?, ?)", ("1.2", datetime.now().isoformat())
+            )
 
-        manager.conn.commit()
-        manager._close()
+            conn.commit()
+        finally:
+            conn.close()
 
         # Create mbox to import
         mbox_path = tmp_path / "test.mbox"

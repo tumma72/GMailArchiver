@@ -48,28 +48,54 @@ class ArchiverFacade:
     def __init__(
         self,
         gmail_client: GmailClient,
-        state_db_path: str = "~/.local/share/gmailarchiver/archive.db",
+        db_manager: DBManager,
+        storage: HybridStorage,
         output_manager: OutputManager | None = None,
     ) -> None:
-        """Initialize facade with dependencies.
+        """Initialize facade with dependencies (internal - use create() instead).
 
         Args:
             gmail_client: Authenticated Gmail client for API calls
-            state_db_path: Path to state database for tracking archived messages
+            db_manager: Initialized DBManager instance
+            storage: HybridStorage instance for atomic operations
             output_manager: Optional output manager for progress reporting
         """
         self.gmail_client = gmail_client
-        self.state_db_path = str(Path(state_db_path).expanduser())
+        self.db_manager = db_manager
+        self.state_db_path = str(db_manager.db_path)
         self.output_manager = output_manager
-
-        # Initialize data layer (single gateway pattern)
-        self.db_manager = DBManager(self.state_db_path, validate_schema=False, auto_create=True)
-        self.storage = HybridStorage(self.db_manager)
+        self.storage = storage
 
         # Initialize internal modules with injected dependencies
         self._lister = MessageLister(gmail_client=gmail_client)
         self._filter = MessageFilter(db_manager=self.db_manager)
         self._writer = MessageWriter(gmail_client=gmail_client, storage=self.storage)
+
+    @classmethod
+    async def create(
+        cls,
+        gmail_client: GmailClient,
+        state_db_path: str = "~/.local/share/gmailarchiver/archive.db",
+        output_manager: OutputManager | None = None,
+    ) -> ArchiverFacade:
+        """Create and initialize archiver facade.
+
+        Args:
+            gmail_client: Authenticated Gmail client for API calls
+            state_db_path: Path to state database for tracking archived messages
+            output_manager: Optional output manager for progress reporting
+
+        Returns:
+            Initialized ArchiverFacade instance
+        """
+        expanded_path = str(Path(state_db_path).expanduser())
+
+        # Initialize data layer (single gateway pattern)
+        db_manager = DBManager(expanded_path, validate_schema=False, auto_create=True)
+        await db_manager.initialize()
+        storage = HybridStorage(db_manager)
+
+        return cls(gmail_client, db_manager, storage, output_manager)
 
     def list_messages_for_archive(
         self,
@@ -93,7 +119,7 @@ class ArchiverFacade:
         """
         return self._lister.list_messages(age_threshold, progress_callback=progress_callback)
 
-    def filter_already_archived(
+    async def filter_already_archived(
         self,
         message_ids: list[str],
         incremental: bool = True,
@@ -109,9 +135,9 @@ class ArchiverFacade:
         Returns:
             Tuple of (filtered_message_ids, skipped_count)
         """
-        return self._filter.filter_archived(message_ids, incremental=incremental)
+        return await self._filter.filter_archived(message_ids, incremental=incremental)
 
-    def archive_messages(
+    async def archive_messages(
         self,
         message_ids: list[str],
         output_file: str,
@@ -135,11 +161,11 @@ class ArchiverFacade:
                 - interrupted: Whether operation was interrupted
                 - actual_file: Actual file path where messages were written
         """
-        return self._writer.archive_messages(
+        return await self._writer.archive_messages(
             message_ids, output_file, compress=compress, operation=operation
         )
 
-    def archive(
+    async def archive(
         self,
         age_threshold: str,
         output_file: str,
@@ -197,7 +223,7 @@ class ArchiverFacade:
             }
 
         # Phase 2: Filter already-archived messages
-        filtered_ids, skipped_count = self.filter_already_archived(
+        filtered_ids, skipped_count = await self.filter_already_archived(
             message_ids, incremental=incremental
         )
 
@@ -224,7 +250,7 @@ class ArchiverFacade:
             }
 
         # Phase 3: Archive messages
-        result = self.archive_messages(
+        result = await self.archive_messages(
             filtered_ids, output_file, compress=compress, operation=operation
         )
 

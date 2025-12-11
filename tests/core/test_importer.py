@@ -16,6 +16,8 @@ from gmailarchiver.core.importer import (
 )
 from gmailarchiver.data.db_manager import DBManager
 
+pytestmark = pytest.mark.asyncio
+
 
 # Fixtures for creating test mbox files
 @pytest.fixture
@@ -263,16 +265,18 @@ def v1_1_db(tmp_path):
 class TestImporterFacadeInit:
     """Test ImporterFacade initialization."""
 
-    def test_init_with_valid_db_path(self, v1_1_db):
+    async def test_init_with_valid_db_path(self, v1_1_db):
         """Test initialization with valid database path."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         assert importer.db_manager == db_manager
 
-    def test_init_creates_db_if_not_exists(self, tmp_path):
+    async def test_init_creates_db_if_not_exists(self, tmp_path):
         """Test initialization creates database if it doesn't exist."""
         db_path = tmp_path / "new.db"
         db_manager = DBManager(str(db_path), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         assert importer.db_manager == db_manager
 
@@ -280,12 +284,13 @@ class TestImporterFacadeInit:
 class TestImportSingleArchive:
     """Test importing single mbox archive."""
 
-    def test_import_simple_mbox_all_messages(self, v1_1_db, sample_mbox_simple):
+    async def test_import_simple_mbox_all_messages(self, v1_1_db, sample_mbox_simple):
         """Test importing simple mbox with 3 messages (all imported)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert isinstance(result, ImportResult)
         assert result.archive_file == str(sample_mbox_simple)
@@ -295,12 +300,13 @@ class TestImportSingleArchive:
         assert result.execution_time_ms > 0
         assert len(result.errors) == 0
 
-    def test_import_verifies_database_population(self, v1_1_db, sample_mbox_simple):
+    async def test_import_verifies_database_population(self, v1_1_db, sample_mbox_simple):
         """Test that imported messages are in database."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Verify database has 3 messages
         conn = sqlite3.connect(str(v1_1_db))
@@ -310,12 +316,15 @@ class TestImportSingleArchive:
 
         assert count == 3
 
-    def test_import_with_skip_duplicates_true(self, v1_1_db, sample_mbox_with_duplicates):
+    async def test_import_with_skip_duplicates_true(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing with duplicate Message-IDs (skipped)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(
+            str(sample_mbox_with_duplicates), skip_duplicates=True
+        )
+        await db_manager.commit()  # Ensure changes are committed
 
         # File has 3 messages: unique1, unique1 (dup), unique2
         # With skip_duplicates=True, only 2 unique messages are imported
@@ -323,19 +332,24 @@ class TestImportSingleArchive:
         assert result.messages_skipped == 1  # 1 duplicate skipped within file
 
         # Import again - should skip all duplicates
-        result2 = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(
+            str(sample_mbox_with_duplicates), skip_duplicates=True
+        )
+        await db_manager.commit()  # Ensure changes are committed
 
         # On second import: all messages already exist in DB
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 3  # All 3 messages are duplicates
 
-    def test_import_with_skip_duplicates_false(self, v1_1_db, sample_mbox_with_duplicates):
+    async def test_import_with_skip_duplicates_false(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing without skipping duplicates (uses INSERT OR REPLACE)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=False)
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(
+            str(sample_mbox_with_duplicates), skip_duplicates=False
+        )
+        await db_manager.commit()  # Ensure changes are committed
 
         # With skip_duplicates=False, INSERT OR REPLACE is used
         # File has: unique1, unique1 (dup), unique2
@@ -352,19 +366,22 @@ class TestImportSingleArchive:
         assert count == 2  # Only 2 unique Message-IDs
 
         # Second import also succeeds (replaces existing records)
-        result2 = importer.import_archive(str(sample_mbox_with_duplicates), skip_duplicates=False)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(
+            str(sample_mbox_with_duplicates), skip_duplicates=False
+        )
+        await db_manager.commit()  # Ensure changes are committed
 
         # All messages imported (replaced) successfully
         assert result2.messages_imported == 3
         assert result2.messages_failed == 0
 
-    def test_import_with_malformed_messages(self, v1_1_db, sample_mbox_malformed):
+    async def test_import_with_malformed_messages(self, v1_1_db, sample_mbox_malformed):
         """Test importing mbox with malformed message (graceful handling)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_malformed))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_malformed))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Python's mailbox library is robust and parses all 3 messages
         # The "malformed" message has no Message-ID, so we generate a fallback
@@ -373,12 +390,13 @@ class TestImportSingleArchive:
         assert result.messages_skipped == 0
         assert result.messages_failed == 0
 
-    def test_import_with_custom_account_id(self, v1_1_db, sample_mbox_simple):
+    async def test_import_with_custom_account_id(self, v1_1_db, sample_mbox_simple):
         """Test importing with custom account_id."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_simple), account_id="custom-account")
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple), account_id="custom-account")
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 3
 
@@ -390,12 +408,13 @@ class TestImportSingleArchive:
 
         assert "custom-account" in account_ids
 
-    def test_import_returns_execution_time(self, v1_1_db, sample_mbox_simple):
+    async def test_import_returns_execution_time(self, v1_1_db, sample_mbox_simple):
         """Test that import result includes execution time."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.execution_time_ms > 0
         assert result.execution_time_ms < 10000  # Should be < 10 seconds
@@ -404,12 +423,13 @@ class TestImportSingleArchive:
 class TestOffsetCalculation:
     """Test mbox offset calculation for O(1) message access."""
 
-    def test_offsets_are_accurate(self, v1_1_db, sample_mbox_simple):
+    async def test_offsets_are_accurate(self, v1_1_db, sample_mbox_simple):
         """Test that calculated offsets allow reading messages directly."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Get offset and length from database
         conn = sqlite3.connect(str(v1_1_db))
@@ -433,12 +453,13 @@ class TestOffsetCalculation:
                 msg = email.message_from_bytes(message_bytes)
                 assert msg.get("Message-ID", "").strip() == rfc_message_id
 
-    def test_offsets_are_non_negative(self, v1_1_db, sample_mbox_simple):
+    async def test_offsets_are_non_negative(self, v1_1_db, sample_mbox_simple):
         """Test that all offsets are non-negative."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("SELECT mbox_offset, mbox_length FROM messages")
@@ -449,12 +470,13 @@ class TestOffsetCalculation:
             assert offset >= 0
             assert length > 0
 
-    def test_offsets_are_unique_per_message(self, v1_1_db, sample_mbox_simple):
+    async def test_offsets_are_unique_per_message(self, v1_1_db, sample_mbox_simple):
         """Test that each message has a unique offset."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("SELECT mbox_offset FROM messages")
@@ -464,12 +486,13 @@ class TestOffsetCalculation:
         # All offsets should be unique
         assert len(offsets) == len(set(offsets))
 
-    def test_offsets_with_compressed_archive(self, v1_1_db, sample_mbox_compressed):
+    async def test_offsets_with_compressed_archive(self, v1_1_db, sample_mbox_compressed):
         """Test offset calculation on decompressed data."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_compressed))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_compressed))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 2
 
@@ -487,12 +510,13 @@ class TestOffsetCalculation:
 class TestMetadataExtraction:
     """Test metadata extraction from email messages."""
 
-    def test_extract_all_v1_1_fields(self, v1_1_db, sample_mbox_simple):
+    async def test_extract_all_v1_1_fields(self, v1_1_db, sample_mbox_simple):
         """Test that all v1.1 metadata fields are populated."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("""
@@ -541,7 +565,7 @@ class TestMetadataExtraction:
         assert size_bytes > 0
         assert account_id == "default"
 
-    def test_extract_thread_id_from_xgm_thrid(self, v1_1_db, tmp_path):
+    async def test_extract_thread_id_from_xgm_thrid(self, v1_1_db, tmp_path):
         """Test thread ID extraction from X-GM-THRID header."""
         mbox_path = tmp_path / "thread_test.mbox"
 
@@ -558,9 +582,10 @@ class TestMetadataExtraction:
             f.write("\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
@@ -574,7 +599,7 @@ class TestMetadataExtraction:
 
         assert thread_id == "1234567890abcdef"
 
-    def test_extract_thread_id_from_references_fallback(self, v1_1_db, tmp_path):
+    async def test_extract_thread_id_from_references_fallback(self, v1_1_db, tmp_path):
         """Test thread ID extraction from References header when X-GM-THRID is missing."""
         mbox_path = tmp_path / "references_test.mbox"
 
@@ -591,9 +616,10 @@ class TestMetadataExtraction:
             f.write("\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
@@ -607,7 +633,7 @@ class TestMetadataExtraction:
 
         assert thread_id == "<original@example.com>"
 
-    def test_extract_thread_id_none_when_missing(self, v1_1_db, tmp_path):
+    async def test_extract_thread_id_none_when_missing(self, v1_1_db, tmp_path):
         """Test thread ID is None when both X-GM-THRID and References are missing."""
         mbox_path = tmp_path / "no_thread.mbox"
 
@@ -623,9 +649,10 @@ class TestMetadataExtraction:
             f.write("\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
@@ -639,7 +666,7 @@ class TestMetadataExtraction:
 
         assert thread_id is None
 
-    def test_body_preview_multipart_with_decoding_error(self, v1_1_db, tmp_path):
+    async def test_body_preview_multipart_with_decoding_error(self, v1_1_db, tmp_path):
         """Test body preview extraction handles decoding errors in multipart messages."""
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
@@ -663,9 +690,10 @@ class TestMetadataExtraction:
         mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
@@ -680,7 +708,7 @@ class TestMetadataExtraction:
 
         assert "Valid text content" in body_preview
 
-    def test_body_preview_non_multipart_with_decoding_error(self, v1_1_db, tmp_path):
+    async def test_body_preview_non_multipart_with_decoding_error(self, v1_1_db, tmp_path):
         """Test body preview extraction handles decoding errors in non-multipart messages."""
         mbox_path = tmp_path / "decode_error.mbox"
 
@@ -698,9 +726,10 @@ class TestMetadataExtraction:
             f.write(b"\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
@@ -715,12 +744,13 @@ class TestMetadataExtraction:
         assert body_preview is not None
         assert "Valid content" in body_preview
 
-    def test_extract_rfc_message_id(self, v1_1_db, sample_mbox_simple):
+    async def test_extract_rfc_message_id(self, v1_1_db, sample_mbox_simple):
         """Test RFC Message-ID extraction."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("SELECT rfc_message_id FROM messages ORDER BY rfc_message_id")
@@ -731,12 +761,13 @@ class TestMetadataExtraction:
         assert "<msg2@example.com>" in message_ids
         assert "<msg3@example.com>" in message_ids
 
-    def test_generate_fallback_message_id(self, v1_1_db, sample_mbox_no_message_id):
+    async def test_generate_fallback_message_id(self, v1_1_db, sample_mbox_no_message_id):
         """Test fallback Message-ID generation for messages without Message-ID."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_no_message_id))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_no_message_id))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 2
 
@@ -751,12 +782,13 @@ class TestMetadataExtraction:
         # Fallback should be a hash-based ID
         assert any("@generated>" in mid for mid in message_ids)
 
-    def test_body_preview_extraction(self, v1_1_db, sample_mbox_simple):
+    async def test_body_preview_extraction(self, v1_1_db, sample_mbox_simple):
         """Test body preview extraction (first 1000 chars)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("""
@@ -770,12 +802,13 @@ class TestMetadataExtraction:
         assert "longer content for body preview testing" in body_preview
         assert len(body_preview) <= 1000
 
-    def test_checksum_calculation(self, v1_1_db, sample_mbox_simple):
+    async def test_checksum_calculation(self, v1_1_db, sample_mbox_simple):
         """Test SHA256 checksum calculation."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("SELECT checksum FROM messages")
@@ -792,37 +825,39 @@ class TestMetadataExtraction:
 class TestDuplicateHandling:
     """Test duplicate message handling."""
 
-    def test_skip_duplicates_on_rfc_message_id(self, v1_1_db, sample_mbox_simple):
+    async def test_skip_duplicates_on_rfc_message_id(self, v1_1_db, sample_mbox_simple):
         """Test duplicate detection uses RFC Message-ID."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # First import
-        result1 = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result1 = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
         assert result1.messages_imported == 3
 
         # Second import with skip_duplicates=True
-        result2 = importer.import_archive(str(sample_mbox_simple), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(sample_mbox_simple), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 3
 
-    def test_duplicate_count_in_result(self, v1_1_db, sample_mbox_simple):
+    async def test_duplicate_count_in_result(self, v1_1_db, sample_mbox_simple):
         """Test that skipped count is accurate."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Import twice
-        importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
-        result = importer.import_archive(str(sample_mbox_simple), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_skipped == 3
         assert result.messages_imported == 0
 
-    def test_duplicate_handling_across_archives(self, v1_1_db, sample_mbox_simple, tmp_path):
+    async def test_duplicate_handling_across_archives(self, v1_1_db, sample_mbox_simple, tmp_path):
         """Test duplicate detection across different archive files."""
         # Create a second archive with same Message-IDs
         mbox_path2 = tmp_path / "simple2.mbox"
@@ -839,16 +874,17 @@ class TestDuplicateHandling:
         mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Import first archive
-        result1 = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result1 = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
         assert result1.messages_imported == 3
 
         # Import second archive with duplicate
-        result2 = importer.import_archive(str(mbox_path2), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(mbox_path2), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 1
 
@@ -856,22 +892,26 @@ class TestDuplicateHandling:
 class TestCompressionSupport:
     """Test compression format support."""
 
-    def test_import_gzip_compressed_archive(self, v1_1_db, sample_mbox_compressed):
+    async def test_import_gzip_compressed_archive(self, v1_1_db, sample_mbox_compressed):
         """Test importing gzip-compressed mbox."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_compressed))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_compressed))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 2
         assert result.messages_failed == 0
 
-    def test_compressed_archive_stores_compressed_filename(self, v1_1_db, sample_mbox_compressed):
+    async def test_compressed_archive_stores_compressed_filename(
+        self, v1_1_db, sample_mbox_compressed
+    ):
         """Test that database stores the compressed filename."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        importer.import_archive(str(sample_mbox_compressed))
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_compressed))
+        await db_manager.commit()  # Ensure changes are committed
 
         conn = sqlite3.connect(str(v1_1_db))
         cursor = conn.execute("SELECT DISTINCT archive_file FROM messages")
@@ -881,7 +921,7 @@ class TestCompressionSupport:
         # Should store the .gz filename
         assert any(str(sample_mbox_compressed) in af for af in archive_files)
 
-    def test_compression_detection_from_extension(self, tmp_path):
+    async def test_compression_detection_from_extension(self, tmp_path):
         """Test compression format detection from file extension."""
         # This is more of an internal implementation test
         # The importer should detect .gz, .xz, .zst extensions
@@ -891,7 +931,7 @@ class TestCompressionSupport:
         # (This test will be implemented when we know the internal API)
         pass
 
-    def test_import_lzma_compressed_archive(self, v1_1_db, tmp_path):
+    async def test_import_lzma_compressed_archive(self, v1_1_db, tmp_path):
         """Test importing lzma-compressed (.xz) mbox."""
         import lzma
 
@@ -920,19 +960,17 @@ class TestCompressionSupport:
 
         # Test import
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(compressed_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(compressed_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
         assert result.messages_failed == 0
 
-    def test_import_zstd_compressed_archive(self, v1_1_db, tmp_path):
+    async def test_import_zstd_compressed_archive(self, v1_1_db, tmp_path):
         """Test importing zstd-compressed (.zst) mbox."""
-        try:
-            import zstandard as zstd
-        except ImportError:
-            pytest.skip("zstandard module not available")
+        from compression import zstd
 
         # Create uncompressed mbox
         mbox_path = tmp_path / "zstd_test.mbox"
@@ -948,21 +986,21 @@ class TestCompressionSupport:
         mbox.add(msg)
         mbox.close()
 
-        # Compress with zstd
+        # Compress with zstd (Python 3.14 built-in compression module)
         compressed_path = tmp_path / "zstd_test.mbox.zst"
-        cctx = zstd.ZstdCompressor()
         with open(mbox_path, "rb") as f_in:
-            with open(compressed_path, "wb") as f_out:
-                f_out.write(cctx.compress(f_in.read()))
+            with zstd.open(compressed_path, "wb") as f_out:
+                f_out.write(f_in.read())
 
         # Remove uncompressed file
         mbox_path.unlink()
 
         # Test import
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(compressed_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(compressed_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
         assert result.messages_failed == 0
@@ -970,7 +1008,7 @@ class TestCompressionSupport:
     # NOTE: test_compression_format_detection removed - compression detection
     # is now tested in unit/core/importer/test_scanner.py
 
-    def test_decompression_failure_cleanup(self, v1_1_db, tmp_path):
+    async def test_decompression_failure_cleanup(self, v1_1_db, tmp_path):
         """Test that temporary files are cleaned up on decompression failure."""
 
         # Create a corrupted gzip file
@@ -979,18 +1017,19 @@ class TestCompressionSupport:
             f.write(b"This is not valid gzip data")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Should raise RuntimeError and clean up temp file
         with pytest.raises(RuntimeError, match="Failed to decompress"):
-            importer.import_archive(str(corrupted_path))
-            db_manager.commit()  # Ensure changes are committed
+            await importer.import_archive(str(corrupted_path))
+            await db_manager.commit()  # Ensure changes are committed
 
 
 class TestErrorHandling:
     """Test error handling and recovery."""
 
-    def test_continue_on_database_error(self, tmp_path):
+    async def test_continue_on_database_error(self, tmp_path):
         """Test that import continues when individual messages cause errors."""
         # Create a v1.1 DB
         db_path = tmp_path / "test.db"
@@ -1010,15 +1049,16 @@ class TestErrorHandling:
         mbox.close()
 
         db_manager = DBManager(str(db_path), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should import successfully
         assert result.messages_imported == 1
         assert result.messages_failed == 0
 
-    def test_error_handling_with_corrupt_db(self, tmp_path):
+    async def test_error_handling_with_corrupt_db(self, tmp_path):
         """Test error details when there are issues."""
         # For now, test that error handling structure exists
         # Actual database errors are hard to trigger with INSERT OR REPLACE
@@ -1037,17 +1077,18 @@ class TestErrorHandling:
         assert len(result.errors) == 1
         assert "Test error" in result.errors[0]
 
-    def test_import_nonexistent_archive_raises_error(self, v1_1_db, tmp_path):
+    async def test_import_nonexistent_archive_raises_error(self, v1_1_db, tmp_path):
         """Test importing nonexistent archive raises appropriate error."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         nonexistent = tmp_path / "nonexistent.mbox"
 
         with pytest.raises((FileNotFoundError, Exception)):
-            importer.import_archive(str(nonexistent))
-            db_manager.commit()  # Ensure changes are committed
+            await importer.import_archive(str(nonexistent))
+            await db_manager.commit()  # Ensure changes are committed
 
-    def test_database_query_error_handling(self, v1_1_db, tmp_path):
+    async def test_database_query_error_handling(self, v1_1_db, tmp_path):
         """Test error handling when database query fails during duplicate check."""
         # Create simple mbox
         mbox_path = tmp_path / "test.mbox"
@@ -1065,19 +1106,20 @@ class TestErrorHandling:
 
         # Import first time normally
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should import successfully (DB exists and is valid)
         assert result.messages_imported == 1
 
         # Second import with skip_duplicates should trigger the existing_ids query
-        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(mbox_path), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 1  # Message already exists
 
-    def test_database_insert_error_recovery(self, v1_1_db, tmp_path):
+    async def test_database_insert_error_recovery(self, v1_1_db, tmp_path):
         """Test that database insert errors are caught and recorded."""
         # Create mbox with messages
         mbox_path = tmp_path / "insert_test.mbox"
@@ -1107,20 +1149,21 @@ class TestErrorHandling:
 
         # Import first time
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result1 = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result1 = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
         assert result1.messages_imported == 2
 
         # Import again with skip_duplicates=True, then manually trigger constraint violation
         # by trying to insert with skip_duplicates=True (will fail silently with proper
         # error handling)
-        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(mbox_path), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 2
         assert result2.messages_failed == 0
 
-    def test_import_multiple_with_file_error(self, v1_1_db, tmp_path):
+    async def test_import_multiple_with_file_error(self, v1_1_db, tmp_path):
         """Test that import_multiple continues after file-level errors."""
         # Create one valid mbox
         mbox1_path = tmp_path / "valid.mbox"
@@ -1142,9 +1185,10 @@ class TestErrorHandling:
             f.write("This is not a valid mbox file\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         pattern = str(tmp_path / "*.mbox")
-        result = importer.import_multiple(pattern)
+        result = await importer.import_multiple(pattern)
 
         # Should have 2 files (1 valid, 1 invalid)
         assert result.total_files == 2
@@ -1155,7 +1199,7 @@ class TestErrorHandling:
         successful_files = [r for r in result.file_results if r.messages_imported > 0]
         assert len(successful_files) >= 1
 
-    def test_body_preview_multipart_exception_handling(self, v1_1_db, tmp_path):
+    async def test_body_preview_multipart_exception_handling(self, v1_1_db, tmp_path):
         """Test exception handling in multipart body preview extraction."""
         from email.mime.base import MIMEBase
         from email.mime.multipart import MIMEMultipart
@@ -1180,9 +1224,10 @@ class TestErrorHandling:
         mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should import successfully despite no text/plain part
         assert result.messages_imported == 1
@@ -1199,7 +1244,7 @@ class TestErrorHandling:
         # Body preview will be empty since no text/plain part exists
         assert body_preview == ""
 
-    def test_body_preview_non_multipart_exception_handling(self, v1_1_db, tmp_path):
+    async def test_body_preview_non_multipart_exception_handling(self, v1_1_db, tmp_path):
         """Test exception handling in non-multipart body preview extraction."""
         mbox_path = tmp_path / "non_multipart_exception.mbox"
 
@@ -1216,14 +1261,15 @@ class TestErrorHandling:
             f.write("\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should import successfully despite non-text content
         assert result.messages_imported == 1
 
-    def test_import_multiple_error_recovery(self, v1_1_db, tmp_path):
+    async def test_import_multiple_error_recovery(self, v1_1_db, tmp_path):
         """Test that import_multiple records errors but continues processing files."""
         # Create one valid mbox
         valid_path = tmp_path / "valid.mbox"
@@ -1244,9 +1290,10 @@ class TestErrorHandling:
         error_path.mkdir()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         pattern = str(tmp_path / "*.mbox")
-        result = importer.import_multiple(pattern)
+        result = await importer.import_multiple(pattern)
 
         # Should have 2 "files" (1 valid mbox, 1 directory)
         assert result.total_files == 2
@@ -1265,7 +1312,7 @@ class TestErrorHandling:
 class TestMultipleArchiveImport:
     """Test importing multiple archives with glob patterns."""
 
-    def test_import_multiple_with_glob_pattern(self, v1_1_db, tmp_path):
+    async def test_import_multiple_with_glob_pattern(self, v1_1_db, tmp_path):
         """Test importing multiple archives using glob pattern."""
         # Create multiple mbox files
         for i in range(3):
@@ -1283,9 +1330,10 @@ class TestMultipleArchiveImport:
             mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         pattern = str(tmp_path / "archive_*.mbox")
-        result = importer.import_multiple(pattern)
+        result = await importer.import_multiple(pattern)
 
         assert isinstance(result, MultiImportResult)
         assert result.total_files == 3
@@ -1293,7 +1341,7 @@ class TestMultipleArchiveImport:
         assert result.total_messages_skipped == 0
         assert result.total_messages_failed == 0
 
-    def test_import_multiple_returns_per_file_results(self, v1_1_db, tmp_path):
+    async def test_import_multiple_returns_per_file_results(self, v1_1_db, tmp_path):
         """Test that import_multiple returns results for each file."""
         # Create 2 mbox files
         for i in range(2):
@@ -1311,20 +1359,22 @@ class TestMultipleArchiveImport:
             mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         pattern = str(tmp_path / "multi_*.mbox")
-        result = importer.import_multiple(pattern)
+        result = await importer.import_multiple(pattern)
 
         assert len(result.file_results) == 2
         for file_result in result.file_results:
             assert isinstance(file_result, ImportResult)
 
-    def test_import_multiple_with_no_matching_files(self, v1_1_db, tmp_path):
+    async def test_import_multiple_with_no_matching_files(self, v1_1_db, tmp_path):
         """Test import_multiple with pattern that matches no files."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         pattern = str(tmp_path / "nonexistent_*.mbox")
-        result = importer.import_multiple(pattern)
+        result = await importer.import_multiple(pattern)
 
         assert result.total_files == 0
         assert result.total_messages_imported == 0
@@ -1333,7 +1383,7 @@ class TestMultipleArchiveImport:
 class TestPerformance:
     """Test performance benchmarks."""
 
-    def test_import_1000_messages_under_6_seconds(self, v1_1_db, tmp_path):
+    async def test_import_1000_messages_under_6_seconds(self, v1_1_db, tmp_path):
         """Test importing 1000 messages completes in < 6 seconds."""
         # Create mbox with 1000 messages
         mbox_path = tmp_path / "performance_1000.mbox"
@@ -1353,16 +1403,17 @@ class TestPerformance:
 
         # Import and measure time
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         start_time = time.time()
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
         elapsed = time.time() - start_time
 
         assert result.messages_imported == 1000
         assert elapsed < 6.0  # Must be under 6 seconds
 
-    def test_report_messages_per_second(self, v1_1_db, tmp_path):
+    async def test_report_messages_per_second(self, v1_1_db, tmp_path):
         """Test performance reporting (messages/second)."""
         # Create mbox with 100 messages
         mbox_path = tmp_path / "performance_100.mbox"
@@ -1381,9 +1432,10 @@ class TestPerformance:
         mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Calculate messages per second
         msg_per_sec = (result.messages_imported / result.execution_time_ms) * 1000
@@ -1395,48 +1447,52 @@ class TestPerformance:
 class TestDBManagerIntegration:
     """Test integration with DBManager instead of direct SQL."""
 
-    def test_uses_dbmanager_for_database_operations(self, v1_1_db, sample_mbox_simple):
+    async def test_uses_dbmanager_for_database_operations(self, v1_1_db, sample_mbox_simple):
         """Test that importer uses DBManager for all database operations."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Import should work without direct SQL queries
-        result = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 3
 
         # Verify DBManager can read the imported messages
-        with DBManager(str(v1_1_db)) as db:
+        async with DBManager(str(v1_1_db)) as db:
             # Check messages were recorded
-            conn = db.conn
-            cursor = conn.execute("SELECT COUNT(*) FROM messages")
-            count = cursor.fetchone()[0]
+            cursor = await db.conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            count = row[0]
             assert count == 3
 
-    def test_atomic_import_operations(self, v1_1_db, sample_mbox_simple):
+    async def test_atomic_import_operations(self, v1_1_db, sample_mbox_simple):
         """Test that import operations are atomic (all or nothing)."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # First import should succeed
-        result = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 3
 
         # Check database has exactly 3 records
-        with DBManager(str(v1_1_db)) as db:
-            cursor = db.conn.execute("SELECT COUNT(*) FROM messages")
-            count = cursor.fetchone()[0]
+        async with DBManager(str(v1_1_db)) as db:
+            cursor = await db.conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            count = row[0]
             assert count == 3
 
-    def test_audit_trail_in_archive_runs(self, v1_1_db, sample_mbox_simple):
+    async def test_audit_trail_in_archive_runs(self, v1_1_db, sample_mbox_simple):
         """Test that import operations are recorded in archive_runs."""
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Import messages
-        importer.import_archive(str(sample_mbox_simple), account_id="test-import")
-        db_manager.commit()  # Ensure changes are committed
+        await importer.import_archive(str(sample_mbox_simple), account_id="test-import")
+        await db_manager.commit()  # Ensure changes are committed
 
         # Verify archive_runs has entries
         conn = sqlite3.connect(str(v1_1_db))
@@ -1452,7 +1508,7 @@ class TestDBManagerIntegration:
         assert run_count > 0
         assert total_messages == 3
 
-    def test_error_handling_with_rollback(self, v1_1_db, tmp_path):
+    async def test_error_handling_with_rollback(self, v1_1_db, tmp_path):
         """Test proper error handling with database rollback."""
         # Create a simple mbox
         mbox_path = tmp_path / "test.mbox"
@@ -1469,34 +1525,36 @@ class TestDBManagerIntegration:
         mbox.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # First import should succeed
-        result1 = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result1 = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
         assert result1.messages_imported == 1
 
         # Second import with skip_duplicates should skip
-        result2 = importer.import_archive(str(mbox_path), skip_duplicates=True)
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(mbox_path), skip_duplicates=True)
+        await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 1
         assert result2.messages_imported == 0
 
-    def test_no_direct_sql_queries_in_importer(self, v1_1_db, sample_mbox_simple):
+    async def test_no_direct_sql_queries_in_importer(self, v1_1_db, sample_mbox_simple):
         """Test that importer doesn't use direct SQL queries."""
         # This is a behavioral test - we verify the importer works correctly
         # using only DBManager methods, not direct SQL
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(sample_mbox_simple))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(sample_mbox_simple))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 3
 
         # Verify using DBManager that messages are correctly stored
-        with DBManager(str(v1_1_db)) as db:
+        async with DBManager(str(v1_1_db)) as db:
             # Get all messages using DBManager API
-            messages = db.get_all_messages_for_archive(str(sample_mbox_simple))
+            messages = await db.get_all_messages_for_archive(str(sample_mbox_simple))
             assert len(messages) == 3
 
             # Verify each message has proper metadata
@@ -1508,7 +1566,7 @@ class TestDBManagerIntegration:
                 assert msg_data["mbox_length"] > 0
                 assert msg_data["archive_file"] == str(sample_mbox_simple)
 
-    def test_extract_body_preview_multipart_exception_handling(
+    async def test_extract_body_preview_multipart_exception_handling(
         self, v1_1_db: Path, tmp_path: Path
     ) -> None:
         """Test body preview extraction when get_payload raises exception (lines 159-160)."""
@@ -1535,12 +1593,13 @@ class TestDBManagerIntegration:
 
         # Import should succeed despite potential exceptions in body extraction
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 1
 
-    def test_extract_body_preview_non_multipart_exception_handling(
+    async def test_extract_body_preview_non_multipart_exception_handling(
         self, v1_1_db: Path, tmp_path: Path
     ) -> None:
         """Test body preview extraction for non-multipart message exception (lines 166-167)."""
@@ -1561,13 +1620,14 @@ class TestDBManagerIntegration:
 
         # Import should succeed
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 1
 
 
-def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: Path) -> None:
+async def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: Path) -> None:
     """Test import handles database constraint violations gracefully (lines 402-414).
 
     When importing an mbox with duplicate Message-IDs, the second insert should
@@ -1597,12 +1657,13 @@ def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: P
         f.write(b"\n")
 
     db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+    await db_manager.initialize()
     importer = ImporterFacade(db_manager)
 
     # Import with skip_duplicates=False (uses INSERT OR REPLACE)
     # This should handle the duplicate gracefully
-    result = importer.import_archive(str(mbox_path), skip_duplicates=False)
-    db_manager.commit()  # Ensure changes are committed
+    result = await importer.import_archive(str(mbox_path), skip_duplicates=False)
+    await db_manager.commit()  # Ensure changes are committed
 
     # Should complete without crashing
     assert result.messages_imported > 0, "Should import at least one message"
@@ -1616,7 +1677,7 @@ def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: P
     assert count == 1, f"Expected 1 message (duplicate replaced), got {count}"
 
 
-def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) -> None:
+async def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) -> None:
     """Test extract_body handles decode errors for non-multipart messages (lines 159-167).
 
     When msg.get_payload(decode=True) raises an exception for a non-multipart
@@ -1648,15 +1709,16 @@ def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) ->
 
         # Import the archive
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should complete without crashing (body might be empty or partial)
         assert result.messages_imported >= 0
 
 
-def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
+async def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
     """Test importer handles database constraint violations (lines 402-414).
 
     When inserting a message causes a database constraint error (e.g., unique
@@ -1693,13 +1755,14 @@ def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
 
         # Import first message
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result1 = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result1 = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Try importing again - should handle duplicates gracefully
-        result2 = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result2 = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Second import should have some failures (duplicates)
         assert result2.messages_failed > 0 or result2.messages_skipped > 0, (
@@ -1707,7 +1770,7 @@ def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
         )
 
 
-def test_importer_message_processing_exception(v1_1_db: Path) -> None:
+async def test_importer_message_processing_exception(v1_1_db: Path) -> None:
     """Test importer handles general message processing exceptions (lines 410-414).
 
     When processing a message raises an unexpected exception (not just database),
@@ -1727,11 +1790,12 @@ def test_importer_message_processing_exception(v1_1_db: Path) -> None:
             f.write(b"\n")
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
 
         # Should handle corrupt message gracefully
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Processing might fail or succeed depending on mailbox parsing
         # Either way, should not crash
@@ -1739,7 +1803,7 @@ def test_importer_message_processing_exception(v1_1_db: Path) -> None:
         assert result.messages_imported >= 0
 
 
-def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
+async def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
     """Test importer handles decode exceptions in multipart messages (lines 159-160).
 
     When extracting body from multipart message raises exception during decode,
@@ -1771,15 +1835,16 @@ def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
         mbox_obj.close()
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         # Should complete successfully
         assert result.messages_imported == 1
 
 
-def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
+async def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
     """Test extract_body handles exception in non-multipart decode (lines 166-167).
 
     When get_payload(decode=True) raises exception, the except block should
@@ -1807,14 +1872,15 @@ def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
 
         # Import should work
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
-        result = importer.import_archive(str(mbox_path))
-        db_manager.commit()  # Ensure changes are committed
+        result = await importer.import_archive(str(mbox_path))
+        await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
 
 
-def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -> None:
+async def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -> None:
     """Test count_messages returns 0 for nonexistent file (line 279).
 
     When the archive file doesn't exist, the method should return 0
@@ -1826,13 +1892,14 @@ def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -> None
         nonexistent = Path(tmpdir) / "does_not_exist.mbox"
 
         db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+        await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         count = importer.count_messages(str(nonexistent))
 
         assert count == 0
 
 
-def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
+async def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
     """Test import creates schema for new database and imports successfully.
 
     When the database doesn't exist, it should be created with proper schema.
@@ -1857,9 +1924,10 @@ def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
 
     # Import should work (auto-create schema)
     db_manager = DBManager(str(db_path), validate_schema=False, auto_create=True)
+    await db_manager.initialize()
     importer = ImporterFacade(db_manager)
-    result = importer.import_archive(str(mbox_path), skip_duplicates=True)
-    db_manager.commit()  # Ensure changes are committed
+    result = await importer.import_archive(str(mbox_path), skip_duplicates=True)
+    await db_manager.commit()  # Ensure changes are committed
 
     # Should import successfully
     assert result.messages_imported == 1
@@ -1869,7 +1937,7 @@ def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
 class TestImporterExceptionHandling:
     """Tests for exception handling paths in ImporterFacade."""
 
-    def test_count_messages_compressed_archive_cleanup(self, v1_1_db: Path) -> None:
+    async def test_count_messages_compressed_archive_cleanup(self, v1_1_db: Path) -> None:
         """Test count_messages cleans up temp files for compressed archives.
 
         Covers line 291: Cleanup of temp file after decompression.
@@ -1890,6 +1958,7 @@ class TestImporterExceptionHandling:
                 f.write(mbox_content)
 
             db_manager = DBManager(str(v1_1_db), validate_schema=False, auto_create=True)
+            await db_manager.initialize()
             importer = ImporterFacade(db_manager)
             count = importer.count_messages(str(archive_path))
 

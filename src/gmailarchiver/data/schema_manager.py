@@ -16,6 +16,8 @@ from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
 
+import aiosqlite
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,7 +138,7 @@ class SchemaManager:
         self._cached_version: SchemaVersion | None = None
         self._conn: sqlite3.Connection | None = None
 
-    def detect_version(self) -> SchemaVersion:
+    async def detect_version(self) -> SchemaVersion:
         """Detect the current schema version of the database.
 
         Returns:
@@ -152,44 +154,40 @@ class SchemaManager:
             return self._cached_version
 
         try:
-            conn = sqlite3.connect(str(self.db_path))
-            try:
-                cursor = conn.cursor()
+            async with aiosqlite.connect(str(self.db_path)) as conn:
+                cursor = await conn.cursor()
 
                 # Check for schema_version table (v1.1+)
-                cursor.execute(
+                await cursor.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
                 )
-                if cursor.fetchone():
-                    cursor.execute("SELECT version FROM schema_version LIMIT 1")
-                    row = cursor.fetchone()
+                if await cursor.fetchone():
+                    await cursor.execute("SELECT version FROM schema_version LIMIT 1")
+                    row = await cursor.fetchone()
                     if row:
                         self._cached_version = SchemaVersion.from_string(row[0])
                         return self._cached_version
 
                 # Check for messages table (v1.1+) vs archived_messages (v1.0)
-                cursor.execute(
+                await cursor.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'"
                 )
-                if cursor.fetchone():
+                if await cursor.fetchone():
                     # Has messages table but no schema_version - assume 1.1
                     self._cached_version = SchemaVersion.V1_1
                     return self._cached_version
 
                 # Check for archived_messages table (v1.0)
-                cursor.execute(
+                await cursor.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='archived_messages'"
                 )
-                if cursor.fetchone():
+                if await cursor.fetchone():
                     self._cached_version = SchemaVersion.V1_0
                     return self._cached_version
 
                 # Empty database
                 self._cached_version = SchemaVersion.NONE
                 return self._cached_version
-
-            finally:
-                conn.close()
 
         except sqlite3.Error as e:
             logger.warning(f"Error detecting schema version: {e}")
@@ -200,7 +198,7 @@ class SchemaManager:
         """Clear the cached version to force re-detection."""
         self._cached_version = None
 
-    def is_supported(self, version: SchemaVersion | None = None) -> bool:
+    async def is_supported(self, version: SchemaVersion | None = None) -> bool:
         """Check if a version is supported.
 
         Args:
@@ -210,29 +208,29 @@ class SchemaManager:
             True if version is supported for operations
         """
         if version is None:
-            version = self.detect_version()
+            version = await self.detect_version()
 
         return version.is_valid and version >= self.MIN_SUPPORTED_VERSION
 
-    def needs_migration(self) -> bool:
+    async def needs_migration(self) -> bool:
         """Check if database needs migration to current version.
 
         Returns:
             True if migration is needed and possible
         """
-        version = self.detect_version()
+        version = await self.detect_version()
         return version.is_valid and version < self.CURRENT_VERSION
 
-    def can_auto_migrate(self) -> bool:
+    async def can_auto_migrate(self) -> bool:
         """Check if automatic migration is possible.
 
         Returns:
             True if database can be automatically migrated
         """
-        version = self.detect_version()
+        version = await self.detect_version()
         return version in self.AUTO_MIGRATE_FROM
 
-    def has_capability(self, capability: SchemaCapability) -> bool:
+    async def has_capability(self, capability: SchemaCapability) -> bool:
         """Check if the database has a specific capability.
 
         Args:
@@ -245,14 +243,14 @@ class SchemaManager:
             if manager.has_capability(SchemaCapability.FTS_SEARCH):
                 results = search_engine.search(query)
         """
-        version = self.detect_version()
+        version = await self.detect_version()
         if not version.is_valid:
             return False
 
         capabilities = _VERSION_CAPABILITIES.get(version, set())
         return capability in capabilities
 
-    def require_version(self, min_version: SchemaVersion) -> None:
+    async def require_version(self, min_version: SchemaVersion) -> None:
         """Require a minimum schema version.
 
         Args:
@@ -261,7 +259,7 @@ class SchemaManager:
         Raises:
             SchemaVersionError: If version requirement not met
         """
-        version = self.detect_version()
+        version = await self.detect_version()
 
         if not version.is_valid:
             raise SchemaVersionError(
@@ -277,7 +275,7 @@ class SchemaManager:
                 required_version=min_version,
             )
 
-    def require_capability(self, capability: SchemaCapability) -> None:
+    async def require_capability(self, capability: SchemaCapability) -> None:
         """Require a specific capability.
 
         Args:
@@ -286,8 +284,8 @@ class SchemaManager:
         Raises:
             SchemaVersionError: If capability not available
         """
-        if not self.has_capability(capability):
-            version = self.detect_version()
+        if not await self.has_capability(capability):
+            version = await self.detect_version()
             # Find minimum version with this capability
             min_version = None
             for v, caps in _VERSION_CAPABILITIES.items():
@@ -302,7 +300,7 @@ class SchemaManager:
                 required_version=min_version,
             )
 
-    def auto_migrate_if_needed(
+    async def auto_migrate_if_needed(
         self,
         confirm_callback: Callable[[str], bool] | None = None,
         progress_callback: Callable[[str], None] | None = None,
@@ -320,12 +318,12 @@ class SchemaManager:
         Raises:
             SchemaVersionError: If migration fails
         """
-        version = self.detect_version()
+        version = await self.detect_version()
 
-        if not self.needs_migration():
+        if not await self.needs_migration():
             return False
 
-        if not self.can_auto_migrate():
+        if not await self.can_auto_migrate():
             raise SchemaVersionError(
                 f"Cannot auto-migrate from version {version.value}",
                 current_version=version,
@@ -347,20 +345,20 @@ class SchemaManager:
             if version == SchemaVersion.V1_0:
                 if progress_callback:
                     progress_callback("Migrating v1.0 to v1.1...")
-                migrator.migrate_v1_to_v1_1()
+                await migrator.migrate_v1_to_v1_1()
 
                 # After v1.0 -> v1.1, check if we need to go to v1.2
                 self.invalidate_cache()
-                version = self.detect_version()
+                version = await self.detect_version()
 
             if version == SchemaVersion.V1_1:
                 if progress_callback:
                     progress_callback("Upgrading v1.1 to v1.2...")
                 # v1.1 to v1.2 is just a schema_version update
                 # (nullable gmail_id is already supported structurally)
-                self._upgrade_v1_1_to_v1_2()
+                await self._upgrade_v1_1_to_v1_2()
 
-            migrator._close()
+            await migrator._close()
             self.invalidate_cache()
 
             if progress_callback:
@@ -375,23 +373,20 @@ class SchemaManager:
                 required_version=self.CURRENT_VERSION,
             ) from e
 
-    def _upgrade_v1_1_to_v1_2(self) -> None:
+    async def _upgrade_v1_1_to_v1_2(self) -> None:
         """Upgrade from v1.1 to v1.2 (schema version table update only)."""
-        conn = sqlite3.connect(str(self.db_path))
-        try:
-            cursor = conn.cursor()
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            cursor = await conn.cursor()
             # Delete all existing versions and insert new one
-            cursor.execute("DELETE FROM schema_version")
-            cursor.execute(
+            await cursor.execute("DELETE FROM schema_version")
+            await cursor.execute(
                 """
                 INSERT INTO schema_version (version, migrated_timestamp)
                 VALUES ('1.2', datetime('now'))
             """
             )
-            conn.commit()
+            await conn.commit()
             logger.info("Upgraded schema version from 1.1 to 1.2")
-        finally:
-            conn.close()
 
     @classmethod
     def version_from_string(cls, version_str: str) -> SchemaVersion:

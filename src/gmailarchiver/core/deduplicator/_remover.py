@@ -25,7 +25,7 @@ class DuplicateRemover:
         """
         self.db = db
 
-    def remove_messages(self, messages: list[MessageInfo], dry_run: bool = True) -> int:
+    async def remove_messages(self, messages: list[MessageInfo], dry_run: bool = True) -> int:
         """
         Remove messages from database.
 
@@ -50,7 +50,9 @@ class DuplicateRemover:
         placeholders = ",".join("?" * len(gmail_ids))
         sql = f"DELETE FROM messages WHERE gmail_id IN ({placeholders})"
 
-        self.db.conn.execute(sql, gmail_ids)
-        self.db.commit()
+        if self.db.conn is None:
+            raise RuntimeError("Database connection not initialized")
+        await self.db.conn.execute(sql, gmail_ids)
+        await self.db.commit()
 
         return message_count

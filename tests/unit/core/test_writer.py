@@ -6,7 +6,7 @@ are mocked.
 """
 
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from gmailarchiver.core.archiver._writer import MessageWriter
 from gmailarchiver.shared.input_validator import InvalidInputError
 
 
+@pytest.mark.unit
 class TestMessageWriter:
     """Unit tests for MessageWriter internal module."""
 
@@ -27,8 +28,8 @@ class TestMessageWriter:
     def mock_db_manager(self):
         """Create mock database manager."""
         db = Mock()
-        db.create_session = Mock()
-        db.close = Mock()
+        db.create_session = AsyncMock()
+        db.close = AsyncMock()
         return db
 
     @pytest.fixture
@@ -53,8 +54,8 @@ class TestMessageWriter:
             "actual_file": "/tmp/archive.mbox",
         }
 
-    @pytest.mark.unit
-    def test_archive_messages_with_valid_message_ids(
+    @pytest.mark.asyncio
+    async def test_archive_messages_with_valid_message_ids(
         self, writer, mock_db_manager, mock_archive_helper
     ):
         """Test archiving with valid message IDs (success path)."""
@@ -63,8 +64,13 @@ class TestMessageWriter:
 
         test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
         with patch("gmailarchiver.core.archiver._writer.uuid.uuid4", return_value=test_uuid):
-            with patch.object(writer, "_archive_messages", return_value=mock_archive_helper):
-                result = writer.archive_messages(message_ids, output_file)
+            with patch.object(
+                writer,
+                "_archive_messages",
+                new_callable=AsyncMock,
+                return_value=mock_archive_helper,
+            ):
+                result = await writer.archive_messages(message_ids, output_file)
 
         # Should return correct structure
         assert result["archived_count"] == 3
@@ -75,9 +81,11 @@ class TestMessageWriter:
         # Should create session with correct parameters
         mock_db_manager.create_session.assert_called_once()
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_creates_session_with_uuid(self, mock_uuid, writer, mock_db_manager):
+    async def test_archive_messages_creates_session_with_uuid(
+        self, mock_uuid, writer, mock_db_manager
+    ):
         """Test that session is created with UUID and correct parameters."""
         test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
         mock_uuid.return_value = test_uuid
@@ -85,6 +93,7 @@ class TestMessageWriter:
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 2,
                 "failed": 0,
@@ -92,7 +101,7 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ):
-            writer.archive_messages(["msg001", "msg002"], "/tmp/test.mbox", compress="gzip")
+            await writer.archive_messages(["msg001", "msg002"], "/tmp/test.mbox", compress="gzip")
 
         # Should create session with UUID
         mock_db_manager.create_session.assert_called_once()
@@ -103,25 +112,26 @@ class TestMessageWriter:
         assert call_kwargs["message_ids"] == ["msg001", "msg002"]
         assert call_kwargs["compression"] == "gzip"
 
-    @pytest.mark.unit
-    def test_archive_messages_with_empty_message_list(self, writer):
+    @pytest.mark.asyncio
+    async def test_archive_messages_with_empty_message_list(self, writer):
         """Test that empty message list returns zeros without processing."""
-        result = writer.archive_messages([], "/tmp/archive.mbox")
+        result = await writer.archive_messages([], "/tmp/archive.mbox")
 
         assert result["archived_count"] == 0
         assert result["failed_count"] == 0
         assert result["interrupted"] is False
         assert result["actual_file"] == "/tmp/archive.mbox"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_gzip_compression(self, mock_uuid, writer):
+    async def test_archive_messages_with_gzip_compression(self, mock_uuid, writer):
         """Test archiving with gzip compression."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -129,20 +139,21 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox.gz",
             },
         ):
-            result = writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="gzip")
+            result = await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="gzip")
 
         assert result["archived_count"] == 1
         assert result["actual_file"] == "/tmp/test.mbox.gz"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_lzma_compression(self, mock_uuid, writer):
+    async def test_archive_messages_with_lzma_compression(self, mock_uuid, writer):
         """Test archiving with lzma compression."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -150,20 +161,21 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox.xz",
             },
         ):
-            result = writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="lzma")
+            result = await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="lzma")
 
         assert result["archived_count"] == 1
         assert result["actual_file"] == "/tmp/test.mbox.xz"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_zstd_compression(self, mock_uuid, writer):
+    async def test_archive_messages_with_zstd_compression(self, mock_uuid, writer):
         """Test archiving with zstd compression."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -171,20 +183,21 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox.zst",
             },
         ):
-            result = writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="zstd")
+            result = await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="zstd")
 
         assert result["archived_count"] == 1
         assert result["actual_file"] == "/tmp/test.mbox.zst"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_without_compression(self, mock_uuid, writer):
+    async def test_archive_messages_without_compression(self, mock_uuid, writer):
         """Test archiving without compression."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -192,41 +205,42 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ):
-            result = writer.archive_messages(["msg001"], "/tmp/test.mbox", compress=None)
+            result = await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress=None)
 
         assert result["archived_count"] == 1
         assert result["actual_file"] == "/tmp/test.mbox"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.validate_compression_format")
-    def test_archive_messages_validates_compression_format(self, mock_validate, writer):
+    async def test_archive_messages_validates_compression_format(self, mock_validate, writer):
         """Test that compression format is validated."""
         mock_validate.return_value = "gzip"
 
         # Empty message list to avoid full processing
-        writer.archive_messages([], "/tmp/test.mbox", compress="gzip")
+        await writer.archive_messages([], "/tmp/test.mbox", compress="gzip")
 
         # Should call validation
         mock_validate.assert_called_once_with("gzip")
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.validate_compression_format")
-    def test_archive_messages_with_invalid_compression_format(self, mock_validate, writer):
+    async def test_archive_messages_with_invalid_compression_format(self, mock_validate, writer):
         """Test error handling for invalid compression format."""
         mock_validate.side_effect = InvalidInputError("Invalid compression format: invalid")
 
         with pytest.raises(InvalidInputError):
-            writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="invalid")
+            await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="invalid")
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_result_dict_structure(self, mock_uuid, writer):
+    async def test_archive_messages_result_dict_structure(self, mock_uuid, writer):
         """Test that result dict has correct structure with all keys."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 5,
                 "failed": 2,
@@ -234,7 +248,7 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox.gz",
             },
         ):
-            result = writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="gzip")
+            result = await writer.archive_messages(["msg001"], "/tmp/test.mbox", compress="gzip")
 
         # Should have all required keys
         assert "archived_count" in result
@@ -248,9 +262,9 @@ class TestMessageWriter:
         assert result["interrupted"] is True
         assert result["actual_file"] == "/tmp/test.mbox.gz"
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_operation_handle(self, mock_uuid, writer):
+    async def test_archive_messages_with_operation_handle(self, mock_uuid, writer):
         """Test that operation handle is passed to helper method."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
@@ -259,6 +273,7 @@ class TestMessageWriter:
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -266,16 +281,16 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ) as mock_helper:
-            writer.archive_messages(["msg001"], "/tmp/test.mbox", operation=mock_operation)
+            await writer.archive_messages(["msg001"], "/tmp/test.mbox", operation=mock_operation)
 
         # Should pass operation handle to _archive_messages
         mock_helper.assert_called_once()
         call_args = mock_helper.call_args
         assert call_args[0][3] == mock_operation  # 4th positional arg
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_with_partial_failure(self, mock_uuid, writer):
+    async def test_archive_messages_with_partial_failure(self, mock_uuid, writer):
         """Test archiving with some messages failing."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
@@ -283,6 +298,7 @@ class TestMessageWriter:
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 2,
                 "failed": 1,
@@ -290,15 +306,15 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ):
-            result = writer.archive_messages(["msg001", "msg002", "msg003"], "/tmp/test.mbox")
+            result = await writer.archive_messages(["msg001", "msg002", "msg003"], "/tmp/test.mbox")
 
         assert result["archived_count"] == 2
         assert result["failed_count"] == 1
         assert result["interrupted"] is False
 
-    @pytest.mark.unit
+    @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    def test_archive_messages_handles_interruption(self, mock_uuid, writer):
+    async def test_archive_messages_handles_interruption(self, mock_uuid, writer):
         """Test that interrupted flag is properly returned."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
@@ -306,6 +322,7 @@ class TestMessageWriter:
         with patch.object(
             writer,
             "_archive_messages",
+            new_callable=AsyncMock,
             return_value={
                 "archived": 1,
                 "failed": 0,
@@ -313,7 +330,7 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ):
-            result = writer.archive_messages(["msg001", "msg002"], "/tmp/test.mbox")
+            result = await writer.archive_messages(["msg001", "msg002"], "/tmp/test.mbox")
 
         assert result["interrupted"] is True
         assert result["archived_count"] == 1

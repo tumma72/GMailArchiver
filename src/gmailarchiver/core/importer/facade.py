@@ -94,7 +94,7 @@ class ImporterFacade:
         finally:
             scanner.cleanup_temp_file(mbox_path, is_temp)
 
-    def import_archive(
+    async def import_archive(
         self,
         archive_path: str | Path,
         account_id: str = "default",
@@ -144,7 +144,7 @@ class ImporterFacade:
         try:
             # Initialize database writer
             writer = DatabaseWriter(self.db_manager)
-            writer.load_existing_ids()
+            await writer.load_existing_ids()
 
             # Read messages with offset tracking
             messages = list(reader.read_messages(mbox_path, str(archive_path)))
@@ -188,7 +188,7 @@ class ImporterFacade:
                     )
 
                     # Write to database
-                    write_result = writer.write_message(metadata, skip_duplicates)
+                    write_result = await writer.write_message(metadata, skip_duplicates)
 
                     if write_result == WriteResult.IMPORTED:
                         result.messages_imported += 1
@@ -217,14 +217,14 @@ class ImporterFacade:
 
             # Record archive run if any messages were imported
             if result.messages_imported > 0:
-                writer.record_archive_run(
+                await writer.record_archive_run(
                     archive_file=str(archive_path),
                     messages_count=result.messages_imported,
                     account_id=account_id,
                 )
 
             # Commit all changes
-            self.db_manager.commit()
+            await self.db_manager.commit()
 
         finally:
             # Clean up temporary file if created
@@ -233,7 +233,7 @@ class ImporterFacade:
         result.execution_time_ms = (time.time() - start_time) * 1000
         return result
 
-    def import_multiple(
+    async def import_multiple(
         self,
         pattern: str,
         account_id: str = "default",
@@ -261,7 +261,7 @@ class ImporterFacade:
 
         for file_path in files:
             try:
-                file_result = self.import_archive(
+                file_result = await self.import_archive(
                     file_path, account_id=account_id, skip_duplicates=skip_duplicates
                 )
 

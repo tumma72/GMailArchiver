@@ -49,7 +49,7 @@ class DiagnosticsRunner:
         self.db_path = db_path
         self.db_manager = db_manager
 
-    def check_database_schema(self) -> CheckResult:
+    async def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
         if str(self.db_path) == ":memory:":
             return CheckResult(
@@ -76,9 +76,19 @@ class DiagnosticsRunner:
                 fixable=False,
             )
 
+        if self.db_manager.conn is None:
+            return CheckResult(
+                name="Database schema",
+                severity=CheckSeverity.ERROR,
+                message="Database connection not initialized",
+                fixable=False,
+            )
+        conn = self.db_manager.conn  # Type narrowed
+
         try:
-            cursor = self.db_manager.conn.execute("PRAGMA user_version")
-            version = cursor.fetchone()[0]
+            cursor = await conn.execute("PRAGMA user_version")
+            row = await cursor.fetchone()
+            version = row[0] if row else 0
 
             if version == 11:
                 return CheckResult(
@@ -110,19 +120,20 @@ class DiagnosticsRunner:
                 fixable=False,
             )
 
-    def check_database_integrity(self) -> CheckResult:
+    async def check_database_integrity(self) -> CheckResult:
         """Check database integrity using PRAGMA integrity_check."""
-        if not self.db_manager:
+        if not self.db_manager or self.db_manager.conn is None:
             return CheckResult(
                 name="Database integrity",
                 severity=CheckSeverity.ERROR,
                 message="Cannot connect to database",
                 fixable=False,
             )
+        conn = self.db_manager.conn  # Type narrowed
 
         try:
-            cursor = self.db_manager.conn.execute("PRAGMA integrity_check")
-            result = cursor.fetchone()
+            cursor = await conn.execute("PRAGMA integrity_check")
+            result = await cursor.fetchone()
 
             if result and result[0] == "ok":
                 return CheckResult(
@@ -147,25 +158,27 @@ class DiagnosticsRunner:
                 fixable=False,
             )
 
-    def check_orphaned_fts(self) -> CheckResult:
+    async def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
-        if not self.db_manager:
+        if not self.db_manager or self.db_manager.conn is None:
             return CheckResult(
                 name="FTS index",
                 severity=CheckSeverity.OK,
                 message="Skipped (no database connection)",
                 fixable=False,
             )
+        conn = self.db_manager.conn  # Type narrowed
 
         try:
             # Check if FTS table exists
-            cursor = self.db_manager.conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='messages_fts'
             """
             )
-            if not cursor.fetchone():
+            row = await cursor.fetchone()
+            if not row:
                 return CheckResult(
                     name="FTS index",
                     severity=CheckSeverity.OK,
@@ -174,20 +187,23 @@ class DiagnosticsRunner:
                 )
 
             # Count orphaned FTS records
-            cursor = self.db_manager.conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT COUNT(*) FROM messages_fts
                 WHERE rowid NOT IN (SELECT rowid FROM messages)
             """
             )
-            count = cursor.fetchone()[0]
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
 
             if count == 0:
                 # Heuristic fallback for test scenarios
-                cursor = self.db_manager.conn.execute("SELECT COUNT(*) FROM messages_fts")
-                fts_count = cursor.fetchone()[0]
-                cursor = self.db_manager.conn.execute("SELECT COUNT(*) FROM messages")
-                msg_count = cursor.fetchone()[0]
+                cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts")
+                row = await cursor.fetchone()
+                fts_count = row[0] if row else 0
+                cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+                row = await cursor.fetchone()
+                msg_count = row[0] if row else 0
                 count = max(fts_count - msg_count, 0)
 
             if count == 0:
@@ -213,25 +229,27 @@ class DiagnosticsRunner:
                 fixable=False,
             )
 
-    def check_archive_files_exist(self) -> CheckResult:
+    async def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files referenced in database exist."""
-        if not self.db_manager:
+        if not self.db_manager or self.db_manager.conn is None:
             return CheckResult(
                 name="Archive files",
                 severity=CheckSeverity.OK,
                 message="Skipped (no database connection)",
                 fixable=False,
             )
+        conn = self.db_manager.conn  # Type narrowed
 
         try:
             # Check if messages table exists
-            cursor = self.db_manager.conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT name FROM sqlite_master
                 WHERE type='table' AND name='messages'
             """
             )
-            if not cursor.fetchone():
+            row = await cursor.fetchone()
+            if not row:
                 return CheckResult(
                     name="Archive files",
                     severity=CheckSeverity.OK,
@@ -240,8 +258,11 @@ class DiagnosticsRunner:
                 )
 
             # Get unique archive files
-            cursor = self.db_manager.conn.execute("SELECT DISTINCT archive_file FROM messages")
-            archive_files = [row[0] for row in cursor.fetchall()]
+            cursor = await self.db_manager.conn.execute(
+                "SELECT DISTINCT archive_file FROM messages"
+            )
+            rows = await cursor.fetchall()
+            archive_files = [row[0] for row in rows]
 
             if not archive_files:
                 return CheckResult(

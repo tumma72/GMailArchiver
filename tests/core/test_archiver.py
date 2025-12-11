@@ -5,120 +5,145 @@ import lzma
 import tempfile
 from compression import zstd
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from gmailarchiver.core.archiver import ArchiverFacade
 from gmailarchiver.shared.input_validator import InvalidInputError
 
+pytestmark = pytest.mark.asyncio
+
 
 class TestArchiverFacadeInit:
     """Tests for ArchiverFacade initialization."""
 
-    def test_init(self) -> None:
-        """Test initialization."""
+    async def test_init(self) -> None:
+        """Test initialization via create()."""
         mock_client = Mock()
-        archiver = ArchiverFacade(mock_client, "test_state.db")
 
-        assert archiver.gmail_client == mock_client
-        assert archiver.state_db_path == "test_state.db"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-    def test_init_default_db_path(self) -> None:
+            assert archiver.gmail_client == mock_client
+            # Use resolve() to handle macOS /private/var symlink
+            assert Path(archiver.state_db_path).resolve() == Path(db_path).resolve()
+
+    async def test_init_default_db_path(self) -> None:
         """Test initialization with default database path."""
         mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
 
-        # Facade uses XDG path, not simple "archive_state.db"
-        assert archiver.state_db_path.endswith("gmailarchiver/archive.db")
+        # Use a temp dir to avoid creating files in user's home
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "archive.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+
+            # Verify path resolves correctly (handle macOS /private/var symlink)
+            assert Path(archiver.state_db_path).resolve() == Path(db_path).resolve()
 
 
 class TestArchive:
     """Tests for archive method."""
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_no_messages_found(self, mock_list: Mock) -> None:
+    async def test_archive_no_messages_found(self, mock_list: Mock) -> None:
         """Test archiving when no messages match criteria."""
         mock_client = Mock()
         mock_list.return_value = ("before:2022/01/01", [])
 
-        archiver = ArchiverFacade(mock_client)
-        result = archiver.archive("3y", "test.mbox")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+            result = await archiver.archive("3y", "test.mbox")
 
-        assert result["found_count"] == 0
-        assert result["archived_count"] == 0
-        assert "actual_file" not in result  # Dry run or no messages
+            assert result["found_count"] == 0
+            assert result["archived_count"] == 0
+            assert "actual_file" not in result  # Dry run or no messages
 
     @patch("gmailarchiver.core.archiver._filter.MessageFilter.filter_archived")
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_all_already_archived(self, mock_list: Mock, mock_filter: Mock) -> None:
+    async def test_archive_all_already_archived(self, mock_list: Mock, mock_filter: Mock) -> None:
         """Test archiving when all messages already archived."""
         mock_client = Mock()
         mock_list.return_value = (
             "before:2022/01/01",
             [{"id": "msg1", "threadId": "thread1"}, {"id": "msg2", "threadId": "thread2"}],
         )
-        # All messages filtered (already archived)
+        # All messages filtered (already archived) - use AsyncMock for async method
         mock_filter.return_value = ([], 2)
 
-        archiver = ArchiverFacade(mock_client)
-        result = archiver.archive("3y", "test.mbox", incremental=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+            # Replace the filter method with our mock
+            archiver._filter.filter_archived = AsyncMock(return_value=([], 2))
+            result = await archiver.archive("3y", "test.mbox", incremental=True)
 
-        assert result["found_count"] == 2
-        assert result["archived_count"] == 0
-        assert result["skipped_count"] == 2
+            assert result["found_count"] == 2
+            assert result["archived_count"] == 0
+            assert result["skipped_count"] == 2
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_dry_run(self, mock_list: Mock) -> None:
+    async def test_archive_dry_run(self, mock_list: Mock) -> None:
         """Test dry run mode."""
         mock_client = Mock()
         mock_list.return_value = ("before:2024/06/01", [{"id": "msg1", "threadId": "thread1"}])
 
-        archiver = ArchiverFacade(mock_client)
-        result = archiver.archive("6m", "test.mbox", dry_run=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+            result = await archiver.archive("6m", "test.mbox", dry_run=True)
 
-        assert result["found_count"] == 1
-        assert result["archived_count"] == 0
-        # Dry run doesn't archive, so no actual_file
-        assert "actual_file" not in result
+            assert result["found_count"] == 1
+            assert result["archived_count"] == 0
+            # Dry run doesn't archive, so no actual_file
+            assert "actual_file" not in result
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_dry_run_with_compression(self, mock_list: Mock) -> None:
+    async def test_archive_dry_run_with_compression(self, mock_list: Mock) -> None:
         """Test dry run with compression specified."""
         mock_client = Mock()
         mock_list.return_value = ("before:2024/01/01", [{"id": "msg1", "threadId": "thread1"}])
 
-        archiver = ArchiverFacade(mock_client)
-        result = archiver.archive("1y", "test.mbox", compress="gzip", dry_run=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+            result = await archiver.archive("1y", "test.mbox", compress="gzip", dry_run=True)
 
-        assert result["found_count"] == 1
-        assert result["archived_count"] == 0
+            assert result["found_count"] == 1
+            assert result["archived_count"] == 0
 
-    def test_archive_invalid_age_threshold(self) -> None:
+    async def test_archive_invalid_age_threshold(self) -> None:
         """Test that invalid age threshold raises error."""
         mock_client = Mock()
-        archiver = ArchiverFacade(mock_client)
 
-        with pytest.raises(InvalidInputError):
-            archiver.archive("invalid", "test.mbox")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+
+            with pytest.raises(InvalidInputError):
+                await archiver.archive("invalid", "test.mbox")
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_archive_invalid_compression(self, mock_list: Mock) -> None:
+    async def test_archive_invalid_compression(self, mock_list: Mock) -> None:
         """Test that invalid compression format raises error."""
         mock_client = Mock()
         # Mock lister to return some messages so we get to the compress validation
         mock_list.return_value = ("before:2022/01/01", [{"id": "msg1", "threadId": "thread1"}])
 
-        archiver = ArchiverFacade(mock_client)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-        with pytest.raises(InvalidInputError):
-            archiver.archive("3y", "test.mbox", compress="bzip2")
+            with pytest.raises(InvalidInputError):
+                await archiver.archive("3y", "test.mbox", compress="bzip2")
 
 
 class TestCompressArchive:
     """Tests for compression via CompressorFacade."""
 
-    def test_compress_gzip(self) -> None:
+    async def test_compress_gzip(self) -> None:
         """Test gzip compression via CompressorFacade."""
         from gmailarchiver.core.compressor._gzip import GzipCompressor
 
@@ -143,7 +168,7 @@ class TestCompressArchive:
             if dest_path.exists():
                 dest_path.unlink()
 
-    def test_compress_lzma(self) -> None:
+    async def test_compress_lzma(self) -> None:
         """Test lzma compression via CompressorFacade."""
         from gmailarchiver.core.compressor._lzma import LzmaCompressor
 
@@ -166,7 +191,7 @@ class TestCompressArchive:
             if dest_path.exists():
                 dest_path.unlink()
 
-    def test_compress_zstd(self) -> None:
+    async def test_compress_zstd(self) -> None:
         """Test zstd compression via CompressorFacade."""
         from gmailarchiver.core.compressor._zstd import ZstdCompressor
 
@@ -191,22 +216,24 @@ class TestCompressArchive:
                 dest_path.unlink()
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    def test_compress_invalid_format(self, mock_list: Mock) -> None:
+    async def test_compress_invalid_format(self, mock_list: Mock) -> None:
         """Test that invalid compression format in archive raises error."""
         mock_client = Mock()
         mock_list.return_value = ("before:2022/01/01", [{"id": "msg1", "threadId": "thread1"}])
 
-        archiver = ArchiverFacade(mock_client)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-        # Invalid compression format should be caught during validation
-        with pytest.raises(InvalidInputError):
-            archiver.archive("3y", "test.mbox", compress="bzip2")
+            # Invalid compression format should be caught during validation
+            with pytest.raises(InvalidInputError):
+                await archiver.archive("3y", "test.mbox", compress="bzip2")
 
 
 class TestValidateArchive:
     """Tests for validation via ValidatorFacade."""
 
-    def test_validate_archive_success(self) -> None:
+    async def test_validate_archive_success(self) -> None:
         """Test successful archive validation returns results dict."""
         from gmailarchiver.core.validator import ValidatorFacade
 
@@ -226,7 +253,7 @@ class TestValidateArchive:
         finally:
             Path(mbox_path).unlink()
 
-    def test_validate_archive_failure(self) -> None:
+    async def test_validate_archive_failure(self) -> None:
         """Test failed archive validation returns results dict with errors."""
         from gmailarchiver.core.validator import ValidatorFacade
 
@@ -237,7 +264,8 @@ class TestValidateArchive:
         try:
             validator = ValidatorFacade(mbox_path)
             # Empty mbox should fail
-            assert not validator.validate_all()
+            passed = validator.validate_all()
+            assert not passed
             assert len(validator.errors) > 0
         finally:
             Path(mbox_path).unlink()
@@ -249,7 +277,7 @@ class TestArchiveMessagesIntegration:
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_works(
+    async def test_archive_works(
         self,
         mock_print: Mock,
         mock_db_class: Mock,
@@ -272,7 +300,9 @@ class TestArchiveMessagesIntegration:
 
         # Mock DBManager
         mock_db = Mock()
-        mock_db.close.return_value = None
+        mock_db.close = AsyncMock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_db_class.return_value = mock_db
 
         # Mock HybridStorage - we set the return value inside the tmpdir block
@@ -286,17 +316,23 @@ class TestArchiveMessagesIntegration:
             output_file.touch()
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
-            result = archiver.archive("3y", str(output_file), incremental=False)
+            result = await archiver.archive("3y", str(output_file), incremental=False)
 
             # Facade returns different keys than legacy
             assert result["found_count"] == 1
@@ -306,7 +342,7 @@ class TestArchiveMessagesIntegration:
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_with_compression_workflow(
+    async def test_archive_with_compression_workflow(
         self,
         mock_print: Mock,
         mock_db_class: Mock,
@@ -323,7 +359,9 @@ class TestArchiveMessagesIntegration:
 
         # Mock DBManager
         mock_db = Mock()
-        mock_db.close.return_value = None
+        mock_db.close = AsyncMock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_db_class.return_value = mock_db
 
         # Mock HybridStorage
@@ -336,24 +374,32 @@ class TestArchiveMessagesIntegration:
             output_file.touch()
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
-            result = archiver.archive("3y", str(output_file), compress="gzip", incremental=False)
+            result = await archiver.archive(
+                "3y", str(output_file), compress="gzip", incremental=False
+            )
 
             assert result["archived_count"] == 1
 
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_with_orphaned_lock_file(
+    async def test_archive_with_orphaned_lock_file(
         self,
         mock_print: Mock,
         mock_db_class: Mock,
@@ -370,7 +416,9 @@ class TestArchiveMessagesIntegration:
 
         # Mock DBManager
         mock_db = Mock()
-        mock_db.close.return_value = None
+        mock_db.close = AsyncMock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_db_class.return_value = mock_db
 
         # Mock HybridStorage - it handles lock file cleanup internally
@@ -383,27 +431,33 @@ class TestArchiveMessagesIntegration:
             lock_file = Path(str(output_file) + ".lock")
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
             # Create orphaned lock file
             lock_file.touch()
             assert lock_file.exists()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
-            result = archiver.archive("3y", str(output_file), incremental=False)
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
+            result = await archiver.archive("3y", str(output_file), incremental=False)
 
             assert result["archived_count"] == 1
 
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_records_state(
+    async def test_archive_records_state(
         self,
         mock_print: Mock,
         mock_db_class: Mock,
@@ -420,8 +474,10 @@ class TestArchiveMessagesIntegration:
 
         # Mock DBManager - record_archived_message is called by HybridStorage
         mock_db = Mock()
-        mock_db.close.return_value = None
-        mock_db.record_archived_message.return_value = None
+        mock_db.close = AsyncMock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
+        mock_db.record_archived_message = AsyncMock()
         mock_db_class.return_value = mock_db
 
         # Mock HybridStorage
@@ -433,17 +489,23 @@ class TestArchiveMessagesIntegration:
             output_file.touch()
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
-            archiver.archive("3y", str(output_file), incremental=False)
+            await archiver.archive("3y", str(output_file), incremental=False)
 
             # Verify HybridStorage.archive_messages_batch was called (which records in DB)
             mock_storage.archive_messages_batch.assert_called_once()
@@ -451,7 +513,7 @@ class TestArchiveMessagesIntegration:
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_marks_messages_in_state(
+    async def test_archive_marks_messages_in_state(
         self,
         mock_print: Mock,
         mock_db_class: Mock,
@@ -472,7 +534,9 @@ class TestArchiveMessagesIntegration:
 
         # Mock DBManager
         mock_db = Mock()
-        mock_db.close.return_value = None
+        mock_db.close = AsyncMock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_db_class.return_value = mock_db
 
         # Mock HybridStorage
@@ -484,17 +548,23 @@ class TestArchiveMessagesIntegration:
             output_file.touch()
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
-            archiver.archive("3y", str(output_file), incremental=False)
+            await archiver.archive("3y", str(output_file), incremental=False)
 
             # Verify HybridStorage.archive_messages_batch was called with messages
             mock_storage.archive_messages_batch.assert_called_once()
@@ -509,30 +579,36 @@ class TestDeleteArchivedMessages:
     """Tests for delete_archived_messages method."""
 
     @patch("builtins.print")
-    def test_delete_permanent(self, mock_print: Mock) -> None:
+    async def test_delete_permanent(self, mock_print: Mock) -> None:
         """Test permanent deletion."""
         mock_client = Mock()
         mock_client.delete_messages_permanent.return_value = 5
-        archiver = ArchiverFacade(mock_client)
 
-        count = archiver.delete_archived_messages(
-            ["msg1", "msg2", "msg3", "msg4", "msg5"], permanent=True
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-        assert count == 5
-        mock_client.delete_messages_permanent.assert_called_once()
+            count = archiver.delete_archived_messages(
+                ["msg1", "msg2", "msg3", "msg4", "msg5"], permanent=True
+            )
+
+            assert count == 5
+            mock_client.delete_messages_permanent.assert_called_once()
 
     @patch("builtins.print")
-    def test_delete_trash(self, mock_print: Mock) -> None:
+    async def test_delete_trash(self, mock_print: Mock) -> None:
         """Test moving to trash."""
         mock_client = Mock()
         mock_client.trash_messages.return_value = 3
-        archiver = ArchiverFacade(mock_client)
 
-        count = archiver.delete_archived_messages(["msg1", "msg2", "msg3"], permanent=False)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-        assert count == 3
-        mock_client.trash_messages.assert_called_once()
+            count = archiver.delete_archived_messages(["msg1", "msg2", "msg3"], permanent=False)
+
+            assert count == 3
+            mock_client.trash_messages.assert_called_once()
 
 
 # NOTE: Tests for _extract_rfc_message_id and _extract_body_preview moved to
@@ -543,11 +619,8 @@ class TestAtomicOperations:
     """Tests for atomic mbox + database operations using HybridStorage."""
 
     @patch("builtins.print")
-    def test_atomic_archive_both_succeed(self, mock_print: Mock) -> None:
+    async def test_atomic_archive_both_succeed(self, mock_print: Mock) -> None:
         """Test that successful archiving commits both mbox and database."""
-        import tempfile
-        from pathlib import Path
-
         from gmailarchiver.data.db_manager import DBManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -568,8 +641,8 @@ class TestAtomicOperations:
             mock_client.decode_message_raw.return_value = test_email
 
             # Archive using HybridStorage
-            archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
-            result = archiver.archive("3y", str(mbox_path), incremental=False)
+            archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
+            result = await archiver.archive("3y", str(mbox_path), incremental=False)
 
             # Verify both mbox and database were updated
             assert result["archived_count"] == 1
@@ -577,24 +650,22 @@ class TestAtomicOperations:
 
             # Verify database has the message
             db = DBManager(str(db_path))
+            await db.initialize()
             # v1.2: Use get_message_location_by_gmail_id for gmail_id lookup
-            location = db.get_message_location_by_gmail_id("msg1")
+            location = await db.get_message_location_by_gmail_id("msg1")
             assert location is not None, "Message should be in database"
             assert location[0] == str(mbox_path)
             assert location[1] >= 0, "Offset should be valid"
             assert location[2] > 0, "Length should be positive"
-            db.close()
+            await db.close()
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("builtins.print")
-    def test_atomic_rollback_on_database_failure(
+    async def test_atomic_rollback_on_database_failure(
         self, mock_print: Mock, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
         """Test that database failure is handled gracefully with batch archiving."""
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             mbox_path = temp_path / "test.mbox"
@@ -617,36 +688,41 @@ class TestAtomicOperations:
 
             # Mock DBManager
             mock_db = Mock()
-            mock_db.close.return_value = None
+            mock_db.close = AsyncMock()
+            mock_db.initialize = AsyncMock()
+            mock_db.db_path = str(temp_path / "state.db")
             mock_db_class.return_value = mock_db
 
             # Mock HybridStorage to return partial success with 1 failure
             mock_storage = Mock()
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,  # One success
-                "skipped": 0,
-                "failed": 1,  # One failure
-                "interrupted": False,
-                "actual_file": str(mbox_path),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,  # One success
+                    "skipped": 0,
+                    "failed": 1,  # One failure
+                    "interrupted": False,
+                    "actual_file": str(mbox_path),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
             mock_storage_class.return_value = mock_storage
 
             # Archive should handle the failure gracefully
-            archiver = ArchiverFacade(mock_client, state_db_path=str(temp_path / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(temp_path / "state.db")
+            )
 
             # The archiving should continue and report partial success
-            result = archiver.archive("3y", str(mbox_path), incremental=False)
+            result = await archiver.archive("3y", str(mbox_path), incremental=False)
 
             # Should have 1 success and 1 failure
             assert result["archived_count"] == 1
             assert result["failed_count"] == 1
 
     @patch("builtins.print")
-    def test_automatic_validation_after_archiving(self, mock_print: Mock) -> None:
+    async def test_automatic_validation_after_archiving(self, mock_print: Mock) -> None:
         """Test that validation runs automatically after each message is archived."""
-        import tempfile
-        from pathlib import Path
-
         from gmailarchiver.data.db_manager import DBManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -667,15 +743,16 @@ class TestAtomicOperations:
             mock_client.decode_message_raw.return_value = test_email
 
             # Archive message
-            archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
-            result = archiver.archive("3y", str(mbox_path), incremental=False)
+            archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
+            result = await archiver.archive("3y", str(mbox_path), incremental=False)
 
             assert result["archived_count"] == 1
 
             # Verify the message can be read from mbox at the stored offset
             db = DBManager(str(db_path))
+            await db.initialize()
             # v1.2: Use get_message_location_by_gmail_id for gmail_id lookup
-            location = db.get_message_location_by_gmail_id("msg1")
+            location = await db.get_message_location_by_gmail_id("msg1")
             assert location is not None
 
             archive_file, offset, length = location
@@ -684,7 +761,7 @@ class TestAtomicOperations:
                 data = f.read(length)
                 assert len(data) > 0, "Should be able to read message at offset"
 
-            db.close()
+            await db.close()
 
     def _create_v11_db(self, db_path: Path) -> None:
         """Helper to create v1.1 database schema."""
@@ -744,7 +821,7 @@ class TestV11OffsetTracking:
     """Tests for v1.1 offset tracking during archiving."""
 
     @patch("builtins.print")
-    def test_archive_with_v1_1_schema_tracks_offsets(self, mock_print: Mock) -> None:
+    async def test_archive_with_v1_1_schema_tracks_offsets(self, mock_print: Mock) -> None:
         """Test that archiving with v1.1 schema captures mbox offsets."""
         import email
         import json
@@ -838,8 +915,8 @@ class TestV11OffsetTracking:
             mock_client.get_messages_batch = mock_get_messages_batch
 
             # Create archiver and archive (use public API)
-            archiver = ArchiverFacade(mock_client, str(db_path))
-            archiver.archive_messages(["msg123"], str(mbox_path))
+            archiver = await ArchiverFacade.create(mock_client, str(db_path))
+            await archiver.archive_messages(["msg123"], str(mbox_path))
 
             # Verify offset and length were captured
             conn = sqlite3.connect(str(db_path))
@@ -895,13 +972,10 @@ class TestExceptionHandling:
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_incremental_falls_back_on_dbmanager_failure(
+    async def test_incremental_falls_back_on_dbmanager_failure(
         self, mock_print: Mock, mock_dbmanager_class: Mock
     ) -> None:
         """Test that DBManager failure during facade construction raises exception."""
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             db_path = temp_path / "test.db"
@@ -910,24 +984,23 @@ class TestExceptionHandling:
             db_path.touch()
 
             # Mock DBManager to raise exception on initialization
-            mock_dbmanager_class.side_effect = Exception("Schema validation failed")
+            mock_db = Mock()
+            mock_db.initialize = AsyncMock(side_effect=Exception("Schema validation failed"))
+            mock_dbmanager_class.return_value = mock_db
 
             # Setup mock client
             mock_client = Mock()
 
             # With new architecture, exception is raised during facade construction
             with pytest.raises(Exception, match="Schema validation failed"):
-                ArchiverFacade(mock_client, state_db_path=str(db_path))
+                await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_incremental_with_nonexistent_database(
+    async def test_incremental_with_nonexistent_database(
         self, mock_print: Mock, mock_db_class: Mock
     ) -> None:
         """Test incremental mode when database doesn't exist yet."""
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             db_path = temp_path / "nonexistent.db"
@@ -937,34 +1010,36 @@ class TestExceptionHandling:
 
             # Mock DBManager to return empty archived set
             mock_db = Mock()
+            mock_db.initialize = AsyncMock()
+            mock_db.db_path = str(db_path)
             mock_cursor = Mock()
-            mock_cursor.fetchall.return_value = []
-            mock_db.conn.execute.return_value = mock_cursor
-            mock_db.close.return_value = None
-            mock_db.get_all_rfc_message_ids.return_value = set()  # For duplicate pre-filtering
+            mock_cursor.fetchall = AsyncMock(return_value=[])
+            mock_db.conn = Mock()
+            mock_db.conn.execute = AsyncMock(return_value=mock_cursor)
+            mock_db.close = AsyncMock()
+            mock_db.get_all_rfc_message_ids = AsyncMock(
+                return_value=set()
+            )  # For duplicate pre-filtering
             mock_db_class.return_value = mock_db
 
             # Setup mock client
             mock_client = Mock()
             mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(db_path))
-            result = archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
+            archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
+            result = await archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
 
             # Should not skip any messages (no archived_ids)
             assert result["found_count"] - result["skipped_count"] == 1
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
-    def test_archive_messages_falls_back_on_dbmanager_init_failure(
+    async def test_archive_messages_falls_back_on_dbmanager_init_failure(
         self,
         mock_print: Mock,
         mock_dbmanager_class: Mock,
     ) -> None:
         """Test that DBManager init failure during facade construction raises exception."""
-        import tempfile
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             db_path = temp_path / "test.db"
@@ -973,14 +1048,16 @@ class TestExceptionHandling:
             db_path.touch()
 
             # Mock DBManager to raise exception on init
-            mock_dbmanager_class.side_effect = Exception("Schema validation failed")
+            mock_db = Mock()
+            mock_db.initialize = AsyncMock(side_effect=Exception("Schema validation failed"))
+            mock_dbmanager_class.return_value = mock_db
 
             # Setup mock client
             mock_client = Mock()
 
             # With new architecture, exception is raised during facade construction
             with pytest.raises(Exception, match="Schema validation failed"):
-                ArchiverFacade(mock_client, state_db_path=str(db_path))
+                await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
 
 
 # NOTE: Tests for body preview exceptions and _log method moved to
@@ -992,7 +1069,7 @@ class TestArchiveWithOperationHandle:
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
-    def test_archive_with_operation_handle(
+    async def test_archive_with_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
         """Test that archiver uses operation handle for logging and progress."""
@@ -1015,16 +1092,19 @@ class TestArchiveWithOperationHandle:
 
         # Setup mock DBManager
         mock_db = Mock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []  # No previously archived messages
-        mock_db.conn.execute.return_value = mock_cursor
-        mock_db.close.return_value = None
+        mock_cursor.fetchall = AsyncMock(return_value=[])  # No previously archived messages
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_db.close = AsyncMock()
         mock_db_class.return_value = mock_db
 
         # Setup mock HybridStorage with side_effect that calls progress callback
         mock_storage = Mock()
 
-        def batch_side_effect(
+        async def batch_side_effect(
             messages,
             archive_file,
             compression=None,
@@ -1046,7 +1126,9 @@ class TestArchiveWithOperationHandle:
                 "actual_file": str(archive_file),
             }
 
-        mock_storage.archive_messages_batch.side_effect = batch_side_effect
+        mock_storage.archive_messages_batch = AsyncMock(side_effect=batch_side_effect)
+        mock_storage.db = mock_db
+        mock_db.create_session = AsyncMock()
         mock_storage_class.return_value = mock_storage
 
         # Setup mock operation handle
@@ -1056,10 +1138,12 @@ class TestArchiveWithOperationHandle:
             output_file = Path(tmpdir) / "archive.mbox"
             output_file.touch()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
             # Archive with operation handle
-            result = archiver.archive(
+            result = await archiver.archive(
                 age_threshold="3y",
                 output_file=str(output_file),
                 incremental=False,
@@ -1096,7 +1180,7 @@ class TestArchiveWithOperationHandle:
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
-    def test_archive_without_operation_handle(
+    async def test_archive_without_operation_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
         """Test that archiver works without operation handle (backward compatibility)."""
@@ -1115,10 +1199,13 @@ class TestArchiveWithOperationHandle:
 
         # Setup mock DBManager
         mock_db = Mock()
+        mock_db.initialize = AsyncMock()
+        mock_db.db_path = "test.db"
         mock_cursor = Mock()
-        mock_cursor.fetchall.return_value = []
-        mock_db.conn.execute.return_value = mock_cursor
-        mock_db.close.return_value = None
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_db.conn = Mock()
+        mock_db.conn.execute = AsyncMock(return_value=mock_cursor)
+        mock_db.close = AsyncMock()
         mock_db_class.return_value = mock_db
 
         # Setup mock HybridStorage
@@ -1130,18 +1217,24 @@ class TestArchiveWithOperationHandle:
             output_file.touch()
 
             # Set the mock return value now that we know the output path
-            mock_storage.archive_messages_batch.return_value = {
-                "archived": 1,
-                "skipped": 0,
-                "failed": 0,
-                "interrupted": False,
-                "actual_file": str(output_file),
-            }
+            mock_storage.archive_messages_batch = AsyncMock(
+                return_value={
+                    "archived": 1,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": False,
+                    "actual_file": str(output_file),
+                }
+            )
+            mock_storage.db = mock_db
+            mock_db.create_session = AsyncMock()
 
-            archiver = ArchiverFacade(mock_client, state_db_path=str(Path(tmpdir) / "state.db"))
+            archiver = await ArchiverFacade.create(
+                mock_client, state_db_path=str(Path(tmpdir) / "state.db")
+            )
 
             # Archive without operation handle (should not crash)
-            result = archiver.archive(
+            result = await archiver.archive(
                 age_threshold="3y",
                 output_file=str(output_file),
                 incremental=False,

@@ -1,40 +1,17 @@
-"""Tests for CLI consolidate command."""
+"""Tests for CLI consolidate command.
+
+Fixtures used from conftest.py:
+- runner: CliRunner for CLI tests
+- v1_1_database: v1.1 database path
+"""
 
 import mailbox
+import sqlite3
 from datetime import datetime
 
 import pytest
-from typer.testing import CliRunner
 
 from gmailarchiver.__main__ import app
-from gmailarchiver.data.migration import MigrationManager
-
-
-@pytest.fixture
-def runner():
-    """Create CLI test runner."""
-    return CliRunner()
-
-
-@pytest.fixture
-def v1_1_database(tmp_path):
-    """Create a v1.1 database for testing."""
-    db_path = tmp_path / "archive_state.db"
-    manager = MigrationManager(db_path)
-    manager._connect()
-
-    # Create v1.1 schema
-    manager._create_enhanced_schema(manager.conn)
-
-    # Set schema version
-    manager.conn.execute(
-        "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-    )
-
-    manager.conn.commit()
-    manager._close()
-
-    return db_path
 
 
 @pytest.fixture
@@ -76,8 +53,13 @@ def sample_mbox_files(tmp_path):
 
 
 @pytest.fixture
-def sample_mbox_with_duplicates(tmp_path):
-    """Create mbox files with duplicate messages."""
+def consolidation_mbox_files_with_duplicates(tmp_path):
+    """Create multiple mbox files with duplicate messages for consolidation testing.
+
+    Note: This is different from conftest.py's consolidation_mbox_files_with_duplicates which
+    creates a single mbox file. This creates TWO files for testing cross-file
+    duplicate detection during consolidation.
+    """
     mbox_files = []
 
     # Create first file with 2 unique messages
@@ -239,7 +221,7 @@ class TestConsolidateCommand:
         assert output_file.exists()
 
     def test_consolidate_with_dedupe(
-        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
     ):
         """Test consolidate with --dedupe removes duplicates."""
         monkeypatch.chdir(tmp_path)
@@ -249,8 +231,8 @@ class TestConsolidateCommand:
             app,
             [
                 "consolidate",
-                str(sample_mbox_with_duplicates[0]),
-                str(sample_mbox_with_duplicates[1]),
+                str(consolidation_mbox_files_with_duplicates[0]),
+                str(consolidation_mbox_files_with_duplicates[1]),
                 "-o",
                 str(output_file),
                 "--dedupe",
@@ -268,7 +250,7 @@ class TestConsolidateCommand:
         merged_mbox.close()
 
     def test_consolidate_with_no_dedupe(
-        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
     ):
         """Test consolidate with --no-dedupe keeps all messages."""
         monkeypatch.chdir(tmp_path)
@@ -278,8 +260,8 @@ class TestConsolidateCommand:
             app,
             [
                 "consolidate",
-                str(sample_mbox_with_duplicates[0]),
-                str(sample_mbox_with_duplicates[1]),
+                str(consolidation_mbox_files_with_duplicates[0]),
+                str(consolidation_mbox_files_with_duplicates[1]),
                 "-o",
                 str(output_file),
                 "--no-dedupe",
@@ -297,7 +279,7 @@ class TestConsolidateCommand:
         merged_mbox.close()
 
     def test_consolidate_with_dedupe_strategy_newest(
-        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
     ):
         """Test consolidate with --dedupe-strategy newest."""
         monkeypatch.chdir(tmp_path)
@@ -307,8 +289,8 @@ class TestConsolidateCommand:
             app,
             [
                 "consolidate",
-                str(sample_mbox_with_duplicates[0]),
-                str(sample_mbox_with_duplicates[1]),
+                str(consolidation_mbox_files_with_duplicates[0]),
+                str(consolidation_mbox_files_with_duplicates[1]),
                 "-o",
                 str(output_file),
                 "--dedupe-strategy",
@@ -322,7 +304,7 @@ class TestConsolidateCommand:
         assert output_file.exists()
 
     def test_consolidate_with_dedupe_strategy_largest(
-        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
     ):
         """Test consolidate with --dedupe-strategy largest."""
         monkeypatch.chdir(tmp_path)
@@ -332,8 +314,8 @@ class TestConsolidateCommand:
             app,
             [
                 "consolidate",
-                str(sample_mbox_with_duplicates[0]),
-                str(sample_mbox_with_duplicates[1]),
+                str(consolidation_mbox_files_with_duplicates[0]),
+                str(consolidation_mbox_files_with_duplicates[1]),
                 "-o",
                 str(output_file),
                 "--dedupe-strategy",
@@ -347,7 +329,7 @@ class TestConsolidateCommand:
         assert output_file.exists()
 
     def test_consolidate_with_dedupe_strategy_first(
-        self, runner, v1_1_database, sample_mbox_with_duplicates, tmp_path, monkeypatch
+        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
     ):
         """Test consolidate with --dedupe-strategy first."""
         monkeypatch.chdir(tmp_path)
@@ -357,8 +339,8 @@ class TestConsolidateCommand:
             app,
             [
                 "consolidate",
-                str(sample_mbox_with_duplicates[0]),
-                str(sample_mbox_with_duplicates[1]),
+                str(consolidation_mbox_files_with_duplicates[0]),
+                str(consolidation_mbox_files_with_duplicates[1]),
                 "-o",
                 str(output_file),
                 "--dedupe-strategy",
@@ -551,16 +533,56 @@ class TestConsolidateCommand:
         """Test consolidate uses default database path when not specified."""
         monkeypatch.chdir(tmp_path)
 
-        # Create v1.1 database at default location
+        # Create v1.1 database at default location using sync sqlite3
         default_db = tmp_path / "archive_state.db"
-        manager = MigrationManager(default_db)
-        manager._connect()
-        manager._create_enhanced_schema(manager.conn)
-        manager.conn.execute(
-            "INSERT INTO schema_version VALUES (?, ?)", ("1.1", datetime.now().isoformat())
-        )
-        manager.conn.commit()
-        manager._close()
+        conn = sqlite3.connect(str(default_db))
+        try:
+            # Create v1.1 schema (must match production schema exactly!)
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    gmail_id TEXT PRIMARY KEY,
+                    rfc_message_id TEXT UNIQUE NOT NULL,
+                    thread_id TEXT,
+                    subject TEXT,
+                    from_addr TEXT,
+                    to_addr TEXT,
+                    cc_addr TEXT,
+                    date TIMESTAMP,
+                    archived_timestamp TIMESTAMP NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    mbox_offset INTEGER NOT NULL,
+                    mbox_length INTEGER NOT NULL,
+                    body_preview TEXT,
+                    checksum TEXT,
+                    size_bytes INTEGER,
+                    labels TEXT,
+                    account_id TEXT DEFAULT 'default'
+                );
+                CREATE TABLE IF NOT EXISTS archive_runs (
+                    run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_timestamp TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    messages_archived INTEGER NOT NULL,
+                    archive_file TEXT NOT NULL,
+                    account_id TEXT DEFAULT 'default',
+                    operation_type TEXT DEFAULT 'archive'
+                );
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    version TEXT PRIMARY KEY,
+                    upgraded_at TEXT NOT NULL
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    subject, from_addr, to_addr, body_preview,
+                    content='messages', content_rowid='rowid'
+                );
+            """)
+            conn.execute(
+                "INSERT INTO schema_version VALUES (?, ?)",
+                ("1.1", datetime.now().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
         output_file = tmp_path / "merged.mbox"
 

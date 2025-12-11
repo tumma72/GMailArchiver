@@ -35,7 +35,7 @@ class ArchiveConsolidator:
         """
         self.db_manager = db_manager
 
-    def consolidate(
+    async def consolidate(
         self,
         source_archives: list[str | Path],
         output_archive: str | Path,
@@ -79,7 +79,7 @@ class ArchiveConsolidator:
 
         try:
             # Phase 1: Read and merge messages
-            messages = merger.merge_archives(source_paths)
+            messages = await merger.merge_archives(source_paths)
             total_messages = len(messages)
 
             # Phase 2: Sort if requested
@@ -95,7 +95,7 @@ class ArchiveConsolidator:
                 )
 
             # Phase 4: Write using HybridStorage primitive
-            offset_map = storage.bulk_write_messages(messages, output_path, compress)
+            offset_map = await storage.bulk_write_messages(messages, output_path, compress)
 
             # Phase 5: Update database atomically with deduplication
             updates = [
@@ -108,10 +108,10 @@ class ArchiveConsolidator:
                 for rfc_id, (gmail_id, offset, length) in offset_map.items()
             ]
 
-            storage.bulk_update_archive_locations_with_dedup(updates, duplicate_gmail_ids)
+            await storage.bulk_update_archive_locations_with_dedup(updates, duplicate_gmail_ids)
 
             # Phase 6: Commit transaction
-            self.db_manager.commit()
+            await self.db_manager.commit()
 
             end_time = time.perf_counter()
             execution_time_ms = (end_time - start_time) * 1000
@@ -128,5 +128,5 @@ class ArchiveConsolidator:
             )
         except Exception:
             # Rollback on any error
-            self.db_manager.rollback()
+            await self.db_manager.rollback()
             raise

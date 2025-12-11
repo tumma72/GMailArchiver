@@ -25,9 +25,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import pytest_asyncio
 
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage, HybridStorageError
+
+pytestmark = pytest.mark.asyncio
 
 # ============================================================================
 # Test Fixtures
@@ -129,12 +132,13 @@ def v11_db_path(temp_dir: Path) -> str:
     return str(db_path)
 
 
-@pytest.fixture
-def db_manager(v11_db_path: str) -> Generator[DBManager]:
-    """Create DBManager instance for testing."""
+@pytest_asyncio.fixture
+async def db_manager(v11_db_path: str) -> DBManager:
+    """Create async DBManager instance for testing."""
     db = DBManager(v11_db_path)
+    await db.initialize()
     yield db
-    db.close()
+    await db.close()
 
 
 @pytest.fixture
@@ -165,7 +169,7 @@ def create_sample_email(
 class TestArchiveMessagesBatch:
     """Tests for archive_messages_batch method - the core performance fix."""
 
-    def test_archive_messages_batch_exists(self, db_manager: DBManager) -> None:
+    async def test_archive_messages_batch_exists(self, db_manager: DBManager) -> None:
         """Verify archive_messages_batch method exists on HybridStorage."""
         storage = HybridStorage(db_manager)
 
@@ -173,7 +177,7 @@ class TestArchiveMessagesBatch:
         assert hasattr(storage, "archive_messages_batch")
         assert callable(getattr(storage, "archive_messages_batch"))
 
-    def test_archive_messages_batch_basic_success(
+    async def test_archive_messages_batch_basic_success(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test batch archiving multiple messages successfully."""
@@ -187,7 +191,7 @@ class TestArchiveMessagesBatch:
         ]
 
         # Archive batch
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
@@ -203,17 +207,17 @@ class TestArchiveMessagesBatch:
 
         # Verify all messages in database
         for i in range(1, 4):
-            msg_data = db_manager.get_message_by_gmail_id(f"gmail_id_{i}")
+            msg_data = await db_manager.get_message_by_gmail_id(f"gmail_id_{i}")
             assert msg_data is not None
             assert msg_data["subject"] == f"Subject {i}"
 
-    def test_archive_messages_batch_empty_list(
+    async def test_archive_messages_batch_empty_list(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test batch archiving with empty list returns zero counts."""
         storage = HybridStorage(db_manager)
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=[],
             archive_file=mbox_path,
         )
@@ -223,7 +227,7 @@ class TestArchiveMessagesBatch:
         # Mbox should not be created for empty batch
         assert not mbox_path.exists()
 
-    def test_archive_messages_batch_records_correct_offsets(
+    async def test_archive_messages_batch_records_correct_offsets(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that batch archiving records correct mbox offsets for each message."""
@@ -234,11 +238,11 @@ class TestArchiveMessagesBatch:
             (create_sample_email("msg2"), "gmail_id_2", None, None),
         ]
 
-        storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
+        await storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
 
         # Get recorded offsets
-        msg1 = db_manager.get_message_by_gmail_id("gmail_id_1")
-        msg2 = db_manager.get_message_by_gmail_id("gmail_id_2")
+        msg1 = await db_manager.get_message_by_gmail_id("gmail_id_1")
+        msg2 = await db_manager.get_message_by_gmail_id("gmail_id_2")
 
         # First message should start at offset 0
         assert msg1["mbox_offset"] == 0
@@ -269,7 +273,7 @@ class TestArchiveMessagesBatch:
 class TestArchiveMessagesBatchAtomicity:
     """Tests for batch atomicity - all succeed or all rollback."""
 
-    def test_batch_handles_per_message_db_errors(
+    async def test_batch_handles_per_message_db_errors(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that database errors are handled per-message without stopping batch."""
@@ -285,25 +289,27 @@ class TestArchiveMessagesBatchAtomicity:
 
         call_count = [0]
 
-        def failing_record(*args, **kwargs):
+        async def failing_record(*args, **kwargs):
             call_count[0] += 1
             if call_count[0] >= 2:
                 raise sqlite3.Error("Simulated database error")
-            return original_record(*args, **kwargs)
+            return await original_record(*args, **kwargs)
 
         with patch.object(db_manager, "record_archived_message", side_effect=failing_record):
-            result = storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
+            result = await storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
 
         # First message should succeed, second should fail
         assert result["archived"] == 1
         assert result["failed"] == 1
 
         # First message should be in database
-        assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_1") is not None
         # Second message should not be in database (failed)
-        assert db_manager.get_message_by_gmail_id("gmail_id_2") is None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_2") is None
 
-    def test_batch_all_or_nothing_semantics(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_all_or_nothing_semantics(
+        self, db_manager: DBManager, mbox_path: Path
+    ) -> None:
         """Test that partial batch failures don't leave partial state."""
         storage = HybridStorage(db_manager)
 
@@ -311,10 +317,10 @@ class TestArchiveMessagesBatchAtomicity:
         messages1 = [
             (create_sample_email("msg1"), "gmail_id_1", None, None),
         ]
-        storage.archive_messages_batch(messages=messages1, archive_file=mbox_path)
+        await storage.archive_messages_batch(messages=messages1, archive_file=mbox_path)
 
         # Verify first batch succeeded
-        assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_1") is not None
 
         # Second batch that fails should not affect first batch
         messages2 = [
@@ -324,13 +330,13 @@ class TestArchiveMessagesBatchAtomicity:
 
         with patch.object(db_manager, "commit", side_effect=sqlite3.Error("Commit failed")):
             with pytest.raises(HybridStorageError):
-                storage.archive_messages_batch(messages=messages2, archive_file=mbox_path)
+                await storage.archive_messages_batch(messages=messages2, archive_file=mbox_path)
 
         # First batch should still be intact
-        assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_1") is not None
         # Second batch should be rolled back
-        assert db_manager.get_message_by_gmail_id("gmail_id_2") is None
-        assert db_manager.get_message_by_gmail_id("gmail_id_3") is None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_2") is None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_3") is None
 
 
 # ============================================================================
@@ -341,7 +347,7 @@ class TestArchiveMessagesBatchAtomicity:
 class TestArchiveMessagesBatchDuplicates:
     """Tests for duplicate handling within batch."""
 
-    def test_batch_skips_duplicates_by_rfc_message_id(
+    async def test_batch_skips_duplicates_by_rfc_message_id(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that duplicates within batch are skipped."""
@@ -353,7 +359,7 @@ class TestArchiveMessagesBatchDuplicates:
             (create_sample_email("same_msg_id"), "gmail_id_2", None, None),  # Duplicate
         ]
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
@@ -363,10 +369,10 @@ class TestArchiveMessagesBatchDuplicates:
         assert result["skipped"] == 1
 
         # Only first should be in DB
-        assert db_manager.get_message_by_gmail_id("gmail_id_1") is not None
-        assert db_manager.get_message_by_gmail_id("gmail_id_2") is None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_1") is not None
+        assert await db_manager.get_message_by_gmail_id("gmail_id_2") is None
 
-    def test_batch_skips_already_archived_messages(
+    async def test_batch_skips_already_archived_messages(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that messages already in DB are skipped."""
@@ -374,7 +380,7 @@ class TestArchiveMessagesBatchDuplicates:
 
         # Archive first message using batch method with single message
         msg1 = create_sample_email("existing_msg")
-        storage.archive_messages_batch(
+        await storage.archive_messages_batch(
             messages=[(msg1, "existing_gmail_id", None, None)],
             archive_file=mbox_path,
         )
@@ -385,7 +391,7 @@ class TestArchiveMessagesBatchDuplicates:
             (create_sample_email("new_msg"), "new_gmail_id_2", None, None),
         ]
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )
@@ -403,7 +409,7 @@ class TestArchiveMessagesBatchDuplicates:
 class TestArchiveMessagesBatchCommitInterval:
     """Tests for configurable batch commit intervals."""
 
-    def test_batch_commits_at_interval(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_commits_at_interval(self, db_manager: DBManager, mbox_path: Path) -> None:
         """Test that batch commits occur at specified interval."""
         storage = HybridStorage(db_manager)
 
@@ -415,12 +421,12 @@ class TestArchiveMessagesBatchCommitInterval:
         commit_count = [0]
         original_commit = db_manager.commit
 
-        def counting_commit():
+        async def counting_commit():
             commit_count[0] += 1
-            return original_commit()
+            return await original_commit()
 
         with patch.object(db_manager, "commit", side_effect=counting_commit):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
                 commit_interval=100,
@@ -430,7 +436,7 @@ class TestArchiveMessagesBatchCommitInterval:
         # (2 commits for 150 messages with interval 100)
         assert commit_count[0] == 2
 
-    def test_batch_single_commit_for_small_batch(
+    async def test_batch_single_commit_for_small_batch(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that small batches only trigger one commit."""
@@ -443,12 +449,12 @@ class TestArchiveMessagesBatchCommitInterval:
         commit_count = [0]
         original_commit = db_manager.commit
 
-        def counting_commit():
+        async def counting_commit():
             commit_count[0] += 1
-            return original_commit()
+            return await original_commit()
 
         with patch.object(db_manager, "commit", side_effect=counting_commit):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
                 commit_interval=100,
@@ -466,7 +472,7 @@ class TestArchiveMessagesBatchCommitInterval:
 class TestArchiveMessagesBatchIOEfficiency:
     """Tests for I/O efficiency - the core performance optimization."""
 
-    def test_batch_single_fsync_at_end(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_single_fsync_at_end(self, db_manager: DBManager, mbox_path: Path) -> None:
         """Test that batch uses single fsync at end, not per message."""
         storage = HybridStorage(db_manager)
 
@@ -485,7 +491,7 @@ class TestArchiveMessagesBatchIOEfficiency:
             return original_fsync(fd)
 
         with patch("os.fsync", side_effect=counting_fsync):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
             )
@@ -493,7 +499,7 @@ class TestArchiveMessagesBatchIOEfficiency:
         # Should only have 1 fsync for the entire batch (not 10)
         assert fsync_count[0] == 1
 
-    def test_batch_single_mbox_open_close_cycle(
+    async def test_batch_single_mbox_open_close_cycle(
         self, db_manager: DBManager, mbox_path: Path
     ) -> None:
         """Test that batch opens/closes mbox only once."""
@@ -511,7 +517,7 @@ class TestArchiveMessagesBatchIOEfficiency:
             return original_mbox_init(self, *args, **kwargs)
 
         with patch.object(mailbox.mbox, "__init__", counting_init):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
             )
@@ -519,7 +525,9 @@ class TestArchiveMessagesBatchIOEfficiency:
         # Should only open mbox once for entire batch
         assert mbox_init_count[0] == 1
 
-    def test_batch_no_per_message_validation(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_no_per_message_validation(
+        self, db_manager: DBManager, mbox_path: Path
+    ) -> None:
         """Test that batch does not validate each message individually."""
         storage = HybridStorage(db_manager)
 
@@ -535,7 +543,7 @@ class TestArchiveMessagesBatchIOEfficiency:
         with patch.object(
             storage, "_validate_message_consistency", side_effect=counting_validation
         ):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
             )
@@ -552,7 +560,7 @@ class TestArchiveMessagesBatchIOEfficiency:
 class TestArchiveMessagesBatchValidation:
     """Tests for batch-level validation."""
 
-    def test_batch_validates_at_end(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_validates_at_end(self, db_manager: DBManager, mbox_path: Path) -> None:
         """Test that batch validation runs once at end."""
         storage = HybridStorage(db_manager)
 
@@ -568,14 +576,14 @@ class TestArchiveMessagesBatchValidation:
         with patch.object(
             storage, "_validate_batch_consistency", side_effect=mock_batch_validation
         ):
-            storage.archive_messages_batch(
+            await storage.archive_messages_batch(
                 messages=messages,
                 archive_file=mbox_path,
             )
 
         assert batch_validation_called[0]
 
-    def test_validate_batch_consistency_method_exists(self, db_manager: DBManager) -> None:
+    async def test_validate_batch_consistency_method_exists(self, db_manager: DBManager) -> None:
         """Verify _validate_batch_consistency method exists."""
         storage = HybridStorage(db_manager)
 
@@ -591,7 +599,7 @@ class TestArchiveMessagesBatchValidation:
 class TestArchiveMessagesBatchMetadata:
     """Tests for thread_id and labels support in batch."""
 
-    def test_batch_records_thread_ids(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_records_thread_ids(self, db_manager: DBManager, mbox_path: Path) -> None:
         """Test that batch records thread IDs correctly."""
         storage = HybridStorage(db_manager)
 
@@ -600,15 +608,15 @@ class TestArchiveMessagesBatchMetadata:
             (create_sample_email("msg2"), "gmail_id_2", "thread_2", None),
         ]
 
-        storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
+        await storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
 
-        msg1 = db_manager.get_message_by_gmail_id("gmail_id_1")
-        msg2 = db_manager.get_message_by_gmail_id("gmail_id_2")
+        msg1 = await db_manager.get_message_by_gmail_id("gmail_id_1")
+        msg2 = await db_manager.get_message_by_gmail_id("gmail_id_2")
 
         assert msg1["thread_id"] == "thread_1"
         assert msg2["thread_id"] == "thread_2"
 
-    def test_batch_records_labels(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_records_labels(self, db_manager: DBManager, mbox_path: Path) -> None:
         """Test that batch records Gmail labels correctly."""
         storage = HybridStorage(db_manager)
 
@@ -617,10 +625,10 @@ class TestArchiveMessagesBatchMetadata:
             (create_sample_email("msg2"), "gmail_id_2", None, '["SENT"]'),
         ]
 
-        storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
+        await storage.archive_messages_batch(messages=messages, archive_file=mbox_path)
 
-        msg1 = db_manager.get_message_by_gmail_id("gmail_id_1")
-        msg2 = db_manager.get_message_by_gmail_id("gmail_id_2")
+        msg1 = await db_manager.get_message_by_gmail_id("gmail_id_1")
+        msg2 = await db_manager.get_message_by_gmail_id("gmail_id_2")
 
         assert msg1["labels"] == '["INBOX", "IMPORTANT"]'
         assert msg2["labels"] == '["SENT"]'
@@ -634,14 +642,14 @@ class TestArchiveMessagesBatchMetadata:
 class TestArchiveMessagesBatchCompression:
     """Tests for compression support in batch archiving."""
 
-    def test_batch_with_gzip_compression(self, db_manager: DBManager, temp_dir: Path) -> None:
+    async def test_batch_with_gzip_compression(self, db_manager: DBManager, temp_dir: Path) -> None:
         """Test batch archiving with gzip compression."""
         storage = HybridStorage(db_manager)
         mbox_path = temp_dir / "test.mbox.gz"
 
         messages = [(create_sample_email(f"msg{i}"), f"gmail_id_{i}", None, None) for i in range(3)]
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
             compression="gzip",
@@ -650,14 +658,14 @@ class TestArchiveMessagesBatchCompression:
         assert result["archived"] == 3
         assert mbox_path.exists()
 
-    def test_batch_with_zstd_compression(self, db_manager: DBManager, temp_dir: Path) -> None:
+    async def test_batch_with_zstd_compression(self, db_manager: DBManager, temp_dir: Path) -> None:
         """Test batch archiving with zstd compression."""
         storage = HybridStorage(db_manager)
         mbox_path = temp_dir / "test.mbox.zst"
 
         messages = [(create_sample_email(f"msg{i}"), f"gmail_id_{i}", None, None) for i in range(3)]
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
             compression="zstd",
@@ -675,7 +683,9 @@ class TestArchiveMessagesBatchCompression:
 class TestArchiveMessagesBatchReturnValues:
     """Tests for batch return values."""
 
-    def test_batch_returns_dict_with_counts(self, db_manager: DBManager, mbox_path: Path) -> None:
+    async def test_batch_returns_dict_with_counts(
+        self, db_manager: DBManager, mbox_path: Path
+    ) -> None:
         """Test that batch returns dict with archived, skipped, failed, interrupted keys."""
         storage = HybridStorage(db_manager)
 
@@ -683,7 +693,7 @@ class TestArchiveMessagesBatchReturnValues:
             (create_sample_email("msg1"), "gmail_id_1", None, None),
         ]
 
-        result = storage.archive_messages_batch(
+        result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=mbox_path,
         )

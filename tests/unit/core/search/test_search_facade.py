@@ -104,91 +104,110 @@ def test_db(v11_db_factory) -> str:
     return db_path
 
 
+@pytest.mark.unit
 class TestSearchFacade:
     """Test SearchFacade high-level interface."""
 
-    def test_search_gmail_style_query(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_gmail_style_query(self, test_db: str) -> None:
         """Test Gmail-style query parsing and execution."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search("from:alice meeting")
+        results = await facade.search("from:alice meeting")
 
         assert results.total_results >= 1
         assert any("Meeting" in r.subject for r in results.results)
         assert all("alice" in r.from_addr for r in results.results)
+        await facade.close()
 
-    def test_search_fulltext_only(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_fulltext_only(self, test_db: str) -> None:
         """Test fulltext search."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search("invoice")
+        results = await facade.search("invoice")
 
         assert results.total_results == 1
         assert results.results[0].subject == "Invoice #12345"
+        await facade.close()
 
-    def test_search_metadata_only(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_metadata_only(self, test_db: str) -> None:
         """Test metadata-only search."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search("from:alice")
+        results = await facade.search("from:alice")
 
         assert results.total_results == 2
         assert all("alice" in r.from_addr for r in results.results)
+        await facade.close()
 
-    def test_search_with_limit(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_with_limit(self, test_db: str) -> None:
         """Test limit parameter."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search("from:alice", limit=1)
+        results = await facade.search("from:alice", limit=1)
 
         assert results.total_results == 1
         assert len(results.results) == 1
+        await facade.close()
 
-    def test_search_tracks_execution_time(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_tracks_execution_time(self, test_db: str) -> None:
         """Test that execution time is tracked."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search("meeting")
+        results = await facade.search("meeting")
 
         assert results.execution_time_ms > 0
+        await facade.close()
 
-    def test_context_manager(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_context_manager(self, test_db: str) -> None:
         """Test context manager protocol."""
-        with SearchFacade(test_db) as facade:
-            results = facade.search("meeting")
+        async with await SearchFacade.create(test_db) as facade:
+            results = await facade.search("meeting")
             assert results.total_results >= 1
 
         # Should not raise after closing
         # (facade.search would fail if called here)
 
-    def test_missing_database_raises(self) -> None:
+    @pytest.mark.asyncio
+    async def test_missing_database_raises(self) -> None:
         """Test that missing database raises FileNotFoundError."""
         with pytest.raises(FileNotFoundError):
-            SearchFacade("/nonexistent/database.db")
+            await SearchFacade.create("/nonexistent/database.db")
 
-    def test_search_fulltext_direct(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_fulltext_direct(self, test_db: str) -> None:
         """Test direct fulltext search method."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search_fulltext("meeting")
+        results = await facade.search_fulltext("meeting")
 
         assert results.total_results >= 1
         assert any("Meeting" in r.subject for r in results.results)
+        await facade.close()
 
-    def test_search_metadata_direct(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_metadata_direct(self, test_db: str) -> None:
         """Test direct metadata search method."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search_metadata(from_addr="alice")
+        results = await facade.search_metadata(from_addr="alice")
 
         assert results.total_results == 2
         assert all("alice" in r.from_addr for r in results.results)
+        await facade.close()
 
-    def test_search_metadata_date_filters(self, test_db: str) -> None:
+    @pytest.mark.asyncio
+    async def test_search_metadata_date_filters(self, test_db: str) -> None:
         """Test metadata search with date filters."""
-        facade = SearchFacade(test_db)
+        facade = await SearchFacade.create(test_db)
 
-        results = facade.search_metadata(after="2024-01-02", before="2024-01-04")
+        results = await facade.search_metadata(after="2024-01-02", before="2024-01-04")
 
         assert results.total_results == 2  # msg2 and msg3
         assert all(r.date >= "2024-01-02" for r in results.results)
+        await facade.close()

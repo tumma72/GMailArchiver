@@ -234,6 +234,24 @@ def test_validate_schema_on_init(self):
 
 ## Fixture Patterns
 
+Before creating any new fixture use the command: `pytest --fixtures` to get a list of available fixtures. Prefer fixture composition over re-writing to reuse existing code and avoid duplication. 
+```python
+@pytest.asyncio.fixture
+async def async_fixture() -> AsyncGenerator[None, None]:
+    """Async fixture example."""
+    await asyncio.sleep(0.1)
+    yield
+    await asyncio.sleep(0.1)
+    
+@pytest.asyncio.fixture
+async def composing_async_fixture(async_fixture) -> AsyncGenerator[None, None]:
+    """Composing async fixture example."""
+    await async_fixture()
+    # do something else
+    yield
+    await async_fixture()
+```
+
 ### Base Fixtures (conftest.py)
 
 All shared fixtures live in `conftest.py`:

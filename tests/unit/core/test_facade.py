@@ -5,7 +5,8 @@ dependencies. All internal modules (MessageLister, MessageFilter, MessageWriter)
 are mocked to test orchestration logic.
 """
 
-from unittest.mock import Mock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -16,40 +17,60 @@ class TestArchiverFacadeInitialization:
     """Tests for ArchiverFacade initialization."""
 
     @pytest.mark.unit
-    def test_facade_creation_with_gmail_client(self):
-        """Test creating facade with gmail_client."""
+    def test_facade_creation_with_injected_dependencies(self):
+        """Test creating facade with injected dependencies."""
         mock_gmail_client = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
+        mock_storage = Mock()
 
-        facade = ArchiverFacade(gmail_client=mock_gmail_client)
+        facade = ArchiverFacade(
+            gmail_client=mock_gmail_client,
+            db_manager=mock_db_manager,
+            storage=mock_storage,
+        )
 
         assert facade is not None
+        assert facade.gmail_client == mock_gmail_client
+        assert facade.db_manager == mock_db_manager
+        assert facade.storage == mock_storage
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver.facade.DBManager")
-    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
-    def test_facade_creation_with_custom_state_db_path(self, mock_storage, mock_db):
-        """Test creating facade with custom state database path."""
+    def test_facade_state_db_path_from_db_manager(self):
+        """Test that state_db_path is derived from db_manager."""
         mock_gmail_client = Mock()
-        custom_db_path = "/tmp/custom/path/archive.db"
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/custom/path/archive.db")
+        mock_storage = Mock()
 
-        facade = ArchiverFacade(gmail_client=mock_gmail_client, state_db_path=custom_db_path)
+        facade = ArchiverFacade(
+            gmail_client=mock_gmail_client,
+            db_manager=mock_db_manager,
+            storage=mock_storage,
+        )
 
-        assert facade is not None
-        assert facade.state_db_path == custom_db_path
+        assert facade.state_db_path == "/tmp/custom/path/archive.db"
 
     @pytest.mark.unit
     def test_facade_creation_with_output_manager(self):
         """Test creating facade with output_manager."""
         mock_gmail_client = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
+        mock_storage = Mock()
         mock_output_manager = Mock()
 
-        facade = ArchiverFacade(gmail_client=mock_gmail_client, output_manager=mock_output_manager)
+        facade = ArchiverFacade(
+            gmail_client=mock_gmail_client,
+            db_manager=mock_db_manager,
+            storage=mock_storage,
+            output_manager=mock_output_manager,
+        )
 
         assert facade is not None
+        assert facade.output_manager == mock_output_manager
 
     @pytest.mark.unit
-    @patch("gmailarchiver.core.archiver.facade.DBManager")
-    @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.MessageLister")
     @patch("gmailarchiver.core.archiver.facade.MessageFilter")
     @patch("gmailarchiver.core.archiver.facade.MessageWriter")
@@ -58,30 +79,24 @@ class TestArchiverFacadeInitialization:
         mock_writer_class,
         mock_filter_class,
         mock_lister_class,
-        mock_storage_class,
-        mock_db_class,
     ):
         """Test that facade creates internal module instances."""
         mock_gmail_client = Mock()
-        state_db_path = "/tmp/test.db"
-        mock_db = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
         mock_storage = Mock()
-        mock_db_class.return_value = mock_db
-        mock_storage_class.return_value = mock_storage
 
-        ArchiverFacade(gmail_client=mock_gmail_client, state_db_path=state_db_path)
-
-        # Should create DBManager
-        mock_db_class.assert_called_once()
-
-        # Should create HybridStorage with DBManager
-        mock_storage_class.assert_called_once_with(mock_db)
+        ArchiverFacade(
+            gmail_client=mock_gmail_client,
+            db_manager=mock_db_manager,
+            storage=mock_storage,
+        )
 
         # Should create MessageLister with gmail_client
         mock_lister_class.assert_called_once_with(gmail_client=mock_gmail_client)
 
         # Should create MessageFilter with db_manager
-        mock_filter_class.assert_called_once_with(db_manager=mock_db)
+        mock_filter_class.assert_called_once_with(db_manager=mock_db_manager)
 
         # Should create MessageWriter with gmail_client and storage
         mock_writer_class.assert_called_once_with(
@@ -106,38 +121,47 @@ class TestArchiverFacadeDelegationMethods:
     def mock_filter(self):
         """Create mock MessageFilter."""
         filter_module = Mock()
-        filter_module.filter_archived.return_value = (["msg002"], 1)
+        # Make filter_archived an async mock
+        filter_module.filter_archived = AsyncMock(return_value=(["msg002"], 1))
         return filter_module
 
     @pytest.fixture
     def mock_writer(self):
         """Create mock MessageWriter."""
         writer = Mock()
-        writer.archive_messages.return_value = {
-            "archived_count": 1,
-            "failed_count": 0,
-            "interrupted": False,
-            "actual_file": "/tmp/archive.mbox",
-        }
+        # Make archive_messages an async mock
+        writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 1,
+                "failed_count": 0,
+                "interrupted": False,
+                "actual_file": "/tmp/archive.mbox",
+            }
+        )
         return writer
 
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch("gmailarchiver.core.archiver.facade.DBManager"):
-            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
+        mock_gmail_client = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
+        mock_storage = Mock()
+
+        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
+            with patch(
+                "gmailarchiver.core.archiver.facade.MessageFilter",
+                return_value=mock_filter,
+            ):
                 with patch(
-                    "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
+                    "gmailarchiver.core.archiver.facade.MessageWriter",
+                    return_value=mock_writer,
                 ):
-                    with patch(
-                        "gmailarchiver.core.archiver.facade.MessageFilter",
-                        return_value=mock_filter,
-                    ):
-                        with patch(
-                            "gmailarchiver.core.archiver.facade.MessageWriter",
-                            return_value=mock_writer,
-                        ):
-                            return ArchiverFacade(gmail_client=Mock())
+                    return ArchiverFacade(
+                        gmail_client=mock_gmail_client,
+                        db_manager=mock_db_manager,
+                        storage=mock_storage,
+                    )
 
     @pytest.mark.unit
     def test_list_messages_for_archive_delegates_to_lister(self, facade, mock_lister):
@@ -163,11 +187,12 @@ class TestArchiverFacadeDelegationMethods:
         mock_lister.list_messages.assert_called_once_with("3y", progress_callback=progress_callback)
 
     @pytest.mark.unit
-    def test_filter_already_archived_delegates_to_filter(self, facade, mock_filter):
+    @pytest.mark.asyncio
+    async def test_filter_already_archived_delegates_to_filter(self, facade, mock_filter):
         """Test that filter_already_archived delegates to MessageFilter."""
         message_ids = ["msg001", "msg002"]
 
-        filtered, skipped = facade.filter_already_archived(message_ids, incremental=True)
+        filtered, skipped = await facade.filter_already_archived(message_ids, incremental=True)
 
         # Should call MessageFilter.filter_archived with message IDs
         mock_filter.filter_archived.assert_called_once_with(message_ids, incremental=True)
@@ -177,22 +202,24 @@ class TestArchiverFacadeDelegationMethods:
         assert skipped == 1
 
     @pytest.mark.unit
-    def test_filter_with_incremental_false(self, facade, mock_filter):
+    @pytest.mark.asyncio
+    async def test_filter_with_incremental_false(self, facade, mock_filter):
         """Test filtering with incremental=False."""
         message_ids = ["msg001", "msg002"]
 
-        facade.filter_already_archived(message_ids, incremental=False)
+        await facade.filter_already_archived(message_ids, incremental=False)
 
         # Should pass incremental flag to filter
         mock_filter.filter_archived.assert_called_once_with(message_ids, incremental=False)
 
     @pytest.mark.unit
-    def test_archive_messages_delegates_to_writer(self, facade, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_messages_delegates_to_writer(self, facade, mock_writer):
         """Test that archive_messages delegates to MessageWriter."""
         message_ids = ["msg001", "msg002"]
         output_file = "/tmp/archive.mbox"
 
-        result = facade.archive_messages(message_ids, output_file)
+        result = await facade.archive_messages(message_ids, output_file)
 
         # Should call MessageWriter.archive_messages
         mock_writer.archive_messages.assert_called_once_with(
@@ -205,12 +232,13 @@ class TestArchiverFacadeDelegationMethods:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    def test_archive_messages_with_compression(self, facade, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_messages_with_compression(self, facade, mock_writer):
         """Test archive_messages with compression parameter."""
         message_ids = ["msg001"]
         output_file = "/tmp/archive.mbox"
 
-        facade.archive_messages(message_ids, output_file, compress="gzip")
+        await facade.archive_messages(message_ids, output_file, compress="gzip")
 
         # Should pass compression to writer
         mock_writer.archive_messages.assert_called_once_with(
@@ -218,13 +246,14 @@ class TestArchiverFacadeDelegationMethods:
         )
 
     @pytest.mark.unit
-    def test_archive_messages_with_operation_handle(self, facade, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_messages_with_operation_handle(self, facade, mock_writer):
         """Test archive_messages with operation handle."""
         message_ids = ["msg001"]
         output_file = "/tmp/archive.mbox"
         mock_operation = Mock()
 
-        facade.archive_messages(message_ids, output_file, operation=mock_operation)
+        await facade.archive_messages(message_ids, output_file, operation=mock_operation)
 
         # Should pass operation handle to writer
         mock_writer.archive_messages.assert_called_once_with(
@@ -249,48 +278,57 @@ class TestArchiverFacadeOrchestration:
     def mock_filter(self):
         """Create mock MessageFilter."""
         filter_module = Mock()
-        filter_module.filter_archived.return_value = (
-            ["msg002", "msg003"],
-            1,
-        )  # msg001 already archived
+        # Make filter_archived an async mock
+        filter_module.filter_archived = AsyncMock(
+            return_value=(["msg002", "msg003"], 1)  # msg001 already archived
+        )
         return filter_module
 
     @pytest.fixture
     def mock_writer(self):
         """Create mock MessageWriter."""
         writer = Mock()
-        writer.archive_messages.return_value = {
-            "archived_count": 2,
-            "failed_count": 0,
-            "interrupted": False,
-            "actual_file": "/tmp/archive.mbox",
-        }
+        # Make archive_messages an async mock
+        writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 2,
+                "failed_count": 0,
+                "interrupted": False,
+                "actual_file": "/tmp/archive.mbox",
+            }
+        )
         return writer
 
     @pytest.fixture
     def facade(self, mock_lister, mock_filter, mock_writer):
         """Create facade with mocked internal modules."""
-        with patch("gmailarchiver.core.archiver.facade.DBManager"):
-            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
+        mock_gmail_client = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
+        mock_storage = Mock()
+
+        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
+            with patch(
+                "gmailarchiver.core.archiver.facade.MessageFilter",
+                return_value=mock_filter,
+            ):
                 with patch(
-                    "gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister
+                    "gmailarchiver.core.archiver.facade.MessageWriter",
+                    return_value=mock_writer,
                 ):
-                    with patch(
-                        "gmailarchiver.core.archiver.facade.MessageFilter",
-                        return_value=mock_filter,
-                    ):
-                        with patch(
-                            "gmailarchiver.core.archiver.facade.MessageWriter",
-                            return_value=mock_writer,
-                        ):
-                            return ArchiverFacade(gmail_client=Mock())
+                    return ArchiverFacade(
+                        gmail_client=mock_gmail_client,
+                        db_manager=mock_db_manager,
+                        storage=mock_storage,
+                    )
 
     @pytest.mark.unit
-    def test_archive_orchestrates_full_workflow(
+    @pytest.mark.asyncio
+    async def test_archive_orchestrates_full_workflow(
         self, facade, mock_lister, mock_filter, mock_writer
     ):
         """Test that archive() orchestrates list → filter → archive workflow."""
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             compress=None,
@@ -321,9 +359,10 @@ class TestArchiverFacadeOrchestration:
         assert result["actual_file"] == "/tmp/archive.mbox"
 
     @pytest.mark.unit
-    def test_archive_with_dry_run_mode(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_dry_run_mode(self, facade, mock_lister, mock_filter, mock_writer):
         """Test that dry-run mode skips archiving."""
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=True,
@@ -348,15 +387,15 @@ class TestArchiverFacadeOrchestration:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    def test_archive_with_incremental_false(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_incremental_false(
+        self, facade, mock_lister, mock_filter, mock_writer
+    ):
         """Test archive with incremental=False (no filtering)."""
         # Configure filter to return all messages when incremental=False
-        mock_filter.filter_archived.return_value = (
-            ["msg001", "msg002", "msg003"],
-            0,
-        )
+        mock_filter.filter_archived = AsyncMock(return_value=(["msg001", "msg002", "msg003"], 0))
 
-        facade.archive(
+        await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             incremental=False,
@@ -369,12 +408,15 @@ class TestArchiverFacadeOrchestration:
         )
 
     @pytest.mark.unit
-    def test_archive_with_empty_message_list(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_empty_message_list(
+        self, facade, mock_lister, mock_filter, mock_writer
+    ):
         """Test archive when no messages are found."""
         # Configure lister to return no messages
         mock_lister.list_messages.return_value = ("before:2022/01/01", [])
 
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             incremental=True,
@@ -397,14 +439,15 @@ class TestArchiverFacadeOrchestration:
         assert result["failed_count"] == 0
 
     @pytest.mark.unit
-    def test_archive_with_all_messages_filtered(
+    @pytest.mark.asyncio
+    async def test_archive_with_all_messages_filtered(
         self, facade, mock_lister, mock_filter, mock_writer
     ):
         """Test archive when all messages are already archived."""
         # Configure filter to return empty list (all filtered)
-        mock_filter.filter_archived.return_value = ([], 3)
+        mock_filter.filter_archived = AsyncMock(return_value=([], 3))
 
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             incremental=True,
@@ -424,11 +467,12 @@ class TestArchiverFacadeOrchestration:
         assert result["archived_count"] == 0
 
     @pytest.mark.unit
-    def test_archive_with_progress_callback(self, facade, mock_lister):
+    @pytest.mark.asyncio
+    async def test_archive_with_progress_callback(self, facade, mock_lister):
         """Test that progress callback is passed to lister."""
         progress_callback = Mock()
 
-        facade.archive(
+        await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=True,
@@ -440,12 +484,15 @@ class TestArchiverFacadeOrchestration:
         assert call_kwargs["progress_callback"] == progress_callback
 
     @pytest.mark.unit
-    def test_archive_with_operation_handle(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_operation_handle(
+        self, facade, mock_lister, mock_filter, mock_writer
+    ):
         """Test that operation handle is passed to writer."""
         mock_operation = Mock()
         mock_operation.progress_callback = None
 
-        facade.archive(
+        await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=False,
@@ -458,9 +505,10 @@ class TestArchiverFacadeOrchestration:
         assert call_kwargs["operation"] == mock_operation
 
     @pytest.mark.unit
-    def test_archive_with_compression_format(self, facade, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_compression_format(self, facade, mock_writer):
         """Test archive with compression parameter."""
-        facade.archive(
+        await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             compress="gzip",
@@ -472,9 +520,10 @@ class TestArchiverFacadeOrchestration:
         assert call_kwargs["compress"] == "gzip"
 
     @pytest.mark.unit
-    def test_archive_result_dict_structure(self, facade):
+    @pytest.mark.asyncio
+    async def test_archive_result_dict_structure(self, facade):
         """Test that archive() returns dict with all required keys."""
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=False,
@@ -493,7 +542,10 @@ class TestArchiverFacadeOrchestration:
             assert key in result
 
     @pytest.mark.unit
-    def test_archive_extracts_message_ids_from_list_result(self, facade, mock_lister, mock_filter):
+    @pytest.mark.asyncio
+    async def test_archive_extracts_message_ids_from_list_result(
+        self, facade, mock_lister, mock_filter
+    ):
         """Test that archive extracts message IDs from lister result."""
         # Lister returns list of message dicts
         mock_lister.list_messages.return_value = (
@@ -504,7 +556,7 @@ class TestArchiverFacadeOrchestration:
             ],
         )
 
-        facade.archive(
+        await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=True,
@@ -514,17 +566,22 @@ class TestArchiverFacadeOrchestration:
         mock_filter.filter_archived.assert_called_once_with(["msg001", "msg002"], incremental=True)
 
     @pytest.mark.unit
-    def test_archive_with_partial_failure(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_partial_failure(
+        self, facade, mock_lister, mock_filter, mock_writer
+    ):
         """Test archive with some messages failing."""
         # Configure writer to report partial failure
-        mock_writer.archive_messages.return_value = {
-            "archived_count": 1,
-            "failed_count": 1,
-            "interrupted": False,
-            "actual_file": "/tmp/archive.mbox",
-        }
+        mock_writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 1,
+                "failed_count": 1,
+                "interrupted": False,
+                "actual_file": "/tmp/archive.mbox",
+            }
+        )
 
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=False,
@@ -536,17 +593,20 @@ class TestArchiverFacadeOrchestration:
         assert result["interrupted"] is False
 
     @pytest.mark.unit
-    def test_archive_with_interruption(self, facade, mock_lister, mock_filter, mock_writer):
+    @pytest.mark.asyncio
+    async def test_archive_with_interruption(self, facade, mock_lister, mock_filter, mock_writer):
         """Test archive with interrupted archiving."""
         # Configure writer to report interruption
-        mock_writer.archive_messages.return_value = {
-            "archived_count": 1,
-            "failed_count": 0,
-            "interrupted": True,
-            "actual_file": "/tmp/archive.mbox",
-        }
+        mock_writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 1,
+                "failed_count": 0,
+                "interrupted": True,
+                "actual_file": "/tmp/archive.mbox",
+            }
+        )
 
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",
             dry_run=False,
@@ -557,19 +617,22 @@ class TestArchiverFacadeOrchestration:
         assert result["archived_count"] == 1
 
     @pytest.mark.unit
-    def test_archive_passes_actual_file_from_writer(
+    @pytest.mark.asyncio
+    async def test_archive_passes_actual_file_from_writer(
         self, facade, mock_lister, mock_filter, mock_writer
     ):
         """Test that actual_file from writer is returned."""
         # Writer might modify file extension (e.g., add .gz)
-        mock_writer.archive_messages.return_value = {
-            "archived_count": 2,
-            "failed_count": 0,
-            "interrupted": False,
-            "actual_file": "/tmp/archive.mbox.gz",  # Modified by writer
-        }
+        mock_writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 2,
+                "failed_count": 0,
+                "interrupted": False,
+                "actual_file": "/tmp/archive.mbox.gz",  # Modified by writer
+            }
+        )
 
-        result = facade.archive(
+        result = await facade.archive(
             age_threshold="3y",
             output_file="/tmp/archive.mbox",  # Original request
             compress="gzip",
@@ -584,24 +647,59 @@ class TestArchiverFacadeEdgeCases:
     """Tests for edge cases and error handling."""
 
     @pytest.fixture
-    def facade(self):
+    def mock_filter(self):
+        """Create mock MessageFilter."""
+        filter_module = Mock()
+        filter_module.filter_archived = AsyncMock(return_value=([], 0))
+        return filter_module
+
+    @pytest.fixture
+    def mock_writer(self):
+        """Create mock MessageWriter."""
+        writer = Mock()
+        writer.archive_messages = AsyncMock(
+            return_value={
+                "archived_count": 0,
+                "failed_count": 0,
+                "interrupted": False,
+                "actual_file": "/tmp/archive.mbox",
+            }
+        )
+        return writer
+
+    @pytest.fixture
+    def facade(self, mock_filter, mock_writer):
         """Create basic facade for edge case testing."""
-        with patch("gmailarchiver.core.archiver.facade.DBManager"):
-            with patch("gmailarchiver.core.archiver.facade.HybridStorage"):
-                with patch("gmailarchiver.core.archiver.facade.MessageLister"):
-                    with patch("gmailarchiver.core.archiver.facade.MessageFilter"):
-                        with patch("gmailarchiver.core.archiver.facade.MessageWriter"):
-                            return ArchiverFacade(gmail_client=Mock())
+        mock_gmail_client = Mock()
+        mock_db_manager = Mock()
+        mock_db_manager.db_path = Path("/tmp/test.db")
+        mock_storage = Mock()
+
+        mock_lister = Mock()
+        mock_lister.list_messages.return_value = ("query", [])
+
+        with patch("gmailarchiver.core.archiver.facade.MessageLister", return_value=mock_lister):
+            with patch(
+                "gmailarchiver.core.archiver.facade.MessageFilter", return_value=mock_filter
+            ):
+                with patch(
+                    "gmailarchiver.core.archiver.facade.MessageWriter", return_value=mock_writer
+                ):
+                    return ArchiverFacade(
+                        gmail_client=mock_gmail_client,
+                        db_manager=mock_db_manager,
+                        storage=mock_storage,
+                    )
 
     @pytest.mark.unit
-    def test_archive_with_none_operation_handle(self, facade):
+    @pytest.mark.asyncio
+    async def test_archive_with_none_operation_handle(self, facade):
         """Test archive with operation=None (default)."""
-        with patch.object(facade._lister, "list_messages", return_value=("query", [])):
-            result = facade.archive(
-                age_threshold="3y",
-                output_file="/tmp/archive.mbox",
-                operation=None,
-            )
+        result = await facade.archive(
+            age_threshold="3y",
+            output_file="/tmp/archive.mbox",
+            operation=None,
+        )
 
         # Should handle None operation gracefully
         assert "found_count" in result
@@ -609,40 +707,27 @@ class TestArchiverFacadeEdgeCases:
     @pytest.mark.unit
     def test_list_messages_with_none_progress_callback(self, facade):
         """Test list_messages with progress_callback=None (default)."""
-        with patch.object(
-            facade._lister,
-            "list_messages",
-            return_value=("query", [{"id": "msg001"}]),
-        ):
-            query, messages = facade.list_messages_for_archive("3y", progress_callback=None)
+        facade._lister.list_messages.return_value = ("query", [{"id": "msg001"}])
+        query, messages = facade.list_messages_for_archive("3y", progress_callback=None)
 
         # Should pass None callback to lister
         assert query is not None
         assert len(messages) == 1
 
     @pytest.mark.unit
-    def test_archive_messages_with_empty_list(self, facade):
+    @pytest.mark.asyncio
+    async def test_archive_messages_with_empty_list(self, facade, mock_writer):
         """Test archive_messages with empty message list."""
-        with patch.object(
-            facade._writer,
-            "archive_messages",
-            return_value={
-                "archived_count": 0,
-                "failed_count": 0,
-                "interrupted": False,
-                "actual_file": "/tmp/archive.mbox",
-            },
-        ):
-            result = facade.archive_messages([], "/tmp/archive.mbox")
+        result = await facade.archive_messages([], "/tmp/archive.mbox")
 
         # Should delegate to writer even with empty list
         assert result["archived_count"] == 0
 
     @pytest.mark.unit
-    def test_filter_with_empty_list(self, facade):
+    @pytest.mark.asyncio
+    async def test_filter_with_empty_list(self, facade, mock_filter):
         """Test filter_already_archived with empty message list."""
-        with patch.object(facade._filter, "filter_archived", return_value=([], 0)):
-            filtered, skipped = facade.filter_already_archived([], incremental=True)
+        filtered, skipped = await facade.filter_already_archived([], incremental=True)
 
         # Should return empty results
         assert filtered == []

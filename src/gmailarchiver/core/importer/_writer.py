@@ -14,6 +14,10 @@ from gmailarchiver.data.db_manager import DBManager
 logger = logging.getLogger(__name__)
 
 
+# Note: This module uses async methods because DBManager is now async.
+# All methods that interact with the database must be async.
+
+
 class WriteResult(Enum):
     """Result of writing a message to database."""
 
@@ -39,15 +43,14 @@ class DatabaseWriter:
         self.existing_ids: set[str] = set()
         self.session_ids: set[str] = set()
 
-    def load_existing_ids(self) -> set[str]:
+    async def load_existing_ids(self) -> set[str]:
         """Load existing RFC Message-IDs from database for deduplication.
 
         Returns:
             Set of existing RFC Message-IDs
         """
         try:
-            cursor = self.db.conn.execute("SELECT rfc_message_id FROM messages")
-            self.existing_ids = {row[0] for row in cursor.fetchall()}
+            self.existing_ids = await self.db.get_all_rfc_message_ids()
             return self.existing_ids
         except Exception:
             # Table might not exist yet, return empty set
@@ -64,7 +67,7 @@ class DatabaseWriter:
         """
         return rfc_message_id in self.existing_ids or rfc_message_id in self.session_ids
 
-    def write_message(self, metadata: MessageMetadata, skip_duplicates: bool) -> WriteResult:
+    async def write_message(self, metadata: MessageMetadata, skip_duplicates: bool) -> WriteResult:
         """Write message metadata to database.
 
         Args:
@@ -81,12 +84,13 @@ class DatabaseWriter:
         try:
             if skip_duplicates:
                 # Use DBManager's INSERT (will fail on duplicates, caught above)
-                self.db.record_archived_message(**metadata.to_dict(), record_run=False)
+                await self.db.record_archived_message(**metadata.to_dict(), record_run=False)
             else:
                 # Use INSERT OR REPLACE for non-skip mode
                 archived_timestamp = datetime.now().isoformat()
-
-                self.db.conn.execute(
+                if self.db.conn is None:
+                    raise RuntimeError("Database connection not initialized")
+                await self.db.conn.execute(
                     """
                     INSERT OR REPLACE INTO messages (
                         gmail_id, rfc_message_id, thread_id,
@@ -125,10 +129,12 @@ class DatabaseWriter:
 
         except Exception as e:
             logger.debug(f"Database write failed for {metadata.rfc_message_id}: {e}")
-            self.db.rollback()
+            await self.db.rollback()
             return WriteResult.FAILED
 
-    def record_archive_run(self, archive_file: str, messages_count: int, account_id: str) -> None:
+    async def record_archive_run(
+        self, archive_file: str, messages_count: int, account_id: str
+    ) -> None:
         """Record import operation in archive_runs table.
 
         Args:
@@ -136,7 +142,7 @@ class DatabaseWriter:
             messages_count: Number of messages imported
             account_id: Account identifier
         """
-        self.db.record_archive_run(
+        await self.db.record_archive_run(
             operation="import",
             messages_count=messages_count,
             archive_file=archive_file,

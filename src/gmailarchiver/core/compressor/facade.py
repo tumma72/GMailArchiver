@@ -94,7 +94,7 @@ class ArchiveCompressor:
             "zstd": ZstdCompressor,
         }
 
-    def compress(
+    async def compress(
         self,
         files: list[str],
         format: str = "zstd",
@@ -146,7 +146,7 @@ class ArchiveCompressor:
 
         try:
             for file_path in file_paths:
-                result = self._compress_file(
+                result = await self._compress_file(
                     file_path,
                     format,
                     in_place,
@@ -168,9 +168,9 @@ class ArchiveCompressor:
 
             # Commit database changes if not dry run
             if not dry_run:
-                self.db_manager.commit()
+                await self.db_manager.commit()
             else:
-                self.db_manager.rollback()
+                await self.db_manager.rollback()
 
             end_time = time.perf_counter()
             execution_time_ms = (end_time - start_time) * 1000
@@ -214,10 +214,10 @@ class ArchiveCompressor:
                 )
 
         except Exception:
-            self.db_manager.rollback()
+            await self.db_manager.rollback()
             raise
 
-    def _compress_file(
+    async def _compress_file(
         self,
         file_path: Path,
         format: str,
@@ -288,7 +288,7 @@ class ArchiveCompressor:
 
             # Update database if in_place
             if in_place:
-                self._update_database_paths(str(file_path), str(dest_path))
+                await self._update_database_paths(str(file_path), str(dest_path))
                 # Remove original file unless the caller requested to keep it
                 if not keep_original:
                     file_path.unlink()
@@ -409,7 +409,7 @@ class ArchiveCompressor:
             logger.error(f"Verification failed for {file_path}: {e}")
             return False
 
-    def _update_database_paths(self, old_path: str, new_path: str) -> None:
+    async def _update_database_paths(self, old_path: str, new_path: str) -> None:
         """Update database to point to new compressed file.
 
         Args:
@@ -417,7 +417,7 @@ class ArchiveCompressor:
             new_path: New compressed file path
         """
         # Get all messages for the old archive
-        messages = self.db_manager.get_all_messages_for_archive(old_path)
+        messages = await self.db_manager.get_all_messages_for_archive(old_path)
 
         if not messages:
             logger.warning(f"No messages found for archive: {old_path}")
@@ -435,5 +435,5 @@ class ArchiveCompressor:
             for msg in messages
         ]
 
-        self.db_manager.bulk_update_archive_locations(updates)
+        await self.db_manager.bulk_update_archive_locations(updates)
         logger.info(f"Updated {len(updates)} messages from {old_path} to {new_path}")

@@ -7,6 +7,8 @@ import pytest
 
 from gmailarchiver.core.search import SearchEngine
 
+pytestmark = pytest.mark.asyncio
+
 
 @pytest.fixture
 def v11_db(v11_db_factory) -> str:
@@ -184,13 +186,13 @@ def v11_db(v11_db_factory) -> str:
 class TestSearchEngineInit:
     """Tests for SearchEngine initialization."""
 
-    def test_init_with_valid_database(self, v11_db):
+    async def test_init_with_valid_database(self, v11_db):
         """Test that SearchEngine initializes with valid v1.1 database."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         assert engine is not None
-        engine.close()
+        await engine.close()
 
-    def test_init_with_missing_database(self):
+    async def test_init_with_missing_database(self):
         """Test that SearchEngine raises error with missing database."""
         with pytest.raises(Exception):
             SearchEngine("/nonexistent/path/to/database.db")
@@ -199,54 +201,54 @@ class TestSearchEngineInit:
 class TestFullTextSearch:
     """Tests for full-text search functionality."""
 
-    def test_fulltext_search_single_word(self, v11_db):
+    async def test_fulltext_search_single_word(self, v11_db):
         """Test full-text search with single word finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for "meeting" - should find msg001 and msg005
-        results = engine.search_fulltext("meeting")
+        results = await engine.search_fulltext("meeting")
 
         assert results.total_results >= 2
         assert any(r.gmail_id == "msg001" for r in results.results)
         assert any(r.gmail_id == "msg005" for r in results.results)
         assert "meeting" in results.query.lower()
 
-        engine.close()
+        await engine.close()
 
-    def test_fulltext_search_phrase(self, v11_db):
+    async def test_fulltext_search_phrase(self, v11_db):
         """Test full-text search with phrase finds exact matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for "invoice payment" - should find msg002 and msg004
-        results = engine.search_fulltext("invoice payment")
+        results = await engine.search_fulltext("invoice payment")
 
         assert results.total_results >= 1
         # At least one message should contain both words
         found_invoice = any(r.gmail_id in ["msg002", "msg004"] for r in results.results)
         assert found_invoice
 
-        engine.close()
+        await engine.close()
 
-    def test_fulltext_search_field_specific(self, v11_db):
+    async def test_fulltext_search_field_specific(self, v11_db):
         """Test full-text search on specific field (subject only)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for "meeting" in subject only
-        results = engine.search_fulltext("meeting", fields=["subject"])
+        results = await engine.search_fulltext("meeting", fields=["subject"])
 
         assert results.total_results >= 2
         # All results should have "meeting" in subject
         for result in results.results:
             assert "meeting" in result.subject.lower()
 
-        engine.close()
+        await engine.close()
 
-    def test_fulltext_search_ranked_results(self, v11_db):
+    async def test_fulltext_search_ranked_results(self, v11_db):
         """Test full-text search returns BM25 ranked results."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for common word
-        results = engine.search_fulltext("meeting")
+        results = await engine.search_fulltext("meeting")
 
         assert results.total_results > 0
         # Results should have relevance scores
@@ -258,135 +260,135 @@ class TestFullTextSearch:
         if len(scores) > 1:
             assert scores == sorted(scores, reverse=True)
 
-        engine.close()
+        await engine.close()
 
-    def test_fulltext_search_no_matches(self, v11_db):
+    async def test_fulltext_search_no_matches(self, v11_db):
         """Test full-text search with no matches returns empty results."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for non-existent word
-        results = engine.search_fulltext("xyznonexistent")
+        results = await engine.search_fulltext("xyznonexistent")
 
         assert results.total_results == 0
         assert len(results.results) == 0
         assert results.execution_time_ms >= 0
 
-        engine.close()
+        await engine.close()
 
 
 class TestMetadataSearch:
     """Tests for metadata-based search functionality."""
 
-    def test_metadata_search_by_from_addr(self, v11_db):
+    async def test_metadata_search_by_from_addr(self, v11_db):
         """Test metadata search by from_addr finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for messages from Alice
-        results = engine.search_metadata(from_addr="alice@example.com")
+        results = await engine.search_metadata(from_addr="alice@example.com")
 
         assert results.total_results >= 3  # msg001, msg003, msg005
         for result in results.results:
             assert "alice@example.com" in result.from_addr
 
-        engine.close()
+        await engine.close()
 
-    def test_metadata_search_by_date_range(self, v11_db):
+    async def test_metadata_search_by_date_range(self, v11_db):
         """Test metadata search with date range (after/before)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for messages after 2024-02-01
-        results = engine.search_metadata(after="2024-02-01")
+        results = await engine.search_metadata(after="2024-02-01")
 
         assert results.total_results >= 4  # msg002, msg003, msg004, msg005
         for result in results.results:
             assert result.date >= "2024-02-01"
 
         # Search for messages before 2024-02-01
-        results = engine.search_metadata(before="2024-02-01")
+        results = await engine.search_metadata(before="2024-02-01")
 
         assert results.total_results >= 3  # msg001, msg006, msg007
         for result in results.results:
             assert result.date < "2024-02-01"
 
-        engine.close()
+        await engine.close()
 
-    def test_metadata_search_combined_filters(self, v11_db):
+    async def test_metadata_search_combined_filters(self, v11_db):
         """Test metadata search with combined filters (from + subject)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for messages from Alice with subject containing "meeting"
-        results = engine.search_metadata(from_addr="alice@example.com", subject="meeting")
+        results = await engine.search_metadata(from_addr="alice@example.com", subject="meeting")
 
         assert results.total_results >= 2  # msg001, msg005
         for result in results.results:
             assert "alice@example.com" in result.from_addr
             assert "meeting" in result.subject.lower()
 
-        engine.close()
+        await engine.close()
 
-    def test_metadata_search_by_to_addr(self, v11_db):
+    async def test_metadata_search_by_to_addr(self, v11_db):
         """Test metadata search by to_addr finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search for messages to billing
-        results = engine.search_metadata(to_addr="billing@example.com")
+        results = await engine.search_metadata(to_addr="billing@example.com")
 
         assert results.total_results >= 2  # msg002, msg004
         for result in results.results:
             assert result.to_addr is not None
             assert "billing@example.com" in result.to_addr
 
-        engine.close()
+        await engine.close()
 
-    def test_metadata_search_with_limit(self, v11_db):
+    async def test_metadata_search_with_limit(self, v11_db):
         """Test metadata search respects limit parameter."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Search all messages with limit of 3
-        results = engine.search_metadata(limit=3)
+        results = await engine.search_metadata(limit=3)
 
         assert len(results.results) <= 3
         assert results.execution_time_ms >= 0
 
-        engine.close()
+        await engine.close()
 
 
 class TestGmailStyleQuery:
     """Tests for Gmail-style query syntax."""
 
-    def test_gmail_query_from_address(self, v11_db):
+    async def test_gmail_query_from_address(self, v11_db):
         """Test Gmail query: from:alice parses and finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Gmail-style query
-        results = engine.search("from:alice@example.com")
+        results = await engine.search("from:alice@example.com")
 
         assert results.total_results >= 3  # msg001, msg003, msg005
         for result in results.results:
             assert "alice@example.com" in result.from_addr
 
-        engine.close()
+        await engine.close()
 
-    def test_gmail_query_combined_terms(self, v11_db):
+    async def test_gmail_query_combined_terms(self, v11_db):
         """Test Gmail query: subject:meeting after:2024-01-01 (combined)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Combined query
-        results = engine.search("subject:meeting after:2024-01-01")
+        results = await engine.search("subject:meeting after:2024-01-01")
 
         assert results.total_results >= 2  # msg001, msg005
         for result in results.results:
             assert "meeting" in result.subject.lower()
             assert result.date >= "2024-01-01"
 
-        engine.close()
+        await engine.close()
 
-    def test_gmail_query_bare_words(self, v11_db):
+    async def test_gmail_query_bare_words(self, v11_db):
         """Test Gmail query: bare words 'invoice payment' performs FTS5."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         # Bare words - should search all fields
-        results = engine.search("invoice payment")
+        results = await engine.search("invoice payment")
 
         assert results.total_results >= 1
         # Should find messages containing these words
@@ -397,51 +399,51 @@ class TestGmailStyleQuery:
         )
         assert found
 
-        engine.close()
+        await engine.close()
 
-    def test_gmail_query_subject_term(self, v11_db):
+    async def test_gmail_query_subject_term(self, v11_db):
         """Test Gmail query: subject:invoice finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
-        results = engine.search("subject:invoice")
+        results = await engine.search("subject:invoice")
 
         assert results.total_results >= 1  # msg002
         for result in results.results:
             assert "invoice" in result.subject.lower()
 
-        engine.close()
+        await engine.close()
 
-    def test_gmail_query_to_address(self, v11_db):
+    async def test_gmail_query_to_address(self, v11_db):
         """Test Gmail query: to:billing finds matches."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
-        results = engine.search("to:billing@example.com")
+        results = await engine.search("to:billing@example.com")
 
         assert results.total_results >= 2  # msg002, msg004
         for result in results.results:
             assert result.to_addr is not None
             assert "billing@example.com" in result.to_addr
 
-        engine.close()
+        await engine.close()
 
-    def test_gmail_query_date_range(self, v11_db):
+    async def test_gmail_query_date_range(self, v11_db):
         """Test Gmail query: before:2024-02-01 after:2024-01-01."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
-        results = engine.search("after:2024-01-01 before:2024-02-01")
+        results = await engine.search("after:2024-01-01 before:2024-02-01")
 
         assert results.total_results >= 2  # msg001, msg006
         for result in results.results:
             assert result.date >= "2024-01-01"
             assert result.date < "2024-02-01"
 
-        engine.close()
+        await engine.close()
 
 
 class TestSearchPerformance:
     """Tests for search performance."""
 
-    def test_search_performance_large_dataset(self, v11_db):
+    async def test_search_performance_large_dataset(self, v11_db):
         """Test search performance: 1000 messages < 100ms."""
         # Add more messages to reach 1000
         conn = sqlite3.connect(v11_db)
@@ -480,10 +482,10 @@ class TestSearchPerformance:
         conn.close()
 
         # Now test search performance
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
 
         start_time = time.perf_counter()
-        results = engine.search("Performance Test")
+        results = await engine.search("Performance Test")
         end_time = time.perf_counter()
 
         elapsed_ms = (end_time - start_time) * 1000
@@ -494,37 +496,37 @@ class TestSearchPerformance:
         # Should complete in under 100ms
         assert elapsed_ms < 100, f"Search took {elapsed_ms:.2f}ms (expected < 100ms)"
 
-        engine.close()
+        await engine.close()
 
 
 class TestSearchEdgeCases:
     """Tests for search edge cases and error handling."""
 
-    def test_fts5_syntax_error_returns_empty_results(self, v11_db: str) -> None:
+    async def test_fts5_syntax_error_returns_empty_results(self, v11_db: str) -> None:
         """Test that FTS5 syntax errors return empty results gracefully.
 
         FTS5 has specific query syntax. Invalid queries should not raise
         exceptions but return empty results instead.
         """
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         try:
             # Invalid FTS5 syntax: unbalanced quotes
-            results = engine.search_fulltext('"unclosed quote')
+            results = await engine.search_fulltext('"unclosed quote')
             assert results.total_results == 0
             assert results.results == []
         finally:
-            engine.close()
+            await engine.close()
 
-    def test_invalid_fts_fields_raises_error(self, v11_db: str) -> None:
+    async def test_invalid_fts_fields_raises_error(self, v11_db: str) -> None:
         """Test that invalid FTS field names raise ValueError."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         try:
             with pytest.raises(ValueError, match="Invalid FTS5 field names"):
-                engine.search_fulltext("test", fields=["invalid_field", "another_bad"])
+                await engine.search_fulltext("test", fields=["invalid_field", "another_bad"])
         finally:
-            engine.close()
+            await engine.close()
 
-    def test_missing_messages_table_raises_error(self, v11_db_factory) -> None:
+    async def test_missing_messages_table_raises_error(self, v11_db_factory) -> None:
         """Test that missing messages table raises error during initialization.
 
         With the refactored architecture, DBManager validates schema before
@@ -541,44 +543,44 @@ class TestSearchEdgeCases:
         from gmailarchiver.data.db_manager import DBManagerError
 
         with pytest.raises(DBManagerError, match="Failed to initialize database"):
-            SearchEngine(db_path)
+            await SearchEngine.create(db_path)
 
 
 class TestSearchHybridFilters:
     """Tests for _search_hybrid via search() with various filter combinations."""
 
-    def test_search_with_to_filter(self, v11_db: str) -> None:
+    async def test_search_with_to_filter(self, v11_db: str) -> None:
         """Test search() with to: filter (covers lines 378-379)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         try:
             # Gmail-style query with to: filter + text for hybrid search
-            results = engine.search("test to:recipient@example.com")
+            results = await engine.search("test to:recipient@example.com")
             # Should return results or empty depending on data
             assert isinstance(results.total_results, int)
         finally:
-            engine.close()
+            await engine.close()
 
-    def test_search_with_before_filter(self, v11_db: str) -> None:
+    async def test_search_with_before_filter(self, v11_db: str) -> None:
         """Test search() with before: filter (covers lines 390-391)."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         try:
             # Gmail-style query with before: filter + text for hybrid search
-            results = engine.search("test before:2030/01/01")
+            results = await engine.search("test before:2030/01/01")
             # Should return results or empty depending on data
             assert isinstance(results.total_results, int)
         finally:
-            engine.close()
+            await engine.close()
 
-    def test_search_with_multiple_hybrid_filters(self, v11_db: str) -> None:
+    async def test_search_with_multiple_hybrid_filters(self, v11_db: str) -> None:
         """Test search() with multiple filters for hybrid search."""
-        engine = SearchEngine(v11_db)
+        engine = await SearchEngine.create(v11_db)
         try:
             # Gmail-style query with multiple filters + text for hybrid search
-            results = engine.search(
+            results = await engine.search(
                 "test from:sender@example.com to:recipient@example.com "
                 "after:2020/01/01 before:2030/01/01"
             )
             # Should return results or empty depending on data
             assert isinstance(results.total_results, int)
         finally:
-            engine.close()
+            await engine.close()

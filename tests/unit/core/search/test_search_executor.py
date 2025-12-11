@@ -1,7 +1,7 @@
 """Tests for search executor module (TDD)."""
 
 import sqlite3
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 
 import pytest
 
@@ -81,37 +81,42 @@ def test_db(v11_db_factory) -> str:
 
 
 @pytest.fixture
-def storage(test_db: str) -> Generator[HybridStorage]:
-    """Create HybridStorage for test database."""
-    db_manager = DBManager(test_db)
-    # Set row_factory for SearchExecutor compatibility
-    db_manager.conn.row_factory = sqlite3.Row
+async def storage(test_db: str) -> AsyncGenerator[HybridStorage]:
+    """Create HybridStorage for test database.
+
+    Uses async fixture to avoid asyncio.run() conflicts with pytest-asyncio.
+    """
+    db_manager = DBManager(test_db, validate_schema=False)
+    await db_manager.initialize()
     storage = HybridStorage(db_manager, preload_rfc_ids=False)
 
     yield storage
 
     # Cleanup
-    db_manager.close()
+    await db_manager.close()
 
 
+@pytest.mark.unit
 class TestSearchExecutor:
     """Test search execution."""
 
-    def test_execute_fulltext_search(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_fulltext_search(self, storage: HybridStorage) -> None:
         """Test executing fulltext search."""
         executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["meeting"], fts_query="meeting", original_query="meeting"
         )
 
-        results = executor.execute(params, limit=100, offset=0)
+        results = await executor.execute(params, limit=100, offset=0)
 
         assert results.total_results == 1
         assert len(results.results) == 1
         assert results.results[0].gmail_id == "msg1"
         assert results.results[0].subject == "Meeting Tomorrow"
 
-    def test_execute_metadata_search(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_metadata_search(self, storage: HybridStorage) -> None:
         """Test executing metadata-only search."""
         executor = SearchExecutor(storage)
         params = QueryParams(
@@ -121,12 +126,13 @@ class TestSearchExecutor:
             from_addr="alice",
         )
 
-        results = executor.execute(params, limit=100, offset=0)
+        results = await executor.execute(params, limit=100, offset=0)
 
         assert results.total_results == 1
         assert results.results[0].from_addr == "alice@test.com"
 
-    def test_execute_hybrid_search(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_hybrid_search(self, storage: HybridStorage) -> None:
         """Test executing hybrid FTS + metadata search."""
         executor = SearchExecutor(storage)
         params = QueryParams(
@@ -136,34 +142,37 @@ class TestSearchExecutor:
             from_addr="vendor",
         )
 
-        results = executor.execute(params, limit=100, offset=0)
+        results = await executor.execute(params, limit=100, offset=0)
 
         assert results.total_results == 1
         assert results.results[0].subject == "Invoice"
         assert "vendor" in results.results[0].from_addr
 
-    def test_execute_with_limit(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_with_limit(self, storage: HybridStorage) -> None:
         """Test limit parameter."""
         executor = SearchExecutor(storage)
         params = QueryParams(fulltext_terms=[], fts_query="", original_query="")
 
-        results = executor.execute(params, limit=1, offset=0)
+        results = await executor.execute(params, limit=1, offset=0)
 
         assert results.total_results == 1
         assert len(results.results) == 1
 
-    def test_execute_tracks_time(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_tracks_time(self, storage: HybridStorage) -> None:
         """Test that execution time is tracked."""
         executor = SearchExecutor(storage)
         params = QueryParams(
             fulltext_terms=["meeting"], fts_query="meeting", original_query="meeting"
         )
 
-        results = executor.execute(params, limit=100, offset=0)
+        results = await executor.execute(params, limit=100, offset=0)
 
         assert results.execution_time_ms > 0
 
-    def test_execute_invalid_fts_query(self, storage: HybridStorage) -> None:
+    @pytest.mark.asyncio
+    async def test_execute_invalid_fts_query(self, storage: HybridStorage) -> None:
         """Test handling of invalid FTS query."""
         executor = SearchExecutor(storage)
         params = QueryParams(
@@ -173,7 +182,7 @@ class TestSearchExecutor:
         )
 
         # Should return empty results rather than crash
-        results = executor.execute(params, limit=100, offset=0)
+        results = await executor.execute(params, limit=100, offset=0)
 
         assert results.total_results == 0
         assert len(results.results) == 0

@@ -1,6 +1,7 @@
 """Performance benchmarks for archive consolidation."""
 
 import mailbox
+import sqlite3
 import tempfile
 from collections.abc import Generator
 from datetime import datetime
@@ -9,7 +10,6 @@ from pathlib import Path
 import pytest
 
 from gmailarchiver.core.consolidator import ArchiveConsolidator
-from gmailarchiver.data.migration import MigrationManager
 
 
 @pytest.fixture
@@ -21,15 +21,68 @@ def temp_dir() -> Generator[Path]:
 
 @pytest.fixture
 def state_db(temp_dir: Path) -> Path:
-    """Create a test state database with v1.1 schema."""
+    """Create a test state database with v1.1 schema directly with SQLite."""
     db_path = temp_dir / "test_state.db"
 
-    # Create v1.1 schema using MigrationManager
-    migrator = MigrationManager(db_path)
-    conn = migrator._connect()
-    migrator._create_enhanced_schema(conn)
-    conn.commit()
-    migrator._close()
+    # Create v1.1 schema using direct SQLite (avoiding async MigrationManager)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                gmail_id TEXT PRIMARY KEY,
+                rfc_message_id TEXT UNIQUE,
+                thread_id TEXT,
+                subject TEXT,
+                from_addr TEXT,
+                to_addr TEXT,
+                cc_addr TEXT,
+                date TEXT,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                mbox_offset INTEGER,
+                mbox_length INTEGER,
+                body_preview TEXT,
+                checksum TEXT,
+                size_bytes INTEGER,
+                labels TEXT,
+                account_id TEXT DEFAULT 'default'
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_archive_file
+            ON messages(archive_file)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_rfc_id
+            ON messages(rfc_message_id)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT NOT NULL,
+                query TEXT,
+                messages_archived INTEGER NOT NULL,
+                archive_file TEXT,
+                account_id TEXT DEFAULT 'default',
+                operation_type TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, ?)",
+            ("1.1", datetime.now().isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
     return db_path
 
@@ -91,7 +144,8 @@ def create_large_mbox(path: Path, num_messages: int, state_db: Path, offset: int
         conn.close()
 
 
-def test_consolidate_10k_messages_performance(temp_dir: Path, state_db: Path) -> None:
+@pytest.mark.asyncio
+async def test_consolidate_10k_messages_performance(temp_dir: Path, state_db: Path) -> None:
     """Test consolidation of 10,000 messages completes in under 60 seconds."""
     # Create two archives with 5k messages each
     mbox1 = temp_dir / "archive1.mbox"
@@ -104,10 +158,11 @@ def test_consolidate_10k_messages_performance(temp_dir: Path, state_db: Path) ->
     from gmailarchiver.data.db_manager import DBManager
 
     db_manager = DBManager(str(state_db), validate_schema=False)
+    await db_manager.initialize()
     consolidator = ArchiveConsolidator(db_manager)
     output_path = temp_dir / "consolidated.mbox"
 
-    result = consolidator.consolidate(
+    result = await consolidator.consolidate(
         source_archives=[mbox1, mbox2],
         output_archive=output_path,
         sort_by_date=True,
@@ -128,8 +183,11 @@ def test_consolidate_10k_messages_performance(temp_dir: Path, state_db: Path) ->
         f"({result.execution_time_ms / 1000:.2f}s)"
     )
 
+    await db_manager.close()
 
-def test_consolidate_1k_messages_quick(temp_dir: Path, state_db: Path) -> None:
+
+@pytest.mark.asyncio
+async def test_consolidate_1k_messages_quick(temp_dir: Path, state_db: Path) -> None:
     """Test consolidation of 1,000 messages completes quickly."""
     # Create two archives with 500 messages each
     mbox1 = temp_dir / "archive1.mbox"
@@ -142,10 +200,11 @@ def test_consolidate_1k_messages_quick(temp_dir: Path, state_db: Path) -> None:
     from gmailarchiver.data.db_manager import DBManager
 
     db_manager = DBManager(str(state_db), validate_schema=False)
+    await db_manager.initialize()
     consolidator = ArchiveConsolidator(db_manager)
     output_path = temp_dir / "consolidated.mbox"
 
-    result = consolidator.consolidate(
+    result = await consolidator.consolidate(
         source_archives=[mbox1, mbox2],
         output_archive=output_path,
         sort_by_date=True,
@@ -165,3 +224,5 @@ def test_consolidate_1k_messages_quick(temp_dir: Path, state_db: Path) -> None:
         f"\n✓ Consolidated 1,000 messages in {result.execution_time_ms:.0f}ms "
         f"({result.execution_time_ms / 1000:.2f}s)"
     )
+
+    await db_manager.close()

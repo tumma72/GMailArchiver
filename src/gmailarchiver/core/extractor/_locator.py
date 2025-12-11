@@ -24,7 +24,7 @@ class MessageLocator:
         """
         self.db = db
 
-    def locate_by_gmail_id(self, gmail_id: str) -> MessageLocation | None:
+    async def locate_by_gmail_id(self, gmail_id: str) -> MessageLocation | None:
         """Locate message by Gmail ID.
 
         Args:
@@ -33,7 +33,7 @@ class MessageLocator:
         Returns:
             MessageLocation or None if not found
         """
-        result = self.db.get_message_location_by_gmail_id(gmail_id)
+        result = await self.db.get_message_location_by_gmail_id(gmail_id)
         if not result:
             return None
 
@@ -44,7 +44,7 @@ class MessageLocator:
             mbox_length=mbox_length,
         )
 
-    def locate_by_rfc_message_id(self, rfc_message_id: str) -> MessageLocation | None:
+    async def locate_by_rfc_message_id(self, rfc_message_id: str) -> MessageLocation | None:
         """Locate message by RFC 2822 Message-ID.
 
         Args:
@@ -53,7 +53,7 @@ class MessageLocator:
         Returns:
             MessageLocation or None if not found
         """
-        message = self.db.get_message_by_rfc_message_id(rfc_message_id)
+        message = await self.db.get_message_by_rfc_message_id(rfc_message_id)
         if not message:
             return None
 
