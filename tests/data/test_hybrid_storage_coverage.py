@@ -109,6 +109,8 @@ class TestHybridStorageInterruptHandling:
         assert result["interrupted"] is True
         assert result["archived"] == 0  # Should stop before archiving any
 
+        await db.close()
+
     async def test_archive_messages_batch_interrupt_mid_batch(self, temp_dir, v11_db):
         """Test interrupt occurring during batch processing."""
         db = DBManager(str(v11_db), validate_schema=False)
@@ -148,6 +150,8 @@ class TestHybridStorageInterruptHandling:
         assert result["interrupted"] is True
         assert result["archived"] >= 2  # At least some messages saved
         assert result["archived"] < 10  # Not all messages
+
+        await db.close()
 
 
 class TestHybridStorageProgressCallbacks:
@@ -195,6 +199,8 @@ class TestHybridStorageProgressCallbacks:
         assert callback_calls[0][0] == "gmail_2"
         assert callback_calls[0][2] == "skipped"
 
+        await db.close()
+
     async def test_progress_callback_on_success(self, temp_dir, v11_db):
         """Test progress callback called on successful archive (line 267)."""
         db = DBManager(str(v11_db), validate_schema=False)
@@ -223,6 +229,8 @@ class TestHybridStorageProgressCallbacks:
         assert len(callback_calls) == 1
         assert callback_calls[0][0] == "gmail_1"
         assert callback_calls[0][2] == "success"
+
+        await db.close()
 
     async def test_progress_callback_on_error(self, temp_dir, v11_db):
         """Test progress callback called on error (line 283)."""
@@ -257,6 +265,8 @@ class TestHybridStorageProgressCallbacks:
             assert callback_calls[0][0] == "gmail_1"
             assert callback_calls[0][2] == "error"
 
+        await db.close()
+
 
 class TestHybridStorageFallbackPaths:
     """Tests for fallback paths when mbox._file is not available (lines 219-222, 233)."""
@@ -287,6 +297,8 @@ class TestHybridStorageFallbackPaths:
         # Verify message was archived
         messages = await db.get_all_messages_for_archive(str(archive_file))
         assert len(messages) == 1
+
+        await db.close()
 
     async def test_length_calculation_fallback(self, temp_dir, v11_db):
         """Test length calculation fallback (line 233)."""
@@ -321,6 +333,8 @@ class TestHybridStorageFallbackPaths:
 
             # Verify add was called
             assert mock_instance.add.called
+
+        await db.close()
 
 
 class TestHybridStorageCleanupPaths:
@@ -360,6 +374,8 @@ class TestHybridStorageCleanupPaths:
 
             # Should have attempted unlock
             assert mock_instance.unlock.called
+
+        await db.close()
 
     async def test_close_exception_handling(self, temp_dir, v11_db):
         """Test exception handling during close (lines 302-303, 389-391)."""
@@ -401,6 +417,8 @@ class TestHybridStorageCleanupPaths:
             # Should have attempted close
             assert mock_file.close.called
 
+        await db.close()
+
     async def test_lock_file_cleanup_on_compression(self, temp_dir, v11_db):
         """Test lock file cleanup during compression (line 335)."""
         db = DBManager(str(v11_db), validate_schema=False)
@@ -427,3 +445,5 @@ class TestHybridStorageCleanupPaths:
 
         # Lock file should be removed after compression
         assert not lock_file.exists()
+
+        await db.close()

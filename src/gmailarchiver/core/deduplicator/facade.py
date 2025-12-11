@@ -3,8 +3,6 @@
 Coordinates scanning, resolution, and removal of duplicate messages.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
 

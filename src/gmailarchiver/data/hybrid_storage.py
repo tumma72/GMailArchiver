@@ -12,8 +12,6 @@ Key Features:
 - Support for all compression formats (gzip, lzma, zstd)
 """
 
-from __future__ import annotations
-
 import asyncio
 import email
 import gzip
