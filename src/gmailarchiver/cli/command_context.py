@@ -28,8 +28,8 @@ import inspect
 import logging
 import sys
 import traceback
-from collections.abc import Callable, Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Callable, Generator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn, ParamSpec, TypeVar
@@ -85,6 +85,7 @@ class CommandContext:
     _operation_name: str | None = field(default=None, repr=False)
     _live_context: Any = field(default=None, repr=False)
     _ui_builder: UIBuilder | None = field(default=None, repr=False)
+    _gmail_credentials: Any = field(default=None, repr=False)
 
     # ==================== OUTPUT METHODS ====================
 
@@ -217,8 +218,9 @@ class CommandContext:
                         return None
 
                 gmail = GmailClient(creds)
-                asyncio.run(gmail.__aenter__())  # Initialize HTTP client
+                asyncio.run(gmail.connect())  # Explicit initialization
                 self.gmail = gmail
+                self._gmail_credentials = creds
                 task.complete("Connected")
                 return gmail
             except FileNotFoundError as e:
@@ -239,6 +241,44 @@ class CommandContext:
                         suggestion="Run 'gmailarchiver auth-reset' and try again",
                     )
                 return None
+
+    @asynccontextmanager
+    async def gmail_session(
+        self,
+        credentials: str | None = None,
+        validate_deletion_scope: bool = False,
+    ) -> AsyncIterator[GmailClient]:
+        """Async context manager for Gmail client with proper lifecycle management.
+
+        This is the preferred way to use GmailClient - it ensures proper
+        initialization and cleanup of the HTTP client using async with.
+
+        Args:
+            credentials: Path to credentials file (uses bundled if None)
+            validate_deletion_scope: Require deletion permission
+
+        Yields:
+            Initialized GmailClient ready for API calls
+
+        Raises:
+            typer.Exit: If authentication fails
+
+        Example:
+            async with ctx.gmail_session() as gmail:
+                async for msg in gmail.list_messages("before:2022/01/01"):
+                    print(msg["id"])
+        """
+        # Authenticate if not already done
+        if self._gmail_credentials is None:
+            self.authenticate_gmail(
+                credentials=credentials,
+                validate_deletion_scope=validate_deletion_scope,
+                required=True,
+            )
+
+        # Use proper async context manager pattern
+        async with GmailClient(self._gmail_credentials) as client:
+            yield client
 
     # ==================== PROGRESS METHODS ====================
 

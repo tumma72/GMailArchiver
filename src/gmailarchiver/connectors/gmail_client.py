@@ -53,18 +53,43 @@ class GmailClient:
         self.max_retries = max_retries
         self.user_id = "me"
 
-        # Will be initialized in __aenter__
+        # Will be initialized in connect() or __aenter__
         self._http_client: httpx.AsyncClient | None = None
         self._rate_limiter = AdaptiveRateLimiter()
 
+    async def connect(self) -> GmailClient:
+        """Initialize HTTP client for making API requests.
+
+        This method provides explicit lifecycle management as an alternative
+        to using the async context manager pattern. Call close() when done.
+
+        Returns:
+            Self, for method chaining
+
+        Example (explicit lifecycle):
+            client = GmailClient(credentials)
+            await client.connect()
+            try:
+                async for msg in client.list_messages(...):
+                    ...
+            finally:
+                await client.close()
+
+        Example (context manager - preferred):
+            async with GmailClient(credentials) as client:
+                async for msg in client.list_messages(...):
+                    ...
+        """
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                http2=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+        return self
+
     async def __aenter__(self) -> GmailClient:
         """Async context manager entry."""
-        # Create httpx client with HTTP/2 enabled
-        self._http_client = httpx.AsyncClient(
-            http2=True,
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        return self
+        return await self.connect()
 
     async def __aexit__(
         self,

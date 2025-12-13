@@ -399,6 +399,7 @@ class TestWithContextDecorator:
             mock_auth = MagicMock()
             MockAuth.return_value = mock_auth
             mock_gmail = MagicMock()
+            mock_gmail.connect = AsyncMock(return_value=mock_gmail)
             MockGmail.return_value = mock_gmail
 
             test_cmd()
