@@ -217,6 +217,7 @@ class CommandContext:
                         return None
 
                 gmail = GmailClient(creds)
+                asyncio.run(gmail.__aenter__())  # Initialize HTTP client
                 self.gmail = gmail
                 task.complete("Connected")
                 return gmail
