@@ -4,7 +4,7 @@ Tests Gmail API lookups for real Gmail IDs during import.
 All tests use mocks - no actual API calls.
 """
 
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -28,16 +28,17 @@ class TestGmailLookupInit:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
 class TestGmailLookupLookupGmailId:
     """Tests for Gmail ID lookup."""
 
-    def test_lookup_gmail_id_found(self) -> None:
+    async def test_lookup_gmail_id_found(self) -> None:
         """Test looking up Gmail ID when message exists."""
         mock_client = Mock()
-        mock_client.search_by_rfc_message_id.return_value = "gmail123"
+        mock_client.search_by_rfc_message_id = AsyncMock(return_value="gmail123")
 
         lookup = GmailLookup(mock_client)
-        result = lookup.lookup_gmail_id("<test@example.com>")
+        result = await lookup.lookup_gmail_id("<test@example.com>")
 
         assert isinstance(result, LookupResult)
         assert result.gmail_id == "gmail123"
@@ -45,34 +46,36 @@ class TestGmailLookupLookupGmailId:
         assert result.error is None
         mock_client.search_by_rfc_message_id.assert_called_once_with("<test@example.com>")
 
-    def test_lookup_gmail_id_not_found(self) -> None:
+    async def test_lookup_gmail_id_not_found(self) -> None:
         """Test looking up Gmail ID when message doesn't exist."""
         mock_client = Mock()
-        mock_client.search_by_rfc_message_id.return_value = None
+        mock_client.search_by_rfc_message_id = AsyncMock(return_value=None)
 
         lookup = GmailLookup(mock_client)
-        result = lookup.lookup_gmail_id("<deleted@example.com>")
+        result = await lookup.lookup_gmail_id("<deleted@example.com>")
 
         assert result.gmail_id is None
         assert result.found is False
         assert result.error is None
 
-    def test_lookup_gmail_id_no_client(self) -> None:
+    async def test_lookup_gmail_id_no_client(self) -> None:
         """Test lookup when no Gmail client is configured."""
         lookup = GmailLookup(None)
-        result = lookup.lookup_gmail_id("<test@example.com>")
+        result = await lookup.lookup_gmail_id("<test@example.com>")
 
         assert result.gmail_id is None
         assert result.found is False
         assert result.error is None
 
-    def test_lookup_gmail_id_api_error(self) -> None:
+    async def test_lookup_gmail_id_api_error(self) -> None:
         """Test lookup when API raises exception."""
         mock_client = Mock()
-        mock_client.search_by_rfc_message_id.side_effect = Exception("API rate limit")
+        mock_client.search_by_rfc_message_id = AsyncMock(
+            side_effect=Exception("API rate limit")
+        )
 
         lookup = GmailLookup(mock_client)
-        result = lookup.lookup_gmail_id("<test@example.com>")
+        result = await lookup.lookup_gmail_id("<test@example.com>")
 
         assert result.gmail_id is None
         assert result.found is False

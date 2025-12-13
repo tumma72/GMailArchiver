@@ -132,7 +132,7 @@ This ensures:
 | **Interface** | CLI parsing, output formatting | `__main__.py`, CommandContext, OutputManager |
 | **Business Logic** | Core workflows, orchestration | Archiver, Importer, Validator, Search |
 | **Data** | Database, transactions, schema | HybridStorage (gateway), DBManager (internal), SchemaManager |
-| **Connectors** | External service integration | GmailClient, GmailAuthenticator |
+| **Connectors** | External service integration (async) | AsyncGmailClient, AdaptiveRateLimiter, GmailAuthenticator |
 | **Shared** | Cross-cutting utilities | utils, input_validator, path_validator |
 
 ### Layer Dependencies
@@ -961,6 +961,7 @@ class CommandContext {
 | [ADR-003](./adrs/003-web-ui-technology-stack.md) | Svelte 5 + FastAPI for Web UI | ✅ Accepted |
 | [ADR-004](./adrs/004-message-deduplication.md) | Message-ID exact matching | ✅ Accepted |
 | [ADR-005](./adrs/005-distribution-strategy.md) | Multi-tiered distribution | ✅ Accepted |
+| [ADR-006](./adrs/006-async-first-architecture.md) | Async-first architecture + httpx + adaptive rate limiting | ✅ Accepted |
 
 ### Key Decisions Summary
 

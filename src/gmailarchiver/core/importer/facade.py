@@ -170,7 +170,7 @@ class ImporterFacade:
                             progress_callback(
                                 msg_index + 1, total_messages, "Looking up Gmail ID..."
                             )
-                        lookup_result = gmail_lookup.lookup_gmail_id(rfc_message_id)
+                        lookup_result = await gmail_lookup.lookup_gmail_id(rfc_message_id)
                         gmail_id = lookup_result.gmail_id
                         if lookup_result.found:
                             result.gmail_ids_found += 1

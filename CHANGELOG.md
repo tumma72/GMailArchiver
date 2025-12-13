@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **AsyncGmailClient**: Native async Gmail API client using httpx with HTTP/2 support
+  - Uses `httpx` with HTTP/2 for multiplexed connections
+  - Async context manager for proper resource cleanup
+  - Methods: `list_messages()`, `get_message()`, `get_messages_batch()`, `trash_messages()`, `delete_messages_permanent()`
+  - Foundation for connectors layer async migration (Phase 2 of ADR-006)
+- **AdaptiveRateLimiter**: Token bucket rate limiter with dynamic backoff
+  - Token bucket algorithm for smooth rate limiting with burst capability
+  - Adaptive rate adjustment based on API responses (429, 5xx errors)
+  - Gradual rate recovery after consecutive successes
+  - Better than circuit breaker for quota-based APIs (graceful degradation vs. blocking)
+- **ArchiverFacade async integration** (Phase 3 of ADR-006):
+  - `is_async_client` property to detect async vs sync Gmail clients
+  - `list_messages_for_archive_async()` method for async message listing
+  - `delete_archived_messages_async()` method for async deletion
+  - `archive()` method auto-detects client type and uses appropriate listing method
+- **CLI async bridge** (Phase 4 of ADR-006):
+  - `CommandContext.async_gmail` attribute for async Gmail client access
+  - `CommandContext.is_async` property to check async client availability
+  - `@with_context(requires_async_gmail=True)` decorator parameter
+  - Automatic AsyncGmailClient initialization and cleanup in decorator
+
+### Changed
+- **Connectors module exports**: Added `AsyncGmailClient` and `AdaptiveRateLimiter` to public API
+- **ArchiverFacade**: Now supports both sync `GmailClient` and async `AsyncGmailClient`
+- **CommandContext**: Extended with async Gmail client support and `is_async` property
+- **`with_context` decorator**: Now accepts `requires_async_gmail` parameter
+- **Architecture documentation**: Updated ADR-006 with httpx rationale and adaptive rate limiting design
+
+### Dependencies
+- Added `httpx[http2]` for async HTTP client with HTTP/2 support
+
 ## [1.4.5] - 2025-12-05
 
 ### Fixed

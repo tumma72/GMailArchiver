@@ -15,7 +15,7 @@ import lzma
 import mailbox
 import sqlite3
 import tempfile
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from typing import Any
 
@@ -966,10 +966,6 @@ def sample_mbox(tmp_path: Path) -> Path:
 # ============================================================================
 # Doctor Test Fixtures
 # ============================================================================
-
-
-from collections.abc import AsyncGenerator
-from typing import Callable
 
 
 @pytest.fixture

@@ -210,25 +210,86 @@ async def get_storage(db_path: Path) -> AsyncIterator[HybridStorage]:
 
 ## Migration Strategy
 
-### Phase 1: Data Layer Foundation
+### Phase 1: Data Layer Foundation ✅
 - Convert DBManager to async with `aiosqlite`
 - Add `initialize()` method for lazy async initialization
 - Convert HybridStorage file I/O with `asyncio.to_thread()`
 
-### Phase 2: Core Facades
+### Phase 2: Connectors Layer 🔄
+- Replace `google-api-python-client` HTTP calls with `httpx` (HTTP/2 support)
+- Implement `AsyncGmailClient` with native async methods
+- Add `AdaptiveRateLimiter` with token bucket + dynamic backoff
+- See [connectors/ARCHITECTURE.md](../../src/gmailarchiver/connectors/ARCHITECTURE.md) for details
+
+### Phase 3: Core Facades
 - Add `async def` to all facade methods
 - Update internal method calls with `await`
 - Ensure proper async resource cleanup
 
-### Phase 3: CLI Bridge
+### Phase 4: CLI Bridge
 - Add `asyncio.run()` in each CLI command
 - Update `@with_context` decorator for async cleanup
 - Test all commands end-to-end
 
-### Phase 4: Test Migration
+### Phase 5: Test Migration
 - Add `@pytest.mark.asyncio` to async tests
 - Convert fixtures to async where needed
 - Update mocks with `AsyncMock`
+
+---
+
+## Connectors Layer: httpx + Adaptive Rate Limiting
+
+### Why httpx over google-api-python-client
+
+The official `google-api-python-client` has limitations:
+- Uses blocking `httplib2` internally
+- No native async support ([GitHub #1637](https://github.com/googleapis/google-api-python-client/issues/1637))
+- `time.sleep()` for rate limiting blocks event loop
+
+**httpx** provides:
+- Native async/await support
+- HTTP/2 multiplexing (multiple requests over single connection)
+- Familiar requests-like API
+- Full type annotations
+
+### Adaptive Rate Limiting vs Circuit Breaker
+
+We chose **adaptive rate limiting** over a full circuit breaker pattern:
+
+| Aspect | Circuit Breaker | Adaptive Rate Limiter |
+|--------|-----------------|----------------------|
+| On failure | Opens circuit, blocks ALL requests | Reduces rate, allows retries |
+| Recovery | Half-open state, slow recovery | Gradual rate increase after successes |
+| Use case | Protecting downstream services | Respecting API quotas |
+| User impact | Punishing (all requests blocked) | Graceful degradation |
+
+**Rationale:**
+1. Gmail API is quota-based, not capacity-based
+2. Single-user CLI doesn't need downstream protection
+3. 429 responses include `Retry-After` guidance
+4. Users waiting for archives shouldn't see total blockage
+
+### Token Bucket Algorithm
+
+```
+┌─────────────────────────────────────────┐
+│         AdaptiveRateLimiter             │
+├─────────────────────────────────────────┤
+│  max_tokens = 20      (burst capacity)  │
+│  refill_rate = 10/sec (sustained rate)  │
+│  min_refill_rate = 1/sec (floor)        │
+├─────────────────────────────────────────┤
+│  on_success():                          │
+│    consecutive_successes++              │
+│    if successes >= 10:                  │
+│      refill_rate *= 1.1 (up to max)     │
+│                                         │
+│  on_rate_limit(retry_after):            │
+│    refill_rate *= 0.5                   │
+│    return retry_after or backoff        │
+└─────────────────────────────────────────┘
+```
 
 ---
 

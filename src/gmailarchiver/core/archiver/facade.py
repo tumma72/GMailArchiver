@@ -1,7 +1,7 @@
 """ArchiverFacade - Public API for Gmail archiving operations.
 
 This module provides the public facade for the archiver package. It orchestrates
-internal modules (MessageLister, MessageFilter, MessageWriter) to provide a clean,
+internal modules (MessageFilter, MessageWriter) to provide a clean,
 simple API for archiving Gmail messages.
 
 This is the main entry point for archiving operations in the clean architecture.
@@ -16,9 +16,10 @@ from gmailarchiver.cli.output import OperationHandle, OutputManager
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
+from gmailarchiver.shared.input_validator import InvalidInputError
+from gmailarchiver.shared.utils import datetime_to_gmail_query, parse_age
 
 from ._filter import MessageFilter
-from ._lister import MessageLister
 from ._writer import MessageWriter
 
 
@@ -26,23 +27,23 @@ class ArchiverFacade:
     """Public facade for Gmail archiving operations.
 
     This is the main entry point for the archiver package. It orchestrates
-    internal modules (MessageLister, MessageFilter, MessageWriter) to provide
+    internal modules (MessageFilter, MessageWriter) to provide
     a clean, simple API for archiving Gmail messages.
 
     The facade implements a three-phase workflow:
-    1. List messages from Gmail (via MessageLister)
+    1. List messages from Gmail (async)
     2. Filter already-archived messages (via MessageFilter)
     3. Archive messages to mbox (via MessageWriter)
 
     Example:
-        >>> facade = ArchiverFacade(gmail_client=client)
-        >>> result = facade.archive(
-        ...     age_threshold="3y",
-        ...     output_file="archive.mbox",
-        ...     incremental=True,
-        ...     dry_run=False
-        ... )
-        >>> print(f"Archived {result['archived_count']} messages")
+        >>> async with await ArchiverFacade.create(gmail_client=client) as facade:
+        ...     result = await facade.archive(
+        ...         age_threshold="3y",
+        ...         output_file="archive.mbox",
+        ...         incremental=True,
+        ...         dry_run=False
+        ...     )
+        ...     print(f"Archived {result['archived_count']} messages")
     """
 
     def __init__(
@@ -55,7 +56,7 @@ class ArchiverFacade:
         """Initialize facade with dependencies (internal - use create() instead).
 
         Args:
-            gmail_client: Authenticated Gmail client for API calls
+            gmail_client: Authenticated async Gmail client for API calls
             db_manager: Initialized DBManager instance
             storage: HybridStorage instance for atomic operations
             output_manager: Optional output manager for progress reporting
@@ -67,7 +68,6 @@ class ArchiverFacade:
         self.storage = storage
 
         # Initialize internal modules with injected dependencies
-        self._lister = MessageLister(gmail_client=gmail_client)
         self._filter = MessageFilter(db_manager=self.db_manager)
         self._writer = MessageWriter(gmail_client=gmail_client, storage=self.storage)
 
@@ -81,7 +81,7 @@ class ArchiverFacade:
         """Create and initialize archiver facade.
 
         Args:
-            gmail_client: Authenticated Gmail client for API calls
+            gmail_client: Authenticated async Gmail client for API calls
             state_db_path: Path to state database for tracking archived messages
             output_manager: Optional output manager for progress reporting
 
@@ -97,14 +97,12 @@ class ArchiverFacade:
 
         return cls(gmail_client, db_manager, storage, output_manager)
 
-    def list_messages_for_archive(
+    async def list_messages_for_archive(
         self,
         age_threshold: str,
         progress_callback: Callable[[int, int], None] | None = None,
-    ) -> tuple[str, list[dict[str, str]]]:
+    ) -> tuple[str, list[dict[str, Any]]]:
         """List messages from Gmail matching age threshold.
-
-        Delegates to MessageLister for implementation.
 
         Args:
             age_threshold: Age expression (e.g., '3y', '6m') or ISO date
@@ -117,7 +115,26 @@ class ArchiverFacade:
         Raises:
             InvalidInputError: If age_threshold format is invalid
         """
-        return self._lister.list_messages(age_threshold, progress_callback=progress_callback)
+        # Parse age threshold to Gmail query (wrap ValueError in InvalidInputError)
+        try:
+            cutoff_date = parse_age(age_threshold)
+        except ValueError as e:
+            raise InvalidInputError(f"Invalid age threshold: {age_threshold}") from e
+        query = f"before:{datetime_to_gmail_query(cutoff_date)}"
+
+        # Collect messages from async generator
+        messages: list[dict[str, Any]] = []
+        count = 0
+        page = 0
+
+        async for msg in self.gmail_client.list_messages(query):
+            messages.append(msg)
+            count += 1
+            if progress_callback and count % 100 == 0:
+                page += 1
+                progress_callback(count, page)
+
+        return query, messages
 
     async def filter_already_archived(
         self,
@@ -204,7 +221,7 @@ class ArchiverFacade:
         """
         # Phase 1: List messages from Gmail
         progress_callback = getattr(operation, "progress_callback", None) if operation else None
-        query, message_list = self.list_messages_for_archive(
+        query, message_list = await self.list_messages_for_archive(
             age_threshold, progress_callback=progress_callback
         )
 
@@ -262,7 +279,9 @@ class ArchiverFacade:
             **result,
         }
 
-    def delete_archived_messages(self, message_ids: list[str], permanent: bool = False) -> int:
+    async def delete_archived_messages(
+        self, message_ids: list[str], permanent: bool = False
+    ) -> int:
         """Delete or trash archived messages from Gmail.
 
         Args:
@@ -273,9 +292,9 @@ class ArchiverFacade:
             Number of messages deleted/trashed
         """
         if permanent:
-            return self.gmail_client.delete_messages_permanent(message_ids)
+            return await self.gmail_client.delete_messages_permanent(message_ids)
         else:
-            return self.gmail_client.trash_messages(message_ids)
+            return await self.gmail_client.trash_messages(message_ids)
 
     async def close(self) -> None:
         """Close database connections and release resources.
@@ -284,7 +303,7 @@ class ArchiverFacade:
         """
         await self.db_manager.close()
 
-    async def __aenter__(self) -> "ArchiverFacade":
+    async def __aenter__(self) -> ArchiverFacade:
         """Async context manager entry."""
         return self
 

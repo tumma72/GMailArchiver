@@ -141,6 +141,11 @@ def archive(
     archiver = asyncio.run(_create_archiver())
 
     # Async helpers for async methods
+    async def _list_messages_for_archive(
+        threshold: str, progress_cb: Any
+    ) -> tuple[str, list[dict[str, Any]]]:
+        return await archiver.list_messages_for_archive(threshold, progress_callback=progress_cb)
+
     async def _filter_already_archived(ids: list[str], inc: bool) -> tuple[list[str], int]:
         return await archiver.filter_already_archived(ids, incremental=inc)
 
@@ -175,8 +180,8 @@ def archive(
                     scan_count = count
                     task.set_status(f"Scanning messages from Gmail... {count:,} found")
 
-                _query, message_list = archiver.list_messages_for_archive(
-                    age_threshold, progress_callback=scan_progress
+                _query, message_list = asyncio.run(
+                    _list_messages_for_archive(age_threshold, scan_progress)
                 )
 
                 if message_list:
@@ -313,7 +318,8 @@ def archive(
                 title="Validation Failed",
                 message="Archive validation did not pass all checks",
                 details=validation_results.get("errors", []),
-                suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
+                suggestion="Check disk space and file permissions. "
+                "DO NOT delete Gmail messages yet.",
             )
 
         ctx.success("Archive validation passed")
@@ -339,7 +345,7 @@ def archive(
 
             # Perform permanent deletion
             with out.progress_context("Permanently deleting messages", total=None):
-                gmail_client.delete_messages_permanent(list(archived_ids))
+                asyncio.run(gmail_client.delete_messages_permanent(list(archived_ids)))
             ctx.success("Messages permanently deleted")
 
         elif trash:
@@ -351,7 +357,7 @@ def archive(
                 return
 
             with out.progress_context("Moving messages to trash", total=None):
-                gmail_client.trash_messages(list(archived_ids))
+                asyncio.run(gmail_client.trash_messages(list(archived_ids)))
             ctx.success("Messages moved to trash")
 
     # Phase 7: Final report
@@ -568,7 +574,7 @@ def retry_delete_cmd(
                 return
 
             # Perform permanent deletion
-            archiver.delete_archived_messages(message_ids, permanent=True)
+            asyncio.run(archiver.delete_archived_messages(message_ids, permanent=True))
 
         else:
             # Trash deletion (default) - still ask for confirmation
@@ -580,7 +586,7 @@ def retry_delete_cmd(
                 return
 
             # Move to trash
-            archiver.delete_archived_messages(message_ids, permanent=False)
+            asyncio.run(archiver.delete_archived_messages(message_ids, permanent=False))
 
         ctx.success("Deletion completed successfully!")
 
@@ -3889,7 +3895,10 @@ def doctor(
                 fix_rows: list[list[str]] = []
 
                 for fix_result in fix_results:
-                    status = "[green]✓ FIXED[/green]" if fix_result.success else "[red]✗ FAILED[/red]"
+                    if fix_result.success:
+                        status = "[green]✓ FIXED[/green]"
+                    else:
+                        status = "[red]✗ FAILED[/red]"
                     fix_rows.append([fix_result.check_name, status, fix_result.message])
 
                 ctx.show_table("Auto-Fix Results", headers, fix_rows)
@@ -4118,11 +4127,12 @@ def backfill_gmail_ids_cmd(
 
         # Use the batch method for efficient lookups
         ctx.info("\nLooking up Gmail IDs...")
-        results = client.search_by_rfc_message_ids_batch(
-            rfc_ids_to_lookup,
-            progress_callback=progress_callback,
-            batch_size=batch_size,
-            batch_delay=1.2,  # Delay between batches to avoid rate limits
+        results = asyncio.run(
+            client.search_by_rfc_message_ids_batch(
+                rfc_ids_to_lookup,
+                progress_callback=progress_callback,
+                batch_size=batch_size,
+            )
         )
 
         # Process results

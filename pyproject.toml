@@ -31,6 +31,7 @@ dependencies = [
     "questionary>=2.0.0",
     "aiosqlite>=0.21.0",
     "aiofiles>=25.1.0",
+    "httpx[http2]>=0.28.1",
 ]
 
 [project.urls]

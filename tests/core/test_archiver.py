@@ -5,6 +5,7 @@ import lzma
 import tempfile
 from compression import zstd
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -15,12 +16,52 @@ from gmailarchiver.shared.input_validator import InvalidInputError
 pytestmark = pytest.mark.asyncio
 
 
+def create_mock_async_client(
+    messages: list[dict[str, Any]] | None = None,
+    raw_email: bytes = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody",
+) -> Mock:
+    """Create a mock GmailClient with proper async methods.
+
+    Args:
+        messages: List of message dicts to return from list_messages
+        raw_email: Raw email bytes to return from decode_message_raw
+
+    Returns:
+        Mock configured as GmailClient
+    """
+    mock_client = Mock()
+
+    # Mock list_messages as async generator
+    async def mock_list_messages(query: str, max_results: int = 100):
+        for msg in (messages or []):
+            yield msg
+
+    mock_client.list_messages = mock_list_messages
+
+    # Mock get_messages_batch as async generator
+    async def mock_get_messages_batch(message_ids: list[str], format: str = "raw"):
+        for msg in (messages or []):
+            if msg.get("id") in message_ids:
+                yield msg
+
+    mock_client.get_messages_batch = mock_get_messages_batch
+
+    # Mock decode_message_raw (sync method)
+    mock_client.decode_message_raw.return_value = raw_email
+
+    # Mock async delete/trash methods
+    mock_client.delete_messages_permanent = AsyncMock(return_value=0)
+    mock_client.trash_messages = AsyncMock(return_value=0)
+
+    return mock_client
+
+
 class TestArchiverFacadeInit:
     """Tests for ArchiverFacade initialization."""
 
     async def test_init(self) -> None:
         """Test initialization via create()."""
-        mock_client = Mock()
+        mock_client = create_mock_async_client()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test_state.db"
@@ -34,7 +75,7 @@ class TestArchiverFacadeInit:
 
     async def test_init_default_db_path(self) -> None:
         """Test initialization with default database path."""
-        mock_client = Mock()
+        mock_client = create_mock_async_client()
 
         # Use a temp dir to avoid creating files in user's home
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -50,11 +91,9 @@ class TestArchiverFacadeInit:
 class TestArchive:
     """Tests for archive method."""
 
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_archive_no_messages_found(self, mock_list: Mock) -> None:
+    async def test_archive_no_messages_found(self) -> None:
         """Test archiving when no messages match criteria."""
-        mock_client = Mock()
-        mock_list.return_value = ("before:2022/01/01", [])
+        mock_client = create_mock_async_client(messages=[])
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -67,22 +106,18 @@ class TestArchive:
 
             await archiver.close()
 
-    @patch("gmailarchiver.core.archiver._filter.MessageFilter.filter_archived")
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_archive_all_already_archived(self, mock_list: Mock, mock_filter: Mock) -> None:
+    async def test_archive_all_already_archived(self) -> None:
         """Test archiving when all messages already archived."""
-        mock_client = Mock()
-        mock_list.return_value = (
-            "before:2022/01/01",
-            [{"id": "msg1", "threadId": "thread1"}, {"id": "msg2", "threadId": "thread2"}],
-        )
-        # All messages filtered (already archived) - use AsyncMock for async method
-        mock_filter.return_value = ([], 2)
+        messages = [
+            {"id": "msg1", "threadId": "thread1"},
+            {"id": "msg2", "threadId": "thread2"},
+        ]
+        mock_client = create_mock_async_client(messages=messages)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
-            # Replace the filter method with our mock
+            # All messages filtered (already archived)
             archiver._filter.filter_archived = AsyncMock(return_value=([], 2))
             result = await archiver.archive("3y", "test.mbox", incremental=True)
 
@@ -92,11 +127,10 @@ class TestArchive:
 
             await archiver.close()
 
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_archive_dry_run(self, mock_list: Mock) -> None:
+    async def test_archive_dry_run(self) -> None:
         """Test dry run mode."""
-        mock_client = Mock()
-        mock_list.return_value = ("before:2024/06/01", [{"id": "msg1", "threadId": "thread1"}])
+        messages = [{"id": "msg1", "threadId": "thread1"}]
+        mock_client = create_mock_async_client(messages=messages)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -110,11 +144,10 @@ class TestArchive:
 
             await archiver.close()
 
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_archive_dry_run_with_compression(self, mock_list: Mock) -> None:
+    async def test_archive_dry_run_with_compression(self) -> None:
         """Test dry run with compression specified."""
-        mock_client = Mock()
-        mock_list.return_value = ("before:2024/01/01", [{"id": "msg1", "threadId": "thread1"}])
+        messages = [{"id": "msg1", "threadId": "thread1"}]
+        mock_client = create_mock_async_client(messages=messages)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -128,7 +161,7 @@ class TestArchive:
 
     async def test_archive_invalid_age_threshold(self) -> None:
         """Test that invalid age threshold raises error."""
-        mock_client = Mock()
+        mock_client = create_mock_async_client()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -140,12 +173,10 @@ class TestArchive:
             finally:
                 await archiver.close()
 
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_archive_invalid_compression(self, mock_list: Mock) -> None:
+    async def test_archive_invalid_compression(self) -> None:
         """Test that invalid compression format raises error."""
-        mock_client = Mock()
-        # Mock lister to return some messages so we get to the compress validation
-        mock_list.return_value = ("before:2022/01/01", [{"id": "msg1", "threadId": "thread1"}])
+        messages = [{"id": "msg1", "threadId": "thread1"}]
+        mock_client = create_mock_async_client(messages=messages)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -233,11 +264,10 @@ class TestCompressArchive:
             if dest_path.exists():
                 dest_path.unlink()
 
-    @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
-    async def test_compress_invalid_format(self, mock_list: Mock) -> None:
+    async def test_compress_invalid_format(self) -> None:
         """Test that invalid compression format in archive raises error."""
-        mock_client = Mock()
-        mock_list.return_value = ("before:2022/01/01", [{"id": "msg1", "threadId": "thread1"}])
+        messages = [{"id": "msg1", "threadId": "thread1"}]
+        mock_client = create_mock_async_client(messages=messages)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
@@ -305,19 +335,10 @@ class TestArchiveMessagesIntegration:
         mock_storage_class: Mock,
     ) -> None:
         """Test successful archiving of messages."""
-        # Setup mock client
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
-        # Mock get_messages_batch to return a message with raw data
+        # Setup mock client with messages
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-        mock_message = {
-            "id": "msg1",
-            "threadId": "thread1",
-            "raw": "dGVzdA==",  # base64 encoded
-        }
-        mock_client.get_messages_batch.return_value = [mock_message]
-        mock_client.decode_message_raw.return_value = test_email
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Mock DBManager
         mock_db = Mock()
@@ -372,13 +393,9 @@ class TestArchiveMessagesIntegration:
         mock_storage_class: Mock,
     ) -> None:
         """Test archiving with compression (gzip)."""
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-        mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-        mock_client.get_messages_batch.return_value = [mock_message]
-        mock_client.decode_message_raw.return_value = test_email
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Mock DBManager
         mock_db = Mock()
@@ -431,13 +448,9 @@ class TestArchiveMessagesIntegration:
         mock_storage_class: Mock,
     ) -> None:
         """Test archiving removes orphaned lock files."""
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-        mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-        mock_client.get_messages_batch.return_value = [mock_message]
-        mock_client.decode_message_raw.return_value = test_email
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Mock DBManager
         mock_db = Mock()
@@ -491,13 +504,9 @@ class TestArchiveMessagesIntegration:
         mock_storage_class: Mock,
     ) -> None:
         """Test that archiving records run in state database."""
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-        mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-        mock_client.get_messages_batch.return_value = [mock_message]
-        mock_client.decode_message_raw.return_value = test_email
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Mock DBManager - record_archived_message is called by HybridStorage
         mock_db = Mock()
@@ -549,17 +558,13 @@ class TestArchiveMessagesIntegration:
         mock_storage_class: Mock,
     ) -> None:
         """Test that individual messages are marked as archived in state."""
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = (
             b"From: test@example.com\r\n"
             b"Subject: Test Subject\r\n"
             b"Date: Mon, 1 Jan 2024 12:00:00 +0000\r\n\r\nBody"
         )
-        mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-        mock_client.get_messages_batch.return_value = [mock_message]
-        mock_client.decode_message_raw.return_value = test_email
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Mock DBManager
         mock_db = Mock()
@@ -612,14 +617,14 @@ class TestDeleteArchivedMessages:
     @patch("builtins.print")
     async def test_delete_permanent(self, mock_print: Mock) -> None:
         """Test permanent deletion."""
-        mock_client = Mock()
-        mock_client.delete_messages_permanent.return_value = 5
+        mock_client = create_mock_async_client()
+        mock_client.delete_messages_permanent = AsyncMock(return_value=5)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-            count = archiver.delete_archived_messages(
+            count = await archiver.delete_archived_messages(
                 ["msg1", "msg2", "msg3", "msg4", "msg5"], permanent=True
             )
 
@@ -631,14 +636,16 @@ class TestDeleteArchivedMessages:
     @patch("builtins.print")
     async def test_delete_trash(self, mock_print: Mock) -> None:
         """Test moving to trash."""
-        mock_client = Mock()
-        mock_client.trash_messages.return_value = 3
+        mock_client = create_mock_async_client()
+        mock_client.trash_messages = AsyncMock(return_value=3)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-            count = archiver.delete_archived_messages(["msg1", "msg2", "msg3"], permanent=False)
+            count = await archiver.delete_archived_messages(
+                ["msg1", "msg2", "msg3"], permanent=False
+            )
 
             assert count == 3
             mock_client.trash_messages.assert_called_once()
@@ -666,14 +673,10 @@ class TestAtomicOperations:
             # Create v1.1 database schema
             self._create_v11_db(db_path)
 
-            # Setup mock client
-            mock_client = Mock()
-            mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+            # Setup mock client with messages
+            messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
             test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-            mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-            mock_client.get_messages_batch.return_value = [mock_message]
-            mock_client.decode_message_raw.return_value = test_email
+            mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
             # Archive using HybridStorage
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
@@ -707,20 +710,13 @@ class TestAtomicOperations:
             mbox_path = temp_path / "test.mbox"
             mbox_path.touch()
 
-            # Setup mock client
-            mock_client = Mock()
-            mock_client.list_messages.return_value = [
-                {"id": "msg1", "threadId": "thread1"},
-                {"id": "msg2", "threadId": "thread2"},
-            ]
-
-            test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-            mock_messages = [
+            # Setup mock client with messages
+            messages = [
                 {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="},
                 {"id": "msg2", "threadId": "thread2", "raw": "dGVzdA=="},
             ]
-            mock_client.get_messages_batch.return_value = mock_messages
-            mock_client.decode_message_raw.return_value = test_email
+            test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
+            mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
             # Mock DBManager
             mock_db = Mock()
@@ -772,13 +768,9 @@ class TestAtomicOperations:
             self._create_v11_db(db_path)
 
             # Setup mock client
-            mock_client = Mock()
-            mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
+            messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
             test_email = b"From: test@example.com\r\nSubject: Test\r\n\r\nBody"
-            mock_message = {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}
-            mock_client.get_messages_batch.return_value = [mock_message]
-            mock_client.decode_message_raw.return_value = test_email
+            mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
             # Archive message
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
@@ -923,9 +915,6 @@ class TestV11OffsetTracking:
             conn.commit()
             conn.close()
 
-            # Setup mock client
-            mock_client = Mock()
-
             # Create test email
             msg = email.message.EmailMessage()
             msg["Message-ID"] = "<test123@example.com>"
@@ -946,12 +935,14 @@ class TestV11OffsetTracking:
                 "labelIds": ["INBOX", "IMPORTANT"],
             }
 
-            def mock_get_messages_batch(ids: list[str]) -> list[dict[str, str | list[str]]]:
-                """Mock batch message retrieval."""
-                return [mock_message]
+            # Create mock client with async generator
+            mock_client = Mock()
 
-            mock_client.decode_message_raw.return_value = raw_email
+            async def mock_get_messages_batch(ids: list[str], format: str = "raw"):
+                yield mock_message
+
             mock_client.get_messages_batch = mock_get_messages_batch
+            mock_client.decode_message_raw.return_value = raw_email
 
             # Create archiver and archive (use public API)
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
@@ -1029,7 +1020,7 @@ class TestExceptionHandling:
             mock_dbmanager_class.return_value = mock_db
 
             # Setup mock client
-            mock_client = Mock()
+            mock_client = create_mock_async_client()
 
             # With new architecture, exception is raised during facade construction
             with pytest.raises(Exception, match="Schema validation failed"):
@@ -1062,9 +1053,9 @@ class TestExceptionHandling:
             )  # For duplicate pre-filtering
             mock_db_class.return_value = mock_db
 
-            # Setup mock client
-            mock_client = Mock()
-            mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
+            # Setup mock client with messages
+            messages = [{"id": "msg1", "threadId": "thread1"}]
+            mock_client = create_mock_async_client(messages=messages)
 
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
             result = await archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
@@ -1094,7 +1085,7 @@ class TestExceptionHandling:
             mock_dbmanager_class.return_value = mock_db
 
             # Setup mock client
-            mock_client = Mock()
+            mock_client = create_mock_async_client()
 
             # With new architecture, exception is raised during facade construction
             with pytest.raises(Exception, match="Schema validation failed"):
@@ -1114,22 +1105,13 @@ class TestArchiveWithOperationHandle:
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
         """Test that archiver uses operation handle for logging and progress."""
-        # Setup mock client
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [
-            {"id": "msg1", "threadId": "thread1"},
-            {"id": "msg2", "threadId": "thread2"},
+        # Setup mock client with messages
+        messages = [
+            {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="},
+            {"id": "msg2", "threadId": "thread2", "raw": "dGVzdA=="},
         ]
-
-        # Setup mock message data
-        # Base64: "Subject: Test Subject\n\nTest body"
-        mock_message_data = {
-            "id": "msg1",
-            "threadId": "thread1",
-            "raw": "U3ViamVjdDogVGVzdCBTdWJqZWN0CgpUZXN0IGJvZHk=",
-        }
-        mock_client.get_messages_batch.return_value = [mock_message_data, mock_message_data]
-        mock_client.decode_message_raw.return_value = b"Subject: Test Subject\n\nTest body"
+        test_email = b"Subject: Test Subject\n\nTest body"
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Setup mock DBManager
         mock_db = Mock()
@@ -1227,18 +1209,10 @@ class TestArchiveWithOperationHandle:
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
         """Test that archiver works without operation handle (backward compatibility)."""
-        # Setup mock client
-        mock_client = Mock()
-        mock_client.list_messages.return_value = [{"id": "msg1", "threadId": "thread1"}]
-
-        # Setup mock message data
-        mock_message_data = {
-            "id": "msg1",
-            "threadId": "thread1",
-            "raw": "U3ViamVjdDogVGVzdCBTdWJqZWN0CgpUZXN0IGJvZHk=",
-        }
-        mock_client.get_messages_batch.return_value = [mock_message_data]
-        mock_client.decode_message_raw.return_value = b"Subject: Test Subject\n\nTest body"
+        # Setup mock client with messages
+        messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
+        test_email = b"Subject: Test Subject\n\nTest body"
+        mock_client = create_mock_async_client(messages=messages, raw_email=test_email)
 
         # Setup mock DBManager
         mock_db = Mock()

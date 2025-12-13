@@ -1,6 +1,6 @@
 # Connectors Layer Architecture
 
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-13
 
 The connectors layer provides external system integrations: Gmail API access, OAuth authentication, and platform-specific scheduling.
 
@@ -13,7 +13,8 @@ The connectors layer provides external system integrations: Gmail API access, OA
 | **Dependencies** | `shared` layer only |
 | **Dependents** | `core`, `cli` layers |
 | **Responsibility** | Gmail API, OAuth2, platform scheduling |
-| **Thread Safety** | Not thread-safe (credentials/service objects not shared) |
+| **Concurrency Model** | Async-first with asyncio (v1.6.0+) |
+| **HTTP Library** | httpx (HTTP/2 support) |
 
 ---
 
@@ -60,53 +61,161 @@ classDiagram
 
 ---
 
-### GmailClient
+### GmailClient (Async)
 
-Gmail API wrapper with retry logic and batch operations.
+Async Gmail API client with adaptive rate limiting and HTTP/2 support.
 
 ```mermaid
 classDiagram
-    class GmailClient {
-        +service: Resource
+    class AsyncGmailClient {
+        -_http_client: httpx.AsyncClient
+        -_rate_limiter: AdaptiveRateLimiter
+        -_credentials: Credentials
         +batch_size: int
         +max_retries: int
-        +batch_delay: float
         +__init__(credentials, batch_size, max_retries)
-        +list_messages(query) list
-        +get_messages_batch(message_ids) list
+        +list_messages(query) AsyncIterator~dict~
+        +get_messages_batch(message_ids) AsyncIterator~dict~
         +get_message(message_id) dict
-        +delete_message(message_id)
-        +trash_message(message_id)
+        +trash_messages(message_ids) int
+        +delete_messages_permanent(message_ids) int
+        +close() None
     }
+
+    class AdaptiveRateLimiter {
+        -_tokens: float
+        -_max_tokens: float
+        -_refill_rate: float
+        -_min_refill_rate: float
+        -_last_refill: float
+        -_consecutive_successes: int
+        +acquire() Awaitable~None~
+        +on_success() None
+        +on_rate_limit(retry_after) float
+        +on_server_error() None
+    }
+
+    AsyncGmailClient --> AdaptiveRateLimiter
 ```
 
-#### Interface
+#### Async Interface
 
-- **List messages**: Query Gmail with automatic pagination
-- **Batch fetch**: Retrieve multiple messages efficiently
-- **Retry logic**: Exponential backoff for rate limits and server errors
-- **Delete/trash**: Remove messages from Gmail
+All methods are async and non-blocking:
 
-#### Retry Strategy
+| Method | Purpose | Returns |
+|--------|---------|---------|
+| `list_messages(query)` | Query Gmail with pagination | `AsyncIterator[dict]` |
+| `get_messages_batch(ids)` | Fetch multiple messages | `AsyncIterator[dict]` |
+| `get_message(id)` | Fetch single message | `dict` |
+| `trash_messages(ids)` | Move to trash | `int` (count) |
+| `delete_messages_permanent(ids)` | Permanently delete | `int` (count) |
+
+#### Adaptive Rate Limiting
+
+The `AdaptiveRateLimiter` uses a token bucket algorithm with dynamic rate adjustment:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Healthy: Initial state
+
+    Healthy --> Healthy: Success (refill tokens)
+    Healthy --> Throttled: 429 Rate Limit
+    Healthy --> Degraded: 5xx Server Error
+
+    Throttled --> Throttled: More 429s (decrease rate)
+    Throttled --> Recovering: Wait + Success
+
+    Recovering --> Healthy: N consecutive successes
+    Recovering --> Throttled: 429 Rate Limit
+
+    Degraded --> Recovering: Success after wait
+    Degraded --> Degraded: More 5xx (backoff)
+```
+
+**Token Bucket Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_tokens` | 20 | Burst capacity |
+| `refill_rate` | 10/sec | Sustained rate (baseline) |
+| `min_refill_rate` | 1/sec | Floor when heavily throttled |
+| `backoff_factor` | 0.5 | Rate reduction on 429 |
+| `recovery_threshold` | 10 | Successes before rate increase |
+
+**Behavior:**
+
+1. **Normal operation**: Token bucket allows bursts up to 20 requests, sustains 10 req/sec
+2. **On 429**: Reduce refill rate by 50%, wait for `Retry-After` header (or exponential backoff)
+3. **On 5xx**: Short backoff, don't reduce rate (transient error)
+4. **Recovery**: After 10 consecutive successes, increase rate by 10% (up to baseline)
+
+#### Request Flow (Async)
 
 ```mermaid
 sequenceDiagram
-    participant C as GmailClient
-    participant A as Gmail API
+    participant Core as Core Layer
+    participant Client as AsyncGmailClient
+    participant RL as AdaptiveRateLimiter
+    participant HTTP as httpx.AsyncClient
+    participant Gmail as Gmail API
 
-    C->>A: API request
-    alt Success
-        A-->>C: Response
-    else Rate limit (429)
-        A-->>C: 429 Error
-        C->>C: Wait (2^retry + jitter)
-        C->>A: Retry request
-    else Server error (500/503)
-        A-->>C: 5xx Error
-        C->>C: Wait (2^retry + jitter)
-        C->>A: Retry request
+    Core->>Client: await get_messages_batch(ids)
+
+    loop For each batch
+        Client->>RL: await acquire()
+        RL->>RL: Wait for token (if needed)
+        RL-->>Client: Token acquired
+
+        Client->>HTTP: POST /batch (HTTP/2)
+        HTTP->>Gmail: Multiplexed request
+
+        alt Success (200)
+            Gmail-->>HTTP: Batch response
+            HTTP-->>Client: Parsed messages
+            Client->>RL: on_success()
+            Client-->>Core: yield messages
+        else Rate Limit (429)
+            Gmail-->>HTTP: 429 + Retry-After
+            HTTP-->>Client: RateLimitError
+            Client->>RL: on_rate_limit(retry_after)
+            RL->>RL: Reduce refill_rate
+            Client->>Client: await asyncio.sleep(wait)
+            Note over Client: Retry same batch
+        else Server Error (5xx)
+            Gmail-->>HTTP: 500/503
+            HTTP-->>Client: ServerError
+            Client->>RL: on_server_error()
+            Client->>Client: await asyncio.sleep(backoff)
+            Note over Client: Retry with exponential backoff
+        end
     end
 ```
+
+#### HTTP/2 Benefits
+
+Using httpx with HTTP/2 provides:
+
+- **Multiplexing**: Multiple requests over single connection (reduces TCP overhead)
+- **Header compression**: HPACK reduces bandwidth
+- **Server push**: (Not used by Gmail API, but available)
+- **Better latency**: No head-of-line blocking
+
+```python
+# HTTP/2 enabled by default with httpx
+async with httpx.AsyncClient(http2=True) as client:
+    response = await client.get("https://gmail.googleapis.com/...")
+```
+
+#### Why No Circuit Breaker
+
+We use adaptive rate limiting instead of a full circuit breaker because:
+
+1. **Single-user CLI**: No need to protect downstream services
+2. **Predictable API**: Gmail has quota-based limits, not capacity-based
+3. **User experience**: Circuit breaker "open" state blocks ALL requests
+4. **Gmail behavior**: 429 errors include `Retry-After` guidance
+
+Adaptive rate limiting provides the benefits (backoff, recovery) without the "punishing" aspect of blocking all requests.
 
 ---
 
@@ -201,9 +310,14 @@ classDiagram
 graph TB
     subgraph "Connectors Layer"
         AUTH[GmailAuthenticator]
-        CLIENT[GmailClient]
+        CLIENT[AsyncGmailClient]
+        RL[AdaptiveRateLimiter]
         SCHED[Scheduler]
         PLAT[PlatformScheduler]
+    end
+
+    subgraph "HTTP Layer"
+        HTTPX[httpx.AsyncClient<br/>HTTP/2]
     end
 
     subgraph "External"
@@ -214,10 +328,45 @@ graph TB
 
     AUTH --> GOOGLE
     AUTH --> CLIENT
-    CLIENT --> GMAIL
+    CLIENT --> RL
+    CLIENT --> HTTPX
+    HTTPX --> GMAIL
     SCHED --> PLAT
     PLAT --> SYSTEMD
 ```
+
+### Async Migration Strategy
+
+The connectors layer is part of the bottom-up async migration:
+
+```mermaid
+graph TB
+    subgraph "1. Data Layer ✅"
+        DB[DBManager<br/>aiosqlite]
+        HS[HybridStorage<br/>async context managers]
+    end
+
+    subgraph "2. Connectors Layer 🔄"
+        GC[AsyncGmailClient<br/>httpx + async]
+        RL[AdaptiveRateLimiter]
+    end
+
+    subgraph "3. Core Layer (Next)"
+        ARCH[ArchiverFacade]
+        IMP[ImporterFacade]
+    end
+
+    subgraph "4. CLI Layer (Bridge)"
+        CMD["Commands<br/>asyncio.run()"]
+    end
+
+    DB --> HS
+    GC --> ARCH
+    HS --> ARCH
+    ARCH --> CMD
+```
+
+**Key Principle:** CLI layer is the ONLY place where `asyncio.run()` bridges sync commands to async processing.
 
 ---
 
@@ -245,11 +394,60 @@ graph TB
 
 ## Testing Strategy
 
-| Component | Test Focus |
-|-----------|------------|
-| `GmailAuthenticator` | OAuth flow mocking, token refresh, scope validation |
-| `GmailClient` | API responses, retry logic, batch operations |
-| `Scheduler` | CRUD operations, validation, edge cases |
-| `PlatformScheduler` | File generation (no actual installation in tests) |
+| Component | Test Focus | Async |
+|-----------|------------|-------|
+| `GmailAuthenticator` | OAuth flow mocking, token refresh, scope validation | No |
+| `AsyncGmailClient` | API responses, retry logic, batch operations | Yes |
+| `AdaptiveRateLimiter` | Token bucket behavior, backoff, recovery | Yes |
+| `Scheduler` | CRUD operations, validation, edge cases | No |
+| `PlatformScheduler` | File generation (no actual installation in tests) | No |
+
+### Async Testing Patterns
+
+```python
+import pytest
+from unittest.mock import AsyncMock, patch
+
+@pytest.mark.asyncio
+async def test_rate_limiter_backs_off_on_429():
+    """Test that rate limiter reduces rate on 429 errors."""
+    limiter = AdaptiveRateLimiter()
+    initial_rate = limiter.refill_rate
+
+    # Simulate 429 response
+    wait_time = limiter.on_rate_limit(retry_after=5.0)
+
+    assert wait_time == 5.0  # Respects Retry-After
+    assert limiter.refill_rate < initial_rate  # Rate reduced
+
+@pytest.mark.asyncio
+async def test_client_uses_http2():
+    """Test that client creates HTTP/2 connection."""
+    with patch("httpx.AsyncClient") as mock_client:
+        async with AsyncGmailClient(credentials) as client:
+            pass
+        mock_client.assert_called_with(http2=True, ...)
+```
+
+### Mock Fixtures
+
+```python
+@pytest.fixture
+def mock_gmail_api():
+    """Mock Gmail API responses for testing."""
+    return {
+        "messages": [{"id": "msg1"}, {"id": "msg2"}],
+        "nextPageToken": None,
+    }
+
+@pytest.fixture
+def mock_rate_limited_response():
+    """Mock 429 response with Retry-After header."""
+    return httpx.Response(
+        429,
+        headers={"Retry-After": "5"},
+        json={"error": {"code": 429, "message": "Rate limit exceeded"}},
+    )
+```
 
 See `tests/connectors/` for test implementations.

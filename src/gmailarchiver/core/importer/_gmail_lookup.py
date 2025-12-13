@@ -35,7 +35,7 @@ class GmailLookup:
         """Initialize GmailLookup with optional Gmail client.
 
         Args:
-            gmail_client: Optional authenticated Gmail client for API calls.
+            gmail_client: Optional authenticated async Gmail client for API calls.
                          If None, lookups are skipped.
         """
         self.client = gmail_client
@@ -48,7 +48,7 @@ class GmailLookup:
         """
         return self.client is not None
 
-    def lookup_gmail_id(self, rfc_message_id: str) -> LookupResult:
+    async def lookup_gmail_id(self, rfc_message_id: str) -> LookupResult:
         """Look up Gmail ID for message by RFC Message-ID.
 
         Args:
@@ -61,7 +61,7 @@ class GmailLookup:
             return LookupResult(gmail_id=None, found=False, error=None)
 
         try:
-            gmail_id = self.client.search_by_rfc_message_id(rfc_message_id)  # type: ignore[union-attr]
+            gmail_id = await self.client.search_by_rfc_message_id(rfc_message_id)  # type: ignore[union-attr]
             if gmail_id:
                 return LookupResult(gmail_id=gmail_id, found=True, error=None)
             else:

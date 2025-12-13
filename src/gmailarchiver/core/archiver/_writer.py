@@ -34,7 +34,7 @@ class MessageWriter:
         """Initialize MessageWriter with Gmail client and hybrid storage.
 
         Args:
-            gmail_client: Gmail API client for fetching messages
+            gmail_client: Async Gmail API client for fetching messages
             storage: HybridStorage instance for atomic mbox+database operations
         """
         self.client = gmail_client
@@ -142,7 +142,7 @@ class MessageWriter:
             operation.set_total(len(message_ids), "Fetching messages from Gmail")
 
         try:
-            for message in self.client.get_messages_batch(message_ids):
+            async for message in self.client.get_messages_batch(message_ids):
                 # Check for interrupt during fetch
                 if self._interrupted.is_set():
                     self._log(

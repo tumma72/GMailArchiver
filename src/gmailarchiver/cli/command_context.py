@@ -619,6 +619,13 @@ def with_context(
                 if json_output:
                     output.end_operation(success=True)
 
+                # Cleanup Gmail client if initialized
+                if ctx.gmail is not None:
+                    try:
+                        asyncio.run(ctx.gmail.close())
+                    except Exception:
+                        pass
+
                 # Cleanup resources
                 # Note: HybridStorage doesn't own the DBManager connection,
                 # so we close the underlying DBManager directly
