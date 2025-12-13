@@ -305,37 +305,42 @@ def archive(
         )
         return
 
-    # Phase 5: Validation (outside live context for clean output)
-    ctx.info("Validating archive...")
-
+    # Phase 5: Validation (with spinner for UI feedback)
     # Get the actual file that was written
     actual_file = result.get("actual_file", output) if result else output
 
     # Get the actual message IDs that were archived
     # (ctx.storage is guaranteed by requires_storage=True)
     assert ctx.storage is not None
-    archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(actual_file))
 
-    # Validate using ValidatorFacade directly
-    validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
-    try:
-        validation_results: dict[str, Any] = validator.validate_comprehensive(archived_ids)
+    validation_results: dict[str, Any] = {}
+    with ctx.ui.spinner("Validating archive") as task:
+        archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(actual_file))
 
-        # Show validation report using new panel method
-        out.show_validation_report(validation_results, title="Archive Validation")
+        # Validate using ValidatorFacade directly
+        validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
+        try:
+            validation_results = validator.validate_comprehensive(archived_ids)
+            if validation_results["passed"]:
+                task.complete("Passed all checks")
+            else:
+                task.fail("Failed")
+        finally:
+            asyncio.run(validator.close())
 
-        if not validation_results["passed"]:
-            ctx.fail_and_exit(
-                title="Validation Failed",
-                message="Archive validation did not pass all checks",
-                details=validation_results.get("errors", []),
-                suggestion="Check disk space and file permissions. "
-                "DO NOT delete Gmail messages yet.",
-            )
+    # Show validation report using panel method (outside spinner)
+    out.show_validation_report(validation_results, title="Archive Validation")
 
-        ctx.success("Archive validation passed")
-    finally:
-        asyncio.run(validator.close())
+    if not validation_results["passed"]:
+        ctx.fail_and_exit(
+            title="Validation Failed",
+            message="Archive validation did not pass all checks",
+            details=validation_results.get("errors", []),
+            suggestion="Check disk space and file permissions. "
+            "DO NOT delete Gmail messages yet.",
+        )
+
+    ctx.success("Archive validation passed")
 
     # Get archived count from result
     archived_count = result.get("archived_count", 0) if result else 0
@@ -398,18 +403,23 @@ def archive(
     ctx.show_report("Archive Summary", report_data)
     ctx.success("Archive completed successfully!")
 
-    # Suggest next steps
-    next_steps = [
-        f"Validate archive: gmailarchiver validate {output}",
-    ]
+    # Suggest contextual next steps
+    next_steps: list[str] = []
 
-    if not trash and not delete:
-        next_steps.append(f"Move to trash: gmailarchiver utilities retry-delete {output}")
+    if archived_count > 0 and not trash and not delete:
+        # Only suggest deletion options if messages were archived and no deletion was done
         next_steps.append(
-            f"Permanently delete: gmailarchiver utilities retry-delete {output} --permanent"
+            f"Move to trash (recoverable): gmailarchiver archive {age_threshold} --trash"
         )
+        next_steps.append(
+            f"Delete permanently: gmailarchiver archive {age_threshold} --delete"
+        )
+    elif archived_count == 0:
+        # No messages archived - suggest status check
+        next_steps.append("Check archive status: gmailarchiver status")
 
-    ctx.suggest_next_steps(next_steps)
+    if next_steps:
+        ctx.suggest_next_steps(next_steps)
 
 
 @app.command()
