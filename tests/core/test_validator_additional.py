@@ -102,6 +102,7 @@ class TestValidatorOffsetVerification:
             # Should return skipped result
             assert result.skipped is True
             assert result.total_checked == 0
+        await validator.close()
 
     @pytest.mark.asyncio
     async def test_verify_offsets_no_messages_table(self) -> None:
@@ -123,6 +124,7 @@ class TestValidatorOffsetVerification:
 
             # Should skip verification
             assert result.skipped is True
+        await validator.close()
 
     @pytest.mark.asyncio
     async def test_verify_offsets_query_exception(self) -> None:
@@ -148,6 +150,7 @@ class TestValidatorOffsetVerification:
 
             # Should skip verification due to missing required columns
             assert result.skipped is True
+        await validator.close()
 
     @pytest.mark.asyncio
     async def test_verify_offsets_no_messages_for_archive(self) -> None:
@@ -178,6 +181,7 @@ class TestValidatorOffsetVerification:
             # Should skip with no messages
             assert result.skipped is True
             assert result.total_checked == 0
+        await validator.close()
 
     def test_verify_offsets_read_exception(self) -> None:
         """Test verify_offsets handles read exceptions (lines 411-413)."""
@@ -222,6 +226,7 @@ class TestValidatorConsistencyPaths:
                 # Should have error
                 assert len(report.errors) > 0
                 assert "Failed to read mbox" in report.errors[0]
+        await validator.close()
 
     def test_verify_consistency_fts_exception(self) -> None:
         """Test verify_consistency handles FTS query exceptions (line 560)."""

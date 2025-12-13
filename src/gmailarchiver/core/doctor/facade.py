@@ -277,3 +277,16 @@ class Doctor:
         if self._db_manager:
             await self._db_manager.close()
             self._db_manager = None
+
+    async def __aenter__(self) -> Self:
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        """Async context manager exit - ensures resources are closed."""
+        await self.close()

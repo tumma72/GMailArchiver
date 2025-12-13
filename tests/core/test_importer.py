@@ -271,6 +271,7 @@ class TestImporterFacadeInit:
         await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         assert importer.db_manager == db_manager
+        await db_manager.close()
 
     async def test_init_creates_db_if_not_exists(self, tmp_path):
         """Test initialization creates database if it doesn't exist."""
@@ -279,6 +280,7 @@ class TestImporterFacadeInit:
         await db_manager.initialize()
         importer = ImporterFacade(db_manager)
         assert importer.db_manager == db_manager
+        await db_manager.close()
 
 
 class TestImportSingleArchive:
@@ -299,6 +301,7 @@ class TestImportSingleArchive:
         assert result.messages_failed == 0
         assert result.execution_time_ms > 0
         assert len(result.errors) == 0
+        await db_manager.close()
 
     async def test_import_verifies_database_population(self, v1_1_db, sample_mbox_simple):
         """Test that imported messages are in database."""
@@ -315,6 +318,7 @@ class TestImportSingleArchive:
         conn.close()
 
         assert count == 3
+        await db_manager.close()
 
     async def test_import_with_skip_duplicates_true(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing with duplicate Message-IDs (skipped)."""
@@ -340,6 +344,7 @@ class TestImportSingleArchive:
         # On second import: all messages already exist in DB
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 3  # All 3 messages are duplicates
+        await db_manager.close()
 
     async def test_import_with_skip_duplicates_false(self, v1_1_db, sample_mbox_with_duplicates):
         """Test importing without skipping duplicates (uses INSERT OR REPLACE)."""
@@ -374,6 +379,7 @@ class TestImportSingleArchive:
         # All messages imported (replaced) successfully
         assert result2.messages_imported == 3
         assert result2.messages_failed == 0
+        await db_manager.close()
 
     async def test_import_with_malformed_messages(self, v1_1_db, sample_mbox_malformed):
         """Test importing mbox with malformed message (graceful handling)."""
@@ -389,6 +395,7 @@ class TestImportSingleArchive:
         assert result.messages_imported == 3
         assert result.messages_skipped == 0
         assert result.messages_failed == 0
+        await db_manager.close()
 
     async def test_import_with_custom_account_id(self, v1_1_db, sample_mbox_simple):
         """Test importing with custom account_id."""
@@ -407,6 +414,7 @@ class TestImportSingleArchive:
         conn.close()
 
         assert "custom-account" in account_ids
+        await db_manager.close()
 
     async def test_import_returns_execution_time(self, v1_1_db, sample_mbox_simple):
         """Test that import result includes execution time."""
@@ -418,6 +426,7 @@ class TestImportSingleArchive:
 
         assert result.execution_time_ms > 0
         assert result.execution_time_ms < 10000  # Should be < 10 seconds
+        await db_manager.close()
 
 
 class TestOffsetCalculation:
@@ -452,6 +461,7 @@ class TestOffsetCalculation:
                 # Parse and verify Message-ID
                 msg = email.message_from_bytes(message_bytes)
                 assert msg.get("Message-ID", "").strip() == rfc_message_id
+        await db_manager.close()
 
     async def test_offsets_are_non_negative(self, v1_1_db, sample_mbox_simple):
         """Test that all offsets are non-negative."""
@@ -469,6 +479,7 @@ class TestOffsetCalculation:
         for offset, length in rows:
             assert offset >= 0
             assert length > 0
+        await db_manager.close()
 
     async def test_offsets_are_unique_per_message(self, v1_1_db, sample_mbox_simple):
         """Test that each message has a unique offset."""
@@ -485,6 +496,7 @@ class TestOffsetCalculation:
 
         # All offsets should be unique
         assert len(offsets) == len(set(offsets))
+        await db_manager.close()
 
     async def test_offsets_with_compressed_archive(self, v1_1_db, sample_mbox_compressed):
         """Test offset calculation on decompressed data."""
@@ -505,6 +517,7 @@ class TestOffsetCalculation:
         for offset, length in rows:
             assert offset >= 0
             assert length > 0
+        await db_manager.close()
 
 
 class TestMetadataExtraction:
@@ -564,6 +577,7 @@ class TestMetadataExtraction:
         assert checksum is not None
         assert size_bytes > 0
         assert account_id == "default"
+        await db_manager.close()
 
     async def test_extract_thread_id_from_xgm_thrid(self, v1_1_db, tmp_path):
         """Test thread ID extraction from X-GM-THRID header."""
@@ -598,6 +612,7 @@ class TestMetadataExtraction:
         conn.close()
 
         assert thread_id == "1234567890abcdef"
+        await db_manager.close()
 
     async def test_extract_thread_id_from_references_fallback(self, v1_1_db, tmp_path):
         """Test thread ID extraction from References header when X-GM-THRID is missing."""
@@ -632,6 +647,7 @@ class TestMetadataExtraction:
         conn.close()
 
         assert thread_id == "<original@example.com>"
+        await db_manager.close()
 
     async def test_extract_thread_id_none_when_missing(self, v1_1_db, tmp_path):
         """Test thread ID is None when both X-GM-THRID and References are missing."""
@@ -665,6 +681,7 @@ class TestMetadataExtraction:
         conn.close()
 
         assert thread_id is None
+        await db_manager.close()
 
     async def test_body_preview_multipart_with_decoding_error(self, v1_1_db, tmp_path):
         """Test body preview extraction handles decoding errors in multipart messages."""
@@ -707,6 +724,7 @@ class TestMetadataExtraction:
         conn.close()
 
         assert "Valid text content" in body_preview
+        await db_manager.close()
 
     async def test_body_preview_non_multipart_with_decoding_error(self, v1_1_db, tmp_path):
         """Test body preview extraction handles decoding errors in non-multipart messages."""
@@ -743,6 +761,7 @@ class TestMetadataExtraction:
 
         assert body_preview is not None
         assert "Valid content" in body_preview
+        await db_manager.close()
 
     async def test_extract_rfc_message_id(self, v1_1_db, sample_mbox_simple):
         """Test RFC Message-ID extraction."""
@@ -760,6 +779,7 @@ class TestMetadataExtraction:
         assert "<msg1@example.com>" in message_ids
         assert "<msg2@example.com>" in message_ids
         assert "<msg3@example.com>" in message_ids
+        await db_manager.close()
 
     async def test_generate_fallback_message_id(self, v1_1_db, sample_mbox_no_message_id):
         """Test fallback Message-ID generation for messages without Message-ID."""
@@ -781,6 +801,7 @@ class TestMetadataExtraction:
         assert "<has-id@example.com>" in message_ids
         # Fallback should be a hash-based ID
         assert any("@generated>" in mid for mid in message_ids)
+        await db_manager.close()
 
     async def test_body_preview_extraction(self, v1_1_db, sample_mbox_simple):
         """Test body preview extraction (first 1000 chars)."""
@@ -801,6 +822,7 @@ class TestMetadataExtraction:
         assert body_preview is not None
         assert "longer content for body preview testing" in body_preview
         assert len(body_preview) <= 1000
+        await db_manager.close()
 
     async def test_checksum_calculation(self, v1_1_db, sample_mbox_simple):
         """Test SHA256 checksum calculation."""
@@ -820,6 +842,7 @@ class TestMetadataExtraction:
             assert checksum is not None
             assert len(checksum) == 64
             assert all(c in "0123456789abcdef" for c in checksum)
+        await db_manager.close()
 
 
 class TestDuplicateHandling:
@@ -841,6 +864,7 @@ class TestDuplicateHandling:
         await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 3
+        await db_manager.close()
 
     async def test_duplicate_count_in_result(self, v1_1_db, sample_mbox_simple):
         """Test that skipped count is accurate."""
@@ -856,6 +880,7 @@ class TestDuplicateHandling:
 
         assert result.messages_skipped == 3
         assert result.messages_imported == 0
+        await db_manager.close()
 
     async def test_duplicate_handling_across_archives(self, v1_1_db, sample_mbox_simple, tmp_path):
         """Test duplicate detection across different archive files."""
@@ -887,6 +912,7 @@ class TestDuplicateHandling:
         await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 1
+        await db_manager.close()
 
 
 class TestCompressionSupport:
@@ -902,6 +928,7 @@ class TestCompressionSupport:
 
         assert result.messages_imported == 2
         assert result.messages_failed == 0
+        await db_manager.close()
 
     async def test_compressed_archive_stores_compressed_filename(
         self, v1_1_db, sample_mbox_compressed
@@ -920,6 +947,7 @@ class TestCompressionSupport:
 
         # Should store the .gz filename
         assert any(str(sample_mbox_compressed) in af for af in archive_files)
+        await db_manager.close()
 
     async def test_compression_detection_from_extension(self, tmp_path):
         """Test compression format detection from file extension."""
@@ -967,6 +995,7 @@ class TestCompressionSupport:
 
         assert result.messages_imported == 1
         assert result.messages_failed == 0
+        await db_manager.close()
 
     async def test_import_zstd_compressed_archive(self, v1_1_db, tmp_path):
         """Test importing zstd-compressed (.zst) mbox."""
@@ -1004,6 +1033,7 @@ class TestCompressionSupport:
 
         assert result.messages_imported == 1
         assert result.messages_failed == 0
+        await db_manager.close()
 
     # NOTE: test_compression_format_detection removed - compression detection
     # is now tested in unit/core/importer/test_scanner.py
@@ -1024,6 +1054,7 @@ class TestCompressionSupport:
         with pytest.raises(RuntimeError, match="Failed to decompress"):
             await importer.import_archive(str(corrupted_path))
             await db_manager.commit()  # Ensure changes are committed
+        await db_manager.close()
 
 
 class TestErrorHandling:
@@ -1057,6 +1088,7 @@ class TestErrorHandling:
         # Should import successfully
         assert result.messages_imported == 1
         assert result.messages_failed == 0
+        await db_manager.close()
 
     async def test_error_handling_with_corrupt_db(self, tmp_path):
         """Test error details when there are issues."""
@@ -1087,6 +1119,7 @@ class TestErrorHandling:
         with pytest.raises((FileNotFoundError, Exception)):
             await importer.import_archive(str(nonexistent))
             await db_manager.commit()  # Ensure changes are committed
+        await db_manager.close()
 
     async def test_database_query_error_handling(self, v1_1_db, tmp_path):
         """Test error handling when database query fails during duplicate check."""
@@ -1118,6 +1151,7 @@ class TestErrorHandling:
         result2 = await importer.import_archive(str(mbox_path), skip_duplicates=True)
         await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 1  # Message already exists
+        await db_manager.close()
 
     async def test_database_insert_error_recovery(self, v1_1_db, tmp_path):
         """Test that database insert errors are caught and recorded."""
@@ -1162,6 +1196,7 @@ class TestErrorHandling:
         await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 2
         assert result2.messages_failed == 0
+        await db_manager.close()
 
     async def test_import_multiple_with_file_error(self, v1_1_db, tmp_path):
         """Test that import_multiple continues after file-level errors."""
@@ -1198,6 +1233,7 @@ class TestErrorHandling:
         # Check that at least one file succeeded
         successful_files = [r for r in result.file_results if r.messages_imported > 0]
         assert len(successful_files) >= 1
+        await db_manager.close()
 
     async def test_body_preview_multipart_exception_handling(self, v1_1_db, tmp_path):
         """Test exception handling in multipart body preview extraction."""
@@ -1243,6 +1279,7 @@ class TestErrorHandling:
 
         # Body preview will be empty since no text/plain part exists
         assert body_preview == ""
+        await db_manager.close()
 
     async def test_body_preview_non_multipart_exception_handling(self, v1_1_db, tmp_path):
         """Test exception handling in non-multipart body preview extraction."""
@@ -1268,6 +1305,7 @@ class TestErrorHandling:
 
         # Should import successfully despite non-text content
         assert result.messages_imported == 1
+        await db_manager.close()
 
     async def test_import_multiple_error_recovery(self, v1_1_db, tmp_path):
         """Test that import_multiple records errors but continues processing files."""
@@ -1307,6 +1345,7 @@ class TestErrorHandling:
         # One should have an error
         error_results = [r for r in result.file_results if len(r.errors) > 0]
         assert len(error_results) >= 1
+        await db_manager.close()
 
 
 class TestMultipleArchiveImport:
@@ -1340,6 +1379,7 @@ class TestMultipleArchiveImport:
         assert result.total_messages_imported == 3
         assert result.total_messages_skipped == 0
         assert result.total_messages_failed == 0
+        await db_manager.close()
 
     async def test_import_multiple_returns_per_file_results(self, v1_1_db, tmp_path):
         """Test that import_multiple returns results for each file."""
@@ -1367,6 +1407,7 @@ class TestMultipleArchiveImport:
         assert len(result.file_results) == 2
         for file_result in result.file_results:
             assert isinstance(file_result, ImportResult)
+        await db_manager.close()
 
     async def test_import_multiple_with_no_matching_files(self, v1_1_db, tmp_path):
         """Test import_multiple with pattern that matches no files."""
@@ -1378,6 +1419,7 @@ class TestMultipleArchiveImport:
 
         assert result.total_files == 0
         assert result.total_messages_imported == 0
+        await db_manager.close()
 
 
 class TestPerformance:
@@ -1412,6 +1454,7 @@ class TestPerformance:
 
         assert result.messages_imported == 1000
         assert elapsed < 6.0  # Must be under 6 seconds
+        await db_manager.close()
 
     async def test_report_messages_per_second(self, v1_1_db, tmp_path):
         """Test performance reporting (messages/second)."""
@@ -1442,6 +1485,7 @@ class TestPerformance:
 
         # Should process at least 100 messages/second
         assert msg_per_sec > 100
+        await db_manager.close()
 
 
 class TestDBManagerIntegration:
@@ -1465,6 +1509,7 @@ class TestDBManagerIntegration:
             row = await cursor.fetchone()
             count = row[0]
             assert count == 3
+        await db_manager.close()
 
     async def test_atomic_import_operations(self, v1_1_db, sample_mbox_simple):
         """Test that import operations are atomic (all or nothing)."""
@@ -1483,6 +1528,7 @@ class TestDBManagerIntegration:
             row = await cursor.fetchone()
             count = row[0]
             assert count == 3
+        await db_manager.close()
 
     async def test_audit_trail_in_archive_runs(self, v1_1_db, sample_mbox_simple):
         """Test that import operations are recorded in archive_runs."""
@@ -1507,6 +1553,7 @@ class TestDBManagerIntegration:
         # Should have audit trail entries
         assert run_count > 0
         assert total_messages == 3
+        await db_manager.close()
 
     async def test_error_handling_with_rollback(self, v1_1_db, tmp_path):
         """Test proper error handling with database rollback."""
@@ -1538,6 +1585,7 @@ class TestDBManagerIntegration:
         await db_manager.commit()  # Ensure changes are committed
         assert result2.messages_skipped == 1
         assert result2.messages_imported == 0
+        await db_manager.close()
 
     async def test_no_direct_sql_queries_in_importer(self, v1_1_db, sample_mbox_simple):
         """Test that importer doesn't use direct SQL queries."""
@@ -1565,6 +1613,7 @@ class TestDBManagerIntegration:
                 assert msg_data["mbox_offset"] >= 0
                 assert msg_data["mbox_length"] > 0
                 assert msg_data["archive_file"] == str(sample_mbox_simple)
+        await db_manager.close()
 
     async def test_extract_body_preview_multipart_exception_handling(
         self, v1_1_db: Path, tmp_path: Path
@@ -1598,6 +1647,7 @@ class TestDBManagerIntegration:
         result = await importer.import_archive(str(mbox_path))
         await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 1
+        await db_manager.close()
 
     async def test_extract_body_preview_non_multipart_exception_handling(
         self, v1_1_db: Path, tmp_path: Path
@@ -1625,6 +1675,7 @@ class TestDBManagerIntegration:
         result = await importer.import_archive(str(mbox_path))
         await db_manager.commit()  # Ensure changes are committed
         assert result.messages_imported == 1
+        await db_manager.close()
 
 
 async def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_path: Path) -> None:
@@ -1675,6 +1726,7 @@ async def test_import_handles_duplicate_messages_constraint(v1_1_db: Path, tmp_p
     conn.close()
 
     assert count == 1, f"Expected 1 message (duplicate replaced), got {count}"
+    await db_manager.close()
 
 
 async def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Path) -> None:
@@ -1716,6 +1768,7 @@ async def test_importer_extract_body_non_multipart_payload_exception(v1_1_db: Pa
 
         # Should complete without crashing (body might be empty or partial)
         assert result.messages_imported >= 0
+    await db_manager.close()
 
 
 async def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
@@ -1768,6 +1821,7 @@ async def test_importer_database_constraint_violation(v1_1_db: Path) -> None:
         assert result2.messages_failed > 0 or result2.messages_skipped > 0, (
             "Second import should detect duplicates"
         )
+    await db_manager.close()
 
 
 async def test_importer_message_processing_exception(v1_1_db: Path) -> None:
@@ -1801,6 +1855,7 @@ async def test_importer_message_processing_exception(v1_1_db: Path) -> None:
         # Either way, should not crash
         assert result.messages_failed >= 0
         assert result.messages_imported >= 0
+    await db_manager.close()
 
 
 async def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
@@ -1842,6 +1897,7 @@ async def test_importer_multipart_decode_exception(v1_1_db: Path) -> None:
 
         # Should complete successfully
         assert result.messages_imported == 1
+    await db_manager.close()
 
 
 async def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
@@ -1878,6 +1934,7 @@ async def test_importer_extract_body_exception_path(v1_1_db: Path) -> None:
         await db_manager.commit()  # Ensure changes are committed
 
         assert result.messages_imported == 1
+    await db_manager.close()
 
 
 async def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -> None:
@@ -1897,6 +1954,7 @@ async def test_count_messages_returns_zero_for_nonexistent_file(v1_1_db: Path) -
         count = importer.count_messages(str(nonexistent))
 
         assert count == 0
+    await db_manager.close()
 
 
 async def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
@@ -1932,6 +1990,7 @@ async def test_import_with_new_database_creates_schema(tmp_path: Path) -> None:
     # Should import successfully
     assert result.messages_imported == 1
     assert db_path.exists()
+    await db_manager.close()
 
 
 class TestImporterExceptionHandling:
@@ -1967,6 +2026,7 @@ class TestImporterExceptionHandling:
             # Temp file should be cleaned up
             temp_files = list(Path(tmpdir).glob("tmp*.mbox"))
             assert len(temp_files) == 0
+        await db_manager.close()
 
     # NOTE: Tests for private implementation details (_extract_rfc_message_id,
     # _extract_body_preview) moved to unit/core/importer/test_writer.py

@@ -963,6 +963,52 @@ def sample_mbox(tmp_path: Path) -> Path:
     return mbox_path
 
 
+# ============================================================================
+# Doctor Test Fixtures
+# ============================================================================
+
+
+from collections.abc import AsyncGenerator
+from typing import Callable
+
+
+@pytest.fixture
+async def doctor(v11_db: str) -> AsyncGenerator:
+    """Create a Doctor instance for a v1.1 database with automatic cleanup.
+
+    This is the primary fixture for simple doctor tests that need a Doctor
+    instance for a valid v1.1 database.
+
+    Yields:
+        Doctor instance (properly closed on teardown)
+    """
+    from gmailarchiver.core.doctor import Doctor
+
+    doc = await Doctor.create(v11_db)
+    try:
+        yield doc
+    finally:
+        await doc.close()
+
+
+@pytest.fixture
+async def memory_doctor() -> AsyncGenerator:
+    """Create a Doctor instance for an in-memory database with automatic cleanup.
+
+    Use this for tests that need a Doctor but don't need persistent data.
+
+    Yields:
+        Doctor instance with :memory: database (properly closed on teardown)
+    """
+    from gmailarchiver.core.doctor import Doctor
+
+    doc = await Doctor.create(":memory:")
+    try:
+        yield doc
+    finally:
+        await doc.close()
+
+
 @pytest.fixture
 def sample_mbox_with_duplicates(tmp_path: Path) -> Path:
     """Create mbox file with duplicate Message-IDs.

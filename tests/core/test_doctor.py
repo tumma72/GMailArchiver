@@ -76,6 +76,7 @@ async def test_check_database_schema_v11(v11_db: str) -> None:
     assert result.severity == CheckSeverity.OK
     assert "v1.1" in result.message
     assert result.fixable is False
+    await doctor.close()
 
 
 async def test_check_database_schema_missing_database() -> None:
@@ -86,6 +87,7 @@ async def test_check_database_schema_missing_database() -> None:
     assert result.severity == CheckSeverity.ERROR
     assert "not found" in result.message.lower()
     assert result.fixable is True  # Can create new database
+    await doctor.close()
 
 
 async def test_check_database_schema_v10() -> None:
@@ -117,6 +119,7 @@ async def test_check_database_schema_v10() -> None:
         assert "v1.0" in result.message
         assert "migration" in result.message.lower()
         assert result.fixable is True
+    await doctor.close()
 
 
 async def test_check_database_integrity_ok(v11_db: str) -> None:
@@ -126,6 +129,7 @@ async def test_check_database_integrity_ok(v11_db: str) -> None:
 
     assert result.severity == CheckSeverity.OK
     assert "healthy" in result.message.lower() or "ok" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_database_integrity_corrupted() -> None:
@@ -148,6 +152,7 @@ async def test_check_database_integrity_corrupted() -> None:
 
         assert result.severity == CheckSeverity.ERROR
         assert result.fixable is False  # Corruption not auto-fixable
+    await doctor.close()
 
 
 async def test_check_orphaned_fts_none(v11_db: str) -> None:
@@ -157,6 +162,7 @@ async def test_check_orphaned_fts_none(v11_db: str) -> None:
 
     assert result.severity == CheckSeverity.OK
     assert "no orphaned" in result.message.lower() or result.message == "FTS index is clean"
+    await doctor.close()
 
 
 async def test_check_archive_files_exist(v11_db: str) -> None:
@@ -185,6 +191,7 @@ async def test_check_archive_files_exist(v11_db: str) -> None:
 
         assert result.severity == CheckSeverity.OK
         assert "exist" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_archive_files_missing(v11_db: str) -> None:
@@ -212,6 +219,7 @@ async def test_check_archive_files_missing(v11_db: str) -> None:
     assert "missing" in result.message.lower()
     assert "1" in result.message  # Should mention count
     assert result.fixable is False  # Can't auto-fix missing files
+    await doctor.close()
 
 
 # ============================================================================
@@ -227,6 +235,7 @@ async def test_check_python_version_ok() -> None:
     # We're running Python 3.14+ in this environment
     assert result.severity == CheckSeverity.OK
     assert "3.14" in result.message or str(sys.version_info.minor) in result.message
+    await doctor.close()
 
 
 @patch("sys.version_info", (3, 12, 0, "final", 0))
@@ -238,6 +247,7 @@ async def test_check_python_version_too_old() -> None:
     assert result.severity == CheckSeverity.WARNING
     assert "3.12" in result.message
     assert result.fixable is False  # Can't auto-upgrade Python
+    await doctor.close()
 
 
 async def test_check_dependencies_installed() -> None:
@@ -247,6 +257,7 @@ async def test_check_dependencies_installed() -> None:
 
     assert result.severity == CheckSeverity.OK
     assert "installed" in result.message.lower()
+    await doctor.close()
 
 
 @patch("importlib.import_module")
@@ -260,6 +271,7 @@ async def test_check_dependencies_missing(mock_import: Mock) -> None:
     assert result.severity == CheckSeverity.ERROR
     assert "missing" in result.message.lower()
     assert result.fixable is True  # Can run pip install
+    await doctor.close()
 
 
 async def test_check_oauth_token_missing() -> None:
@@ -275,6 +287,7 @@ async def test_check_oauth_token_missing() -> None:
             assert result.severity == CheckSeverity.WARNING
             assert "not found" in result.message.lower()
             assert result.fixable is True  # Can re-authenticate
+    await doctor.close()
 
 
 async def test_check_oauth_token_valid() -> None:
@@ -309,6 +322,7 @@ async def test_check_oauth_token_valid() -> None:
 
                 assert result.severity == CheckSeverity.OK
                 assert "valid" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_oauth_token_expired() -> None:
@@ -344,6 +358,7 @@ async def test_check_oauth_token_expired() -> None:
                 assert result.severity == CheckSeverity.WARNING
                 assert "expired" in result.message.lower()
                 assert result.fixable is True
+    await doctor.close()
 
 
 async def test_check_credentials_file_exists() -> None:
@@ -354,6 +369,7 @@ async def test_check_credentials_file_exists() -> None:
     # Bundled credentials should exist
     assert result.severity == CheckSeverity.OK
     assert "found" in result.message.lower() or "exists" in result.message.lower()
+    await doctor.close()
 
 
 # ============================================================================
@@ -371,6 +387,7 @@ async def test_check_disk_space_sufficient() -> None:
 
         assert result.severity == CheckSeverity.OK
         assert "GB" in result.message or "MB" in result.message
+    await doctor.close()
 
 
 async def test_check_disk_space_low_warning() -> None:
@@ -384,6 +401,7 @@ async def test_check_disk_space_low_warning() -> None:
         assert result.severity == CheckSeverity.WARNING
         assert "300" in result.message
         assert result.fixable is False  # Can't auto-fix disk space
+    await doctor.close()
 
 
 async def test_check_disk_space_critical_error() -> None:
@@ -396,6 +414,7 @@ async def test_check_disk_space_critical_error() -> None:
 
         assert result.severity == CheckSeverity.ERROR
         assert "50" in result.message
+    await doctor.close()
 
 
 async def test_check_write_permissions_ok() -> None:
@@ -408,6 +427,7 @@ async def test_check_write_permissions_ok() -> None:
 
         assert result.severity == CheckSeverity.OK
         assert "writable" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_write_permissions_denied() -> None:
@@ -422,6 +442,7 @@ async def test_check_write_permissions_denied() -> None:
 
                 assert result.severity == CheckSeverity.ERROR
                 assert "not writable" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_stale_lock_files_none() -> None:
@@ -434,6 +455,7 @@ async def test_check_stale_lock_files_none() -> None:
 
         assert result.severity == CheckSeverity.OK
         assert "no stale" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_stale_lock_files_found() -> None:
@@ -452,6 +474,7 @@ async def test_check_stale_lock_files_found() -> None:
         assert "lock file" in result.message.lower()
         assert "2" in result.message
         assert result.fixable is True  # Can remove stale locks
+    await doctor.close()
 
 
 async def test_check_temp_directory_accessible() -> None:
@@ -461,6 +484,7 @@ async def test_check_temp_directory_accessible() -> None:
 
     assert result.severity == CheckSeverity.OK
     assert "accessible" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_temp_directory_not_accessible() -> None:
@@ -472,6 +496,7 @@ async def test_check_temp_directory_not_accessible() -> None:
 
             assert result.severity == CheckSeverity.ERROR
             assert "not accessible" in result.message.lower()
+    await doctor.close()
 
 
 # ============================================================================
@@ -508,6 +533,7 @@ async def test_run_diagnostics_all_checks_pass(v11_db: str) -> None:
         assert report.warnings == 0
         assert len(report.checks) > 0
         assert all(check.severity == CheckSeverity.OK for check in report.checks)
+    await doctor.close()
 
 
 async def test_run_diagnostics_with_warnings(v11_db: str) -> None:
@@ -521,6 +547,7 @@ async def test_run_diagnostics_with_warnings(v11_db: str) -> None:
         assert report.overall_status == CheckSeverity.WARNING
         assert report.warnings >= 1
         assert report.errors == 0
+    await doctor.close()
 
 
 async def test_run_diagnostics_with_errors(v11_db: str) -> None:
@@ -533,6 +560,7 @@ async def test_run_diagnostics_with_errors(v11_db: str) -> None:
 
         assert report.overall_status == CheckSeverity.ERROR
         assert report.errors >= 1
+    await doctor.close()
 
 
 async def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
@@ -554,6 +582,7 @@ async def test_run_diagnostics_counts_results_correctly(v11_db: str) -> None:
 
         assert report.warnings >= 1  # At least disk space warning
         assert report.checks_passed >= 0  # Some checks should pass
+    await doctor.close()
 
 
 # ============================================================================
@@ -583,6 +612,7 @@ async def test_auto_fix_orphaned_fts(v11_db: str) -> None:
     cursor = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE rowid = 999")
     count = cursor.fetchone()[0]
     assert count == 0
+    await doctor.close()
 
 
 async def test_auto_fix_stale_locks() -> None:
@@ -602,6 +632,7 @@ async def test_auto_fix_stale_locks() -> None:
         assert result.success is True
         assert not lock1.exists()
         assert not lock2.exists()
+    await doctor.close()
 
 
 async def test_auto_fix_create_missing_database() -> None:
@@ -620,6 +651,7 @@ async def test_auto_fix_create_missing_database() -> None:
         cursor = conn.execute("PRAGMA user_version")
         version = cursor.fetchone()[0]
         assert version == 11
+    await doctor.close()
 
 
 async def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
@@ -657,6 +689,7 @@ async def test_run_auto_fix_fixes_all_issues(v11_db: str) -> None:
     report_after = await doctor.run_diagnostics()
     assert report_after.warnings <= report_before.warnings
     assert report_after.errors <= report_before.errors
+    await doctor.close()
 
 
 # ============================================================================
@@ -723,6 +756,7 @@ async def test_doctor_with_memory_database() -> None:
 
     # Should handle gracefully - some checks will skip/warn
     assert isinstance(report, DoctorReport)
+    await doctor.close()
 
 
 async def test_doctor_handles_permission_errors() -> None:
@@ -736,6 +770,7 @@ async def test_doctor_handles_permission_errors() -> None:
                 # Should not raise, handle gracefully
                 result = await doctor.check_database_integrity()
                 assert result.severity == CheckSeverity.ERROR
+    await doctor.close()
 
 
 async def test_multiple_diagnostics_runs_independent(v11_db: str) -> None:
@@ -748,6 +783,7 @@ async def test_multiple_diagnostics_runs_independent(v11_db: str) -> None:
     # Both should produce same results
     assert report1.overall_status == report2.overall_status
     assert len(report1.checks) == len(report2.checks)
+    await doctor.close()
 
 
 # ============================================================================
@@ -762,6 +798,7 @@ async def test_doctor_on_windows() -> None:
     # Should not crash on Windows
     result = doctor.check_temp_directory()
     assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 @patch("sys.platform", "darwin")
@@ -770,6 +807,7 @@ async def test_doctor_on_macos() -> None:
     doctor = await Doctor.create(":memory:")
     result = doctor.check_temp_directory()
     assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 # ============================================================================
@@ -821,6 +859,7 @@ async def test_check_database_schema_unknown_version() -> None:
         assert result.severity == CheckSeverity.WARNING
         assert "unknown" in result.message.lower() or "99.99" in result.message
         assert result.fixable is False
+    await doctor.close()
 
 
 async def test_check_database_schema_error(v11_db: str) -> None:
@@ -834,6 +873,7 @@ async def test_check_database_schema_error(v11_db: str) -> None:
     # Should result in error since path doesn't exist and can't be accessed
     assert result.severity == CheckSeverity.ERROR
     assert result.fixable is False or result.fixable is True
+    await doctor.close()
 
 
 async def test_check_orphaned_fts_not_found() -> None:
@@ -879,6 +919,7 @@ async def test_check_orphaned_fts_not_found() -> None:
 
         # Should handle gracefully
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
+    await doctor.close()
 
 
 async def test_check_archive_files_exist_with_missing_files(v11_db: str) -> None:
@@ -950,6 +991,7 @@ async def test_check_archive_files_exist_with_missing_files(v11_db: str) -> None
 
         # Should detect missing files
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 async def test_check_python_version_compatibility() -> None:
@@ -960,6 +1002,7 @@ async def test_check_python_version_compatibility() -> None:
     assert result.severity == CheckSeverity.OK
     assert "3.14" in result.message or "Python" in result.message
     assert result.fixable is False
+    await doctor.close()
 
 
 async def test_check_dependencies_import_failures() -> None:
@@ -970,6 +1013,7 @@ async def test_check_dependencies_import_failures() -> None:
 
         # Should identify missing dependencies
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 async def test_check_oauth_token_file_missing() -> None:
@@ -981,6 +1025,7 @@ async def test_check_oauth_token_file_missing() -> None:
 
         # Token missing is OK if not configured
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
+    await doctor.close()
 
 
 async def test_check_credentials_file_missing() -> None:
@@ -991,6 +1036,7 @@ async def test_check_credentials_file_missing() -> None:
 
         # Missing credentials is acceptable
         assert result.severity in [CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 async def test_check_disk_space_insufficient() -> None:
@@ -1003,6 +1049,7 @@ async def test_check_disk_space_insufficient() -> None:
 
         # Should warn about low space
         assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
+    await doctor.close()
 
 
 async def test_check_write_permissions_readonly_file() -> None:
@@ -1022,6 +1069,7 @@ async def test_check_write_permissions_readonly_file() -> None:
             assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING, CheckSeverity.ERROR]
         finally:
             test_file.chmod(0o644)
+    await doctor.close()
 
 
 async def test_check_stale_locks_found() -> None:
@@ -1040,6 +1088,7 @@ async def test_check_stale_locks_found() -> None:
 
             # Should detect locks
             assert result.severity in [CheckSeverity.OK, CheckSeverity.WARNING]
+    await doctor.close()
 
 
 async def test_fix_missing_database() -> None:
@@ -1053,6 +1102,7 @@ async def test_fix_missing_database() -> None:
 
         assert result.success is True
         assert db_path.exists()
+    await doctor.close()
 
 
 async def test_run_diagnostics_full_report(v11_db: str) -> None:
@@ -1066,6 +1116,7 @@ async def test_run_diagnostics_full_report(v11_db: str) -> None:
     # Should have various check results
     check_names = [c.name for c in report.checks]
     assert "Database schema" in check_names
+    await doctor.close()
 
 
 async def test_doctor_report_dict_conversion() -> None:
@@ -1096,6 +1147,7 @@ async def test_get_connection_returns_none_for_missing_db() -> None:
 
         db_manager = doctor._get_db_manager()
         assert db_manager is None
+    await doctor.close()
 
 
 async def test_check_database_schema_connection_failure() -> None:
@@ -1113,6 +1165,7 @@ async def test_check_database_schema_connection_failure() -> None:
         # Should detect error
         assert result.severity == CheckSeverity.ERROR
         assert "cannot connect" in result.message.lower() or "failed" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_disk_space_exception() -> None:
@@ -1127,6 +1180,7 @@ async def test_check_disk_space_exception() -> None:
 
             assert result.severity == CheckSeverity.WARNING
             assert "failed" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_write_permissions_exception() -> None:
@@ -1141,6 +1195,7 @@ async def test_check_write_permissions_exception() -> None:
 
             assert result.severity == CheckSeverity.WARNING
             assert "failed" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_stale_locks_exception() -> None:
@@ -1155,6 +1210,7 @@ async def test_check_stale_locks_exception() -> None:
 
             assert result.severity == CheckSeverity.WARNING
             assert "failed" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_temp_directory_exception() -> None:
@@ -1169,6 +1225,7 @@ async def test_check_temp_directory_exception() -> None:
 
             assert result.severity == CheckSeverity.WARNING
             assert "failed" in result.message.lower()
+    await doctor.close()
 
 
 async def test_fix_orphaned_fts_connection_failure() -> None:
@@ -1181,6 +1238,7 @@ async def test_fix_orphaned_fts_connection_failure() -> None:
 
         assert result.success is False
         assert "cannot connect" in result.message.lower()
+    await doctor.close()
 
 
 async def test_fix_stale_locks_exception() -> None:
@@ -1201,6 +1259,7 @@ async def test_fix_stale_locks_exception() -> None:
             # Should handle exception gracefully
             assert result.success is True  # Reports success even if some locks couldn't be removed
             assert "0 lock" in result.message.lower()
+    await doctor.close()
 
 
 async def test_check_database_schema_for_connection_failures() -> None:
@@ -1214,6 +1273,7 @@ async def test_check_database_schema_for_connection_failures() -> None:
         # Should detect error when auto_create=False
         assert result.severity == CheckSeverity.ERROR
         assert "not found" in result.message.lower() or "missing" in result.message.lower()
+    await doctor.close()
 
 
 async def test_run_diagnostics_detects_fixable_issues() -> None:
@@ -1226,6 +1286,7 @@ async def test_run_diagnostics_detects_fixable_issues() -> None:
 
         # Should have detected fixable issue (missing database when auto_create=False)
         assert len(report.fixable_issues) > 0
+    await doctor.close()
 
 
 async def test_fix_stale_locks_handles_glob_error() -> None:
@@ -1244,3 +1305,4 @@ async def test_fix_stale_locks_handles_glob_error() -> None:
 
         # Should succeed even if no locks found
         assert result.success is True
+    await doctor.close()

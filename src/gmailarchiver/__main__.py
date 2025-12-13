@@ -302,20 +302,23 @@ def archive(
 
     # Validate using ValidatorFacade directly
     validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
-    validation_results: dict[str, Any] = validator.validate_comprehensive(archived_ids)
+    try:
+        validation_results: dict[str, Any] = validator.validate_comprehensive(archived_ids)
 
-    # Show validation report using new panel method
-    out.show_validation_report(validation_results, title="Archive Validation")
+        # Show validation report using new panel method
+        out.show_validation_report(validation_results, title="Archive Validation")
 
-    if not validation_results["passed"]:
-        ctx.fail_and_exit(
-            title="Validation Failed",
-            message="Archive validation did not pass all checks",
-            details=validation_results.get("errors", []),
-            suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
-        )
+        if not validation_results["passed"]:
+            ctx.fail_and_exit(
+                title="Validation Failed",
+                message="Archive validation did not pass all checks",
+                details=validation_results.get("errors", []),
+                suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
+            )
 
-    ctx.success("Archive validation passed")
+        ctx.success("Archive validation passed")
+    finally:
+        asyncio.run(validator.close())
 
     # Get archived count from result
     archived_count = result.get("archived_count", 0) if result else 0
@@ -442,17 +445,20 @@ def validate(
         # Task 2: Run validation checks
         with seq.task("Running validation checks") as t:
             validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
-            results = validator.validate_comprehensive(expected_ids)
+            try:
+                results = validator.validate_comprehensive(expected_ids)
 
-            if results["passed"]:
-                t.complete("All checks passed")
-            else:
-                failed_checks = [
-                    k.replace("_check", "").replace("_", " ")
-                    for k, v in results.items()
-                    if k.endswith("_check") and not v
-                ]
-                t.complete(f"Failed: {', '.join(failed_checks)}")
+                if results["passed"]:
+                    t.complete("All checks passed")
+                else:
+                    failed_checks = [
+                        k.replace("_check", "").replace("_", " ")
+                        for k, v in results.items()
+                        if k.endswith("_check") and not v
+                    ]
+                    t.complete(f"Failed: {', '.join(failed_checks)}")
+            finally:
+                asyncio.run(validator.close())
 
     # Show validation report using OutputManager method
     ctx.output.show_validation_report(results, title="Archive Validation")
@@ -1428,6 +1434,8 @@ def verify_offsets_cmd(
             f"Offset verification failed: {e}",
             suggestion="Check database and archive file integrity",
         )
+    finally:
+        asyncio.run(validator.close())
 
 
 @utilities_app.command(name="verify-consistency")
@@ -1525,6 +1533,8 @@ def verify_consistency_cmd(
             str(e),
             suggestion="Check database and archive file integrity",
         )
+    finally:
+        asyncio.run(validator.close())
 
 
 @app.command()
@@ -2354,20 +2364,23 @@ def consolidate(
                         try:
                             # Use ValidatorFacade to verify archive can be read
                             validator = ValidatorFacade(str(output_path))
-                            # Simple check: verify archive is readable and has content
-                            is_valid = validator.validate_all()
-                            if not is_valid:
-                                # Try to get error details
-                                errors = validator.errors
-                                error_msg = errors[0] if errors else "Unknown error"
-                                t.fail("Validation failed", reason=error_msg)
-                                ctx.warning(f"Archive validation failed: {error_msg}")
-                                ctx.info(
-                                    "Please review the consolidated archive "
-                                    "before manually removing sources"
-                                )
-                                raise typer.Exit(1)
-                            t.complete(f"Archive valid ({format_bytes(output_size)})")
+                            try:
+                                # Simple check: verify archive is readable and has content
+                                is_valid = validator.validate_all()
+                                if not is_valid:
+                                    # Try to get error details
+                                    errors = validator.errors
+                                    error_msg = errors[0] if errors else "Unknown error"
+                                    t.fail("Validation failed", reason=error_msg)
+                                    ctx.warning(f"Archive validation failed: {error_msg}")
+                                    ctx.info(
+                                        "Please review the consolidated archive "
+                                        "before manually removing sources"
+                                    )
+                                    raise typer.Exit(1)
+                                t.complete(f"Archive valid ({format_bytes(output_size)})")
+                            finally:
+                                asyncio.run(validator.close())
                         except typer.Exit:
                             raise
                         except Exception as e:
@@ -2878,15 +2891,18 @@ def check(
                         from .core.validator import ValidatorFacade
 
                         validator = ValidatorFacade(archive_file, state_db)
-                        report = asyncio.run(validator.verify_consistency())
-                        check_results["database_consistency"]["checked"] = True
-                        check_results["database_consistency"]["report"] = report
-                        check_results["database_consistency"]["passed"] = report.passed
+                        try:
+                            report = asyncio.run(validator.verify_consistency())
+                            check_results["database_consistency"]["checked"] = True
+                            check_results["database_consistency"]["report"] = report
+                            check_results["database_consistency"]["passed"] = report.passed
 
-                        if report.passed:
-                            t.complete("OK")
-                        else:
-                            t.complete(f"{len(report.errors)} issue(s)")
+                            if report.passed:
+                                t.complete("OK")
+                            else:
+                                t.complete(f"{len(report.errors)} issue(s)")
+                        finally:
+                            asyncio.run(validator.close())
                     else:
                         check_results["database_consistency"]["checked"] = False
                         check_results["database_consistency"]["passed"] = True
@@ -2911,20 +2927,23 @@ def check(
                         from .core.validator import ValidatorFacade
 
                         validator = ValidatorFacade(archive_file_for_offset, state_db)
-                        result = asyncio.run(validator.verify_offsets())
+                        try:
+                            result = asyncio.run(validator.verify_offsets())
 
-                        check_results["offset_accuracy"]["checked"] = True
-                        check_results["offset_accuracy"]["result"] = result
+                            check_results["offset_accuracy"]["checked"] = True
+                            check_results["offset_accuracy"]["result"] = result
 
-                        if result.accuracy_percentage == 100.0:
-                            check_results["offset_accuracy"]["passed"] = True
-                            t.complete(f"100% ({result.total_checked:,} checked)")
-                        else:
-                            check_results["offset_accuracy"]["passed"] = False
-                            t.complete(
-                                f"{result.accuracy_percentage:.1f}% "
-                                f"({result.successful_reads:,}/{result.total_checked:,})"
-                            )
+                            if result.accuracy_percentage == 100.0:
+                                check_results["offset_accuracy"]["passed"] = True
+                                t.complete(f"100% ({result.total_checked:,} checked)")
+                            else:
+                                check_results["offset_accuracy"]["passed"] = False
+                                t.complete(
+                                    f"{result.accuracy_percentage:.1f}% "
+                                    f"({result.successful_reads:,}/{result.total_checked:,})"
+                                )
+                        finally:
+                            asyncio.run(validator.close())
                     else:
                         check_results["offset_accuracy"]["checked"] = False
                         check_results["offset_accuracy"]["passed"] = True
@@ -3791,157 +3810,160 @@ def doctor(
     # Initialize doctor
     doctor_instance = asyncio.run(_create_doctor())
 
-    # Run diagnostics
-    with ctx.ui.task_sequence() as seq:
-        with seq.task("Running diagnostic checks") as t:
-            report = asyncio.run(_run_diagnostics(doctor_instance))
+    try:
+            # Run diagnostics
+        with ctx.ui.task_sequence() as seq:
+            with seq.task("Running diagnostic checks") as t:
+                report = asyncio.run(_run_diagnostics(doctor_instance))
 
+                if report.overall_status == CheckSeverity.OK:
+                    t.complete(f"{report.checks_passed}/{len(report.checks)} passed")
+                else:
+                    t.complete(f"{report.errors} error(s), {report.warnings} warning(s)")
+
+        # Show results in Rich format
+        if not json_output:
+            # Build diagnostic results table via OutputManager
+            headers = ["Check", "Status", "Message"]
+            rows: list[list[str]] = []
+
+            for check in report.checks:
+                # Color-code status
+                if check.severity == CheckSeverity.OK:
+                    status = "[green]✓ OK[/green]"
+                elif check.severity == CheckSeverity.WARNING:
+                    status = "[yellow]⚠ WARNING[/yellow]"
+                else:  # ERROR
+                    status = "[red]✗ ERROR[/red]"
+
+                # Add fixable indicator
+                message = check.message
+                if check.fixable and check.severity != CheckSeverity.OK:
+                    message += " (fixable)"
+
+                rows.append([check.name, status, message])
+
+            ctx.show_table("Diagnostic Results", headers, rows)
+
+            # Show summary
             if report.overall_status == CheckSeverity.OK:
-                t.complete(f"{report.checks_passed}/{len(report.checks)} passed")
-            else:
-                t.complete(f"{report.errors} error(s), {report.warnings} warning(s)")
-
-    # Show results in Rich format
-    if not json_output:
-        # Build diagnostic results table via OutputManager
-        headers = ["Check", "Status", "Message"]
-        rows: list[list[str]] = []
-
-        for check in report.checks:
-            # Color-code status
-            if check.severity == CheckSeverity.OK:
-                status = "[green]✓ OK[/green]"
-            elif check.severity == CheckSeverity.WARNING:
-                status = "[yellow]⚠ WARNING[/yellow]"
+                ctx.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
+            elif report.overall_status == CheckSeverity.WARNING:
+                ctx.warning(
+                    f"Found {report.warnings} warning(s), {report.errors} error(s), "
+                    f"{report.checks_passed} passed"
+                )
             else:  # ERROR
-                status = "[red]✗ ERROR[/red]"
-
-            # Add fixable indicator
-            message = check.message
-            if check.fixable and check.severity != CheckSeverity.OK:
-                message += " (fixable)"
-
-            rows.append([check.name, status, message])
-
-        ctx.show_table("Diagnostic Results", headers, rows)
-
-        # Show summary
-        if report.overall_status == CheckSeverity.OK:
-            ctx.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
-        elif report.overall_status == CheckSeverity.WARNING:
-            ctx.warning(
-                f"Found {report.warnings} warning(s), {report.errors} error(s), "
-                f"{report.checks_passed} passed"
-            )
-        else:  # ERROR
-            ctx.error(
-                f"Found {report.errors} error(s), {report.warnings} warning(s), "
-                f"{report.checks_passed} passed"
-            )
-
-        # Show fixable issues
-        if report.fixable_issues:
-            ctx.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
-            for issue in report.fixable_issues:
-                ctx.info(f"  • {issue}")
-
-            if not fix:
-                ctx.suggest_next_steps(
-                    ["Run with --fix to auto-repair: gmailarchiver doctor --fix"]
+                ctx.error(
+                    f"Found {report.errors} error(s), {report.warnings} warning(s), "
+                    f"{report.checks_passed} passed"
                 )
 
-    # Run auto-fix if requested
-    if fix and report.fixable_issues:
-        with ctx.ui.task_sequence() as seq:
-            with seq.task("Running auto-fix", total=len(report.fixable_issues)) as t:
-                fix_results = asyncio.run(_run_auto_fix(doctor_instance))
-                fixed_count = sum(1 for r in fix_results if r.success)
-                failed_count = len(fix_results) - fixed_count
+            # Show fixable issues
+            if report.fixable_issues:
+                ctx.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
+                for issue in report.fixable_issues:
+                    ctx.info(f"  • {issue}")
 
-                if failed_count == 0:
-                    t.complete(f"Fixed {fixed_count} issue(s)")
-                else:
-                    t.complete(f"Fixed {fixed_count}, failed {failed_count}")
+                if not fix:
+                    ctx.suggest_next_steps(
+                        ["Run with --fix to auto-repair: gmailarchiver doctor --fix"]
+                    )
 
-        # Show fix results
-        if not json_output:
-            headers = ["Check", "Status", "Message"]
-            fix_rows: list[list[str]] = []
+        # Run auto-fix if requested
+        if fix and report.fixable_issues:
+            with ctx.ui.task_sequence() as seq:
+                with seq.task("Running auto-fix", total=len(report.fixable_issues)) as t:
+                    fix_results = asyncio.run(_run_auto_fix(doctor_instance))
+                    fixed_count = sum(1 for r in fix_results if r.success)
+                    failed_count = len(fix_results) - fixed_count
 
-            for fix_result in fix_results:
-                status = "[green]✓ FIXED[/green]" if fix_result.success else "[red]✗ FAILED[/red]"
-                fix_rows.append([fix_result.check_name, status, fix_result.message])
+                    if failed_count == 0:
+                        t.complete(f"Fixed {fixed_count} issue(s)")
+                    else:
+                        t.complete(f"Fixed {fixed_count}, failed {failed_count}")
 
-            ctx.show_table("Auto-Fix Results", headers, fix_rows)
+            # Show fix results
+            if not json_output:
+                headers = ["Check", "Status", "Message"]
+                fix_rows: list[list[str]] = []
 
-        # Show success/failure summary (fixed_count and failed_count computed above)
-        if fixed_count > 0 and failed_count == 0:
-            ctx.success(f"Successfully fixed {fixed_count} issue(s)")
+                for fix_result in fix_results:
+                    status = "[green]✓ FIXED[/green]" if fix_result.success else "[red]✗ FAILED[/red]"
+                    fix_rows.append([fix_result.check_name, status, fix_result.message])
+
+                ctx.show_table("Auto-Fix Results", headers, fix_rows)
+
+            # Show success/failure summary (fixed_count and failed_count computed above)
+            if fixed_count > 0 and failed_count == 0:
+                ctx.success(f"Successfully fixed {fixed_count} issue(s)")
+                ctx.suggest_next_steps(
+                    [
+                        "Verify fixes: gmailarchiver doctor",
+                        "Check database: gmailarchiver verify-integrity",
+                    ]
+                )
+            elif fixed_count > 0:
+                ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
+            else:
+                ctx.error(f"Failed to fix {failed_count} issue(s)")
+
+        # Run internal database checks if --check flag is used
+        if include_check:
+            ctx.info("\n── Internal Database Checks ──")
+            db_path = Path(state_db)
+            if db_path.exists():
+                assert ctx.storage is not None, "Storage should be initialized by @with_context"
+
+                with ctx.ui.task_sequence() as seq:
+                    with seq.task("Running internal checks") as t:
+                        try:
+                            issues = asyncio.run(ctx.storage.db.verify_database_integrity())
+
+                            if not issues:
+                                t.complete("All internal checks passed")
+                            else:
+                                t.complete(f"{len(issues)} issue(s) found")
+                                for issue in issues[:5]:
+                                    ctx.info(f"  • {issue}")
+                                if len(issues) > 5:
+                                    ctx.info(f"  ... and {len(issues) - 5} more")
+                        except Exception as e:
+                            t.fail("Check failed", reason=str(e))
+
+                ctx.suggest_next_steps(["Run full internal checks: gmailarchiver check --verbose"])
+            else:
+                ctx.warning("Database not found, skipping internal checks")
+        elif not json_output:
+            # Suggest running check for full internal validation
             ctx.suggest_next_steps(
                 [
-                    "Verify fixes: gmailarchiver doctor",
-                    "Check database: gmailarchiver verify-integrity",
+                    "Run internal database checks: gmailarchiver check",
+                    "Full health check: gmailarchiver doctor --check",
                 ]
             )
-        elif fixed_count > 0:
-            ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
-        else:
-            ctx.error(f"Failed to fix {failed_count} issue(s)")
 
-    # Run internal database checks if --check flag is used
-    if include_check:
-        ctx.info("\n── Internal Database Checks ──")
-        db_path = Path(state_db)
-        if db_path.exists():
-            assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        # JSON output mode
+        if json_output:
+            report_dict = report.to_dict()
+            ctx.show_report("Doctor Report", report_dict)
 
-            with ctx.ui.task_sequence() as seq:
-                with seq.task("Running internal checks") as t:
-                    try:
-                        issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-                        if not issues:
-                            t.complete("All internal checks passed")
-                        else:
-                            t.complete(f"{len(issues)} issue(s) found")
-                            for issue in issues[:5]:
-                                ctx.info(f"  • {issue}")
-                            if len(issues) > 5:
-                                ctx.info(f"  ... and {len(issues) - 5} more")
-                    except Exception as e:
-                        t.fail("Check failed", reason=str(e))
-
-            ctx.suggest_next_steps(["Run full internal checks: gmailarchiver check --verbose"])
-        else:
-            ctx.warning("Database not found, skipping internal checks")
-    elif not json_output:
-        # Suggest running check for full internal validation
-        ctx.suggest_next_steps(
-            [
-                "Run internal database checks: gmailarchiver check",
-                "Full health check: gmailarchiver doctor --check",
-            ]
-        )
-
-    # JSON output mode
-    if json_output:
-        report_dict = report.to_dict()
-        ctx.show_report("Doctor Report", report_dict)
-
-        if fix and report.fixable_issues:
-            fix_dict = {
-                "fixed": sum(1 for r in fix_results if r.success),
-                "failed": sum(1 for r in fix_results if not r.success),
-                "results": [
-                    {
-                        "check": r.check_name,
-                        "success": r.success,
-                        "message": r.message,
-                    }
-                    for r in fix_results
-                ],
-            }
-            ctx.show_report("Fix Results", fix_dict)
+            if fix and report.fixable_issues:
+                fix_dict = {
+                    "fixed": sum(1 for r in fix_results if r.success),
+                    "failed": sum(1 for r in fix_results if not r.success),
+                    "results": [
+                        {
+                            "check": r.check_name,
+                            "success": r.success,
+                            "message": r.message,
+                        }
+                        for r in fix_results
+                    ],
+                }
+                ctx.show_report("Fix Results", fix_dict)
+    finally:
+        asyncio.run(doctor_instance.close())
 
 
 @utilities_app.command()

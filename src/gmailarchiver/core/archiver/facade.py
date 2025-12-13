@@ -276,3 +276,20 @@ class ArchiverFacade:
             return self.gmail_client.delete_messages_permanent(message_ids)
         else:
             return self.gmail_client.trash_messages(message_ids)
+
+    async def close(self) -> None:
+        """Close database connections and release resources.
+
+        Should be called when done using the facade to prevent resource leaks.
+        """
+        await self.db_manager.close()
+
+    async def __aenter__(self) -> "ArchiverFacade":
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
+        """Async context manager exit - ensures resources are closed."""
+        await self.close()

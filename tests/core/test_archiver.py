@@ -30,6 +30,8 @@ class TestArchiverFacadeInit:
             # Use resolve() to handle macOS /private/var symlink
             assert Path(archiver.state_db_path).resolve() == Path(db_path).resolve()
 
+            await archiver.close()
+
     async def test_init_default_db_path(self) -> None:
         """Test initialization with default database path."""
         mock_client = Mock()
@@ -41,6 +43,8 @@ class TestArchiverFacadeInit:
 
             # Verify path resolves correctly (handle macOS /private/var symlink)
             assert Path(archiver.state_db_path).resolve() == Path(db_path).resolve()
+
+            await archiver.close()
 
 
 class TestArchive:
@@ -60,6 +64,8 @@ class TestArchive:
             assert result["found_count"] == 0
             assert result["archived_count"] == 0
             assert "actual_file" not in result  # Dry run or no messages
+
+            await archiver.close()
 
     @patch("gmailarchiver.core.archiver._filter.MessageFilter.filter_archived")
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
@@ -84,6 +90,8 @@ class TestArchive:
             assert result["archived_count"] == 0
             assert result["skipped_count"] == 2
 
+            await archiver.close()
+
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
     async def test_archive_dry_run(self, mock_list: Mock) -> None:
         """Test dry run mode."""
@@ -100,6 +108,8 @@ class TestArchive:
             # Dry run doesn't archive, so no actual_file
             assert "actual_file" not in result
 
+            await archiver.close()
+
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
     async def test_archive_dry_run_with_compression(self, mock_list: Mock) -> None:
         """Test dry run with compression specified."""
@@ -114,6 +124,8 @@ class TestArchive:
             assert result["found_count"] == 1
             assert result["archived_count"] == 0
 
+            await archiver.close()
+
     async def test_archive_invalid_age_threshold(self) -> None:
         """Test that invalid age threshold raises error."""
         mock_client = Mock()
@@ -122,8 +134,11 @@ class TestArchive:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-            with pytest.raises(InvalidInputError):
-                await archiver.archive("invalid", "test.mbox")
+            try:
+                with pytest.raises(InvalidInputError):
+                    await archiver.archive("invalid", "test.mbox")
+            finally:
+                await archiver.close()
 
     @patch("gmailarchiver.core.archiver._lister.MessageLister.list_messages")
     async def test_archive_invalid_compression(self, mock_list: Mock) -> None:
@@ -136,8 +151,11 @@ class TestArchive:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-            with pytest.raises(InvalidInputError):
-                await archiver.archive("3y", "test.mbox", compress="bzip2")
+            try:
+                with pytest.raises(InvalidInputError):
+                    await archiver.archive("3y", "test.mbox", compress="bzip2")
+            finally:
+                await archiver.close()
 
 
 class TestCompressArchive:
@@ -225,9 +243,12 @@ class TestCompressArchive:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
 
-            # Invalid compression format should be caught during validation
-            with pytest.raises(InvalidInputError):
-                await archiver.archive("3y", "test.mbox", compress="bzip2")
+            try:
+                # Invalid compression format should be caught during validation
+                with pytest.raises(InvalidInputError):
+                    await archiver.archive("3y", "test.mbox", compress="bzip2")
+            finally:
+                await archiver.close()
 
 
 class TestValidateArchive:
@@ -339,6 +360,8 @@ class TestArchiveMessagesIntegration:
             assert result["archived_count"] == 1
             assert result["failed_count"] == 0
 
+            await archiver.close()
+
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
@@ -395,6 +418,8 @@ class TestArchiveMessagesIntegration:
             )
 
             assert result["archived_count"] == 1
+
+            await archiver.close()
 
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
@@ -454,6 +479,8 @@ class TestArchiveMessagesIntegration:
 
             assert result["archived_count"] == 1
 
+            await archiver.close()
+
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("builtins.print")
@@ -509,6 +536,8 @@ class TestArchiveMessagesIntegration:
 
             # Verify HybridStorage.archive_messages_batch was called (which records in DB)
             mock_storage.archive_messages_batch.assert_called_once()
+
+            await archiver.close()
 
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     @patch("gmailarchiver.core.archiver.facade.DBManager")
@@ -574,6 +603,8 @@ class TestArchiveMessagesIntegration:
             assert len(messages_arg) == 1
             assert messages_arg[0][1] == "msg1"  # gmail_id is second element of tuple
 
+            await archiver.close()
+
 
 class TestDeleteArchivedMessages:
     """Tests for delete_archived_messages method."""
@@ -595,6 +626,8 @@ class TestDeleteArchivedMessages:
             assert count == 5
             mock_client.delete_messages_permanent.assert_called_once()
 
+            await archiver.close()
+
     @patch("builtins.print")
     async def test_delete_trash(self, mock_print: Mock) -> None:
         """Test moving to trash."""
@@ -609,6 +642,8 @@ class TestDeleteArchivedMessages:
 
             assert count == 3
             mock_client.trash_messages.assert_called_once()
+
+            await archiver.close()
 
 
 # NOTE: Tests for _extract_rfc_message_id and _extract_body_preview moved to
@@ -643,6 +678,7 @@ class TestAtomicOperations:
             # Archive using HybridStorage
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
             result = await archiver.archive("3y", str(mbox_path), incremental=False)
+            await archiver.close()
 
             # Verify both mbox and database were updated
             assert result["archived_count"] == 1
@@ -720,6 +756,8 @@ class TestAtomicOperations:
             assert result["archived_count"] == 1
             assert result["failed_count"] == 1
 
+            await archiver.close()
+
     @patch("builtins.print")
     async def test_automatic_validation_after_archiving(self, mock_print: Mock) -> None:
         """Test that validation runs automatically after each message is archived."""
@@ -745,6 +783,7 @@ class TestAtomicOperations:
             # Archive message
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
             result = await archiver.archive("3y", str(mbox_path), incremental=False)
+            await archiver.close()
 
             assert result["archived_count"] == 1
 
@@ -917,6 +956,7 @@ class TestV11OffsetTracking:
             # Create archiver and archive (use public API)
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
             await archiver.archive_messages(["msg123"], str(mbox_path))
+            await archiver.close()
 
             # Verify offset and length were captured
             conn = sqlite3.connect(str(db_path))
@@ -1028,6 +1068,7 @@ class TestExceptionHandling:
 
             archiver = await ArchiverFacade.create(mock_client, state_db_path=str(db_path))
             result = await archiver.archive("3y", "test.mbox", incremental=True, dry_run=True)
+            await archiver.close()
 
             # Should not skip any messages (no archived_ids)
             assert result["found_count"] - result["skipped_count"] == 1
@@ -1178,6 +1219,8 @@ class TestArchiveWithOperationHandle:
                 "Should update progress for fetch phase (2) + archive phase (2)"
             )
 
+            await archiver.close()
+
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
     async def test_archive_without_operation_handle(
@@ -1243,3 +1286,5 @@ class TestArchiveWithOperationHandle:
 
             # Should complete successfully
             assert result["archived_count"] == 1
+
+            await archiver.close()
