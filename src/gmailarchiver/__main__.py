@@ -13,6 +13,7 @@ from ._version import __version__
 from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
 from .connectors.auth import GmailAuthenticator
+from .connectors.gmail_client import GmailClient
 from .core.archiver import ArchiverFacade
 from .core.compressor.facade import ArchiveCompressor
 from .core.consolidator.facade import ArchiveConsolidator
@@ -126,43 +127,21 @@ def archive(
             extension = ".mbox.zst"
         output = f"archive_{timestamp}{extension}"
 
-    # Phase 1: Authentication
-    gmail_client = ctx.authenticate_gmail(credentials=credentials)
-    assert gmail_client is not None  # required=True ensures this
+    # Phase 1: Authentication - get OAuth credentials (client created in async workflow)
+    with ctx.ui.spinner("Authenticating with Gmail") as task:
+        try:
+            authenticator = GmailAuthenticator(credentials_file=credentials)
+            oauth_creds = authenticator.authenticate()
+            task.complete("Connected")
+        except Exception as e:
+            task.fail("Authentication failed")
+            ctx.fail_and_exit(
+                "Authentication Failed",
+                f"Failed to authenticate with Gmail: {e}",
+                suggestion="Run 'gmailarchiver auth-reset' and try again",
+            )
 
-    # Async helper to create ArchiverFacade
-    async def _create_archiver() -> ArchiverFacade:
-        return await ArchiverFacade.create(
-            gmail_client=gmail_client,
-            state_db_path="archive_state.db",
-            output_manager=out,
-        )
-
-    archiver = asyncio.run(_create_archiver())
-
-    # Async helpers for async methods
-    async def _list_messages_for_archive(
-        threshold: str, progress_cb: Any
-    ) -> tuple[str, list[dict[str, Any]]]:
-        return await archiver.list_messages_for_archive(threshold, progress_callback=progress_cb)
-
-    async def _filter_already_archived(ids: list[str], inc: bool) -> tuple[list[str], int]:
-        return await archiver.filter_already_archived(ids, incremental=inc)
-
-    async def _archive_messages(
-        msg_ids: list[str],
-        out_file: str,
-        compr: str | None,
-        op: Any,
-    ) -> dict[str, Any]:
-        return await archiver.archive_messages(
-            message_ids=msg_ids,
-            output_file=out_file,
-            compress=compr,
-            operation=op,
-        )
-
-    # Phase 2: Discovery and Archiving (multi-task sequence)
+    # Phase 2: Discovery and Archiving - single async workflow for proper resource management
     message_list: list[dict[str, str]] = []
     messages_to_archive: list[str] = []
     skipped_count: int = 0
@@ -170,73 +149,105 @@ def archive(
     archive_error: Exception | None = None
     scan_count: int = 0  # Track messages scanned during listing
 
-    with ctx.ui.task_sequence(show_logs=True) as seq:
-        # Task 1: Scan messages from Gmail (sync - uses Gmail API)
-        with seq.task("Scanning messages from Gmail") as task:
+    # Single async workflow using proper context manager for Gmail client
+    async def _archive_workflow() -> (
+        tuple[list[dict[str, str]], list[str], int, dict[str, Any] | None, Exception | None]
+    ):
+        nonlocal message_list, messages_to_archive, skipped_count, result, archive_error, scan_count
+
+        # Use async context manager for proper HTTP client lifecycle
+        async with GmailClient(oauth_creds) as gmail:
+            # Create archiver with the properly initialized client
+            archiver = await ArchiverFacade.create(
+                gmail_client=gmail,
+                state_db_path="archive_state.db",
+                output_manager=out,
+            )
+
             try:
-                # Progress callback to update counter during scanning
-                def scan_progress(count: int, page: int) -> None:
-                    nonlocal scan_count
-                    scan_count = count
-                    task.set_status(f"Scanning messages from Gmail... {count:,} found")
+                # Task 1: Scan messages from Gmail
+                with ctx.ui.task_sequence(show_logs=True) as seq:
+                    with seq.task("Scanning messages from Gmail") as task:
+                        try:
+                            def scan_progress(count: int, page: int) -> None:
+                                nonlocal scan_count
+                                scan_count = count
+                                task.set_status(f"Scanning messages from Gmail... {count:,} found")
 
-                _query, message_list = asyncio.run(
-                    _list_messages_for_archive(age_threshold, scan_progress)
-                )
+                            _query, message_list = await archiver.list_messages_for_archive(
+                                age_threshold, progress_callback=scan_progress
+                            )
 
-                if message_list:
-                    task.complete(f"Found {len(message_list):,} messages")
-                else:
-                    task.complete("No messages found matching criteria")
+                            if message_list:
+                                task.complete(f"Found {len(message_list):,} messages")
+                            else:
+                                task.complete("No messages found matching criteria")
 
-            except Exception as e:
-                task.fail(f"Scan failed: {e}")
-                archive_error = e
+                        except Exception as e:
+                            task.fail(f"Scan failed: {e}")
+                            archive_error = e
 
-        # Task 2: Filter already archived (only if messages found and no error)
-        if message_list and not archive_error:
-            with seq.task("Checking for already archived") as task:
-                try:
-                    all_ids = [msg["id"] for msg in message_list]
-                    messages_to_archive, skipped_count = asyncio.run(
-                        _filter_already_archived(all_ids, incremental)
-                    )
+                    # Task 2: Filter already archived
+                    if message_list and not archive_error:
+                        with seq.task("Checking for already archived") as task:
+                            try:
+                                all_ids = [msg["id"] for msg in message_list]
+                                messages_to_archive, skipped_count = (
+                                    await archiver.filter_already_archived(all_ids, incremental)
+                                )
 
-                    if skipped_count > 0:
-                        task.complete(
-                            f"Identified {len(messages_to_archive):,} to archive "
-                            f"({skipped_count:,} already archived)"
-                        )
-                    else:
-                        task.complete(f"Identified {len(messages_to_archive):,} to archive")
+                                if skipped_count > 0:
+                                    task.complete(
+                                        f"Identified {len(messages_to_archive):,} to archive "
+                                        f"({skipped_count:,} already archived)"
+                                    )
+                                else:
+                                    task.complete(
+                                        f"Identified {len(messages_to_archive):,} to archive"
+                                    )
 
-                except Exception as e:
-                    task.fail(f"Filter failed: {e}")
-                    archive_error = e
+                            except Exception as e:
+                                task.fail(f"Filter failed: {e}")
+                                archive_error = e
 
-        # Task 3: Archive messages (only if messages to archive and no error)
-        if messages_to_archive and not archive_error and not dry_run:
-            with seq.task("Archiving messages", total=len(messages_to_archive)) as task:
-                try:
-                    result = asyncio.run(
-                        _archive_messages(messages_to_archive, output, compress, task)
-                    )
+                    # Task 3: Archive messages
+                    if messages_to_archive and not archive_error and not dry_run:
+                        with seq.task(
+                            "Archiving messages", total=len(messages_to_archive)
+                        ) as task:
+                            try:
+                                result = await archiver.archive_messages(
+                                    message_ids=messages_to_archive,
+                                    output_file=output,
+                                    compress=compress,
+                                    operation=task,
+                                )
 
-                    if result.get("interrupted"):
-                        task.complete(f"Interrupted after {result['archived_count']:,} messages")
-                    elif result["archived_count"] > 0:
-                        task.complete(f"Archived {result['archived_count']:,} messages")
-                    else:
-                        task.complete("No messages archived")
+                                if result.get("interrupted"):
+                                    task.complete(
+                                        f"Interrupted after {result['archived_count']:,} messages"
+                                    )
+                                elif result["archived_count"] > 0:
+                                    task.complete(f"Archived {result['archived_count']:,} messages")
+                                else:
+                                    task.complete("No messages archived")
 
-                except KeyboardInterrupt:
-                    task.log("Archive interrupted by user", "WARNING")
-                    task.complete("Interrupted")
-                    result = {"interrupted": True, "archived_count": 0}
+                            except KeyboardInterrupt:
+                                task.log("Archive interrupted by user", "WARNING")
+                                task.complete("Interrupted")
+                                result = {"interrupted": True, "archived_count": 0}
 
-                except Exception as e:
-                    task.fail(f"Archive failed: {e}")
-                    archive_error = e
+                            except Exception as e:
+                                task.fail(f"Archive failed: {e}")
+                                archive_error = e
+            finally:
+                # Clean up archiver resources
+                await archiver.close()
+
+        return message_list, messages_to_archive, skipped_count, result, archive_error
+
+    # Run the entire workflow in a single event loop
+    asyncio.run(_archive_workflow())
 
     # Handle errors (outside live context)
     if archive_error:
@@ -343,9 +354,13 @@ def archive(
                 ctx.info("Deletion cancelled")
                 return
 
-            # Perform permanent deletion
+            # Perform permanent deletion with proper async resource management
+            async def _delete_messages() -> None:
+                async with GmailClient(oauth_creds) as gmail:
+                    await gmail.delete_messages_permanent(list(archived_ids))
+
             with out.progress_context("Permanently deleting messages", total=None):
-                asyncio.run(gmail_client.delete_messages_permanent(list(archived_ids)))
+                asyncio.run(_delete_messages())
             ctx.success("Messages permanently deleted")
 
         elif trash:
@@ -356,8 +371,13 @@ def archive(
                 ctx.info("Cancelled")
                 return
 
+            # Trash messages with proper async resource management
+            async def _trash_messages() -> None:
+                async with GmailClient(oauth_creds) as gmail:
+                    await gmail.trash_messages(list(archived_ids))
+
             with out.progress_context("Moving messages to trash", total=None):
-                asyncio.run(gmail_client.trash_messages(list(archived_ids)))
+                asyncio.run(_trash_messages())
             ctx.success("Messages moved to trash")
 
     # Phase 7: Final report
