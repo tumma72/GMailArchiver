@@ -447,114 +447,57 @@ class MigrationManager:
                         for row in await cursor.fetchall()
                     }
 
-                    # Scan mbox file once and process all messages
-                    try:
-                        with closing(mailbox.mbox(str(archive_path))) as mbox:
-                            file_size = archive_path.stat().st_size
-                            keys_list = list(mbox.keys())
+                    # CPU-bound mbox scanning in thread pool
+                    records, file_skipped, warnings = await asyncio.to_thread(
+                        self._scan_mbox_for_migration_sync,
+                        archive_path,
+                        old_messages,
+                    )
 
-                            for i, key in enumerate(keys_list):
-                                try:
-                                    # Get offset from mbox._toc (private API but necessary)
-                                    offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+                    # Log any warnings
+                    for warning in warnings:
+                        console.print(f"[yellow]Warning: {warning}[/yellow]")
 
-                                    # Read message
-                                    msg = mbox[key]
+                    # Insert records into database (async)
+                    for record in records:
+                        await conn.execute(
+                            """
+                            INSERT INTO messages
+                            (gmail_id, rfc_message_id, thread_id,
+                             subject, from_addr, to_addr, cc_addr,
+                             date, archived_timestamp, archive_file,
+                             mbox_offset, mbox_length,
+                             body_preview, checksum, size_bytes,
+                             labels, account_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                    ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                record["gmail_id"],
+                                record["rfc_message_id"],
+                                record["thread_id"],
+                                record["subject"],
+                                record["from_addr"],
+                                record["to_addr"],
+                                record["cc_addr"],
+                                record["date"],
+                                record["archived_timestamp"],
+                                record["archive_file"],
+                                record["mbox_offset"],
+                                record["mbox_length"],
+                                record["body_preview"],
+                                record["checksum"],
+                                record["size_bytes"],
+                                None,  # labels
+                                "default",  # account_id
+                            ),
+                        )
+                        migrated_count += 1
+                        progress.update(task, advance=1)
 
-                                    # Calculate length (same pattern as importer.py)
-                                    if i < len(keys_list) - 1:
-                                        # Not the last message
-                                        next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
-                                        length = next_offset - offset
-                                    else:
-                                        # Last message
-                                        length = file_size - offset
-
-                                    # For migration, we take the first message from the mbox
-                                    # Since v1.0 didn't track Message-IDs, we can't match by ID
-                                    # We assume the order in v1.0 DB matches the order in mbox
-                                    # This is a limitation of v1.0 migration
-                                    # Better approach: match by subject + from + date
-                                    # For now, just take the next available gmail_id
-                                    if old_messages:
-                                        # Pop one gmail_id from the dict
-                                        gmail_id = next(iter(old_messages.keys()))
-                                        old_meta = old_messages.pop(gmail_id)
-
-                                        # Extract RFC Message-ID
-                                        rfc_message_id = self._extract_rfc_message_id(msg)
-
-                                        # Extract thread ID
-                                        thread_id = self._extract_thread_id(msg)
-
-                                        # Extract body preview
-                                        body_preview = self._extract_body_preview(msg)
-
-                                        # Calculate checksum
-                                        message_bytes = msg.as_bytes()
-                                        checksum = hashlib.sha256(message_bytes).hexdigest()
-
-                                        # Insert with real metadata
-                                        await conn.execute(
-                                            """
-                                            INSERT INTO messages
-                                            (gmail_id, rfc_message_id, thread_id,
-                                             subject, from_addr, to_addr, cc_addr,
-                                             date, archived_timestamp, archive_file,
-                                             mbox_offset, mbox_length,
-                                             body_preview, checksum, size_bytes,
-                                             labels, account_id)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                                    ?, ?, ?, ?, ?, ?, ?)
-                                            """,
-                                            (
-                                                gmail_id,
-                                                rfc_message_id,
-                                                thread_id,
-                                                msg.get("Subject"),
-                                                msg.get("From"),
-                                                msg.get("To"),
-                                                msg.get("Cc"),
-                                                msg.get("Date"),
-                                                old_meta["archived_timestamp"],
-                                                archive_file,
-                                                offset,
-                                                length,
-                                                body_preview,
-                                                checksum,
-                                                len(message_bytes),
-                                                None,  # labels
-                                                "default",  # account_id
-                                            ),
-                                        )
-
-                                        migrated_count += 1
-                                        progress.update(task, advance=1)
-
-                                except Exception as e:
-                                    warn_msg = (
-                                        f"[yellow]Warning: Failed to process message {key}: {e}"
-                                    )
-                                    console.print(f"{warn_msg}[/yellow]")
-                                    skipped_count += 1
-                                    progress.update(task, advance=1)
-                                    continue
-
-                        # Handle any remaining old_messages that weren't in mbox
-                        if old_messages:
-                            console.print(
-                                f"[yellow]Warning: {len(old_messages)} messages from v1.0 DB "
-                                f"not found in {archive_path}[/yellow]"
-                            )
-                            skipped_count += len(old_messages)
-                            progress.update(task, advance=len(old_messages))
-
-                    except Exception as e:
-                        warn_msg = f"[yellow]Warning: Failed to scan {archive_path}: {e}"
-                        console.print(f"{warn_msg}[/yellow]")
-                        skipped_count += len(old_messages)
-                        progress.update(task, advance=len(old_messages))
-                        continue
+                    # Update progress for skipped messages
+                    skipped_count += file_skipped
+                    progress.update(task, advance=file_skipped)
 
             # 4. Drop old table
             console.print("[cyan]Dropping old table...[/cyan]")
@@ -676,7 +619,6 @@ class MigrationManager:
         Raises:
             MigrationError: If backfill fails
         """
-        import mailbox
         from collections import defaultdict
 
         if not invalid_messages:
@@ -705,57 +647,28 @@ class MigrationManager:
                 # Create lookup dictionary by RFC Message-ID
                 msg_lookup = {m["rfc_message_id"]: m for m in msgs}
 
-                try:
-                    # Scan mbox file
-                    with closing(mailbox.mbox(str(archive_path))) as mbox:
-                        file_size = archive_path.stat().st_size
-                        keys_list = list(mbox.keys())
+                # CPU-bound mbox scanning in thread pool
+                updates, warnings = await asyncio.to_thread(
+                    self._scan_mbox_for_backfill_sync,
+                    archive_path,
+                    msg_lookup,
+                )
 
-                        for i, key in enumerate(keys_list):
-                            try:
-                                # Get offset from mbox._toc
-                                offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+                # Log any warnings
+                for warning in warnings:
+                    console.print(f"[yellow]Warning: {warning}[/yellow]")
 
-                                # Read message
-                                email_msg: Message[str, str] = mbox[key]
-
-                                # Extract RFC Message-ID
-                                rfc_message_id = self._extract_rfc_message_id(email_msg)
-
-                                # Check if this is one of our invalid messages
-                                if rfc_message_id in msg_lookup:
-                                    # Calculate length
-                                    if i < len(keys_list) - 1:
-                                        next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
-                                        length = next_offset - offset
-                                    else:
-                                        length = file_size - offset
-
-                                    # Update database with real offsets
-                                    gmail_id = msg_lookup[rfc_message_id]["gmail_id"]
-
-                                    await conn.execute(
-                                        """
-                                        UPDATE messages
-                                        SET mbox_offset = ?, mbox_length = ?
-                                        WHERE gmail_id = ?
-                                        """,
-                                        (offset, length, gmail_id),
-                                    )
-
-                                    backfilled += 1
-
-                            except Exception as e:
-                                # Skip this message but continue
-                                console.print(
-                                    f"[yellow]Warning: Failed to process "
-                                    f"message {key}: {e}[/yellow]"
-                                )
-                                continue
-
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Failed to scan {archive_path}: {e}[/yellow]")
-                    continue
+                # Apply updates to database (async)
+                for gmail_id, offset, length in updates:
+                    await conn.execute(
+                        """
+                        UPDATE messages
+                        SET mbox_offset = ?, mbox_length = ?
+                        WHERE gmail_id = ?
+                        """,
+                        (offset, length, gmail_id),
+                    )
+                    backfilled += 1
 
             # Commit all updates
             await conn.commit()
@@ -766,6 +679,175 @@ class MigrationManager:
         except Exception as e:
             await conn.rollback()
             raise MigrationError(f"Backfill failed: {e}") from e
+
+    # ==================== SYNC HELPERS FOR CPU-BOUND WORK ====================
+    # These methods run in thread pool via asyncio.to_thread() to avoid
+    # blocking the event loop during CPU-intensive mbox/email operations.
+
+    def _scan_mbox_for_migration_sync(
+        self,
+        archive_path: Path,
+        old_messages: dict[str, dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], int, list[str]]:
+        """
+        Sync helper: Scan mbox file and extract metadata for migration.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+
+        Args:
+            archive_path: Path to mbox file
+            old_messages: Dict of gmail_id -> old message metadata from v1.0 DB
+
+        Returns:
+            Tuple of:
+            - records: List of message records for database insertion
+            - skipped: Number of messages skipped
+            - warnings: List of warning messages
+        """
+        import mailbox
+
+        records: list[dict[str, Any]] = []
+        skipped = 0
+        warnings: list[str] = []
+
+        # Make a copy to avoid modifying the original
+        remaining_messages = dict(old_messages)
+
+        try:
+            with closing(mailbox.mbox(str(archive_path))) as mbox:
+                file_size = archive_path.stat().st_size
+                keys_list = list(mbox.keys())
+
+                for i, key in enumerate(keys_list):
+                    try:
+                        # Get offset from mbox._toc (private API but necessary)
+                        offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+
+                        # Read message
+                        msg = mbox[key]
+
+                        # Calculate length
+                        if i < len(keys_list) - 1:
+                            next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
+                            length = next_offset - offset
+                        else:
+                            length = file_size - offset
+
+                        if remaining_messages:
+                            # Pop one gmail_id from the dict
+                            gmail_id = next(iter(remaining_messages.keys()))
+                            old_meta = remaining_messages.pop(gmail_id)
+
+                            # Extract RFC Message-ID
+                            rfc_message_id = self._extract_rfc_message_id(msg)
+
+                            # Extract thread ID
+                            thread_id = self._extract_thread_id(msg)
+
+                            # Extract body preview
+                            body_preview = self._extract_body_preview(msg)
+
+                            # Calculate checksum
+                            message_bytes = msg.as_bytes()
+                            checksum = hashlib.sha256(message_bytes).hexdigest()
+
+                            records.append({
+                                "gmail_id": gmail_id,
+                                "rfc_message_id": rfc_message_id,
+                                "thread_id": thread_id,
+                                "subject": msg.get("Subject"),
+                                "from_addr": msg.get("From"),
+                                "to_addr": msg.get("To"),
+                                "cc_addr": msg.get("Cc"),
+                                "date": msg.get("Date"),
+                                "archived_timestamp": old_meta["archived_timestamp"],
+                                "archive_file": str(archive_path),
+                                "mbox_offset": offset,
+                                "mbox_length": length,
+                                "body_preview": body_preview,
+                                "checksum": checksum,
+                                "size_bytes": len(message_bytes),
+                            })
+
+                    except Exception as e:
+                        warnings.append(f"Failed to process message {key}: {e}")
+                        skipped += 1
+                        continue
+
+            # Handle any remaining old_messages that weren't in mbox
+            if remaining_messages:
+                warnings.append(
+                    f"{len(remaining_messages)} messages from v1.0 DB "
+                    f"not found in {archive_path}"
+                )
+                skipped += len(remaining_messages)
+
+        except Exception as e:
+            warnings.append(f"Failed to scan {archive_path}: {e}")
+            skipped += len(remaining_messages)
+
+        return records, skipped, warnings
+
+    def _scan_mbox_for_backfill_sync(
+        self,
+        archive_path: Path,
+        msg_lookup: dict[str, dict[str, Any]],
+    ) -> tuple[list[tuple[str, int, int]], list[str]]:
+        """
+        Sync helper: Scan mbox file to extract offsets for backfill.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+
+        Args:
+            archive_path: Path to mbox file
+            msg_lookup: Dict mapping rfc_message_id -> message record
+
+        Returns:
+            Tuple of:
+            - updates: List of (gmail_id, offset, length) tuples for database update
+            - warnings: List of warning messages
+        """
+        import mailbox
+
+        updates: list[tuple[str, int, int]] = []
+        warnings: list[str] = []
+
+        try:
+            with closing(mailbox.mbox(str(archive_path))) as mbox:
+                file_size = archive_path.stat().st_size
+                keys_list = list(mbox.keys())
+
+                for i, key in enumerate(keys_list):
+                    try:
+                        # Get offset from mbox._toc
+                        offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+
+                        # Read message
+                        email_msg: Message[str, str] = mbox[key]
+
+                        # Extract RFC Message-ID
+                        rfc_message_id = self._extract_rfc_message_id(email_msg)
+
+                        # Check if this is one of our invalid messages
+                        if rfc_message_id in msg_lookup:
+                            # Calculate length
+                            if i < len(keys_list) - 1:
+                                next_offset = mbox._toc[keys_list[i + 1]][0]  # type: ignore
+                                length = next_offset - offset
+                            else:
+                                length = file_size - offset
+
+                            gmail_id = msg_lookup[rfc_message_id]["gmail_id"]
+                            updates.append((gmail_id, offset, length))
+
+                    except Exception as e:
+                        warnings.append(f"Failed to process message {key}: {e}")
+                        continue
+
+        except Exception as e:
+            warnings.append(f"Failed to scan {archive_path}: {e}")
+
+        return updates, warnings
 
     async def __aenter__(self) -> MigrationManager:
         """Context manager entry."""

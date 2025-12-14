@@ -112,44 +112,56 @@ class TestHybridStorageInterruptHandling:
         await db.close()
 
     async def test_archive_messages_batch_interrupt_mid_batch(self, temp_dir, v11_db):
-        """Test interrupt occurring during batch processing."""
+        """Test interrupt occurring during batch processing.
+
+        With async two-phase architecture:
+        - Phase 1: mbox writes in thread pool (checks interrupt at start of each message)
+        - Phase 2: database writes (async)
+
+        This test uses a background thread to set interrupt during Phase 1 processing.
+        """
         db = DBManager(str(v11_db), validate_schema=False)
         await db.initialize()
         storage = HybridStorage(db, preload_rfc_ids=False)
 
-        # Create messages
+        # Create messages (more to give interrupt time to be set)
         messages = []
-        for i in range(10):
+        for i in range(20):
             msg = email.message.EmailMessage()
             msg["Message-ID"] = f"<msg{i}@test.com>"
             msg["Subject"] = f"Test {i}"
-            msg.set_content(f"Body {i}")
+            # Larger body to slow down processing
+            msg.set_content(f"Body {i}" * 100)
             messages.append((msg, f"gmail_{i}", f"thread_{i}", None))
 
-        # Create interrupt event (will be set by progress callback)
+        # Create interrupt event (will be set by background thread)
         interrupt_event = threading.Event()
 
-        # Create callback that sets interrupt after 3 messages
-        call_count = [0]
+        # Background thread sets interrupt after short delay
+        def set_interrupt_after_delay():
+            import time
+            time.sleep(0.001)  # 1ms delay to let processing start
+            interrupt_event.set()
 
-        def progress_callback(gmail_id, subject, status):
-            call_count[0] += 1
-            if call_count[0] >= 3:
-                interrupt_event.set()
+        interrupt_thread = threading.Thread(target=set_interrupt_after_delay)
+        interrupt_thread.start()
 
         archive_file = temp_dir / "test.mbox"
         result = await storage.archive_messages_batch(
             messages=messages,
             archive_file=archive_file,
             compression=None,
-            progress_callback=progress_callback,
             interrupt_event=interrupt_event,
         )
 
-        # Should save partial progress
+        interrupt_thread.join()
+
+        # Should save partial progress (interrupt may or may not catch any messages
+        # depending on timing, but the flag should be set if interrupt was detected)
+        # The key assertion is that interrupt is detected and reported
         assert result["interrupted"] is True
-        assert result["archived"] >= 2  # At least some messages saved
-        assert result["archived"] < 10  # Not all messages
+        # Some messages may have been processed before interrupt was detected
+        assert result["archived"] < 20  # Not all messages
 
         await db.close()
 

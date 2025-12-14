@@ -142,6 +142,7 @@ class HybridStorage:
         - Single fsync at end (not per-message)
         - Configurable DB commit interval (default: 100 messages)
         - Batch validation at end (not per-message)
+        - CPU-bound mbox work runs in thread pool (asyncio.to_thread)
 
         Args:
             messages: List of (email_message, gmail_id, thread_id, labels) tuples
@@ -169,13 +170,8 @@ class HybridStorage:
                 "actual_file": str(archive_file),
             }
 
-        archived_count = 0
-        skipped_count = 0
-        failed_count = 0
-        interrupted = False
-        batch_rfc_ids: list[str] = []
-        mbox_obj = None
         mbox_path = archive_file
+        lock_file = Path(str(archive_file) + ".lock")
 
         # If compression requested, work with uncompressed mbox first
         if compression:
@@ -183,138 +179,94 @@ class HybridStorage:
                 mbox_path = archive_file.with_suffix("")
             else:
                 mbox_path = archive_file.parent / (archive_file.stem + ".mbox")
+            lock_file = Path(str(mbox_path) + ".lock")
+
+        batch_rfc_ids: list[str] = []
 
         try:
-            # Clean up any orphaned lock files
-            lock_file = Path(str(mbox_path) + ".lock")
-            if lock_file.exists():
-                logger.warning(f"Removing orphaned lock file: {lock_file}")
-                lock_file.unlink()
+            # Check for interrupt BEFORE CPU-bound work
+            if interrupt_event and interrupt_event.is_set():
+                logger.warning("Interrupt received before processing")
+                return {
+                    "archived": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "interrupted": True,
+                    "actual_file": str(archive_file),
+                }
 
-            # Open mbox ONCE for entire batch
-            mbox_obj = mailbox.mbox(str(mbox_path))
-            mbox_obj.lock()
+            # Phase 1: CPU-bound mbox work in thread pool
+            # This prevents blocking the event loop during mbox I/O and checksum calculations
+            results, new_rfc_ids, skipped_messages, skipped_count, failed_count, mbox_interrupted = (
+                await asyncio.to_thread(
+                    self._write_messages_to_mbox_sync,
+                    messages,
+                    mbox_path,
+                    archive_file,
+                    self._known_rfc_ids.copy(),  # Pass copy to avoid thread safety issues
+                    interrupt_event,
+                )
+            )
 
-            for email_message, gmail_id, thread_id, labels in messages:
-                # Check for interrupt BEFORE processing
-                if interrupt_event and interrupt_event.is_set():
-                    interrupted = True
-                    logger.warning("Interrupt received - saving progress...")
-                    break
-                # Check for duplicate (O(1) using pre-loaded set)
-                rfc_message_id = self._extract_rfc_message_id(email_message)
-                if rfc_message_id in self._known_rfc_ids:
-                    logger.debug(
-                        f"Skipping duplicate message {gmail_id}: "
-                        f"rfc_message_id '{rfc_message_id}' already archived"
-                    )
-                    skipped_count += 1
-                    subject = email_message.get("Subject", "No Subject")
-                    if progress_callback:
-                        progress_callback(gmail_id, subject, "skipped")
-                    continue
+            # Report skipped messages first (for progress callbacks)
+            if progress_callback:
+                for gmail_id, subject in skipped_messages:
+                    progress_callback(gmail_id, subject, "skipped")
 
+            # Phase 2: Async database operations (with per-message error handling)
+            db_success_count = 0
+            db_failed_count = 0
+            successful_rfc_ids: list[str] = []
+
+            for i, record in enumerate(results):
                 try:
-                    # Get offset BEFORE writing using the mbox's internal file handle
-                    # This avoids opening a separate file handle
-                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                        # Seek to end to get correct offset for appending
-                        # (file cursor may not be at end when mbox is reopened)
-                        mbox_obj._file.seek(0, 2)  # SEEK_END
-                        offset = mbox_obj._file.tell()
-                    elif mbox_path.exists():
-                        offset = mbox_path.stat().st_size
-                    else:
-                        offset = 0
-
-                    # Write message
-                    mbox_obj.add(email_message)
-
-                    # Get length AFTER writing using the mbox's internal file handle
-                    # This avoids flush() which calls fsync
-                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                        length = mbox_obj._file.tell() - offset
-                    else:
-                        # Fallback: estimate from message size
-                        length = len(email_message.as_bytes()) + 50
-
-                    # Extract metadata
-                    subject = email_message.get("Subject", "No Subject")
-                    body_preview = self._extract_body_preview(email_message)
-                    checksum = self._compute_checksum(email_message.as_bytes())
-
                     # Record in database (NO commit yet)
                     await self.db.record_archived_message(
-                        gmail_id=gmail_id,
-                        rfc_message_id=rfc_message_id,
-                        archive_file=str(archive_file),  # Store final path (with compression)
-                        mbox_offset=offset,
-                        mbox_length=length,
-                        thread_id=thread_id,
-                        subject=subject,
-                        from_addr=email_message.get("From"),
-                        to_addr=email_message.get("To"),
-                        cc_addr=email_message.get("Cc"),
-                        date=email_message.get("Date"),
-                        body_preview=body_preview,
-                        checksum=checksum,
-                        size_bytes=len(email_message.as_bytes()),
-                        labels=labels,
-                        record_run=False,  # Don't record per-message, we'll record once at end
+                        gmail_id=record["gmail_id"],
+                        rfc_message_id=record["rfc_message_id"],
+                        archive_file=record["archive_file"],
+                        mbox_offset=record["mbox_offset"],
+                        mbox_length=record["mbox_length"],
+                        thread_id=record["thread_id"],
+                        subject=record["subject"],
+                        from_addr=record["from_addr"],
+                        to_addr=record["to_addr"],
+                        cc_addr=record["cc_addr"],
+                        date=record["date"],
+                        body_preview=record["body_preview"],
+                        checksum=record["checksum"],
+                        size_bytes=record["size_bytes"],
+                        labels=record["labels"],
+                        record_run=False,
                     )
 
-                    # Add to known set and batch tracking
-                    self._known_rfc_ids.add(rfc_message_id)
-                    batch_rfc_ids.append(rfc_message_id)
-                    archived_count += 1
+                    # Add to known set
+                    self._known_rfc_ids.add(record["rfc_message_id"])
+                    successful_rfc_ids.append(record["rfc_message_id"])
+                    db_success_count += 1
 
-                    # Report progress
+                    # Report progress (on main thread for UI)
                     if progress_callback:
-                        progress_callback(gmail_id, subject, "success")
+                        progress_callback(record["gmail_id"], record["subject"], "success")
 
                     # Commit at interval
-                    if archived_count % commit_interval == 0:
+                    if db_success_count % commit_interval == 0:
                         await self.db.commit()
-                        # Update session progress if tracking
                         if session_id:
-                            await self.db.update_session_progress(session_id, archived_count)
-                        logger.debug(f"Committed {archived_count} messages")
+                            await self.db.update_session_progress(session_id, db_success_count)
+                        logger.debug(f"Committed {db_success_count} messages")
 
                 except Exception as e:
-                    # Log error but continue with next message
-                    logger.error(f"Failed to archive message {gmail_id}: {e}")
-                    failed_count += 1
-                    subject = email_message.get("Subject", "No Subject")
+                    # Log error but continue with next message (like original behavior)
+                    logger.error(f"Failed to record message {record['gmail_id']} in database: {e}")
+                    db_failed_count += 1
                     if progress_callback:
-                        progress_callback(gmail_id, subject, "error")
+                        progress_callback(record["gmail_id"], record["subject"], "error")
 
-            # Flush buffered data to file without calling fsync
-            # The mbox object's internal file handle should be flushed
-            if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                mbox_obj._file.flush()
-
-            # Unlock and close mbox WITHOUT calling mbox.close() (which calls fsync)
-            # We'll do our own fsync after this
-            if mbox_obj:
-                try:
-                    mbox_obj.unlock()
-                except Exception as e:
-                    logger.warning(f"Failed to unlock mbox: {e}")
-
-                # Close the internal file handle directly to avoid mbox.close()'s fsync
-                if hasattr(mbox_obj, "_file") and mbox_obj._file:
-                    try:
-                        mbox_obj._file.close()
-                    except Exception as e:
-                        logger.warning(f"Failed to close mbox file: {e}")
-
-                mbox_obj = None
-
-            # Single fsync at END of batch (critical for performance)
-            # This is the ONLY fsync for the entire batch
-            if mbox_path.exists():
-                with open(mbox_path, "r+b") as sync_file:
-                    os.fsync(sync_file.fileno())
+            # Update counts
+            archived_count = db_success_count
+            failed_count += db_failed_count
+            batch_rfc_ids = successful_rfc_ids
 
             # Final commit
             await self.db.commit()
@@ -326,12 +278,12 @@ class HybridStorage:
             # Determine final file path
             final_path = mbox_path
 
-            # Only finalize (validate/compress) if NOT interrupted
-            if archived_count > 0 and not interrupted:
+            # Only finalize (validate/compress) if we archived something
+            if archived_count > 0:
                 # Batch validation at end (not per-message)
                 await self._validate_batch_consistency(batch_rfc_ids)
 
-                # Compress if requested
+                # Compress if requested (already uses asyncio.to_thread internally)
                 if compression:
                     logger.debug(f"Compressing with {compression}")
                     await self._compress_file(mbox_path, archive_file, compression)
@@ -356,16 +308,12 @@ class HybridStorage:
                     f"Batch archived {archived_count} messages "
                     f"(skipped {skipped_count} duplicates) to {final_path}"
                 )
-            elif interrupted:
-                logger.warning(
-                    f"Interrupted: saved {archived_count}/{len(messages)} messages to {mbox_path}"
-                )
 
             return {
                 "archived": archived_count,
                 "skipped": skipped_count,
                 "failed": failed_count,
-                "interrupted": interrupted,
+                "interrupted": mbox_interrupted,
                 "actual_file": str(final_path),
             }
 
@@ -383,18 +331,6 @@ class HybridStorage:
                 self._known_rfc_ids.discard(rfc_id)
 
             raise HybridStorageError(f"Failed to batch archive messages: {e}") from e
-
-        finally:
-            # Cleanup
-            if mbox_obj:
-                try:
-                    mbox_obj.unlock()
-                except Exception as e:
-                    logger.warning(f"Failed to unlock mbox: {e}")
-                try:
-                    mbox_obj.close()
-                except Exception as e:
-                    logger.warning(f"Failed to close mbox: {e}")
 
     # ==================== CONSOLIDATION PRIMITIVES ====================
 
@@ -579,9 +515,9 @@ class HybridStorage:
         Atomically consolidate multiple archives.
 
         Steps:
-        1. Read all messages from source archives
+        1. Read all messages from source archives (uses asyncio.to_thread)
         2. Optionally deduplicate by Message-ID
-        3. Write to NEW consolidated mbox (never modify in-place)
+        3. Write to NEW consolidated mbox (uses asyncio.to_thread)
         4. Validate consistency (before database commit)
         5. Update ALL database records with new offsets
         6. Only then, optionally delete old archives
@@ -599,10 +535,9 @@ class HybridStorage:
             HybridStorageError: If operation fails
         """
         staging_mbox = self._staging_area / f"consolidate_{uuid.uuid4()}.mbox"
-        mbox_obj = None
 
         try:
-            # Phase 1: Read and collect messages
+            # Phase 1: Read and collect messages (uses asyncio.to_thread internally)
             logger.info(f"Phase 1: Reading {len(source_archives)} source archives")
             messages = await self._collect_messages(source_archives)
             total_messages = len(messages)
@@ -615,48 +550,13 @@ class HybridStorage:
                 messages, duplicates_removed = self._deduplicate_messages(messages)
                 logger.info(f"Removed {duplicates_removed} duplicates")
 
-            # Phase 3: Write to staging mbox
+            # Phase 3: Write to staging mbox (CPU-bound work in thread pool)
             logger.info("Phase 3: Writing to staging mbox")
-            offset_map: dict[
-                str, tuple[str, int, int]
-            ] = {}  # rfc_message_id -> (gmail_id, offset, length)
-
-            mbox_obj = mailbox.mbox(str(staging_mbox))
-            mbox_obj.lock()
-
-            for msg_dict in messages:
-                msg = msg_dict["message"]
-                gmail_id = msg_dict["gmail_id"]
-                rfc_id = msg.get("Message-ID", "")
-
-                # Get offset before write
-                if staging_mbox.exists():
-                    with open(staging_mbox, "rb") as f:
-                        f.seek(0, 2)  # Seek to end
-                        offset = f.tell()
-                else:
-                    offset = 0
-
-                # Write message
-                mbox_obj.add(msg)
-                mbox_obj.flush()
-
-                # Calculate length
-                # mbox library might not have created file on disk yet for first message
-                if staging_mbox.exists():
-                    with open(staging_mbox, "rb") as f:
-                        f.seek(0, 2)
-                        length = f.tell() - offset
-                else:
-                    # File not created yet - use message size as estimate
-                    # This happens when mbox library delays file creation
-                    length = len(msg.as_bytes())
-
-                offset_map[rfc_id] = (gmail_id, offset, length)
-
-            mbox_obj.unlock()
-            mbox_obj.close()
-            mbox_obj = None
+            offset_map = await asyncio.to_thread(
+                self._write_consolidation_mbox_sync,
+                messages,
+                staging_mbox,
+            )
 
             # Phase 4: Move staging to final location
             logger.info("Phase 4: Moving to final location")
@@ -666,7 +566,7 @@ class HybridStorage:
 
             shutil.move(str(staging_mbox), str(final_mbox))
 
-            # Compress if requested
+            # Compress if requested (already uses asyncio.to_thread internally)
             if compression:
                 logger.info(f"Compressing with {compression}")
                 await self._compress_file(final_mbox, output_archive, compression)
@@ -751,18 +651,6 @@ class HybridStorage:
 
             raise HybridStorageError(f"Failed to consolidate archives: {e}") from e
 
-        finally:
-            # Cleanup
-            if mbox_obj:
-                try:
-                    mbox_obj.unlock()
-                except Exception as e:
-                    logger.warning(f"Failed to unlock staging mbox: {e}")
-                try:
-                    mbox_obj.close()
-                except Exception as e:
-                    logger.warning(f"Failed to close staging mbox: {e}")
-
     # ==================== VALIDATION ====================
 
     async def _validate_batch_consistency(self, rfc_message_ids: list[str]) -> None:
@@ -789,13 +677,15 @@ class HybridStorage:
         """
         Validate that a message exists in both mbox and database.
 
+        Uses asyncio.to_thread() for CPU-bound file reading and email parsing.
+
         Args:
             rfc_message_id: RFC 2822 Message-ID to validate (primary key in v1.2)
 
         Raises:
             IntegrityError: If inconsistent
         """
-        # Get location from database
+        # Get location from database (async DB operation)
         location = await self.db.get_message_location(rfc_message_id)
         if not location:
             raise IntegrityError(f"Message {rfc_message_id} not in database")
@@ -805,6 +695,7 @@ class HybridStorage:
         # Handle compressed archives - need to decompress to validate
         archive_path = Path(archive_file)
         compression = self._detect_compression(archive_path)
+        tmp_path: Path | None = None
 
         if compression:
             # Decompress to temp file for validation
@@ -812,6 +703,7 @@ class HybridStorage:
                 tmp_path = Path(tmp.name)
 
             try:
+                # Decompression already uses asyncio.to_thread internally
                 await self._decompress_file(archive_path, tmp_path, compression)
                 validate_path = tmp_path
             except Exception as e:
@@ -822,26 +714,18 @@ class HybridStorage:
             validate_path = archive_path
 
         try:
-            # Verify file exists
-            if not validate_path.exists():
-                raise IntegrityError(f"Archive file missing: {validate_path}")
-
-            # Verify message can be read at offset
-            with open(validate_path, "rb") as f:
-                f.seek(offset)
-                message_bytes = f.read(length)
-                if not message_bytes:
-                    raise IntegrityError(f"No data at offset {offset} in {archive_file}")
-
-                # Verify it parses as email
-                try:
-                    email.message_from_bytes(message_bytes, policy=policy.default)
-                except Exception as e:
-                    raise IntegrityError(f"Invalid email data at offset {offset}: {e}")
+            # CPU-bound validation in thread pool
+            await asyncio.to_thread(
+                self._validate_message_at_offset_sync,
+                validate_path,
+                offset,
+                length,
+                archive_file,
+            )
 
         finally:
             # Clean up temp file if created
-            if compression and tmp_path.exists():
+            if tmp_path and tmp_path.exists():
                 tmp_path.unlink()
 
     async def _validate_archive_consistency(self, archive_file: Path) -> None:
@@ -986,18 +870,21 @@ class HybridStorage:
         """
         Collect all messages from source archives.
 
+        Uses asyncio.to_thread() for CPU-bound mbox reading operations to avoid
+        blocking the event loop.
+
         Args:
             source_archives: List of archive paths
 
         Returns:
             List of message dictionaries with metadata
         """
-        messages: list[dict[str, Any]] = []
+        all_messages: list[dict[str, Any]] = []
 
         for archive_path in source_archives:
             logger.debug(f"Reading archive: {archive_path}")
 
-            # Get all database records for this archive
+            # Get all database records for this archive (async DB operation)
             db_records = await self.db.get_all_messages_for_archive(str(archive_path))
 
             # Create lookup by rfc_message_id
@@ -1005,11 +892,14 @@ class HybridStorage:
 
             # Handle compressed archives
             compression = self._detect_compression(archive_path)
+            tmp_path: Path | None = None
+
             if compression:
                 with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
 
                 try:
+                    # Decompression already uses asyncio.to_thread internally
                     await self._decompress_file(archive_path, tmp_path, compression)
                     read_path = tmp_path
                 except Exception as e:
@@ -1018,41 +908,27 @@ class HybridStorage:
                     raise HybridStorageError(f"Failed to decompress {archive_path}: {e}")
             else:
                 read_path = archive_path
-                tmp_path = None
 
             try:
-                with closing(mailbox.mbox(str(read_path))) as mbox_obj:
-                    for key in mbox_obj.keys():
-                        msg = mbox_obj[key]
-                        rfc_message_id = msg.get("Message-ID", "")
+                # CPU-bound mbox reading in thread pool
+                archive_messages = await asyncio.to_thread(
+                    self._collect_messages_from_archive_sync,
+                    read_path,
+                    db_lookup,
+                )
 
-                        # Get gmail_id from database
-                        db_record = db_lookup.get(rfc_message_id)
-                        gmail_id = db_record["gmail_id"] if db_record else "unknown"
+                # Update source_archive to original path (not temp file)
+                for msg in archive_messages:
+                    msg["source_archive"] = str(archive_path)
 
-                        # Extract date for sorting
-                        date_str = msg.get("Date", "")
-
-                        # Calculate size for dedup strategies
-                        size = len(msg.as_bytes())
-
-                        messages.append(
-                            {
-                                "message": msg,
-                                "rfc_message_id": rfc_message_id,
-                                "gmail_id": gmail_id,
-                                "source_archive": str(archive_path),
-                                "date": date_str,
-                                "size": size,
-                            }
-                        )
+                all_messages.extend(archive_messages)
 
             finally:
                 # Clean up temp file if created
                 if tmp_path and tmp_path.exists():
                     tmp_path.unlink()
 
-        return messages
+        return all_messages
 
     def _deduplicate_messages(
         self, messages: list[dict[str, Any]]
@@ -1165,6 +1041,319 @@ class HybridStorage:
         elif suffix == ".zst":
             return "zstd"
         return None
+
+    # ==================== SYNC HELPERS FOR CPU-BOUND WORK ====================
+    # These methods run in thread pool via asyncio.to_thread() to avoid
+    # blocking the event loop during CPU-intensive mbox/email operations.
+
+    def _write_messages_to_mbox_sync(
+        self,
+        messages: list[tuple[email.message.Message, str, str | None, str | None]],
+        mbox_path: Path,
+        archive_file: Path,
+        known_rfc_ids: set[str],
+        interrupt_event: Any | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str], list[tuple[str, str]], int, int, bool]:
+        """
+        Sync helper: Write messages to mbox and extract metadata.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+        It handles mbox operations, checksum calculation, and metadata extraction.
+
+        Args:
+            messages: List of (email_message, gmail_id, thread_id, labels) tuples
+            mbox_path: Path to mbox file (uncompressed working file)
+            archive_file: Path to final archive file (for database records)
+            known_rfc_ids: Set of already-archived RFC Message-IDs
+            interrupt_event: Optional threading.Event for graceful interruption
+
+        Returns:
+            Tuple of:
+            - results: List of message metadata dicts for database insertion
+            - new_rfc_ids: List of RFC Message-IDs that were archived
+            - skipped_messages: List of (gmail_id, subject) for skipped duplicates
+            - skipped_count: Number of duplicate messages skipped
+            - failed_count: Number of messages that failed to process
+            - interrupted: Whether processing was interrupted
+        """
+        results: list[dict[str, Any]] = []
+        new_rfc_ids: list[str] = []
+        skipped_messages: list[tuple[str, str]] = []
+        skipped_count = 0
+        failed_count = 0
+        interrupted = False
+        mbox_obj = None
+
+        try:
+            # Clean up any orphaned lock files
+            lock_file = Path(str(mbox_path) + ".lock")
+            if lock_file.exists():
+                logger.warning(f"Removing orphaned lock file: {lock_file}")
+                lock_file.unlink()
+
+            # Open mbox ONCE for entire batch
+            mbox_obj = mailbox.mbox(str(mbox_path))
+            mbox_obj.lock()
+
+            for email_message, gmail_id, thread_id, labels in messages:
+                # Check for interrupt at start of each message
+                if interrupt_event and interrupt_event.is_set():
+                    logger.info("Interrupt received during mbox processing")
+                    interrupted = True
+                    break
+                # Check for duplicate (O(1) using pre-loaded set)
+                rfc_message_id = self._extract_rfc_message_id(email_message)
+                if rfc_message_id in known_rfc_ids:
+                    subject = email_message.get("Subject", "No Subject")
+                    logger.debug(
+                        f"Skipping duplicate message {gmail_id}: "
+                        f"rfc_message_id '{rfc_message_id}' already archived"
+                    )
+                    skipped_messages.append((gmail_id, subject))
+                    skipped_count += 1
+                    continue
+
+                try:
+                    # Get offset BEFORE writing
+                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                        mbox_obj._file.seek(0, 2)  # SEEK_END
+                        offset = mbox_obj._file.tell()
+                    elif mbox_path.exists():
+                        offset = mbox_path.stat().st_size
+                    else:
+                        offset = 0
+
+                    # Write message
+                    mbox_obj.add(email_message)
+
+                    # Get length AFTER writing
+                    if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                        length = mbox_obj._file.tell() - offset
+                    else:
+                        length = len(email_message.as_bytes()) + 50
+
+                    # Extract metadata (CPU-bound)
+                    msg_bytes = email_message.as_bytes()
+                    subject = email_message.get("Subject", "No Subject")
+                    body_preview = self._extract_body_preview(email_message)
+                    checksum = self._compute_checksum(msg_bytes)
+
+                    results.append(
+                        {
+                            "gmail_id": gmail_id,
+                            "rfc_message_id": rfc_message_id,
+                            "archive_file": str(archive_file),
+                            "mbox_offset": offset,
+                            "mbox_length": length,
+                            "thread_id": thread_id,
+                            "subject": subject,
+                            "from_addr": email_message.get("From"),
+                            "to_addr": email_message.get("To"),
+                            "cc_addr": email_message.get("Cc"),
+                            "date": email_message.get("Date"),
+                            "body_preview": body_preview,
+                            "checksum": checksum,
+                            "size_bytes": len(msg_bytes),
+                            "labels": labels,
+                        }
+                    )
+                    new_rfc_ids.append(rfc_message_id)
+                    # Add to known_rfc_ids to detect duplicates within same batch
+                    known_rfc_ids.add(rfc_message_id)
+
+                except Exception as e:
+                    logger.error(f"Failed to archive message {gmail_id}: {e}")
+                    failed_count += 1
+
+            # Flush buffered data
+            if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                mbox_obj._file.flush()
+
+            # Unlock mbox (handle failures gracefully)
+            try:
+                mbox_obj.unlock()
+            except Exception as e:
+                logger.warning(f"Failed to unlock mbox: {e}")
+
+            # Close internal file handle directly (avoid mbox.close()'s fsync)
+            if hasattr(mbox_obj, "_file") and mbox_obj._file:
+                try:
+                    mbox_obj._file.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close mbox file: {e}")
+
+            mbox_obj = None
+
+            # Single fsync at END (critical for performance)
+            if mbox_path.exists():
+                with open(mbox_path, "r+b") as sync_file:
+                    os.fsync(sync_file.fileno())
+
+            return results, new_rfc_ids, skipped_messages, skipped_count, failed_count, interrupted
+
+        finally:
+            if mbox_obj:
+                try:
+                    mbox_obj.unlock()
+                except Exception as e:
+                    logger.warning(f"Failed to unlock mbox in cleanup: {e}")
+                try:
+                    mbox_obj.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close mbox in cleanup: {e}")
+
+    def _collect_messages_from_archive_sync(
+        self,
+        archive_path: Path,
+        db_lookup: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Sync helper: Collect messages from a single archive.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+        It handles mbox reading, message parsing, and metadata extraction.
+
+        Args:
+            archive_path: Path to archive file (may be decompressed temp file)
+            db_lookup: Dict mapping rfc_message_id -> database record
+
+        Returns:
+            List of message dictionaries with metadata
+        """
+        messages: list[dict[str, Any]] = []
+
+        with closing(mailbox.mbox(str(archive_path))) as mbox_obj:
+            for key in mbox_obj.keys():
+                msg = mbox_obj[key]
+                rfc_message_id = msg.get("Message-ID", "")
+
+                # Get gmail_id from database
+                db_record = db_lookup.get(rfc_message_id)
+                gmail_id = db_record["gmail_id"] if db_record else "unknown"
+
+                # Extract date for sorting
+                date_str = msg.get("Date", "")
+
+                # Calculate size for dedup strategies (CPU-bound)
+                size = len(msg.as_bytes())
+
+                messages.append(
+                    {
+                        "message": msg,
+                        "rfc_message_id": rfc_message_id,
+                        "gmail_id": gmail_id,
+                        "source_archive": str(archive_path),
+                        "date": date_str,
+                        "size": size,
+                    }
+                )
+
+        return messages
+
+    def _write_consolidation_mbox_sync(
+        self,
+        messages: list[dict[str, Any]],
+        staging_mbox: Path,
+    ) -> dict[str, tuple[str, int, int]]:
+        """
+        Sync helper: Write messages to consolidation mbox.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+
+        Args:
+            messages: List of message dictionaries to write
+            staging_mbox: Path to staging mbox file
+
+        Returns:
+            Dict mapping rfc_message_id -> (gmail_id, offset, length)
+        """
+        offset_map: dict[str, tuple[str, int, int]] = {}
+        mbox_obj = None
+
+        try:
+            mbox_obj = mailbox.mbox(str(staging_mbox))
+            mbox_obj.lock()
+
+            for msg_dict in messages:
+                msg = msg_dict["message"]
+                gmail_id = msg_dict["gmail_id"]
+                rfc_id = msg.get("Message-ID", "")
+
+                # Get offset before write
+                if staging_mbox.exists():
+                    with open(staging_mbox, "rb") as f:
+                        f.seek(0, 2)
+                        offset = f.tell()
+                else:
+                    offset = 0
+
+                # Write message
+                mbox_obj.add(msg)
+                mbox_obj.flush()
+
+                # Calculate length
+                if staging_mbox.exists():
+                    with open(staging_mbox, "rb") as f:
+                        f.seek(0, 2)
+                        length = f.tell() - offset
+                else:
+                    length = len(msg.as_bytes())
+
+                offset_map[rfc_id] = (gmail_id, offset, length)
+
+            mbox_obj.unlock()
+            mbox_obj.close()
+            mbox_obj = None
+
+            return offset_map
+
+        finally:
+            if mbox_obj:
+                try:
+                    mbox_obj.unlock()
+                except Exception as e:
+                    logger.warning(f"Failed to unlock staging mbox: {e}")
+                try:
+                    mbox_obj.close()
+                except Exception as e:
+                    logger.warning(f"Failed to close staging mbox: {e}")
+
+    def _validate_message_at_offset_sync(
+        self,
+        validate_path: Path,
+        offset: int,
+        length: int,
+        archive_file: str,
+    ) -> None:
+        """
+        Sync helper: Validate message can be read at offset.
+
+        This is CPU-bound work that runs in a thread pool via asyncio.to_thread().
+
+        Args:
+            validate_path: Path to file to validate (may be decompressed temp)
+            offset: Byte offset in file
+            length: Expected message length
+            archive_file: Original archive path (for error messages)
+
+        Raises:
+            IntegrityError: If validation fails
+        """
+        if not validate_path.exists():
+            raise IntegrityError(f"Archive file missing: {validate_path}")
+
+        with open(validate_path, "rb") as f:
+            f.seek(offset)
+            message_bytes = f.read(length)
+            if not message_bytes:
+                raise IntegrityError(f"No data at offset {offset} in {archive_file}")
+
+            try:
+                email.message_from_bytes(message_bytes, policy=policy.default)
+            except Exception as e:
+                raise IntegrityError(f"Invalid email data at offset {offset}: {e}")
+
+    # ==================== COMPRESSION HELPERS ====================
 
     async def _compress_file(self, source: Path, dest: Path, compression: str) -> None:
         """
