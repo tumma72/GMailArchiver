@@ -150,9 +150,9 @@ def archive(
     scan_count: int = 0  # Track messages scanned during listing
 
     # Single async workflow using proper context manager for Gmail client
-    async def _archive_workflow() -> (
-        tuple[list[dict[str, str]], list[str], int, dict[str, Any] | None, Exception | None]
-    ):
+    async def _archive_workflow() -> tuple[
+        list[dict[str, str]], list[str], int, dict[str, Any] | None, Exception | None
+    ]:
         nonlocal message_list, messages_to_archive, skipped_count, result, archive_error, scan_count
 
         # Use async context manager for proper HTTP client lifecycle
@@ -169,6 +169,7 @@ def archive(
                 with ctx.ui.task_sequence(show_logs=True) as seq:
                     with seq.task("Scanning messages from Gmail") as task:
                         try:
+
                             def scan_progress(count: int, page: int) -> None:
                                 nonlocal scan_count
                                 scan_count = count
@@ -192,9 +193,10 @@ def archive(
                         with seq.task("Checking for already archived") as task:
                             try:
                                 all_ids = [msg["id"] for msg in message_list]
-                                messages_to_archive, skipped_count = (
-                                    await archiver.filter_already_archived(all_ids, incremental)
-                                )
+                                (
+                                    messages_to_archive,
+                                    skipped_count,
+                                ) = await archiver.filter_already_archived(all_ids, incremental)
 
                                 if skipped_count > 0:
                                     task.complete(
@@ -212,9 +214,7 @@ def archive(
 
                     # Task 3: Archive messages
                     if messages_to_archive and not archive_error and not dry_run:
-                        with seq.task(
-                            "Archiving messages", total=len(messages_to_archive)
-                        ) as task:
+                        with seq.task("Archiving messages", total=len(messages_to_archive)) as task:
                             try:
                                 result = await archiver.archive_messages(
                                     message_ids=messages_to_archive,
@@ -336,8 +336,7 @@ def archive(
             title="Validation Failed",
             message="Archive validation did not pass all checks",
             details=validation_results.get("errors", []),
-            suggestion="Check disk space and file permissions. "
-            "DO NOT delete Gmail messages yet.",
+            suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
         )
 
     ctx.success("Archive validation passed")
@@ -411,9 +410,7 @@ def archive(
         next_steps.append(
             f"Move to trash (recoverable): gmailarchiver archive {age_threshold} --trash"
         )
-        next_steps.append(
-            f"Delete permanently: gmailarchiver archive {age_threshold} --delete"
-        )
+        next_steps.append(f"Delete permanently: gmailarchiver archive {age_threshold} --delete")
     elif archived_count == 0:
         # No messages archived - suggest status check
         next_steps.append("Check archive status: gmailarchiver status")
@@ -463,38 +460,43 @@ def validate(
     expected_ids: set[str] = set()
     results: dict[str, Any] = {}
 
+    # Create validator upfront for use in async workflow
+    validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
+
+    async def _validate_workflow() -> tuple[set[str], dict[str, Any]]:
+        """Single async workflow for validate command."""
+        try:
+            assert ctx.storage is not None, "Storage should be initialized by @with_context"
+            ids = await ctx.storage.get_message_ids_for_archive(archive_file)
+            # validate_comprehensive is sync, run via to_thread to not block
+            validation_results = await asyncio.to_thread(
+                validator.validate_comprehensive, ids
+            )
+            return ids, validation_results
+        finally:
+            await validator.close()
+
     with ctx.ui.task_sequence() as seq:
-        # Task 1: Load database information
-        with seq.task("Loading database information") as t:
+        # Task 1: Load database and run validation
+        with seq.task("Loading database and validating") as t:
             try:
-                assert ctx.storage is not None, "Storage should be initialized by @with_context"
-                expected_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(archive_file))
-                t.complete(f"Found {len(expected_ids):,} messages")
-            except Exception as e:
-                t.fail("Database error", reason=str(e))
-                ctx.fail_and_exit(
-                    title="Database Error",
-                    message=f"Failed to read database: {e}",
-                    suggestion="Check database file permissions and integrity",
-                )
-
-        # Task 2: Run validation checks
-        with seq.task("Running validation checks") as t:
-            validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
-            try:
-                results = validator.validate_comprehensive(expected_ids)
-
+                expected_ids, results = asyncio.run(_validate_workflow())
                 if results["passed"]:
-                    t.complete("All checks passed")
+                    t.complete(f"Validated {len(expected_ids):,} messages - all checks passed")
                 else:
                     failed_checks = [
                         k.replace("_check", "").replace("_", " ")
                         for k, v in results.items()
                         if k.endswith("_check") and not v
                     ]
-                    t.complete(f"Failed: {', '.join(failed_checks)}")
-            finally:
-                asyncio.run(validator.close())
+                    t.complete(f"Found {len(expected_ids):,} messages - failed: {', '.join(failed_checks)}")
+            except Exception as e:
+                t.fail("Validation error", reason=str(e))
+                ctx.fail_and_exit(
+                    title="Validation Error",
+                    message=f"Failed to validate: {e}",
+                    suggestion="Check database file permissions and integrity",
+                )
 
     # Show validation report using OutputManager method
     ctx.output.show_validation_report(results, title="Archive Validation")
@@ -562,9 +564,74 @@ def retry_delete_cmd(
     try:
         # 1. Get archived message IDs from database
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        message_ids = list(asyncio.run(ctx.storage.get_message_ids_for_archive(archive_file)))
 
-        if not message_ids:
+        # Authenticate and validate deletion permissions (must happen before async workflow)
+        client = ctx.authenticate_gmail(
+            credentials=credentials,
+            validate_deletion_scope=True,
+        )
+        assert client is not None  # required=True ensures this
+
+        # Create archiver (for deletion functionality)
+        archiver = ArchiverFacade(client, ctx.storage.db, ctx.storage, output_manager=ctx.output)
+
+        # Track deletion result
+        deletion_cancelled = False
+        deletion_completed = False
+
+        def _confirm_permanent_deletion(num_messages: int) -> bool:
+            """Sync confirmation for permanent deletion."""
+            ctx.warning("WARNING: PERMANENT DELETION")
+            ctx.warning(
+                f"This will permanently delete {num_messages} messages. "
+                "This action CANNOT be undone!"
+            )
+            ctx.info("Deleted messages will be gone forever - not in trash and not recoverable.\n")
+
+            confirmation = typer.prompt(f"Type 'DELETE {num_messages} MESSAGES' to confirm")
+            return confirmation == f"DELETE {num_messages} MESSAGES"
+
+        def _confirm_trash_deletion(num_messages: int) -> bool:
+            """Sync confirmation for trash deletion."""
+            ctx.info(f"This will move {num_messages} messages to trash.")
+            ctx.info("(Messages can be recovered from trash for 30 days)\n")
+            return typer.confirm(f"Move {num_messages} messages to trash?")
+
+        async def _retry_delete_workflow() -> tuple[int, bool, bool]:
+            """Single async workflow for retry-delete command.
+
+            Returns:
+                Tuple of (message_count, was_cancelled, completed_successfully)
+            """
+            # Get message IDs
+            message_ids = list(await ctx.storage.get_message_ids_for_archive(archive_file))
+
+            if not message_ids:
+                return 0, False, False
+
+            # Show message info (sync via to_thread)
+            def _show_info() -> None:
+                ctx.info(f"Found {len(message_ids)} archived messages")
+                ctx.info(f"Archive: {archive_file}\n")
+
+            await asyncio.to_thread(_show_info)
+
+            # Confirm deletion (sync via to_thread)
+            if permanent:
+                confirmed = await asyncio.to_thread(_confirm_permanent_deletion, len(message_ids))
+            else:
+                confirmed = await asyncio.to_thread(_confirm_trash_deletion, len(message_ids))
+
+            if not confirmed:
+                return len(message_ids), True, False
+
+            # Perform deletion
+            await archiver.delete_archived_messages(message_ids, permanent=permanent)
+            return len(message_ids), False, True
+
+        message_count, deletion_cancelled, deletion_completed = asyncio.run(_retry_delete_workflow())
+
+        if message_count == 0:
             ctx.fail_and_exit(
                 title="No Messages Found",
                 message=f"No archived messages found for: {archive_file}",
@@ -576,49 +643,12 @@ def retry_delete_cmd(
                 suggestion="Check the archive file name and state database path",
             )
 
-        ctx.info(f"Found {len(message_ids)} archived messages")
-        ctx.info(f"Archive: {archive_file}\n")
+        if deletion_cancelled:
+            ctx.info("Deletion cancelled" if permanent else "Cancelled")
+            return
 
-        # Authenticate and validate deletion permissions
-        client = ctx.authenticate_gmail(
-            credentials=credentials,
-            validate_deletion_scope=True,
-        )
-        assert client is not None  # required=True ensures this
-
-        # Create archiver (for deletion functionality)
-        archiver = ArchiverFacade(client, ctx.storage.db, ctx.storage, output_manager=ctx.output)
-
-        # 6. Delete messages with appropriate confirmation
-        if permanent:
-            ctx.warning("WARNING: PERMANENT DELETION")
-            ctx.warning(
-                f"This will permanently delete {len(message_ids)} messages. "
-                "This action CANNOT be undone!"
-            )
-            ctx.info("Deleted messages will be gone forever - not in trash and not recoverable.\n")
-
-            confirmation = typer.prompt(f"Type 'DELETE {len(message_ids)} MESSAGES' to confirm")
-            if confirmation != f"DELETE {len(message_ids)} MESSAGES":
-                ctx.info("Deletion cancelled")
-                return
-
-            # Perform permanent deletion
-            asyncio.run(archiver.delete_archived_messages(message_ids, permanent=True))
-
-        else:
-            # Trash deletion (default) - still ask for confirmation
-            ctx.info(f"This will move {len(message_ids)} messages to trash.")
-            ctx.info("(Messages can be recovered from trash for 30 days)\n")
-
-            if not typer.confirm(f"Move {len(message_ids)} messages to trash?"):
-                ctx.info("Cancelled")
-                return
-
-            # Move to trash
-            asyncio.run(archiver.delete_archived_messages(message_ids, permanent=False))
-
-        ctx.success("Deletion completed successfully!")
+        if deletion_completed:
+            ctx.success("Deletion completed successfully!")
 
     except Exception as e:
         ctx.fail_and_exit(
@@ -663,23 +693,19 @@ def status(
 
     # Detect schema version
     manager = MigrationManager(db_path)
-    try:
-        version = asyncio.run(manager.detect_schema_version())
-        db_size = db_path.stat().st_size
 
-        # Direct database access to support both v1.0 and v1.1+ schemas
-        # (DBManager requires v1.1+ schema)
+    def _get_status_data_sync(schema_version: str, run_limit: int) -> tuple[int, list[dict[str, Any]]]:
+        """Sync helper to query database statistics."""
         conn = sqlite3.connect(state_db)
         conn.row_factory = sqlite3.Row
 
         # Get message count - handle both v1.0 (archived_messages) and v1.1+ (messages)
-        table_name = "messages" if version in ("1.1", "1.2") else "archived_messages"
+        table_name = "messages" if schema_version in ("1.1", "1.2") else "archived_messages"
         cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
         result = cursor.fetchone()
         total_archived = int(result[0]) if result else 0
 
         # Get recent runs
-        run_limit = 10 if verbose else 5
         cursor = conn.execute(
             """
             SELECT run_id, run_timestamp as timestamp, query,
@@ -692,6 +718,23 @@ def status(
         )
         recent_runs = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        return total_archived, recent_runs
+
+    async def _status_workflow() -> tuple[str, int, list[dict[str, Any]]]:
+        """Single async workflow for status command."""
+        try:
+            version = await manager.detect_schema_version()
+            run_limit = 10 if verbose else 5
+            total_archived, recent_runs = await asyncio.to_thread(
+                _get_status_data_sync, version, run_limit
+            )
+            return version, total_archived, recent_runs
+        finally:
+            await manager._close()
+
+    try:
+        version, total_archived, recent_runs = asyncio.run(_status_workflow())
+        db_size = db_path.stat().st_size
 
         # Get unique archive files from runs
         archive_files = set(run["archive_file"] for run in recent_runs if run.get("archive_file"))
@@ -715,6 +758,7 @@ def status(
         ctx.show_report("Archive Status", report_data)
 
         # Display recent runs table
+        run_limit = 10 if verbose else 5
         if recent_runs:
             # Include query column in verbose mode
             if verbose:
@@ -754,8 +798,6 @@ def status(
             message=f"Error reading database: {e}",
             suggestion="Check database file integrity or run 'gmailarchiver doctor'",
         )
-    finally:
-        asyncio.run(manager._close())
 
 
 @app.command()
@@ -819,17 +861,86 @@ def cleanup(
 
     try:
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        asyncio.run(ctx.storage.db.ensure_sessions_table())
+        storage_db = ctx.storage.db  # Capture for async closure
 
-        # Get all partial sessions
-        sessions = asyncio.run(ctx.storage.db.get_all_partial_sessions())
+        def _confirm_cleanup(num_sessions: int) -> bool:
+            """Sync confirmation for cleanup."""
+            ctx.warning(
+                f"This will delete {num_sessions} partial session(s) "
+                "and their associated data"
+            )
+            return typer.confirm("Continue?")
 
-        if list_sessions:
+        async def _cleanup_workflow() -> dict[str, Any]:
+            """Single async workflow for cleanup command."""
+            try:
+                await storage_db.ensure_sessions_table()
+                sessions = await storage_db.get_all_partial_sessions()
+
+                # Handle list mode
+                if list_sessions:
+                    return {"status": "list", "sessions": sessions}
+
+                # Determine which sessions to clean
+                sessions_to_clean: list[dict[str, Any]] = []
+
+                if all_sessions:
+                    sessions_to_clean = sessions
+                    if not sessions_to_clean:
+                        return {"status": "no_sessions"}
+                elif session_id:
+                    matching = [s for s in sessions if s["session_id"].startswith(session_id)]
+                    if not matching:
+                        return {"status": "not_found", "session_id": session_id}
+                    if len(matching) > 1:
+                        return {"status": "multiple_matches", "session_id": session_id}
+                    sessions_to_clean = matching
+
+                # Get confirmation (sync via to_thread)
+                if not force:
+                    confirmed = await asyncio.to_thread(_confirm_cleanup, len(sessions_to_clean))
+                    if not confirmed:
+                        return {"status": "cancelled"}
+
+                # Perform cleanup
+                cleaned_count = 0
+                for session in sessions_to_clean:
+                    target_file = session["target_file"]
+                    partial_file = Path(target_file + ".partial")
+
+                    # Delete partial file if it exists (sync file op via to_thread)
+                    if partial_file.exists():
+                        await asyncio.to_thread(partial_file.unlink)
+                        await asyncio.to_thread(
+                            ctx.info, f"Deleted partial file: {partial_file.name}"
+                        )
+
+                    # Delete messages associated with the partial file
+                    deleted_msgs = await storage_db.delete_messages_for_file(str(partial_file))
+                    if deleted_msgs > 0:
+                        await asyncio.to_thread(ctx.info, f"Removed {deleted_msgs} message records")
+
+                    # Delete session record
+                    await storage_db.delete_session(session["session_id"])
+                    await asyncio.to_thread(
+                        ctx.success, f"Cleaned session: {session['session_id'][:12]}..."
+                    )
+                    cleaned_count += 1
+
+                return {"status": "success", "cleaned_count": cleaned_count}
+
+            finally:
+                await storage_db.close()
+
+        result = asyncio.run(_cleanup_workflow())
+
+        # Handle result based on status
+        if result["status"] == "list":
+            sessions = result["sessions"]
             if not sessions:
                 ctx.info("No partial archive sessions found")
                 raise typer.Exit(0)
 
-            # Display sessions table
             headers = ["Session ID", "Target File", "Progress", "Started", "Updated"]
             rows: list[list[str]] = []
             for session in sessions:
@@ -838,7 +949,7 @@ def cleanup(
                 updated = session["updated_at"][:19] if session["updated_at"] else "N/A"
                 rows.append(
                     [
-                        session["session_id"][:12] + "...",  # Truncate UUID
+                        session["session_id"][:12] + "...",
                         Path(session["target_file"]).name,
                         progress,
                         started,
@@ -856,74 +967,25 @@ def cleanup(
             )
             raise typer.Exit(0)
 
-        # Determine which sessions to clean
-        sessions_to_clean: list[dict[str, Any]] = []
+        if result["status"] == "no_sessions":
+            ctx.info("No partial archive sessions to clean up")
+            raise typer.Exit(0)
 
-        if all_sessions:
-            sessions_to_clean = sessions
-            if not sessions_to_clean:
-                ctx.info("No partial archive sessions to clean up")
-                raise typer.Exit(0)
-        elif session_id:
-            # Find specific session (support partial UUID match)
-            matching = [s for s in sessions if s["session_id"].startswith(session_id)]
-            if not matching:
-                ctx.error(f"Session not found: {session_id}")
-                ctx.suggest_next_steps(["List sessions: gmailarchiver cleanup --list"])
-                raise typer.Exit(1)
-            if len(matching) > 1:
-                ctx.error(f"Multiple sessions match '{session_id}'. Be more specific.")
-                raise typer.Exit(1)
-            sessions_to_clean = matching
+        if result["status"] == "not_found":
+            ctx.error(f"Session not found: {result['session_id']}")
+            ctx.suggest_next_steps(["List sessions: gmailarchiver cleanup --list"])
+            raise typer.Exit(1)
 
-        # Confirmation prompt
-        if not force:
-            ctx.warning(
-                f"This will delete {len(sessions_to_clean)} partial session(s) "
-                "and their associated data"
-            )
-            confirm = typer.confirm("Continue?")
-            if not confirm:
-                ctx.info("Cleanup cancelled")
-                raise typer.Exit(0)
+        if result["status"] == "multiple_matches":
+            ctx.error(f"Multiple sessions match '{result['session_id']}'. Be more specific.")
+            raise typer.Exit(1)
 
-        # Async helper for cleanup operations
-        assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        storage_db = ctx.storage.db  # Capture for async closures
+        if result["status"] == "cancelled":
+            ctx.info("Cleanup cancelled")
+            raise typer.Exit(0)
 
-        async def _delete_messages_for_file(file_path: str) -> int:
-            return await storage_db.delete_messages_for_file(file_path)
-
-        async def _delete_session(session_id: str) -> None:
-            await storage_db.delete_session(session_id)
-
-        async def _close_db() -> None:
-            await storage_db.close()
-
-        # Perform cleanup
-        cleaned_count = 0
-        for session in sessions_to_clean:
-            target_file = session["target_file"]
-            partial_file = Path(target_file + ".partial")
-
-            # Delete partial file if it exists
-            if partial_file.exists():
-                partial_file.unlink()
-                ctx.info(f"Deleted partial file: {partial_file.name}")
-
-            # Delete messages associated with the partial file
-            deleted_msgs = asyncio.run(_delete_messages_for_file(str(partial_file)))
-            if deleted_msgs > 0:
-                ctx.info(f"Removed {deleted_msgs} message records")
-
-            # Delete session record
-            asyncio.run(_delete_session(session["session_id"]))
-            ctx.success(f"Cleaned session: {session['session_id'][:12]}...")
-            cleaned_count += 1
-
-        asyncio.run(_close_db())
-
-        ctx.success(f"Cleaned up {cleaned_count} partial session(s)")
+        if result["status"] == "success":
+            ctx.success(f"Cleaned up {result['cleaned_count']} partial session(s)")
 
     except typer.Exit:
         raise
@@ -963,91 +1025,90 @@ def migrate(
             suggestion="Check the database path or use --state-db to specify location",
         )
 
-    # Use centralized SchemaManager for version detection
-    schema_mgr = SchemaManager(db_path)
-    current_version = asyncio.run(schema_mgr.detect_version())
-    manager: MigrationManager | None = None
+    # Result container for workflow
+    migration_result: dict[str, Any] | None = None
 
-    try:
-        # Check if migration is needed
-        if not asyncio.run(schema_mgr.needs_migration()):
-            ctx.success(f"Database is already at version {current_version.value} (up to date)")
-            return
-
-        if current_version == SchemaVersion.NONE:
-            ctx.fail_and_exit(
-                title="Invalid Database",
-                message="Database appears to be empty or invalid",
-                suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
-            )
-
-        if not asyncio.run(schema_mgr.can_auto_migrate()):
-            ctx.fail_and_exit(
-                title="Cannot Migrate",
-                message=f"Cannot auto-migrate from version {current_version.value}",
-                suggestion="Manual intervention required",
-            )
-
-        # Show migration info
-        target_version = SchemaManager.CURRENT_VERSION
-        ctx.info(f"Current schema version: {current_version.value}")
-        ctx.info(f"\nMigration from v{current_version.value} to v{target_version.value} will:")
+    def _show_migration_info_and_confirm(current_ver: str, target_ver: str) -> bool:
+        """Show migration info and get user confirmation (sync)."""
+        ctx.info(f"Current schema version: {current_ver}")
+        ctx.info(f"\nMigration from v{current_ver} to v{target_ver} will:")
         ctx.info("  • Create backup of current database")
         ctx.info("  • Add enhanced schema with mbox offset tracking")
         ctx.info("  • Enable full-text search capabilities")
         ctx.info("  • Add multi-account support (future-ready)")
         ctx.info("  • Preserve all existing message data")
+        return typer.confirm("\nProceed with migration?")
 
-        # Confirm migration
-        if not typer.confirm("\nProceed with migration?"):
-            ctx.info("Migration cancelled")
-            return
+    async def _migrate_workflow() -> dict[str, Any]:
+        """Single async workflow for migrate command."""
+        schema_mgr = SchemaManager(db_path)
+        manager: MigrationManager | None = None
 
-        # Create backup with progress
-        manager = MigrationManager(db_path)
-        with ctx.output.progress_context("Creating backup", total=3) as progress:
-            task = progress.add_task("Migration", total=3) if progress else None
+        try:
+            # Phase 1: Pre-migration checks
+            current_version = await schema_mgr.detect_version()
 
-            backup_path = asyncio.run(manager.create_backup())
-            if progress and task:
-                progress.update(task, advance=1, refresh=True)
+            if not await schema_mgr.needs_migration():
+                return {
+                    "status": "up_to_date",
+                    "version": current_version.value,
+                }
 
-            ctx.success(f"Backup created: {backup_path}")
+            if current_version == SchemaVersion.NONE:
+                return {
+                    "status": "invalid_database",
+                    "version": current_version.value,
+                }
 
-            # Run migration using SchemaManager
-            asyncio.run(
-                schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+            if not await schema_mgr.can_auto_migrate():
+                return {
+                    "status": "cannot_migrate",
+                    "version": current_version.value,
+                }
+
+            # Phase 2: Get user confirmation (sync via to_thread)
+            confirmed = await asyncio.to_thread(
+                _show_migration_info_and_confirm,
+                current_version.value,
+                SchemaManager.CURRENT_VERSION.value,
             )
-            if progress and task:
-                progress.update(task, advance=1, refresh=True)
 
-            # Validate migration using SchemaManager
+            if not confirmed:
+                return {"status": "cancelled"}
+
+            # Phase 3: Execute migration
+            manager = MigrationManager(db_path)
+            backup_path = await manager.create_backup()
+
+            await schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
+
             schema_mgr.invalidate_cache()
-            final_version = asyncio.run(schema_mgr.detect_version())
+            final_version = await schema_mgr.detect_version()
+
             if final_version != SchemaManager.CURRENT_VERSION:
                 raise RuntimeError(
                     f"Migration validation failed: expected {SchemaManager.CURRENT_VERSION.value}, "
                     f"got {final_version.value}"
                 )
+
+            return {
+                "status": "success",
+                "from_version": current_version.value,
+                "to_version": final_version.value,
+                "backup_path": str(backup_path),
+            }
+
+        finally:
+            if manager is not None:
+                await manager._close()
+
+    # SINGLE asyncio.run() call for entire workflow
+    try:
+        with ctx.output.progress_context("Migrating database", total=3) as progress:
+            task = progress.add_task("Migration", total=3) if progress else None
+            migration_result = asyncio.run(_migrate_workflow())
             if progress and task:
-                progress.update(task, advance=1, refresh=True)
-
-        # Build report data
-        report_data = {
-            "From Version": current_version.value,
-            "To Version": target_version.value,
-            "Backup Location": str(backup_path),
-        }
-
-        ctx.show_report("Migration Summary", report_data)
-        ctx.success("Migration completed successfully!")
-
-        ctx.suggest_next_steps(
-            [
-                "Verify integrity: gmailarchiver verify-integrity",
-                "Search messages: gmailarchiver search <query>",
-            ]
-        )
+                progress.update(task, advance=3, refresh=True)
 
     except Exception as e:
         ctx.fail_and_exit(
@@ -1055,9 +1116,63 @@ def migrate(
             message=str(e),
             suggestion="Check database integrity or restore from backup",
         )
-    finally:
-        if manager is not None:
-            asyncio.run(manager._close())
+
+    # Handle post-migration results based on status
+    if migration_result is None:
+        ctx.fail_and_exit(
+            title="Migration Failed",
+            message="Unknown error occurred",
+            suggestion="Check database integrity or restore from backup",
+        )
+
+    status = migration_result["status"]
+
+    if status == "up_to_date":
+        ctx.success(f"Database is already at version {migration_result['version']} (up to date)")
+        return
+
+    if status == "invalid_database":
+        ctx.fail_and_exit(
+            title="Invalid Database",
+            message="Database appears to be empty or invalid",
+            suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
+        )
+
+    if status == "cannot_migrate":
+        ctx.fail_and_exit(
+            title="Cannot Migrate",
+            message=f"Cannot auto-migrate from version {migration_result['version']}",
+            suggestion="Manual intervention required",
+        )
+
+    if status == "cancelled":
+        ctx.info("Migration cancelled")
+        return
+
+    if status != "success":
+        error_msg = migration_result.get("error", "Unknown error")
+        ctx.fail_and_exit(
+            title="Migration Failed",
+            message=error_msg,
+            suggestion="Check database integrity or restore from backup",
+        )
+
+    # Build report data for success case
+    report_data = {
+        "From Version": migration_result["from_version"],
+        "To Version": migration_result["to_version"],
+        "Backup Location": migration_result["backup_path"],
+    }
+
+    ctx.show_report("Migration Summary", report_data)
+    ctx.success("Migration completed successfully!")
+
+    ctx.suggest_next_steps(
+        [
+            "Verify integrity: gmailarchiver verify-integrity",
+            "Search messages: gmailarchiver search <query>",
+        ]
+    )
 
 
 @utilities_app.command()
@@ -1215,146 +1330,159 @@ def dedupe(
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
         db = ctx.storage.db
 
-        # Async helper functions - each uses proper async context manager
-        async def _find_duplicates() -> dict[str, Any]:
-            async with await DeduplicatorFacade.create(db) as dedup:
-                return await dedup.find_duplicates()
+        def _confirm_dedupe(messages_to_remove: int, strategy_name: str) -> bool:
+            """Sync confirmation for deduplication."""
+            ctx.warning(
+                "⚠ WARNING: This will permanently remove duplicate messages from the database"
+            )
+            ctx.info("The mbox files themselves will not be modified.")
+            return typer.confirm(
+                f"Remove {messages_to_remove:,} duplicate messages using '{strategy_name}' strategy?"
+            )
 
-        async def _generate_report(dups: dict[str, Any]) -> Any:
+        async def _dedupe_workflow() -> dict[str, Any]:
+            """Single async workflow for dedupe command."""
+            # Task 1: Find duplicates
             async with await DeduplicatorFacade.create(db) as dedup:
-                return await dedup.generate_report(dups)
+                duplicates = await dedup.find_duplicates()
 
-        async def _deduplicate(dups: dict[str, Any], strat: str, is_dry_run: bool) -> Any:
+            # Early return if no duplicates
+            if not duplicates:
+                return {"status": "no_duplicates"}
+
+            # Task 2: Generate report
             async with await DeduplicatorFacade.create(db) as dedup:
-                return await dedup.deduplicate(dups, strategy=strat, dry_run=is_dry_run)
+                report = await dedup.generate_report(duplicates)
 
-        async def _verify_integrity() -> list[str]:
-            return await db.verify_database_integrity()
+            # For non-dry-run: get confirmation BEFORE actually deduplicating
+            if not dry_run:
+                confirmed = await asyncio.to_thread(
+                    _confirm_dedupe, report.messages_to_remove, strategy
+                )
+                if not confirmed:
+                    return {"status": "cancelled", "report": report}
+
+            # Task 3: Deduplicate (dry run or actual)
+            async with await DeduplicatorFacade.create(db) as dedup:
+                result = await dedup.deduplicate(duplicates, strategy=strategy, dry_run=dry_run)
+
+            # Task 4: Auto-verify if requested and not dry run
+            verification_issues = None
+            verification_error = None
+            if auto_verify and not dry_run:
+                try:
+                    verification_issues = await db.verify_database_integrity()
+                except Exception as e:
+                    verification_error = e
+
+            return {
+                "status": "dry_run" if dry_run else "success",
+                "duplicates": duplicates,
+                "report": report,
+                "result": result,
+                "verification_issues": verification_issues,
+                "verification_error": verification_error,
+            }
+
+        # Execute the single async workflow
+        workflow_result = asyncio.run(_dedupe_workflow())
+
+        # Post-workflow sync handling (display results)
+        status = workflow_result["status"]
+
+        if status == "no_duplicates":
+            ctx.success("No duplicate messages found!")
+            return
+
+        if status == "cancelled":
+            ctx.info("Cancelled")
+            return
+
+        report = workflow_result["report"]
+        result = workflow_result["result"]
 
         with ctx.ui.task_sequence() as seq:
-            # Task 1: Find duplicates
             with seq.task("Finding duplicates") as t:
-                duplicates = asyncio.run(_find_duplicates())
-                if not duplicates:
-                    t.complete("No duplicates found")
-                    ctx.success("No duplicate messages found!")
-                    return
-                t.complete(f"Found {len(duplicates):,} duplicate message IDs")
+                t.complete(f"Found {len(workflow_result['duplicates']):,} duplicate message IDs")
 
-            # Task 2: Analyze duplicates
             with seq.task("Analyzing duplicates") as t:
-                report = asyncio.run(_generate_report(duplicates))
                 t.complete(
                     f"{report.messages_to_remove:,} messages to remove, "
                     f"{format_bytes(report.space_recoverable)} recoverable"
                 )
 
-                report_data = {
-                    "Strategy": strategy,
-                    "Duplicate Message-IDs": report.duplicate_message_ids,
-                    "Messages to Remove": report.messages_to_remove,
-                    "Space to Save": format_bytes(report.space_recoverable),
-                }
+            report_data = {
+                "Strategy": strategy,
+                "Duplicate Message-IDs": report.duplicate_message_ids,
+                "Messages to Remove": report.messages_to_remove,
+                "Space to Save": format_bytes(report.space_recoverable),
+            }
 
-                if dry_run:
-                    ctx.warning("DRY RUN - No changes will be made")
+            if status == "dry_run":
+                ctx.warning("DRY RUN - No changes will be made")
 
-                    # Task 3: Preview deduplication (dry run)
-                    with seq.task("Previewing deduplication") as t:
-                        result = asyncio.run(_deduplicate(duplicates, strategy, True))
-                        t.complete(
-                            f"Would remove {result.messages_removed:,} messages, "
-                            f"keep {result.messages_kept:,} messages"
-                        )
-
-                    report_data["Would Remove"] = f"{result.messages_removed:,} messages"
-                    report_data["Would Keep"] = f"{result.messages_kept:,} messages"
-                    report_data["Would Save"] = format_bytes(result.space_saved)
-
-                    ctx.show_report("Deduplication Preview (Dry Run)", report_data)
-
-                    ctx.suggest_next_steps(
-                        [
-                            (
-                                f"Apply changes: gmailarchiver dedupe "
-                                f"--strategy {strategy} --no-dry-run"
-                            ),
-                        ]
+                with seq.task("Previewing deduplication") as t:
+                    t.complete(
+                        f"Would remove {result.messages_removed:,} messages, "
+                        f"keep {result.messages_kept:,} messages"
                     )
 
-                else:
-                    # Confirm before proceeding
-                    ctx.warning(
-                        "⚠ WARNING: This will permanently remove duplicate messages "
-                        "from the database"
-                    )
-                    ctx.info("The mbox files themselves will not be modified.")
+                report_data["Would Remove"] = f"{result.messages_removed:,} messages"
+                report_data["Would Keep"] = f"{result.messages_kept:,} messages"
+                report_data["Would Save"] = format_bytes(result.space_saved)
 
-                    if not typer.confirm(
-                        f"Remove {report.messages_to_remove:,} duplicate messages "
-                        f"using '{strategy}' strategy?"
-                    ):
-                        ctx.info("Cancelled")
-                        return
+                ctx.show_report("Deduplication Preview (Dry Run)", report_data)
+                ctx.suggest_next_steps(
+                    [(f"Apply changes: gmailarchiver dedupe --strategy {strategy} --no-dry-run")]
+                )
 
-                    # Task 3: Perform deduplication
-                    with seq.task("Removing duplicates") as t:
-                        result = asyncio.run(_deduplicate(duplicates, strategy, False))
-                        t.complete(
-                            f"Removed {result.messages_removed:,} messages, "
-                            f"kept {result.messages_kept:,} messages"
-                        )
-
-                    report_data["Removed"] = f"{result.messages_removed:,} messages"
-                    report_data["Kept"] = f"{result.messages_kept:,} messages"
-                    report_data["Space Saved"] = format_bytes(result.space_saved)
-
-                    ctx.show_report("Deduplication Results", report_data)
-                    ctx.success("Deduplication completed!")
-
-                    ctx.suggest_next_steps(
-                        [
-                            "Verify database: gmailarchiver verify-integrity",
-                            (
-                                "Consolidate archives: "
-                                "gmailarchiver consolidate archive*.mbox -o merged.mbox"
-                            ),
-                        ]
+            else:  # success
+                with seq.task("Removing duplicates") as t:
+                    t.complete(
+                        f"Removed {result.messages_removed:,} messages, "
+                        f"kept {result.messages_kept:,} messages"
                     )
 
-                    # Auto-verify if requested (only for non-dry-run)
-                    if auto_verify:
-                        ctx.info("\nRunning verification...")
+                report_data["Removed"] = f"{result.messages_removed:,} messages"
+                report_data["Kept"] = f"{result.messages_kept:,} messages"
+                report_data["Space Saved"] = format_bytes(result.space_saved)
 
-                        with seq.task("Verifying database integrity") as t:
-                            try:
-                                issues = asyncio.run(_verify_integrity())
+                ctx.show_report("Deduplication Results", report_data)
+                ctx.success("Deduplication completed!")
 
-                                if not issues:
-                                    t.complete("No issues found")
-                                else:
-                                    t.complete(f"Found {len(issues)} issue(s)")
-                                    ctx.warning(f"Verification found {len(issues)} issue(s):")
-                                    for issue in issues[:5]:  # Show first 5 issues
-                                        ctx.info(f"  • {issue}")
-                                    if len(issues) > 5:
-                                        ctx.info(f"  ... and {len(issues) - 5} more issues")
+                ctx.suggest_next_steps(
+                    [
+                        "Verify database: gmailarchiver verify-integrity",
+                        "Consolidate archives: gmailarchiver consolidate archive*.mbox -o merged.mbox",
+                    ]
+                )
 
-                                    ctx.suggest_next_steps(
-                                        [
-                                            (
-                                                "Fix issues automatically: "
-                                                "gmailarchiver check --auto-repair"
-                                            ),
-                                            (
-                                                "View all issues: "
-                                                "gmailarchiver verify-integrity --verbose"
-                                            ),
-                                        ]
-                                    )
-                            except Exception as e:
-                                t.fail("Verification failed", reason=str(e))
-                                ctx.warning(f"Verification failed: {e}")
+                # Auto-verify display if requested
+                if auto_verify:
+                    ctx.info("\nRunning verification...")
+                    verification_issues = workflow_result["verification_issues"]
+                    verification_error = workflow_result["verification_error"]
+
+                    with seq.task("Verifying database integrity") as t:
+                        if verification_error is not None:
+                            t.fail("Verification failed", reason=str(verification_error))
+                            ctx.warning(f"Verification failed: {verification_error}")
+                        elif verification_issues is not None and not verification_issues:
+                            t.complete("No issues found")
+                        elif verification_issues is not None:
+                            t.complete(f"Found {len(verification_issues)} issue(s)")
+                            ctx.warning(f"Verification found {len(verification_issues)} issue(s):")
+                            for issue in verification_issues[:5]:
+                                ctx.info(f"  • {issue}")
+                            if len(verification_issues) > 5:
+                                ctx.info(f"  ... and {len(verification_issues) - 5} more issues")
+
+                            ctx.suggest_next_steps(
+                                [
+                                    "Fix issues automatically: gmailarchiver check --auto-repair",
+                                    "View all issues: gmailarchiver verify-integrity --verbose",
+                                ]
+                            )
 
     except ValueError as e:
         ctx.fail_and_exit(
@@ -1405,11 +1533,19 @@ def verify_offsets_cmd(
         from .core.validator import ValidatorFacade
 
         validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
+
+        async def _verify_offsets_workflow() -> Any:
+            """Single async workflow for verify-offsets command."""
+            try:
+                return await validator.verify_offsets()
+            finally:
+                await validator.close()
+
         result = None
 
         with ctx.ui.task_sequence() as seq:
             with seq.task("Verifying offsets") as t:
-                result = asyncio.run(validator.verify_offsets())
+                result = asyncio.run(_verify_offsets_workflow())
 
                 if result.skipped:
                     t.complete("Skipped (v1.0 schema)")
@@ -1470,8 +1606,6 @@ def verify_offsets_cmd(
             f"Offset verification failed: {e}",
             suggestion="Check database and archive file integrity",
         )
-    finally:
-        asyncio.run(validator.close())
 
 
 @utilities_app.command(name="verify-consistency")
@@ -1509,10 +1643,23 @@ def verify_consistency_cmd(
         from .core.validator import ValidatorFacade
 
         validator = ValidatorFacade(archive_file, state_db, output=ctx.output)
+        schema_mgr = SchemaManager(state_db)
+
+        async def _verify_consistency_workflow() -> tuple[Any, bool]:
+            """Single async workflow for verify-consistency command."""
+            try:
+                report = await validator.verify_consistency()
+                has_fts = await schema_mgr.has_capability(SchemaCapability.FTS_SEARCH)
+                return report, has_fts
+            finally:
+                await validator.close()
+
+        report = None
+        has_fts_capability = False
 
         with ctx.ui.task_sequence() as seq:
             with seq.task("Running consistency checks") as t:
-                report = asyncio.run(validator.verify_consistency())
+                report, has_fts_capability = asyncio.run(_verify_consistency_workflow())
 
                 if report.passed:
                     t.complete("All checks passed")
@@ -1532,9 +1679,8 @@ def verify_consistency_cmd(
             "Duplicate Gmail IDs": report.duplicate_gmail_ids,
         }
 
-        # Use SchemaManager to check capabilities instead of hardcoded version strings
-        schema_mgr = SchemaManager(state_db)
-        if asyncio.run(schema_mgr.has_capability(SchemaCapability.FTS_SEARCH)):
+        # Add FTS-specific fields if schema supports it
+        if has_fts_capability:
             report_data["Duplicate RFC Message-IDs"] = report.duplicate_rfc_message_ids
             report_data["FTS Synchronized"] = "Yes" if report.fts_synced else "No"
 
@@ -1569,8 +1715,6 @@ def verify_consistency_cmd(
             str(e),
             suggestion="Check database and archive file integrity",
         )
-    finally:
-        asyncio.run(validator.close())
 
 
 @app.command()
@@ -1656,7 +1800,8 @@ def search(
             )
 
     # Build query string from filters if no query provided
-    if not query:
+    effective_query = query
+    if not effective_query:
         query_parts = []
         if from_addr:
             query_parts.append(f"from:{from_addr}")
@@ -1676,214 +1821,242 @@ def search(
                 suggestion="Provide a query argument or use filters like --from, --subject",
             )
 
-        query = " ".join(query_parts)
+        effective_query = " ".join(query_parts)
 
-    # Execute search
-    try:
-        from gmailarchiver.cli._output_search import (
-            display_search_results_json,
-            display_search_results_rich,
-        )
-        from gmailarchiver.cli.output import SearchResultEntry
+    # Helper functions for interactive mode (sync via asyncio.to_thread)
+    def _interactive_select_messages(
+        results_list: list[Any],
+    ) -> tuple[list[str] | None, str | None]:
+        """Sync interactive message selection."""
+        try:
+            import questionary
+        except ImportError:
+            return None, None
+
+        # Build choices for interactive selection
+        choices = []
+        for idx, result in enumerate(results_list, 1):
+            subject_display = result.subject or "(no subject)"
+            if len(subject_display) > 50:
+                subject_display = subject_display[:50] + "..."
+
+            choice_label = (
+                f"{idx}. {subject_display} "
+                f"(from: {result.from_addr[:30]}, "
+                f"date: {result.date[:10] if result.date else 'N/A'})"
+            )
+            choices.append(questionary.Choice(title=choice_label, value=result.gmail_id))
+
+        # Prompt user to select messages
+        selected_ids = questionary.checkbox(
+            "Select messages to extract (space to select, enter to confirm):",
+            choices=choices,
+        ).ask()
+
+        if not selected_ids:
+            return None, None
+
+        # Prompt for output directory
+        output_dir_str = questionary.path(
+            "Output directory for extracted messages:",
+            default="./extracted",
+            only_directories=True,
+        ).ask()
+
+        return selected_ids, output_dir_str
+
+    async def _search_workflow() -> dict[str, Any]:
+        """Single async workflow for search command."""
         from gmailarchiver.core.search._types import SearchResults
 
-        start_time = time.perf_counter()
+        try:
+            start_time = time.perf_counter()
 
-        async def _search() -> SearchResults:
-            async with await SearchFacade.create(state_db) as search:
-                return await search.search(query, limit=limit)
-
-        results = asyncio.run(_search())
-
-        execution_time_ms = (time.perf_counter() - start_time) * 1000
-
-        # Convert search results to SearchResultEntry format
-        result_entries = [
-            SearchResultEntry(
-                gmail_id=r.gmail_id,
-                rfc_message_id=r.rfc_message_id,
-                subject=r.subject,
-                from_addr=r.from_addr,
-                to_addr=r.to_addr,
-                date=r.date,
-                body_preview=r.body_preview,
-                archive_file=r.archive_file,
-                mbox_offset=r.mbox_offset,
-                relevance_score=r.relevance_score,
-            )
-            for r in results.results
-        ]
-
-        # Format output via OutputManager
-        if json_output:
-            display_search_results_json(ctx.output, result_entries, with_preview=with_preview)
-        else:
-            display_search_results_rich(
-                ctx.output,
-                result_entries,
-                results.total_results,
-                with_preview=with_preview,
-            )
-            if results.total_results == 0:
-                ctx.suggest_next_steps(
-                    [
-                        "Try a broader search query",
-                        "Check query syntax with: gmailarchiver search --help",
-                    ]
+            # Execute search
+            async with await SearchFacade.create(state_db) as search_facade:
+                results: SearchResults = await search_facade.search(
+                    effective_query, limit=limit
                 )
-            else:
-                # Show summary
-                report_data = {
-                    "Query": query,
-                    "Results Found": results.total_results,
-                    "Execution Time": f"{execution_time_ms:.2f}ms",
+
+            execution_time_ms = (time.perf_counter() - start_time) * 1000
+
+            workflow_result: dict[str, Any] = {
+                "status": "success",
+                "results": results,
+                "execution_time_ms": execution_time_ms,
+                "extraction_stats": None,
+                "interactive_cancelled": False,
+                "missing_questionary": False,
+            }
+
+            # Handle interactive mode
+            if interactive and not json_output and results.total_results > 0:
+                # Interactive selection via to_thread
+                selected_ids, output_dir_str = await asyncio.to_thread(
+                    _interactive_select_messages, results.results
+                )
+
+                if selected_ids is None:
+                    # Check if questionary import failed
+                    try:
+                        import questionary  # noqa: F401
+
+                        workflow_result["interactive_cancelled"] = True
+                    except ImportError:
+                        workflow_result["missing_questionary"] = True
+                    return workflow_result
+
+                if not output_dir_str:
+                    workflow_result["interactive_cancelled"] = True
+                    return workflow_result
+
+                # Extract selected messages
+                assert ctx.storage is not None
+                async with MessageExtractor(ctx.storage.db) as extractor:
+                    stats = await extractor.batch_extract(selected_ids, Path(output_dir_str))
+
+                workflow_result["extraction_stats"] = {
+                    "selected": len(selected_ids),
+                    "extracted": stats["extracted"],
+                    "failed": stats["failed"],
+                    "errors": stats["errors"],
+                    "output_dir": output_dir_str,
                 }
-                ctx.show_report("Search Summary", report_data)
+                return workflow_result
 
-        # Interactive mode: allow user to select messages for extraction
-        if interactive and not json_output:
-            # If there are no search results, skip interactive UI entirely
-            if results.total_results == 0:
-                ctx.info("No search results found; nothing to select in interactive mode.")
-                return
+            # Handle extract mode
+            if extract and output_dir:
+                gmail_ids = [r.gmail_id for r in results.results]
+                assert ctx.storage is not None
+                async with MessageExtractor(ctx.storage.db) as extractor:
+                    stats = await extractor.batch_extract(gmail_ids, Path(output_dir))
 
-            try:
-                import questionary
-            except ImportError:
-                ctx.fail_and_exit(
-                    "Missing Dependency",
-                    "Interactive mode requires the 'questionary' package",
-                    suggestion="Install with: pip install questionary",
-                )
+                workflow_result["extraction_stats"] = {
+                    "selected": len(gmail_ids),
+                    "extracted": stats["extracted"],
+                    "failed": stats["failed"],
+                    "errors": stats["errors"],
+                    "output_dir": output_dir,
+                }
 
-            # Build choices for interactive selection
-            choices = []
-            for idx, result in enumerate(results.results, 1):
-                subject_display = result.subject or "(no subject)"
-                if len(subject_display) > 50:
-                    subject_display = subject_display[:50] + "..."
+            return workflow_result
 
-                choice_label = (
-                    f"{idx}. {subject_display} "
-                    f"(from: {result.from_addr[:30]}, "
-                    f"date: {result.date[:10] if result.date else 'N/A'})"
-                )
-                choices.append(questionary.Choice(title=choice_label, value=result.gmail_id))
+        except ValueError as e:
+            return {"status": "error", "error_type": "ValueError", "error_message": str(e)}
+        except Exception as e:
+            return {"status": "error", "error_type": "Exception", "error_message": str(e)}
 
-            # Prompt user to select messages
-            ctx.info("")
-            selected_ids = questionary.checkbox(
-                "Select messages to extract (space to select, enter to confirm):",
-                choices=choices,
-            ).ask()
+    # Execute single async workflow
+    workflow_result = asyncio.run(_search_workflow())
 
-            # Handle cancellation or no selection
-            if not selected_ids:
-                ctx.info("No messages selected. Cancelled.")
-                return
+    # Handle errors
+    if workflow_result["status"] == "error":
+        error_type = workflow_result.get("error_type", "Exception")
+        error_message = workflow_result.get("error_message", "Unknown error")
 
-            # Prompt for output directory
-            default_output_dir = "./extracted"
-            output_dir_str = questionary.path(
-                "Output directory for extracted messages:",
-                default=default_output_dir,
-                only_directories=True,
-            ).ask()
+        if error_type == "ValueError":
+            ctx.fail_and_exit(
+                "Search Query Error",
+                error_message,
+                suggestion="Check your search query syntax",
+            )
+        else:
+            ctx.fail_and_exit("Search Failed", error_message)
 
-            if not output_dir_str:
-                ctx.info("No output directory specified. Cancelled.")
-                return
-
-            # Extract selected messages
-            ctx.info(f"\nExtracting {len(selected_ids)} selected messages to {output_dir_str}...")
-
-            assert ctx.storage is not None, "Storage should be initialized by @with_context"
-            storage_db = ctx.storage.db  # Capture for async closure
-
-            async def _batch_extract() -> ExtractStats:
-                async with MessageExtractor(storage_db) as extractor:
-                    return await extractor.batch_extract(selected_ids, Path(output_dir_str))
-
-            with ctx.output.progress_context(
-                "Extracting messages", total=len(selected_ids)
-            ) as progress:
-                task = (
-                    progress.add_task("Extracting", total=len(selected_ids)) if progress else None
-                )
-
-                stats = asyncio.run(_batch_extract())
-
-                if progress and task:
-                    progress.update(task, completed=len(selected_ids))
-
-            # Show extraction summary
-            extraction_report = {
-                "Messages Selected": len(selected_ids),
-                "Messages Extracted": stats["extracted"],
-                "Failed": stats["failed"],
-                "Output Directory": output_dir_str,
-            }
-            ctx.show_report("Extraction Summary", extraction_report)
-
-            if stats["errors"]:
-                ctx.warning(f"Encountered {len(stats['errors'])} error(s):")
-                for error in stats["errors"][:5]:  # Show first 5 errors
-                    ctx.info(f"  • {error}")
-                if len(stats["errors"]) > 5:
-                    ctx.info(f"  ... and {len(stats['errors']) - 5} more")
-
-            return
-
-        # Extract messages if requested
-        if extract:
-            assert output_dir is not None, "Output directory required for extraction"
-            ctx.info(f"\nExtracting {results.total_results} messages to {output_dir}...")
-
-            gmail_ids = [r.gmail_id for r in results.results]
-
-            assert ctx.storage is not None, "Storage should be initialized by @with_context"
-            storage_db = ctx.storage.db  # Capture for async closure
-
-            async def _batch_extract_search() -> ExtractStats:
-                async with MessageExtractor(storage_db) as extractor:
-                    return await extractor.batch_extract(gmail_ids, Path(output_dir))
-
-            with ctx.output.progress_context(
-                "Extracting messages", total=len(gmail_ids)
-            ) as progress:
-                task = progress.add_task("Extracting", total=len(gmail_ids)) if progress else None
-
-                stats = asyncio.run(_batch_extract_search())
-
-                if progress and task:
-                    progress.update(task, completed=len(gmail_ids))
-
-            # Show extraction summary
-            extraction_report = {
-                "Messages Extracted": stats["extracted"],
-                "Failed": stats["failed"],
-                "Output Directory": output_dir,
-            }
-            ctx.show_report("Extraction Summary", extraction_report)
-
-            if stats["errors"]:
-                ctx.warning(f"Encountered {len(stats['errors'])} error(s):")
-                for error in stats["errors"][:5]:  # Show first 5 errors
-                    ctx.info(f"  • {error}")
-                if len(stats["errors"]) > 5:
-                    ctx.info(f"  ... and {len(stats['errors']) - 5} more")
-
-    except ValueError as e:
+    # Handle missing questionary
+    if workflow_result.get("missing_questionary"):
         ctx.fail_and_exit(
-            "Search Query Error",
-            str(e),
-            suggestion="Check your search query syntax",
+            "Missing Dependency",
+            "Interactive mode requires the 'questionary' package",
+            suggestion="Install with: pip install questionary",
         )
-    except Exception as e:
-        ctx.fail_and_exit(
-            "Search Failed",
-            str(e),
+
+    # Handle interactive cancellation
+    if workflow_result.get("interactive_cancelled"):
+        ctx.info("No messages selected. Cancelled.")
+        return
+
+    # Display search results
+    from gmailarchiver.cli._output_search import (
+        display_search_results_json,
+        display_search_results_rich,
+    )
+    from gmailarchiver.cli.output import SearchResultEntry
+
+    results = workflow_result["results"]
+    execution_time_ms = workflow_result["execution_time_ms"]
+
+    # Convert search results to SearchResultEntry format
+    result_entries = [
+        SearchResultEntry(
+            gmail_id=r.gmail_id,
+            rfc_message_id=r.rfc_message_id,
+            subject=r.subject,
+            from_addr=r.from_addr,
+            to_addr=r.to_addr,
+            date=r.date,
+            body_preview=r.body_preview,
+            archive_file=r.archive_file,
+            mbox_offset=r.mbox_offset,
+            relevance_score=r.relevance_score,
         )
+        for r in results.results
+    ]
+
+    # Format output via OutputManager
+    if json_output:
+        display_search_results_json(ctx.output, result_entries, with_preview=with_preview)
+    else:
+        display_search_results_rich(
+            ctx.output,
+            result_entries,
+            results.total_results,
+            with_preview=with_preview,
+        )
+        if results.total_results == 0:
+            ctx.suggest_next_steps(
+                [
+                    "Try a broader search query",
+                    "Check query syntax with: gmailarchiver search --help",
+                ]
+            )
+        else:
+            # Show summary
+            report_data = {
+                "Query": effective_query,
+                "Results Found": results.total_results,
+                "Execution Time": f"{execution_time_ms:.2f}ms",
+            }
+            ctx.show_report("Search Summary", report_data)
+
+    # Display extraction results if any
+    extraction_stats = workflow_result.get("extraction_stats")
+    if extraction_stats:
+        if interactive:
+            ctx.info(
+                f"\nExtracted {extraction_stats['extracted']} of "
+                f"{extraction_stats['selected']} selected messages to {extraction_stats['output_dir']}"
+            )
+        else:
+            ctx.info(
+                f"\nExtracted {extraction_stats['extracted']} messages to {extraction_stats['output_dir']}"
+            )
+
+        extraction_report = {
+            "Messages Extracted": extraction_stats["extracted"],
+            "Failed": extraction_stats["failed"],
+            "Output Directory": extraction_stats["output_dir"],
+        }
+        if interactive:
+            extraction_report["Messages Selected"] = extraction_stats["selected"]
+        ctx.show_report("Extraction Summary", extraction_report)
+
+        if extraction_stats["errors"]:
+            ctx.warning(f"Encountered {len(extraction_stats['errors'])} error(s):")
+            for error in extraction_stats["errors"][:5]:
+                ctx.info(f"  • {error}")
+            if len(extraction_stats["errors"]) > 5:
+                ctx.info(f"  ... and {len(extraction_stats['errors']) - 5} more")
 
 
 @app.command()
@@ -2006,48 +2179,7 @@ def import_cmd(
 
     db_path = Path(state_db)
 
-    # Handle database schema using centralized SchemaManager
-    if db_path.exists():
-        schema_mgr = SchemaManager(db_path)
-        version = asyncio.run(schema_mgr.detect_version())
-
-        if version == SchemaVersion.NONE:
-            # Empty database file exists - delete it and let DBManager create a fresh one
-            ctx.warning("Found empty database file, recreating...")
-            try:
-                db_path.unlink()
-            except Exception as e:
-                ctx.fail_and_exit(
-                    "Database Error",
-                    f"Failed to delete empty database: {e}",
-                    suggestion="Check file permissions and try again",
-                )
-        elif not asyncio.run(schema_mgr.is_supported()):
-            ctx.fail_and_exit(
-                "Unsupported Database",
-                f"Unsupported database schema version: {version.value}",
-                suggestion="Delete the database or use --state-db with a different path",
-            )
-        elif asyncio.run(schema_mgr.needs_migration()):
-            # Auto-migrate to current version
-            ctx.warning(
-                f"Detected v{version.value} database, "
-                f"auto-migrating to v{SchemaManager.CURRENT_VERSION.value}..."
-            )
-            try:
-                asyncio.run(
-                    schema_mgr.auto_migrate_if_needed(progress_callback=lambda msg: ctx.info(msg))
-                )
-                ctx.success("Migration completed successfully")
-            except Exception as e:
-                ctx.fail_and_exit(
-                    "Migration Failed",
-                    f"Failed to migrate database: {e}",
-                    suggestion="Run 'gmailarchiver migrate' manually for more details",
-                )
-    # If database doesn't exist, DBManager will auto-create it with current schema
-
-    # Expand glob pattern
+    # Expand glob pattern first (sync - fast I/O)
     files = glob.glob(archive_pattern)
     if not files:
         ctx.fail_and_exit(
@@ -2065,81 +2197,124 @@ def import_cmd(
         if gmail_client is None:
             ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
 
-    # Import each file with progress
-    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+    async def _import_workflow() -> dict[str, Any]:
+        """Single async workflow for import command."""
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
 
-    importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
-    results: list[Any] = []
-    start_time = time.perf_counter()
+        try:
+            # Handle database schema using centralized SchemaManager
+            if db_path.exists():
+                schema_mgr = SchemaManager(db_path)
+                version = await schema_mgr.detect_version()
 
-    # Async helper for import_archive
-    async def _import_archive(
-        file_path: str,
-        acct_id: str,
-        skip_dups: bool,
-        progress_cb: Callable[[int, int, str], None] | None,
-    ) -> Any:
-        return await importer.import_archive(
-            file_path,
-            account_id=acct_id,
-            skip_duplicates=skip_dups,
-            progress_callback=progress_cb,
-        )
+                if version == SchemaVersion.NONE:
+                    # Empty database file exists - delete it and let DBManager create a fresh one
+                    try:
+                        db_path.unlink()
+                    except Exception as e:
+                        return {
+                            "status": "error",
+                            "error_title": "Database Error",
+                            "error_message": f"Failed to delete empty database: {e}",
+                            "suggestion": "Check file permissions and try again",
+                        }
+                elif not await schema_mgr.is_supported():
+                    return {
+                        "status": "error",
+                        "error_title": "Unsupported Database",
+                        "error_message": f"Unsupported database schema version: {version.value}",
+                        "suggestion": "Delete the database or use --state-db with a different path",
+                    }
+                elif await schema_mgr.needs_migration():
+                    # Auto-migrate to current version
+                    try:
+                        await schema_mgr.auto_migrate_if_needed(
+                            progress_callback=lambda msg: ctx.info(msg)
+                        )
+                    except Exception as e:
+                        return {
+                            "status": "error",
+                            "error_title": "Migration Failed",
+                            "error_message": f"Failed to migrate database: {e}",
+                            "suggestion": "Run 'gmailarchiver migrate' manually for more details",
+                        }
 
-    # Use fluent UI builder for task sequence
-    total_messages = 0
-    file_message_counts: list[int] = []
-    messages_processed = 0
+            # Import each file
+            importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
+            results: list[Any] = []
+            start_time = time.perf_counter()
 
-    with ctx.ui.task_sequence() as seq:
-        # Task 1: Count messages across all files
-        with seq.task("Counting messages") as count_task:
+            # Count messages first (sync operation in importer)
+            file_message_counts: list[int] = []
+            total_messages = 0
             for file_path in files:
                 count = importer.count_messages(file_path)
                 file_message_counts.append(count)
                 total_messages += count
-            count_task.complete(f"Found {total_messages:,} messages")
 
-        # Task 2: Import messages with progress tracking
-        with seq.task("Importing messages", total=total_messages) as import_task:
-            current_task_pos = 0
-            last_reported = 0
-
+            # Import each file
+            import_errors: list[str] = []
             for file_idx, file_path in enumerate(files):
-
-                def make_progress_callback(
-                    base_pos: int,
-                    task: Any,
-                ) -> Callable[[int, int, str], None]:
-                    def callback(current: int, total: int, status: str) -> None:
-                        nonlocal messages_processed, last_reported
-                        messages_processed = base_pos + current
-                        # Advance progress by the delta since last report
-                        delta = messages_processed - last_reported
-                        if delta > 0:
-                            task.advance(delta)
-                            last_reported = messages_processed
-
-                    return callback
-
                 try:
-                    result = asyncio.run(
-                        _import_archive(
-                            file_path,
-                            account_id,
-                            skip_duplicates,
-                            make_progress_callback(current_task_pos, import_task),
-                        )
+                    result = await importer.import_archive(
+                        file_path,
+                        account_id=account_id,
+                        skip_duplicates=skip_duplicates,
+                        progress_callback=None,  # Progress handled in sync UI
                     )
                     results.append(result)
-                    current_task_pos += file_message_counts[file_idx]
                 except Exception as e:
-                    import_task.log(f"Error importing {file_path}: {e}", "ERROR")
-                    current_task_pos += file_message_counts[file_idx]
+                    import_errors.append(f"Error importing {file_path}: {e}")
 
-            import_task.complete(f"Imported {messages_processed:,} messages")
+            total_time = time.perf_counter() - start_time
 
-    total_time = time.perf_counter() - start_time
+            # Auto-verify if requested
+            verify_issues: list[str] | None = None
+            if auto_verify and results:
+                total_failed = sum(r.messages_failed for r in results)
+                if total_failed == 0:
+                    try:
+                        verify_issues = await ctx.storage.db.verify_database_integrity()
+                    except Exception as e:
+                        verify_issues = [f"Verification failed: {e}"]
+
+            return {
+                "status": "success",
+                "results": results,
+                "total_time": total_time,
+                "total_messages": total_messages,
+                "file_message_counts": file_message_counts,
+                "import_errors": import_errors,
+                "verify_issues": verify_issues,
+            }
+
+        except Exception as e:
+            return {"status": "error", "error_message": str(e)}
+
+    # Execute single async workflow
+    workflow_result = asyncio.run(_import_workflow())
+
+    # Handle errors
+    if workflow_result["status"] == "error":
+        error_title = workflow_result.get("error_title", "Import Failed")
+        error_message = workflow_result.get("error_message", "Unknown error")
+        suggestion = workflow_result.get("suggestion")
+        ctx.fail_and_exit(error_title, error_message, suggestion=suggestion)
+
+    # Extract results
+    results = workflow_result["results"]
+    total_time = workflow_result["total_time"]
+    total_messages = workflow_result["total_messages"]
+    import_errors = workflow_result.get("import_errors", [])
+    verify_issues = workflow_result.get("verify_issues")
+
+    # Show progress info
+    ctx.success(f"Counted {total_messages:,} messages across {len(files)} file(s)")
+    ctx.success(f"Imported messages from {len(results)} file(s)")
+
+    # Show import errors
+    for error in import_errors:
+        ctx.warning(error)
 
     # Calculate totals
     total_imported = sum(r.messages_imported for r in results)
@@ -2201,29 +2376,22 @@ def import_cmd(
             ]
         )
 
-    # Auto-verify if requested
-    if auto_verify and total_failed == 0:
-        ctx.info("\nRunning verification...")
-        try:
-            issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-            if not issues:
-                ctx.success("Verification complete - no issues found")
-            else:
-                ctx.warning(f"Verification found {len(issues)} issue(s):")
-                for issue in issues[:5]:  # Show first 5 issues
-                    ctx.info(f"  • {issue}")
-                if len(issues) > 5:
-                    ctx.info(f"  ... and {len(issues) - 5} more issues")
-
-                ctx.suggest_next_steps(
-                    [
-                        "Fix issues automatically: gmailarchiver check --auto-repair",
-                        "View all issues: gmailarchiver verify-integrity --verbose",
-                    ]
-                )
-        except Exception as e:
-            ctx.warning(f"Verification failed: {e}")
+    # Show verification results
+    if verify_issues is not None:
+        if not verify_issues:
+            ctx.success("Verification complete - no issues found")
+        else:
+            ctx.warning(f"Verification found {len(verify_issues)} issue(s):")
+            for issue in verify_issues[:5]:
+                ctx.info(f"  • {issue}")
+            if len(verify_issues) > 5:
+                ctx.info(f"  ... and {len(verify_issues) - 5} more issues")
+            ctx.suggest_next_steps(
+                [
+                    "Fix issues automatically: gmailarchiver check --auto-repair",
+                    "View all issues: gmailarchiver verify-integrity --verbose",
+                ]
+            )
 
 
 @app.command()
@@ -2265,8 +2433,8 @@ def consolidate(
 
     # ArchiveConsolidator and ValidatorFacade are imported at module level
 
-    # 1. Expand glob patterns
-    all_files = []
+    # 1. Expand glob patterns (sync - fast I/O)
+    all_files: list[str] = []
     for pattern in archives:
         matches = glob.glob(pattern)
         if not matches:
@@ -2297,282 +2465,298 @@ def consolidate(
         )
 
     # 3. Auto-detect compression from output extension
-    if compress is None:
+    effective_compress = compress
+    if effective_compress is None:
         output_path = Path(output_file)
         if output_path.suffix == ".gz":
-            compress = "gzip"
+            effective_compress = "gzip"
         elif output_path.suffix == ".xz":
-            compress = "lzma"
+            effective_compress = "lzma"
         elif output_path.suffix == ".zst":
-            compress = "zstd"
+            effective_compress = "zstd"
 
-    # 4. Check if output file exists
-    output_path = Path(output_file)
-    if output_path.exists():
-        overwrite = typer.confirm(f"Output file exists: {output_file}. Overwrite?")
-        if not overwrite:
-            ctx.info("Consolidation cancelled")
-            raise typer.Exit(0)
+    # Helper functions for sync operations via asyncio.to_thread
+    def _confirm_overwrite() -> bool:
+        """Sync confirmation for overwrite."""
+        return typer.confirm(f"Output file exists: {output_file}. Overwrite?")
 
-    # 5. Consolidate with progress
-    assert ctx.storage is not None, "Storage should be initialized by @with_context"
-    consolidator = ArchiveConsolidator(ctx.storage.db)
+    def _confirm_remove_sources(files: list[Path], total_size: int) -> bool:
+        """Sync confirmation for removing source files."""
+        ctx.info(f"\nThe following {len(files)} source file(s) will be removed:")
+        for file_path in files:
+            ctx.info(f"  • {file_path}")
+        ctx.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
+        return typer.confirm("\nRemove source files?")
 
-    try:
-        with ctx.ui.task_sequence() as seq:
-            # Task 1: Consolidate archives
-            with seq.task("Consolidating archives") as t:
-                # Convert file paths to list[str | Path] for type compatibility
-                source_paths: list[str | Path] = [Path(f) for f in all_files]
+    def _validate_archive_sync(archive_path: str) -> tuple[bool, str]:
+        """Sync validation of archive (CPU-bound)."""
+        validator = ValidatorFacade(archive_path)
+        try:
+            is_valid = validator.validate_all()
+            if not is_valid:
+                errors = validator.errors
+                error_msg = errors[0] if errors else "Unknown error"
+                return False, error_msg
+            return True, ""
+        finally:
+            # ValidatorFacade.close() is async, but we're in sync context
+            # The async close will be handled in the workflow
+            pass
 
-                result = asyncio.run(
-                    consolidator.consolidate(
-                        source_archives=source_paths,
-                        output_archive=output_file,
-                        sort_by_date=sort,
-                        deduplicate=dedupe,
-                        dedupe_strategy=dedupe_strategy,
-                        compress=compress,
-                    )
-                )
-                t.complete(
-                    f"Consolidated {result.messages_consolidated:,} messages from "
-                    f"{len(result.source_files)} archive(s)"
-                )
+    async def _consolidate_workflow() -> dict[str, Any]:
+        """Single async workflow for consolidate command."""
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        consolidator = ArchiveConsolidator(ctx.storage.db)
 
-            # Task 2: Auto-verify if requested (within task_sequence)
+        try:
+            # 4. Check if output file exists (with async confirmation)
+            output_path = Path(output_file)
+            if output_path.exists():
+                overwrite = await asyncio.to_thread(_confirm_overwrite)
+                if not overwrite:
+                    return {"status": "cancelled", "reason": "overwrite_declined"}
+
+            # 5. Consolidate archives
+            source_paths: list[str | Path] = [Path(f) for f in all_files]
+
+            result = await consolidator.consolidate(
+                source_archives=source_paths,
+                output_archive=output_file,
+                sort_by_date=sort,
+                deduplicate=dedupe,
+                dedupe_strategy=dedupe_strategy,
+                compress=effective_compress,
+            )
+
+            # 6. Auto-verify if requested
+            verify_issues: list[str] | None = None
             if auto_verify:
-                with seq.task("Verifying database integrity") as t:
-                    try:
-                        issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-                        if not issues:
-                            t.complete("No issues found")
-                        else:
-                            t.complete(f"Found {len(issues)} issue(s)")
-                            ctx.warning(f"Verification found {len(issues)} issue(s):")
-                            for issue in issues[:5]:
-                                ctx.info(f"  • {issue}")
-                            if len(issues) > 5:
-                                ctx.info(f"  ... and {len(issues) - 5} more issues")
-
-                            ctx.suggest_next_steps(
-                                [
-                                    ("Fix issues automatically: gmailarchiver check --auto-repair"),
-                                    ("View all issues: gmailarchiver verify-integrity --verbose"),
-                                ]
-                            )
-                    except Exception as e:  # pragma: no cover - defensive
-                        t.fail("Verification failed", reason=str(e))
-                        ctx.warning(f"Verification failed: {e}")
-
-            # Task 3: Validate consolidated archive before removing sources
-            cleanup_data: dict[str, Any] | None = None
-            if remove_sources:
                 try:
-                    with seq.task("Validating consolidated archive") as t:
-                        output_path = Path(result.output_file)
-                        if not output_path.exists():
-                            t.fail("Archive does not exist")
-                            ctx.error(
-                                "Consolidated archive does not exist - source files NOT removed"
-                            )
-                            raise typer.Exit(1)
-
-                        try:
-                            # Verify we can read the output file (basic safety check)
-                            output_size = output_path.stat().st_size
-                            if output_size == 0:
-                                t.fail("Archive is empty")
-                                ctx.warning(
-                                    "Consolidated archive appears to be empty "
-                                    "- skipping source file removal"
-                                )
-                                raise typer.Exit(1)
-                        except typer.Exit:
-                            raise
-                        except OSError as e:
-                            t.fail("Cannot access archive", reason=str(e))
-                            ctx.warning(f"Cannot access consolidated archive: {e}")
-                            ctx.info("Skipping source file removal due to access issues")
-                            raise typer.Exit(1)
-
-                        try:
-                            # Use ValidatorFacade to verify archive can be read
-                            validator = ValidatorFacade(str(output_path))
-                            try:
-                                # Simple check: verify archive is readable and has content
-                                is_valid = validator.validate_all()
-                                if not is_valid:
-                                    # Try to get error details
-                                    errors = validator.errors
-                                    error_msg = errors[0] if errors else "Unknown error"
-                                    t.fail("Validation failed", reason=error_msg)
-                                    ctx.warning(f"Archive validation failed: {error_msg}")
-                                    ctx.info(
-                                        "Please review the consolidated archive "
-                                        "before manually removing sources"
-                                    )
-                                    raise typer.Exit(1)
-                                t.complete(f"Archive valid ({format_bytes(output_size)})")
-                            finally:
-                                asyncio.run(validator.close())
-                        except typer.Exit:
-                            raise
-                        except Exception as e:
-                            t.fail("Validation error", reason=str(e))
-                            ctx.warning(f"Archive readability check failed: {e}")
-                            ctx.info("Skipping source file removal due to verification issues")
-                            raise typer.Exit(1)
-
-                    # Determine which files to remove (exclude output file)
-                    output_path_resolved = Path(output_file).resolve()
-                    files_to_remove = []
-                    total_size = 0
-
-                    for source_file in all_files:
-                        source_path = Path(source_file).resolve()
-                        # Never remove the output file
-                        if source_path != output_path_resolved:
-                            if source_path.exists():
-                                total_size += source_path.stat().st_size
-                                files_to_remove.append(source_path)
-
-                    if not files_to_remove:
-                        ctx.info("No source files to remove (output file is the only file)")
-                    else:
-                        # Determine if we should proceed with removal
-                        # Auto-confirm if --yes or --json is provided
-                        should_remove = yes or json_output
-
-                        if not should_remove:
-                            # Show confirmation prompt
-                            ctx.info(
-                                f"\nThe following {len(files_to_remove)} "
-                                f"source file(s) will be removed:"
-                            )
-                            for file_path in files_to_remove:
-                                ctx.info(f"  • {file_path}")
-                            ctx.info(f"\nTotal space to be freed: {format_bytes(total_size)}")
-
-                            should_remove = typer.confirm("\nRemove source files?")
-                            if not should_remove:
-                                ctx.info("Source file removal cancelled - files kept")
-
-                        if should_remove:
-                            # Task 4: Remove source files
-                            with seq.task("Removing source files", total=len(files_to_remove)) as t:
-                                removed_count = 0
-                                freed_space = 0
-                                failed_removals = []
-
-                                for file_path in files_to_remove:
-                                    try:
-                                        file_size = file_path.stat().st_size
-                                        file_path.unlink()
-                                        removed_count += 1
-                                        freed_space += file_size
-                                        t.advance()
-                                    except FileNotFoundError:
-                                        # File already deleted - that's OK
-                                        t.advance()
-                                    except PermissionError as e:
-                                        failed_removals.append(f"{file_path}: {e}")
-                                        t.advance()
-                                    except Exception as e:
-                                        failed_removals.append(f"{file_path}: {e}")
-                                        t.advance()
-
-                                # Complete task
-                                if removed_count > 0:
-                                    t.complete(
-                                        f"Removed {removed_count} file(s), "
-                                        f"freed {format_bytes(freed_space)}"
-                                    )
-                                else:
-                                    t.fail("No files removed")
-
-                                # Record cleanup data for JSON top-level summary
-                                cleanup_data = {
-                                    "removed_files": removed_count,
-                                    "space_freed_bytes": freed_space,
-                                    "failed_removals": len(failed_removals),
-                                }
-
-                                # Add cleanup data to JSON events for scripting
-                                if json_output:
-                                    ctx.output._json_events.append(
-                                        {
-                                            "event": "cleanup",
-                                            **cleanup_data,
-                                        }
-                                    )
-
-                            if failed_removals:
-                                ctx.warning(f"Failed to remove {len(failed_removals)} file(s):")
-                                for failure in failed_removals[:3]:
-                                    ctx.info(f"  • {failure}")
-                                if len(failed_removals) > 3:
-                                    ctx.info(f"  ... and {len(failed_removals) - 3} more")
-
-                except typer.Exit:
-                    raise
+                    verify_issues = await ctx.storage.db.verify_database_integrity()
                 except Exception as e:
-                    ctx.warning(f"Source file cleanup failed: {e}")
-                    ctx.info("Consolidation succeeded but source files were NOT removed")
+                    verify_issues = [f"Verification failed: {e}"]
 
-        # 6. Build report data (after task_sequence)
-        report_data = {
-            "Source Archives": len(result.source_files),
-            "Total Messages": result.total_messages,
-            "Duplicates Deduplicated": result.duplicates_removed,
-            "Messages Consolidated": result.messages_consolidated,
-            "Sorted by Date": "Yes" if result.sort_applied else "No",
-        }
+            # 7. Validate and remove sources if requested
+            cleanup_data: dict[str, Any] | None = None
+            cleanup_warnings: list[str] = []
+            validation_failed = False
 
-        if result.compression_used:
-            report_data["Compression"] = result.compression_used
+            if remove_sources:
+                # Validate consolidated archive first
+                output_path = Path(result.output_file)
+                if not output_path.exists():
+                    return {
+                        "status": "error",
+                        "error_type": "validation",
+                        "error_title": "Archive Not Found",
+                        "error_message": "Consolidated archive does not exist - source files NOT removed",
+                    }
 
-        # 7. Performance metrics
-        if result.execution_time_ms > 0:
-            rate = (result.messages_consolidated / result.execution_time_ms) * 1000
-            report_data["Performance"] = f"{rate:.1f} messages/second"
+                try:
+                    output_size = output_path.stat().st_size
+                    if output_size == 0:
+                        return {
+                            "status": "error",
+                            "error_type": "validation",
+                            "error_title": "Empty Archive",
+                            "error_message": "Consolidated archive appears to be empty - skipping source file removal",
+                        }
+                except OSError as e:
+                    return {
+                        "status": "error",
+                        "error_type": "validation",
+                        "error_title": "Access Error",
+                        "error_message": f"Cannot access consolidated archive: {e}",
+                    }
 
-        ctx.show_report("Consolidation Summary", report_data)
-        ctx.success(f"Consolidation complete! Output: {result.output_file}")
+                # Validate archive content (CPU-bound via to_thread)
+                is_valid, error_msg = await asyncio.to_thread(
+                    _validate_archive_sync, str(output_path)
+                )
+                if not is_valid:
+                    return {
+                        "status": "error",
+                        "error_type": "validation",
+                        "error_title": "Validation Failed",
+                        "error_message": f"Archive validation failed: {error_msg}",
+                        "suggestion": "Please review the consolidated archive before manually removing sources",
+                    }
 
-        ctx.suggest_next_steps(
-            [
-                "Verify consolidated archive: gmailarchiver validate " + result.output_file,
-                "Search messages: gmailarchiver search <query>",
-            ]
-        )
+                # Determine which files to remove (exclude output file)
+                output_path_resolved = Path(output_file).resolve()
+                files_to_remove: list[Path] = []
+                total_size = 0
 
-        # If in JSON mode and we have cleanup data, attach it to the top-level payload
-        if json_output and cleanup_data is not None:
-            # Merge status with cleanup summary for top-level convenience
-            output_payload = {
-                "status": "ok",
-                "success": True,
-                **cleanup_data,
+                for source_file in all_files:
+                    source_path = Path(source_file).resolve()
+                    if source_path != output_path_resolved and source_path.exists():
+                        total_size += source_path.stat().st_size
+                        files_to_remove.append(source_path)
+
+                if files_to_remove:
+                    # Determine if we should proceed with removal
+                    should_remove = yes or json_output
+
+                    if not should_remove:
+                        should_remove = await asyncio.to_thread(
+                            _confirm_remove_sources, files_to_remove, total_size
+                        )
+
+                    if should_remove:
+                        # Remove source files
+                        removed_count = 0
+                        freed_space = 0
+                        failed_removals: list[str] = []
+
+                        for file_path in files_to_remove:
+                            try:
+                                file_size = file_path.stat().st_size
+                                file_path.unlink()
+                                removed_count += 1
+                                freed_space += file_size
+                            except FileNotFoundError:
+                                pass  # Already deleted
+                            except (PermissionError, Exception) as e:
+                                failed_removals.append(f"{file_path}: {e}")
+
+                        cleanup_data = {
+                            "removed_files": removed_count,
+                            "space_freed_bytes": freed_space,
+                            "failed_removals": len(failed_removals),
+                            "failed_details": failed_removals,
+                        }
+                    else:
+                        cleanup_warnings.append("Source file removal cancelled - files kept")
+
+            return {
+                "status": "success",
+                "result": result,
+                "verify_issues": verify_issues,
+                "cleanup_data": cleanup_data,
+                "cleanup_warnings": cleanup_warnings,
             }
-            ctx.output.set_json_payload(output_payload)
 
-    except typer.Exit:
-        raise
-    except ValueError as e:
-        ctx.fail_and_exit("Validation Error", str(e))
-    except FileNotFoundError as e:
-        ctx.fail_and_exit("File Not Found", str(e))
-    except Exception as e:
-        ctx.fail_and_exit(
-            "Consolidation Failed",
-            str(e),
-            suggestion="Check archive files and try again",
-        )
-    finally:
-        if ctx.storage:
-            asyncio.run(ctx.storage.db.close())
+        except ValueError as e:
+            return {"status": "error", "error_type": "ValueError", "error_message": str(e)}
+        except FileNotFoundError as e:
+            return {"status": "error", "error_type": "FileNotFoundError", "error_message": str(e)}
+        except Exception as e:
+            return {"status": "error", "error_type": "Exception", "error_message": str(e)}
+        finally:
+            if ctx.storage:
+                await ctx.storage.db.close()
+
+    # Execute single async workflow
+    workflow_result = asyncio.run(_consolidate_workflow())
+
+    # Handle result based on status
+    if workflow_result["status"] == "cancelled":
+        ctx.info("Consolidation cancelled")
+        raise typer.Exit(0)
+
+    if workflow_result["status"] == "error":
+        error_type = workflow_result.get("error_type", "Exception")
+        error_message = workflow_result.get("error_message", "Unknown error")
+        error_title = workflow_result.get("error_title")
+        suggestion = workflow_result.get("suggestion")
+
+        if error_title:
+            ctx.fail_and_exit(error_title, error_message, suggestion=suggestion)
+        elif error_type == "ValueError":
+            ctx.fail_and_exit("Validation Error", error_message)
+        elif error_type == "FileNotFoundError":
+            ctx.fail_and_exit("File Not Found", error_message)
+        else:
+            ctx.fail_and_exit(
+                "Consolidation Failed",
+                error_message,
+                suggestion="Check archive files and try again",
+            )
+
+    # Success - display results
+    result = workflow_result["result"]
+    verify_issues = workflow_result.get("verify_issues")
+    cleanup_data = workflow_result.get("cleanup_data")
+    cleanup_warnings = workflow_result.get("cleanup_warnings", [])
+
+    # Show consolidation progress summary
+    ctx.success(
+        f"Consolidated {result.messages_consolidated:,} messages from "
+        f"{len(result.source_files)} archive(s)"
+    )
+
+    # Show verification results if auto-verify was used
+    if verify_issues is not None:
+        if not verify_issues:
+            ctx.success("Database integrity verified - no issues found")
+        else:
+            ctx.warning(f"Verification found {len(verify_issues)} issue(s):")
+            for issue in verify_issues[:5]:
+                ctx.info(f"  • {issue}")
+            if len(verify_issues) > 5:
+                ctx.info(f"  ... and {len(verify_issues) - 5} more issues")
+            ctx.suggest_next_steps(
+                [
+                    ("Fix issues automatically: gmailarchiver check --auto-repair"),
+                    ("View all issues: gmailarchiver verify-integrity --verbose"),
+                ]
+            )
+
+    # Show cleanup results
+    for warning in cleanup_warnings:
+        ctx.info(warning)
+
+    if cleanup_data:
+        removed = cleanup_data["removed_files"]
+        freed = cleanup_data["space_freed_bytes"]
+        failed = cleanup_data["failed_removals"]
+
+        if removed > 0:
+            ctx.success(f"Removed {removed} source file(s), freed {format_bytes(freed)}")
+
+        if failed > 0:
+            ctx.warning(f"Failed to remove {failed} file(s):")
+            for failure in cleanup_data.get("failed_details", [])[:3]:
+                ctx.info(f"  • {failure}")
+
+        # Add cleanup data to JSON events for scripting
+        if json_output:
+            ctx.output._json_events.append({"event": "cleanup", **cleanup_data})
+
+    # Build and show report
+    report_data = {
+        "Source Archives": len(result.source_files),
+        "Total Messages": result.total_messages,
+        "Duplicates Deduplicated": result.duplicates_removed,
+        "Messages Consolidated": result.messages_consolidated,
+        "Sorted by Date": "Yes" if result.sort_applied else "No",
+    }
+
+    if result.compression_used:
+        report_data["Compression"] = result.compression_used
+
+    if result.execution_time_ms > 0:
+        rate = (result.messages_consolidated / result.execution_time_ms) * 1000
+        report_data["Performance"] = f"{rate:.1f} messages/second"
+
+    ctx.show_report("Consolidation Summary", report_data)
+    ctx.success(f"Consolidation complete! Output: {result.output_file}")
+
+    ctx.suggest_next_steps(
+        [
+            "Verify consolidated archive: gmailarchiver validate " + result.output_file,
+            "Search messages: gmailarchiver search <query>",
+        ]
+    )
+
+    # JSON mode output
+    if json_output and cleanup_data is not None:
+        output_payload = {
+            "status": "ok",
+            "success": True,
+            **cleanup_data,
+        }
+        ctx.output.set_json_payload(output_payload)
 
 
 @utilities_app.command(name="verify-integrity")
@@ -2708,65 +2892,88 @@ def repair(
 
     db_path = Path(state_db)
 
-    # Get confirmation for non-dry-run
-    if not dry_run:
+    # Helper for sync confirmation via asyncio.to_thread
+    def _confirm_repair() -> bool:
+        """Sync confirmation for repair."""
         ctx.warning("⚠ WARNING: This will modify the database")
-        confirm = typer.confirm("Continue with database repair?", default=False)
-        if not confirm:
-            ctx.info("Repair cancelled")
-            raise typer.Exit(0)
+        return typer.confirm("Continue with database repair?", default=False)
 
-    try:
-        with ctx.output.progress_context("Running repair operations", total=2) as progress:
+    async def _repair_workflow() -> dict[str, Any]:
+        """Single async workflow for repair command."""
+        assert ctx.storage is not None
+
+        try:
+            # Get confirmation for non-dry-run
+            if not dry_run:
+                confirmed = await asyncio.to_thread(_confirm_repair)
+                if not confirmed:
+                    return {"status": "cancelled"}
+
             # Phase 1: Fix FTS sync issues
-            task = progress.add_task("Phase 1: FTS synchronization", total=2) if progress else None
-            ctx.info("Phase 1: Checking FTS synchronization...")
-            # Access DBManager directly for low-level database operations
-            assert ctx.storage is not None
-            repairs = asyncio.run(ctx.storage.db.repair_database(dry_run=dry_run))
-            if progress and task:
-                progress.update(task, completed=1)
+            repairs = await ctx.storage.db.repair_database(dry_run=dry_run)
 
             # Phase 2: Backfill invalid offsets if requested
+            invalid_count = 0
             if backfill:
-                ctx.info("Phase 2: Checking for invalid offsets...")
-                invalid_msgs = asyncio.run(ctx.storage.db.get_messages_with_invalid_offsets())
+                invalid_msgs = await ctx.storage.db.get_messages_with_invalid_offsets()
+                invalid_count = len(invalid_msgs) if invalid_msgs else 0
 
                 if invalid_msgs:
-                    ctx.info(f"Found {len(invalid_msgs)} messages with invalid offsets")
-
                     if not dry_run:
                         # Use MigrationManager logic to scan mbox and backfill
-                        async def run_backfill(msgs: list[Any]) -> int:
-                            migrator = MigrationManager(db_path)
-                            try:
-                                return await migrator.backfill_offsets_from_mbox(msgs)
-                            finally:
-                                await migrator._close()
-
-                        backfilled = asyncio.run(run_backfill(invalid_msgs))
-                        repairs["invalid_offsets_fixed"] = backfilled
+                        migrator = MigrationManager(db_path)
+                        try:
+                            backfilled = await migrator.backfill_offsets_from_mbox(invalid_msgs)
+                            repairs["invalid_offsets_fixed"] = backfilled
+                        finally:
+                            await migrator._close()
                     else:
                         repairs["invalid_offsets_would_fix"] = len(invalid_msgs)
-                else:
-                    ctx.success("No invalid offsets found")
 
-            if progress and task:
-                progress.update(task, completed=2)
+            return {
+                "status": "success",
+                "repairs": repairs,
+                "invalid_count": invalid_count,
+            }
 
-        # Display results
-        _display_repair_results(ctx.output, repairs, dry_run)
+        except FileNotFoundError as e:
+            return {"status": "error", "error_type": "FileNotFoundError", "error_message": str(e)}
+        except Exception as e:
+            return {"status": "error", "error_type": "Exception", "error_message": str(e)}
 
-    except typer.Exit:
-        raise
-    except FileNotFoundError as e:
-        ctx.fail_and_exit("File Not Found", str(e))
-    except Exception as e:
-        ctx.fail_and_exit(
-            "Repair Failed",
-            str(e),
-            suggestion="Check the database file and try again",
-        )
+    # Execute single async workflow
+    workflow_result = asyncio.run(_repair_workflow())
+
+    # Handle result based on status
+    if workflow_result["status"] == "cancelled":
+        ctx.info("Repair cancelled")
+        raise typer.Exit(0)
+
+    if workflow_result["status"] == "error":
+        error_type = workflow_result.get("error_type", "Exception")
+        error_message = workflow_result.get("error_message", "Unknown error")
+
+        if error_type == "FileNotFoundError":
+            ctx.fail_and_exit("File Not Found", error_message)
+        else:
+            ctx.fail_and_exit(
+                "Repair Failed",
+                error_message,
+                suggestion="Check the database file and try again",
+            )
+
+    # Display progress info
+    ctx.info("Phase 1: FTS synchronization complete")
+    if backfill:
+        invalid_count = workflow_result.get("invalid_count", 0)
+        if invalid_count > 0:
+            ctx.info(f"Phase 2: Found {invalid_count} messages with invalid offsets")
+        else:
+            ctx.success("Phase 2: No invalid offsets found")
+
+    # Display results
+    repairs = workflow_result["repairs"]
+    _display_repair_results(ctx.output, repairs, dry_run)
 
 
 def _display_repair_results(output: OutputManager, repairs: dict[str, int], dry_run: bool) -> None:
@@ -2846,7 +3053,7 @@ def check(
     """
     db_path = Path(state_db)
 
-    # Check if database exists
+    # Check if database exists (sync - no async needed)
     if not db_path.exists():
         ctx.fail_and_exit(
             "Database Not Found",
@@ -2854,45 +3061,60 @@ def check(
             suggestion="Run 'gmailarchiver archive' to create one, or use --state-db",
         )
 
-    # Use centralized SchemaManager for version detection
-    schema_mgr = SchemaManager(db_path)
-    schema_version = asyncio.run(schema_mgr.detect_version())
+    async def _check_workflow() -> dict[str, Any]:
+        """Single async workflow for all check operations."""
+        from .core.validator import ValidatorFacade
 
-    if schema_version == SchemaVersion.NONE:
-        ctx.fail_and_exit(
-            "Invalid Database",
-            "Database is empty or invalid",
-            suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
-        )
+        # Use centralized SchemaManager for version detection
+        schema_mgr = SchemaManager(db_path)
+        schema_version = await schema_mgr.detect_version()
 
-    # Initialize results dictionary
-    check_results: dict[str, Any] = {
-        "database_integrity": {"passed": False, "issues": []},
-        "database_consistency": {"passed": False, "checked": False, "report": None},
-        "offset_accuracy": {"passed": False, "checked": False, "result": None},
-        "fts_synchronization": {"passed": False, "issues": []},
-    }
+        if schema_version == SchemaVersion.NONE:
+            return {"status": "invalid_database"}
 
-    assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        # Initialize results dictionary
+        check_results: dict[str, Any] = {
+            "database_integrity": {"passed": False, "issues": [], "error": None},
+            "database_consistency": {
+                "passed": False,
+                "checked": False,
+                "report": None,
+                "skip_reason": None,
+                "error": None,
+            },
+            "offset_accuracy": {
+                "passed": False,
+                "checked": False,
+                "result": None,
+                "skip_reason": None,
+                "error": None,
+            },
+            "fts_synchronization": {"passed": False, "issues": []},
+        }
 
-    with ctx.ui.task_sequence() as seq:
+        assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        storage_db = ctx.storage.db
+
+        # Helper function for async database query
+        async def get_first_archive_file() -> str | None:
+            if storage_db.conn is None:
+                return None
+            cursor = await storage_db.conn.execute(
+                "SELECT DISTINCT archive_file FROM messages LIMIT 1"
+            )
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
         # ==================== CHECK 1: Database Integrity ====================
-        with seq.task("Checking database integrity") as t:
-            try:
-                issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-                if not issues:
-                    check_results["database_integrity"]["passed"] = True
-                    t.complete("OK")
-                else:
-                    check_results["database_integrity"]["issues"] = issues
-                    t.complete(f"{len(issues)} issue(s)")
-                    if verbose:
-                        for issue in issues[:5]:
-                            ctx.info(f"    • {issue}")
-            except Exception as e:
-                check_results["database_integrity"]["issues"] = [str(e)]
-                t.fail("Check failed", reason=str(e))
+        try:
+            issues = await storage_db.verify_database_integrity()
+            if not issues:
+                check_results["database_integrity"]["passed"] = True
+            else:
+                check_results["database_integrity"]["issues"] = issues
+        except Exception as e:
+            check_results["database_integrity"]["issues"] = [str(e)]
+            check_results["database_integrity"]["error"] = str(e)
 
         # Extract FTS-specific issues from integrity issues
         fts_issues = [
@@ -2904,105 +3126,167 @@ def check(
         check_results["fts_synchronization"]["issues"] = fts_issues
 
         # ==================== CHECK 2: Database Consistency ====================
-        with seq.task("Checking database consistency") as t:
-            try:
-                assert ctx.storage is not None, "Storage should be initialized by @with_context"
-                storage_db = ctx.storage.db  # Capture for async closure
+        try:
+            archive_file = await get_first_archive_file()
+            has_archives = archive_file is not None
 
-                # Helper function for async database query
-                async def get_first_archive_file() -> str | None:
-                    if storage_db.conn is None:
-                        return None
-                    cursor = await storage_db.conn.execute(
-                        "SELECT DISTINCT archive_file FROM messages LIMIT 1"
-                    )
-                    row = await cursor.fetchone()
-                    return row[0] if row else None
-
-                archive_file = asyncio.run(get_first_archive_file())
-                has_archives = archive_file is not None
-
-                if has_archives and archive_file is not None:
-                    if Path(archive_file).exists():
-                        from .core.validator import ValidatorFacade
-
-                        validator = ValidatorFacade(archive_file, state_db)
-                        try:
-                            report = asyncio.run(validator.verify_consistency())
-                            check_results["database_consistency"]["checked"] = True
-                            check_results["database_consistency"]["report"] = report
-                            check_results["database_consistency"]["passed"] = report.passed
-
-                            if report.passed:
-                                t.complete("OK")
-                            else:
-                                t.complete(f"{len(report.errors)} issue(s)")
-                        finally:
-                            asyncio.run(validator.close())
-                    else:
-                        check_results["database_consistency"]["checked"] = False
-                        check_results["database_consistency"]["passed"] = True
-                        t.complete("Skipped (archive file not found)")
+            if has_archives and archive_file is not None:
+                if Path(archive_file).exists():
+                    validator = ValidatorFacade(archive_file, state_db)
+                    try:
+                        report = await validator.verify_consistency()
+                        check_results["database_consistency"]["checked"] = True
+                        check_results["database_consistency"]["report"] = report
+                        check_results["database_consistency"]["passed"] = report.passed
+                    finally:
+                        await validator.close()
                 else:
                     check_results["database_consistency"]["checked"] = False
                     check_results["database_consistency"]["passed"] = True
-                    t.complete("Skipped (no archives in database)")
-
-            except Exception as e:
-                check_results["database_consistency"]["issues"] = [str(e)]
-                t.fail("Check failed", reason=str(e))
+                    check_results["database_consistency"]["skip_reason"] = "archive file not found"
+            else:
+                check_results["database_consistency"]["checked"] = False
+                check_results["database_consistency"]["passed"] = True
+                check_results["database_consistency"]["skip_reason"] = "no archives in database"
+        except Exception as e:
+            check_results["database_consistency"]["error"] = str(e)
 
         # ==================== CHECK 3: Offset Accuracy ====================
-        with seq.task("Checking offset accuracy") as t:
-            if asyncio.run(schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS)):
-                try:
-                    # Reuse async helper from CHECK 2
-                    archive_file_for_offset = asyncio.run(get_first_archive_file())
+        has_offsets = await schema_mgr.has_capability(SchemaCapability.MBOX_OFFSETS)
+        if has_offsets:
+            try:
+                archive_file_for_offset = await get_first_archive_file()
 
-                    if archive_file_for_offset and Path(archive_file_for_offset).exists():
-                        from .core.validator import ValidatorFacade
+                if archive_file_for_offset and Path(archive_file_for_offset).exists():
+                    validator = ValidatorFacade(archive_file_for_offset, state_db)
+                    try:
+                        result = await validator.verify_offsets()
+                        check_results["offset_accuracy"]["checked"] = True
+                        check_results["offset_accuracy"]["result"] = result
+                        check_results["offset_accuracy"]["passed"] = (
+                            result.accuracy_percentage == 100.0
+                        )
+                    finally:
+                        await validator.close()
+                else:
+                    check_results["offset_accuracy"]["checked"] = False
+                    check_results["offset_accuracy"]["passed"] = True
+                    check_results["offset_accuracy"]["skip_reason"] = "no accessible archives"
+            except Exception as e:
+                check_results["offset_accuracy"]["error"] = str(e)
+        else:
+            check_results["offset_accuracy"]["checked"] = False
+            check_results["offset_accuracy"]["passed"] = True
+            check_results["offset_accuracy"]["skip_reason"] = "v1.0 schema"
 
-                        validator = ValidatorFacade(archive_file_for_offset, state_db)
-                        try:
-                            result = asyncio.run(validator.verify_offsets())
+        # Determine overall status
+        all_passed = (
+            check_results["database_integrity"]["passed"]
+            and check_results["database_consistency"]["passed"]
+            and check_results["offset_accuracy"]["passed"]
+            and check_results["fts_synchronization"]["passed"]
+        )
 
-                            check_results["offset_accuracy"]["checked"] = True
-                            check_results["offset_accuracy"]["result"] = result
+        # ==================== AUTO-REPAIR (if requested and issues found) ====================
+        repair_result: dict[str, Any] | None = None
+        if not all_passed and auto_repair:
+            try:
+                repairs = await storage_db.repair_database(dry_run=False)
+                total_repairs = sum(repairs.values())
 
-                            if result.accuracy_percentage == 100.0:
-                                check_results["offset_accuracy"]["passed"] = True
-                                t.complete(f"100% ({result.total_checked:,} checked)")
-                            else:
-                                check_results["offset_accuracy"]["passed"] = False
-                                t.complete(
-                                    f"{result.accuracy_percentage:.1f}% "
-                                    f"({result.successful_reads:,}/{result.total_checked:,})"
-                                )
-                        finally:
-                            asyncio.run(validator.close())
-                    else:
-                        check_results["offset_accuracy"]["checked"] = False
-                        check_results["offset_accuracy"]["passed"] = True
-                        t.complete("Skipped (no accessible archives)")
+                if total_repairs > 0:
+                    # Re-run checks to verify repairs
+                    post_repair_issues = await storage_db.verify_database_integrity()
+                    repair_result = {
+                        "performed": True,
+                        "total_repairs": total_repairs,
+                        "repairs": repairs,
+                        "post_repair_issues": post_repair_issues,
+                        "all_resolved": not post_repair_issues,
+                    }
+                else:
+                    repair_result = {
+                        "performed": False,
+                        "reason": "no automatic repairs available",
+                    }
+            except Exception as e:
+                repair_result = {
+                    "performed": False,
+                    "error": str(e),
+                }
 
-                except Exception as e:
-                    check_results["offset_accuracy"]["issues"] = [str(e)]
-                    t.fail("Check failed", reason=str(e))
+        return {
+            "status": "success",
+            "check_results": check_results,
+            "all_passed": all_passed,
+            "repair_result": repair_result,
+        }
+
+    # Execute single async workflow
+    workflow_result = asyncio.run(_check_workflow())
+
+    # Handle invalid database (sync)
+    if workflow_result["status"] == "invalid_database":
+        ctx.fail_and_exit(
+            "Invalid Database",
+            "Database is empty or invalid",
+            suggestion="Create with 'gmailarchiver archive' or 'gmailarchiver import'",
+        )
+
+    check_results = workflow_result["check_results"]
+    all_passed = workflow_result["all_passed"]
+    repair_result = workflow_result["repair_result"]
+
+    # ==================== Display Results with Task Sequence ====================
+    with ctx.ui.task_sequence() as seq:
+        # Database integrity
+        with seq.task("Checking database integrity") as t:
+            if check_results["database_integrity"]["error"]:
+                t.fail("Check failed", reason=check_results["database_integrity"]["error"])
+            elif check_results["database_integrity"]["passed"]:
+                t.complete("OK")
             else:
-                check_results["offset_accuracy"]["checked"] = False
-                check_results["offset_accuracy"]["passed"] = True
-                t.complete("Skipped (v1.0 schema)")
+                issues = check_results["database_integrity"]["issues"]
+                t.complete(f"{len(issues)} issue(s)")
+                if verbose:
+                    for issue in issues[:5]:
+                        ctx.info(f"    • {issue}")
+
+        # Database consistency
+        with seq.task("Checking database consistency") as t:
+            if check_results["database_consistency"]["error"]:
+                t.fail("Check failed", reason=check_results["database_consistency"]["error"])
+            elif not check_results["database_consistency"]["checked"]:
+                skip_reason = check_results["database_consistency"]["skip_reason"]
+                t.complete(f"Skipped ({skip_reason})")
+            elif check_results["database_consistency"]["passed"]:
+                t.complete("OK")
+            else:
+                report = check_results["database_consistency"]["report"]
+                t.complete(f"{len(report.errors) if report else 0} issue(s)")
+
+        # Offset accuracy
+        with seq.task("Checking offset accuracy") as t:
+            if check_results["offset_accuracy"]["error"]:
+                t.fail("Check failed", reason=check_results["offset_accuracy"]["error"])
+            elif not check_results["offset_accuracy"]["checked"]:
+                skip_reason = check_results["offset_accuracy"]["skip_reason"]
+                t.complete(f"Skipped ({skip_reason})")
+            elif check_results["offset_accuracy"]["passed"]:
+                result = check_results["offset_accuracy"]["result"]
+                if result:
+                    t.complete(f"100% ({result.total_checked:,} checked)")
+                else:
+                    t.complete("OK")
+            else:
+                result = check_results["offset_accuracy"]["result"]
+                if result:
+                    t.complete(
+                        f"{result.accuracy_percentage:.1f}% "
+                        f"({result.successful_reads:,}/{result.total_checked:,})"
+                    )
 
     # ==================== SUMMARY ====================
-
-    # Determine overall status
-    all_passed = (
-        check_results["database_integrity"]["passed"]
-        and check_results["database_consistency"]["passed"]
-        and check_results["offset_accuracy"]["passed"]
-        and check_results["fts_synchronization"]["passed"]
-    )
-
     # Build summary report
     report_data: dict[str, str] = {}
 
@@ -3065,54 +3349,44 @@ def check(
 
     ctx.show_report("Health Check Summary", report_data)
 
-    # ==================== AUTO-REPAIR ====================
-    if not all_passed and auto_repair:
+    # ==================== HANDLE AUTO-REPAIR RESULTS ====================
+    if repair_result is not None:
         ctx.warning("\n⚠ Auto-repair enabled - attempting to fix issues...")
 
-        try:
-            repairs = asyncio.run(ctx.storage.db.repair_database(dry_run=False))
-
-            # Show repair results
-            total_repairs = sum(repairs.values())
-            if total_repairs > 0:
-                ctx.success(f"Performed {total_repairs} repair(s)")
-
-                # Re-run checks to verify repairs
-                ctx.info("\nRe-checking after repairs...")
-
-                post_repair_issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-                if not post_repair_issues:
-                    ctx.success("All issues resolved!")
-                    raise typer.Exit(0)
-                else:
-                    ctx.warning(f"{len(post_repair_issues)} issue(s) remain after repair")
-                    ctx.suggest_next_steps(
-                        [
-                            "Some issues may require manual intervention",
-                            "Check remaining issues: gmailarchiver verify-integrity --verbose",
-                        ]
-                    )
-                    raise typer.Exit(2)  # Exit code 2 = repair failed
-            else:
-                ctx.warning("No automatic repairs available for these issues")
-                ctx.suggest_next_steps(
-                    [
-                        "Manual intervention may be required",
-                        "Check details: gmailarchiver verify-integrity --verbose",
-                    ]
-                )
-                raise typer.Exit(2)
-
-        except typer.Exit:
-            raise
-        except Exception as e:
+        if repair_result.get("error"):
             ctx.fail_and_exit(
                 title="Auto-Repair Failed",
-                message=str(e),
+                message=repair_result["error"],
                 suggestion="Run 'gmailarchiver repair --no-dry-run' manually to fix issues",
                 exit_code=2,
             )
+
+        if repair_result.get("performed"):
+            ctx.success(f"Performed {repair_result['total_repairs']} repair(s)")
+            ctx.info("\nRe-checking after repairs...")
+
+            if repair_result["all_resolved"]:
+                ctx.success("All issues resolved!")
+                raise typer.Exit(0)
+            else:
+                post_issues = repair_result["post_repair_issues"]
+                ctx.warning(f"{len(post_issues)} issue(s) remain after repair")
+                ctx.suggest_next_steps(
+                    [
+                        "Some issues may require manual intervention",
+                        "Check remaining issues: gmailarchiver verify-integrity --verbose",
+                    ]
+                )
+                raise typer.Exit(2)  # Exit code 2 = repair failed
+        else:
+            ctx.warning("No automatic repairs available for these issues")
+            ctx.suggest_next_steps(
+                [
+                    "Manual intervention may be required",
+                    "Check details: gmailarchiver verify-integrity --verbose",
+                ]
+            )
+            raise typer.Exit(2)
 
     # ==================== EXIT ====================
     if all_passed:
@@ -3683,6 +3957,19 @@ def compress(
     assert ctx.storage is not None, "Storage should be initialized by @with_context"
     compressor = ArchiveCompressor(ctx.storage.db)
 
+    async def _compress_workflow() -> Any:
+        """Single async workflow for compress command."""
+        try:
+            return await compressor.compress(
+                files=expanded_files,
+                format=format,
+                in_place=in_place,
+                dry_run=dry_run,
+                keep_original=keep_original,
+            )
+        finally:
+            await ctx.storage.db.close()
+
     try:
         # Compress files with progress tracking
         with ctx.output.progress_context(
@@ -3690,15 +3977,7 @@ def compress(
         ) as progress:
             task = progress.add_task("Compress", total=len(expanded_files)) if progress else None
 
-            result = asyncio.run(
-                compressor.compress(
-                    files=expanded_files,
-                    format=format,
-                    in_place=in_place,
-                    dry_run=dry_run,
-                    keep_original=keep_original,
-                )
-            )
+            result = asyncio.run(_compress_workflow())
 
             if progress and task:
                 progress.update(task, completed=len(expanded_files))
@@ -3792,9 +4071,6 @@ def compress(
             title="Unexpected Error",
             message=str(e),
         )
-    finally:
-        if ctx.storage:
-            asyncio.run(ctx.storage.db.close())
 
 
 @app.command()
@@ -3833,176 +4109,189 @@ def doctor(
     """
     from gmailarchiver.core.doctor._diagnostics import CheckSeverity
 
-    # Async helper functions
-    async def _create_doctor() -> Doctor:
-        return await Doctor.create(state_db, validate_schema=False, auto_create=False)
+    async def _doctor_workflow() -> dict[str, Any]:
+        """Single async workflow for doctor command."""
+        try:
+            # Initialize doctor
+            doctor_instance = await Doctor.create(state_db, validate_schema=False, auto_create=False)
 
-    async def _run_diagnostics(doctor: Doctor) -> Any:
-        return await doctor.run_diagnostics()
+            try:
+                # Run diagnostics
+                report = await doctor_instance.run_diagnostics()
 
-    async def _run_auto_fix(doctor: Doctor) -> list[Any]:
-        return await doctor.run_auto_fix()
+                # Run auto-fix if requested
+                fix_results: list[Any] = []
+                if fix and report.fixable_issues:
+                    fix_results = await doctor_instance.run_auto_fix()
 
-    # Initialize doctor
-    doctor_instance = asyncio.run(_create_doctor())
-
-    try:
-            # Run diagnostics
-        with ctx.ui.task_sequence() as seq:
-            with seq.task("Running diagnostic checks") as t:
-                report = asyncio.run(_run_diagnostics(doctor_instance))
-
-                if report.overall_status == CheckSeverity.OK:
-                    t.complete(f"{report.checks_passed}/{len(report.checks)} passed")
-                else:
-                    t.complete(f"{report.errors} error(s), {report.warnings} warning(s)")
-
-        # Show results in Rich format
-        if not json_output:
-            # Build diagnostic results table via OutputManager
-            headers = ["Check", "Status", "Message"]
-            rows: list[list[str]] = []
-
-            for check in report.checks:
-                # Color-code status
-                if check.severity == CheckSeverity.OK:
-                    status = "[green]✓ OK[/green]"
-                elif check.severity == CheckSeverity.WARNING:
-                    status = "[yellow]⚠ WARNING[/yellow]"
-                else:  # ERROR
-                    status = "[red]✗ ERROR[/red]"
-
-                # Add fixable indicator
-                message = check.message
-                if check.fixable and check.severity != CheckSeverity.OK:
-                    message += " (fixable)"
-
-                rows.append([check.name, status, message])
-
-            ctx.show_table("Diagnostic Results", headers, rows)
-
-            # Show summary
-            if report.overall_status == CheckSeverity.OK:
-                ctx.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
-            elif report.overall_status == CheckSeverity.WARNING:
-                ctx.warning(
-                    f"Found {report.warnings} warning(s), {report.errors} error(s), "
-                    f"{report.checks_passed} passed"
-                )
-            else:  # ERROR
-                ctx.error(
-                    f"Found {report.errors} error(s), {report.warnings} warning(s), "
-                    f"{report.checks_passed} passed"
-                )
-
-            # Show fixable issues
-            if report.fixable_issues:
-                ctx.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
-                for issue in report.fixable_issues:
-                    ctx.info(f"  • {issue}")
-
-                if not fix:
-                    ctx.suggest_next_steps(
-                        ["Run with --fix to auto-repair: gmailarchiver doctor --fix"]
-                    )
-
-        # Run auto-fix if requested
-        if fix and report.fixable_issues:
-            with ctx.ui.task_sequence() as seq:
-                with seq.task("Running auto-fix", total=len(report.fixable_issues)) as t:
-                    fix_results = asyncio.run(_run_auto_fix(doctor_instance))
-                    fixed_count = sum(1 for r in fix_results if r.success)
-                    failed_count = len(fix_results) - fixed_count
-
-                    if failed_count == 0:
-                        t.complete(f"Fixed {fixed_count} issue(s)")
-                    else:
-                        t.complete(f"Fixed {fixed_count}, failed {failed_count}")
-
-            # Show fix results
-            if not json_output:
-                headers = ["Check", "Status", "Message"]
-                fix_rows: list[list[str]] = []
-
-                for fix_result in fix_results:
-                    if fix_result.success:
-                        status = "[green]✓ FIXED[/green]"
-                    else:
-                        status = "[red]✗ FAILED[/red]"
-                    fix_rows.append([fix_result.check_name, status, fix_result.message])
-
-                ctx.show_table("Auto-Fix Results", headers, fix_rows)
-
-            # Show success/failure summary (fixed_count and failed_count computed above)
-            if fixed_count > 0 and failed_count == 0:
-                ctx.success(f"Successfully fixed {fixed_count} issue(s)")
-                ctx.suggest_next_steps(
-                    [
-                        "Verify fixes: gmailarchiver doctor",
-                        "Check database: gmailarchiver verify-integrity",
-                    ]
-                )
-            elif fixed_count > 0:
-                ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
-            else:
-                ctx.error(f"Failed to fix {failed_count} issue(s)")
-
-        # Run internal database checks if --check flag is used
-        if include_check:
-            ctx.info("\n── Internal Database Checks ──")
-            db_path = Path(state_db)
-            if db_path.exists():
-                assert ctx.storage is not None, "Storage should be initialized by @with_context"
-
-                with ctx.ui.task_sequence() as seq:
-                    with seq.task("Running internal checks") as t:
+                # Run internal database checks if --check flag is used
+                internal_issues: list[str] | None = None
+                if include_check:
+                    db_path = Path(state_db)
+                    if db_path.exists():
+                        assert ctx.storage is not None
                         try:
-                            issues = asyncio.run(ctx.storage.db.verify_database_integrity())
-
-                            if not issues:
-                                t.complete("All internal checks passed")
-                            else:
-                                t.complete(f"{len(issues)} issue(s) found")
-                                for issue in issues[:5]:
-                                    ctx.info(f"  • {issue}")
-                                if len(issues) > 5:
-                                    ctx.info(f"  ... and {len(issues) - 5} more")
+                            internal_issues = await ctx.storage.db.verify_database_integrity()
                         except Exception as e:
-                            t.fail("Check failed", reason=str(e))
+                            internal_issues = [f"Check failed: {e}"]
 
-                ctx.suggest_next_steps(["Run full internal checks: gmailarchiver check --verbose"])
-            else:
-                ctx.warning("Database not found, skipping internal checks")
-        elif not json_output:
-            # Suggest running check for full internal validation
-            ctx.suggest_next_steps(
-                [
-                    "Run internal database checks: gmailarchiver check",
-                    "Full health check: gmailarchiver doctor --check",
-                ]
+                return {
+                    "status": "success",
+                    "report": report,
+                    "fix_results": fix_results,
+                    "internal_issues": internal_issues,
+                }
+
+            finally:
+                await doctor_instance.close()
+
+        except Exception as e:
+            return {"status": "error", "error_message": str(e)}
+
+    # Execute single async workflow
+    workflow_result = asyncio.run(_doctor_workflow())
+
+    # Handle errors
+    if workflow_result["status"] == "error":
+        ctx.fail_and_exit(
+            "Doctor Failed",
+            workflow_result.get("error_message", "Unknown error"),
+        )
+
+    # Extract results
+    from gmailarchiver.core.doctor._diagnostics import CheckSeverity
+
+    report = workflow_result["report"]
+    fix_results = workflow_result.get("fix_results", [])
+    internal_issues = workflow_result.get("internal_issues")
+
+    # Show results in Rich format
+    if not json_output:
+        # Build diagnostic results table via OutputManager
+        headers = ["Check", "Status", "Message"]
+        rows: list[list[str]] = []
+
+        for check in report.checks:
+            # Color-code status
+            if check.severity == CheckSeverity.OK:
+                status = "[green]✓ OK[/green]"
+            elif check.severity == CheckSeverity.WARNING:
+                status = "[yellow]⚠ WARNING[/yellow]"
+            else:  # ERROR
+                status = "[red]✗ ERROR[/red]"
+
+            # Add fixable indicator
+            message = check.message
+            if check.fixable and check.severity != CheckSeverity.OK:
+                message += " (fixable)"
+
+            rows.append([check.name, status, message])
+
+        ctx.show_table("Diagnostic Results", headers, rows)
+
+        # Show summary
+        if report.overall_status == CheckSeverity.OK:
+            ctx.success(f"All checks passed! ({report.checks_passed}/{len(report.checks)} OK)")
+        elif report.overall_status == CheckSeverity.WARNING:
+            ctx.warning(
+                f"Found {report.warnings} warning(s), {report.errors} error(s), "
+                f"{report.checks_passed} passed"
+            )
+        else:  # ERROR
+            ctx.error(
+                f"Found {report.errors} error(s), {report.warnings} warning(s), "
+                f"{report.checks_passed} passed"
             )
 
-        # JSON output mode
-        if json_output:
-            report_dict = report.to_dict()
-            ctx.show_report("Doctor Report", report_dict)
+        # Show fixable issues
+        if report.fixable_issues:
+            ctx.info(f"\n{len(report.fixable_issues)} issue(s) can be automatically fixed:")
+            for issue in report.fixable_issues:
+                ctx.info(f"  • {issue}")
 
-            if fix and report.fixable_issues:
-                fix_dict = {
-                    "fixed": sum(1 for r in fix_results if r.success),
-                    "failed": sum(1 for r in fix_results if not r.success),
-                    "results": [
-                        {
-                            "check": r.check_name,
-                            "success": r.success,
-                            "message": r.message,
-                        }
-                        for r in fix_results
-                    ],
-                }
-                ctx.show_report("Fix Results", fix_dict)
-    finally:
-        asyncio.run(doctor_instance.close())
+            if not fix:
+                ctx.suggest_next_steps(
+                    ["Run with --fix to auto-repair: gmailarchiver doctor --fix"]
+                )
+
+    # Show fix results if auto-fix was run
+    if fix_results:
+        fixed_count = sum(1 for r in fix_results if r.success)
+        failed_count = len(fix_results) - fixed_count
+
+        if not json_output:
+            headers = ["Check", "Status", "Message"]
+            fix_rows: list[list[str]] = []
+
+            for fix_result in fix_results:
+                if fix_result.success:
+                    status = "[green]✓ FIXED[/green]"
+                else:
+                    status = "[red]✗ FAILED[/red]"
+                fix_rows.append([fix_result.check_name, status, fix_result.message])
+
+            ctx.show_table("Auto-Fix Results", headers, fix_rows)
+
+        # Show success/failure summary
+        if fixed_count > 0 and failed_count == 0:
+            ctx.success(f"Successfully fixed {fixed_count} issue(s)")
+            ctx.suggest_next_steps(
+                [
+                    "Verify fixes: gmailarchiver doctor",
+                    "Check database: gmailarchiver verify-integrity",
+                ]
+            )
+        elif fixed_count > 0:
+            ctx.warning(f"Fixed {fixed_count} issue(s), {failed_count} failed")
+        else:
+            ctx.error(f"Failed to fix {failed_count} issue(s)")
+
+    # Show internal check results
+    if include_check:
+        ctx.info("\n── Internal Database Checks ──")
+        db_path = Path(state_db)
+        if db_path.exists():
+            if internal_issues is None:
+                ctx.warning("Database not found, skipping internal checks")
+            elif not internal_issues:
+                ctx.success("All internal checks passed")
+            else:
+                ctx.warning(f"{len(internal_issues)} issue(s) found")
+                for issue in internal_issues[:5]:
+                    ctx.info(f"  • {issue}")
+                if len(internal_issues) > 5:
+                    ctx.info(f"  ... and {len(internal_issues) - 5} more")
+            ctx.suggest_next_steps(["Run full internal checks: gmailarchiver check --verbose"])
+        else:
+            ctx.warning("Database not found, skipping internal checks")
+    elif not json_output:
+        # Suggest running check for full internal validation
+        ctx.suggest_next_steps(
+            [
+                "Run internal database checks: gmailarchiver check",
+                "Full health check: gmailarchiver doctor --check",
+            ]
+        )
+
+    # JSON output mode
+    if json_output:
+        report_dict = report.to_dict()
+        ctx.show_report("Doctor Report", report_dict)
+
+        if fix_results:
+            fix_dict = {
+                "fixed": sum(1 for r in fix_results if r.success),
+                "failed": sum(1 for r in fix_results if not r.success),
+                "results": [
+                    {
+                        "check": r.check_name,
+                        "success": r.success,
+                        "message": r.message,
+                    }
+                    for r in fix_results
+                ],
+            }
+            ctx.show_report("Fix Results", fix_dict)
 
 
 @utilities_app.command()
@@ -4068,157 +4357,163 @@ def backfill_gmail_ids_cmd(
     # Pattern to detect synthetic gmail_ids (start with 000...)
     synthetic_id_pattern = re.compile(r"^0{3,}[0-9a-f]+$", re.IGNORECASE)
 
-    try:
-        # Gmail client and storage are already initialized via @with_context
-        assert ctx.gmail is not None, "Gmail client should be initialized"
-        assert ctx.storage is not None, "Storage should be initialized"
-        client = ctx.gmail
+    async def _backfill_workflow() -> dict[str, Any]:
+        """Single async workflow for backfill command."""
+        try:
+            # Gmail client and storage are already initialized via @with_context
+            assert ctx.gmail is not None, "Gmail client should be initialized"
+            assert ctx.storage is not None, "Storage should be initialized"
+            client = ctx.gmail
+            storage_db = ctx.storage.db
 
-        # 2. Find messages needing Gmail ID lookup
-        ctx.info("Scanning database for messages needing backfill...")
-
-        assert ctx.storage is not None, "Storage should be initialized by @with_context"
-        storage_db = ctx.storage.db  # Capture for async closure
-
-        async def get_all_messages() -> list[tuple[str | None, str]]:
+            # Get all messages from database
             if storage_db.conn is None:
-                return []
-            cursor = await storage_db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
+                return {"status": "error", "error_message": "Database connection not initialized"}
+
+            cursor = await storage_db.conn.execute(
+                "SELECT gmail_id, rfc_message_id FROM messages"
+            )
             rows = await cursor.fetchall()
-            return [(row[0], row[1]) for row in rows]
+            all_messages = [(row[0], row[1]) for row in rows]
 
-        all_messages = asyncio.run(get_all_messages())
+            # Categorize messages
+            messages_needing_backfill: list[tuple[str | None, str]] = []
+            real_messages_count = 0
+            null_gmail_id_count = 0
+            synthetic_gmail_id_count = 0
 
-        # Messages needing backfill: NULL gmail_id OR synthetic pattern
-        messages_needing_backfill: list[tuple[str | None, str]] = []
-        real_messages_count = 0
-        null_gmail_id_count = 0
-        synthetic_gmail_id_count = 0
+            for gid, rfc in all_messages:
+                if gid is None:
+                    messages_needing_backfill.append((gid, rfc))
+                    null_gmail_id_count += 1
+                elif synthetic_id_pattern.match(gid):
+                    messages_needing_backfill.append((gid, rfc))
+                    synthetic_gmail_id_count += 1
+                else:
+                    real_messages_count += 1
 
-        for gid, rfc in all_messages:
-            if gid is None:
-                messages_needing_backfill.append((gid, rfc))
-                null_gmail_id_count += 1
-            elif synthetic_id_pattern.match(gid):
-                messages_needing_backfill.append((gid, rfc))
-                synthetic_gmail_id_count += 1
-            else:
-                real_messages_count += 1
+            # Early return if no backfill needed
+            if not messages_needing_backfill:
+                return {
+                    "status": "success",
+                    "no_backfill_needed": True,
+                    "total_messages": len(all_messages),
+                    "real_count": real_messages_count,
+                    "null_count": null_gmail_id_count,
+                    "synthetic_count": synthetic_gmail_id_count,
+                }
 
-        ctx.info(f"Total messages in database: {len(all_messages):,}")
-        ctx.info(f"Messages with real Gmail IDs: {real_messages_count:,}")
-        ctx.info(f"Messages with NULL gmail_id: {null_gmail_id_count:,}")
-        ctx.info(f"Messages with synthetic IDs: {synthetic_gmail_id_count:,}")
-        ctx.info(f"Total needing backfill: {len(messages_needing_backfill):,}")
+            # Apply offset and limit
+            messages_to_process = messages_needing_backfill[offset:]
+            if limit > 0:
+                messages_to_process = messages_to_process[:limit]
 
-        if not messages_needing_backfill:
-            ctx.success("No messages need backfill!")
-            return
+            # Extract rfc_message_ids for batch lookup
+            rfc_ids_to_lookup = [rfc for _, rfc in messages_to_process]
 
-        # Apply offset and limit
-        messages_to_process = messages_needing_backfill[offset:]
-        if limit > 0:
-            messages_to_process = messages_to_process[:limit]
-
-        if offset > 0:
-            ctx.info(f"Skipping first {offset} messages (--offset)")
-        if limit > 0:
-            ctx.info(f"Processing up to {limit} messages (--limit)")
-
-        total_to_process = len(messages_to_process)
-        ctx.info(f"\nProcessing {total_to_process:,} messages in batches of {batch_size}...")
-
-        # Estimate time (batch processing is faster: ~1 batch per 1.5 seconds)
-        num_batches = (total_to_process + batch_size - 1) // batch_size
-        est_seconds = num_batches * 1.5  # ~1.5s per batch (API call + delay)
-        ctx.info(f"Estimated time: {est_seconds / 60:.1f} minutes")
-
-        if dry_run:
-            ctx.warning("[DRY RUN] No changes will be made")
-
-        # 3. Process messages in batches using batch API
-        found = 0
-        not_found = 0
-        updates: list[tuple[str | None, str]] = []  # (new_gmail_id, rfc_message_id)
-
-        # Extract just the rfc_message_ids for batch lookup
-        rfc_ids_to_lookup = [rfc for _, rfc in messages_to_process]
-
-        # Track progress state for periodic updates
-        last_progress_update = [0]  # Use list to allow mutation in nested function
-
-        # Use batch lookup with progress callback
-        def progress_callback(processed: int, total: int) -> None:
-            # Only update every 10 messages or at completion for clean output
-            if processed - last_progress_update[0] >= 10 or processed == total:
-                pct = 100 * processed // total if total > 0 else 0
-                ctx.info(f"  Progress: {processed:,}/{total:,} ({pct}%)")
-                last_progress_update[0] = processed
-
-        # Use the batch method for efficient lookups
-        ctx.info("\nLooking up Gmail IDs...")
-        results = asyncio.run(
-            client.search_by_rfc_message_ids_batch(
+            # Use batch lookup
+            results = await client.search_by_rfc_message_ids_batch(
                 rfc_ids_to_lookup,
-                progress_callback=progress_callback,
+                progress_callback=None,  # Progress handled in sync UI
                 batch_size=batch_size,
             )
-        )
 
-        # Process results
-        for rfc_id, gmail_id in results.items():
-            if gmail_id:
-                found += 1
-                updates.append((gmail_id, rfc_id))
-            else:
-                not_found += 1
+            # Process results
+            found = 0
+            not_found = 0
+            updates: list[tuple[str | None, str]] = []
 
-        # 4. Update database
-        ctx.info("\nResults:")
-        ctx.info(f"  Found in Gmail: {found:,}")
-        ctx.info(f"  Not in Gmail (deleted): {not_found:,}")
+            for rfc_id, gmail_id in results.items():
+                if gmail_id:
+                    found += 1
+                    updates.append((gmail_id, rfc_id))
+                else:
+                    not_found += 1
 
-        if dry_run:
-            ctx.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
-            if updates[:5]:
-                ctx.info("Sample updates:")
-                for new_id, rfc_id in updates[:5]:
-                    status = new_id[:16] + "..." if new_id else "NULL"
-                    rfc_display = rfc_id[:40] + "..." if len(rfc_id) > 40 else rfc_id
-                    ctx.info(f"  {rfc_display} -> {status}")
-        else:
-            ctx.info(f"\nUpdating database with {len(updates):,} changes...")
-
-            async def update_gmail_ids(
-                updates_list: list[tuple[str | None, str]],
-            ) -> None:
-                if storage_db.conn is None:
-                    raise RuntimeError("Database connection not initialized")
-                for new_gmail_id, rfc_message_id in updates_list:
+            # Update database if not dry run
+            if not dry_run and updates:
+                for new_gmail_id, rfc_message_id in updates:
                     await storage_db.conn.execute(
                         "UPDATE messages SET gmail_id = ? WHERE rfc_message_id = ?",
                         (new_gmail_id, rfc_message_id),
                     )
                 await storage_db.conn.commit()
 
-            asyncio.run(update_gmail_ids(updates))
-            ctx.success("Database updated!")
+            return {
+                "status": "success",
+                "no_backfill_needed": False,
+                "total_messages": len(all_messages),
+                "real_count": real_messages_count,
+                "null_count": null_gmail_id_count,
+                "synthetic_count": synthetic_gmail_id_count,
+                "total_needing_backfill": len(messages_needing_backfill),
+                "processed": len(messages_to_process),
+                "found": found,
+                "not_found": not_found,
+                "updates": updates,
+                "remaining": len(messages_needing_backfill) - len(messages_to_process) - offset,
+            }
 
-        # Summary
-        remaining = len(messages_needing_backfill) - len(messages_to_process) - offset
-        if remaining > 0:
-            ctx.info(f"\nRemaining messages to process: {remaining:,}")
-            next_offset = offset + len(messages_to_process)
-            ctx.info(f"Resume with: --offset {next_offset}")
+        except Exception as e:
+            return {"status": "error", "error_message": str(e)}
 
-    except typer.Exit:
-        raise
-    except Exception as e:
+    # Execute single async workflow
+    workflow_result = asyncio.run(_backfill_workflow())
+
+    # Handle errors
+    if workflow_result["status"] == "error":
         ctx.fail_and_exit(
             title="Backfill Failed",
-            message=str(e),
+            message=workflow_result.get("error_message", "Unknown error"),
             suggestion="Check your internet connection and Gmail authentication",
         )
+
+    # Display scan results
+    ctx.info(f"Total messages in database: {workflow_result['total_messages']:,}")
+    ctx.info(f"Messages with real Gmail IDs: {workflow_result['real_count']:,}")
+    ctx.info(f"Messages with NULL gmail_id: {workflow_result['null_count']:,}")
+    ctx.info(f"Messages with synthetic IDs: {workflow_result['synthetic_count']:,}")
+
+    # Handle no backfill needed
+    if workflow_result.get("no_backfill_needed"):
+        ctx.success("No messages need backfill!")
+        return
+
+    ctx.info(f"Total needing backfill: {workflow_result['total_needing_backfill']:,}")
+
+    if offset > 0:
+        ctx.info(f"Skipping first {offset} messages (--offset)")
+    if limit > 0:
+        ctx.info(f"Processing up to {limit} messages (--limit)")
+
+    ctx.info(f"\nProcessed {workflow_result['processed']:,} messages in batches of {batch_size}")
+
+    if dry_run:
+        ctx.warning("[DRY RUN] No changes were made")
+
+    # Display results
+    ctx.info("\nResults:")
+    ctx.info(f"  Found in Gmail: {workflow_result['found']:,}")
+    ctx.info(f"  Not in Gmail (deleted): {workflow_result['not_found']:,}")
+
+    updates = workflow_result.get("updates", [])
+    if dry_run:
+        ctx.warning(f"\n[DRY RUN] Would update {len(updates):,} messages")
+        if updates[:5]:
+            ctx.info("Sample updates:")
+            for new_id, rfc_id in updates[:5]:
+                status = new_id[:16] + "..." if new_id else "NULL"
+                rfc_display = rfc_id[:40] + "..." if len(rfc_id) > 40 else rfc_id
+                ctx.info(f"  {rfc_display} -> {status}")
+    elif updates:
+        ctx.success(f"Database updated with {len(updates):,} changes!")
+
+    # Summary for resumption
+    remaining = workflow_result.get("remaining", 0)
+    if remaining > 0:
+        ctx.info(f"\nRemaining messages to process: {remaining:,}")
+        next_offset = offset + workflow_result["processed"]
+        ctx.info(f"Resume with: --offset {next_offset}")
 
 
 if __name__ == "__main__":
