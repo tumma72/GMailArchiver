@@ -57,6 +57,9 @@ class GmailClient:
         self._http_client: httpx.AsyncClient | None = None
         self._rate_limiter = AdaptiveRateLimiter()
 
+        # Lock for thread-safe token refresh (prevents concurrent refresh attempts)
+        self._refresh_lock: asyncio.Lock | None = None
+
     async def connect(self) -> GmailClient:
         """Initialize HTTP client for making API requests.
 
@@ -85,6 +88,8 @@ class GmailClient:
                 http2=True,
                 timeout=httpx.Timeout(30.0, connect=10.0),
             )
+        if self._refresh_lock is None:
+            self._refresh_lock = asyncio.Lock()
         return self
 
     async def __aenter__(self) -> GmailClient:
@@ -107,17 +112,49 @@ class GmailClient:
             self._http_client = None
 
     def _get_headers(self) -> dict[str, str]:
-        """Get authorization headers with current token."""
-        # Refresh token if needed
-        if self._credentials.expired and self._credentials.refresh_token:
-            from google.auth.transport.requests import Request
+        """Get authorization headers with current token.
 
-            self._credentials.refresh(Request())  # type: ignore[no-untyped-call]
-
+        Note: Token refresh is handled by _ensure_valid_token() before requests.
+        This method only constructs headers using the current token.
+        """
         return {
             "Authorization": f"Bearer {self._credentials.token}",
             "Content-Type": "application/json",
         }
+
+    async def _ensure_valid_token(self) -> None:
+        """Ensure credentials are valid, refreshing if needed.
+
+        This method handles token refresh asynchronously using asyncio.to_thread()
+        to avoid blocking the event loop during the HTTP request to Google's
+        token endpoint.
+
+        Uses a lock to prevent concurrent refresh attempts, which could cause
+        race conditions or redundant network requests.
+        """
+        if not self._credentials.expired:
+            return
+
+        if not self._credentials.refresh_token:
+            return
+
+        if self._refresh_lock is None:
+            # Fallback if connect() wasn't called (shouldn't happen)
+            self._refresh_lock = asyncio.Lock()
+
+        async with self._refresh_lock:
+            # Double-check after acquiring lock (another coroutine may have refreshed)
+            if self._credentials.expired and self._credentials.refresh_token:
+                await asyncio.to_thread(self._refresh_token_sync)
+
+    def _refresh_token_sync(self) -> None:
+        """Sync helper: Refresh the OAuth token.
+
+        Called via asyncio.to_thread() from _ensure_valid_token().
+        """
+        from google.auth.transport.requests import Request
+
+        self._credentials.refresh(Request())  # type: ignore[no-untyped-call]
 
     async def _request_with_retry(
         self,
@@ -140,6 +177,9 @@ class GmailClient:
         """
         if self._http_client is None:
             raise RuntimeError("Client not initialized. Use 'async with' context manager.")
+
+        # Ensure token is valid before making request (async refresh if needed)
+        await self._ensure_valid_token()
 
         for attempt in range(self.max_retries):
             await self._rate_limiter.acquire()

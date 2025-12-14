@@ -1,5 +1,6 @@
 """OAuth2 authentication for Gmail API."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -260,3 +261,67 @@ class GmailAuthenticator:
         if self.token_file.exists():
             os.remove(self.token_file)
         self._creds = None
+
+    # ==================== ASYNC METHODS ====================
+    # These methods wrap sync operations in asyncio.to_thread() to avoid
+    # blocking the event loop during OAuth operations.
+
+    async def authenticate_async(self) -> Credentials:
+        """
+        Perform OAuth2 authentication flow asynchronously.
+
+        This wraps the sync authenticate() method in asyncio.to_thread() to
+        prevent blocking the event loop during:
+        - Token file I/O
+        - Token refresh (network request)
+        - OAuth flow (browser interaction, 30+ seconds)
+
+        Returns:
+            Google OAuth2 credentials
+
+        Raises:
+            FileNotFoundError: If bundled credentials are missing
+            Exception: If OAuth flow fails
+        """
+        return await asyncio.to_thread(self.authenticate)
+
+    async def refresh_token_async(self) -> Credentials | None:
+        """
+        Refresh expired token asynchronously.
+
+        This method checks if the current token needs refresh and performs
+        the refresh in a thread pool to avoid blocking the event loop.
+
+        Returns:
+            Refreshed credentials, or None if no credentials exist
+
+        Note:
+            This is a no-op if credentials are still valid or don't exist.
+            Use authenticate_async() for initial authentication.
+        """
+        if not self._creds:
+            return None
+
+        if self._creds.valid:
+            return self._creds
+
+        if self._creds.expired and self._creds.refresh_token:
+            await asyncio.to_thread(self._refresh_token_sync)
+
+        return self._creds
+
+    def _refresh_token_sync(self) -> None:
+        """
+        Sync helper: Refresh the current token.
+
+        This is called via asyncio.to_thread() from refresh_token_async().
+        """
+        if self._creds and self._creds.expired and self._creds.refresh_token:
+            self._creds.refresh(Request())  # type: ignore[no-untyped-call]
+
+            # Save refreshed token
+            try:
+                with open(self.token_file, "w") as token:
+                    token.write(self._creds.to_json())  # type: ignore[no-untyped-call]
+            except Exception:
+                pass  # Non-critical - token still valid in memory
