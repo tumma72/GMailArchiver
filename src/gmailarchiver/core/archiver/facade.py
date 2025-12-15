@@ -164,6 +164,7 @@ class ArchiverFacade:
         output_file: str,
         compress: str | None = None,
         operation: OperationHandle | None = None,
+        gmail_query: str | None = None,
     ) -> dict[str, Any]:
         """Archive messages to mbox file.
 
@@ -174,6 +175,7 @@ class ArchiverFacade:
             output_file: Output mbox file path
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
             operation: Optional operation handle for progress tracking
+            gmail_query: The Gmail search query used (for session tracking/resume)
 
         Returns:
             Dict with keys:
@@ -183,7 +185,8 @@ class ArchiverFacade:
                 - actual_file: Actual file path where messages were written
         """
         return await self._writer.archive_messages(
-            message_ids, output_file, compress=compress, operation=operation
+            message_ids, output_file, compress=compress, operation=operation,
+            gmail_query=gmail_query
         )
 
     async def archive(

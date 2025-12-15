@@ -1171,6 +1171,51 @@ class DBManager:
             return result
         return None
 
+    async def get_session_by_query(
+        self, query: str, compression: str | None = None
+    ) -> dict[str, Any] | None:
+        """Get in-progress session for a Gmail query.
+
+        Used to find existing partial archives that can be resumed.
+
+        Args:
+            query: Gmail query string (e.g., "before:2024/01/01")
+            compression: Compression format to match (or None for uncompressed)
+
+        Returns:
+            Session dict or None if not found
+        """
+        import json
+
+        await self.ensure_sessions_table()
+
+        # Match query and compression (NULL-safe comparison for compression)
+        if compression is None:
+            cursor = await self._conn.execute(
+                """
+                SELECT * FROM archive_sessions
+                WHERE query = ? AND compression IS NULL AND status = 'in_progress'
+                ORDER BY started_at DESC LIMIT 1
+                """,
+                (query,),
+            )
+        else:
+            cursor = await self._conn.execute(
+                """
+                SELECT * FROM archive_sessions
+                WHERE query = ? AND compression = ? AND status = 'in_progress'
+                ORDER BY started_at DESC LIMIT 1
+                """,
+                (query, compression),
+            )
+
+        row = await cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["message_ids"] = json.loads(result["message_ids"])
+            return result
+        return None
+
     async def get_all_partial_sessions(self) -> list[dict[str, Any]]:
         """Get all in-progress sessions.
 

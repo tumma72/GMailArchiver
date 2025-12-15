@@ -24,7 +24,7 @@ from .core.search.facade import SearchFacade
 from .core.validator.facade import ValidatorFacade
 from .data.migration import MigrationManager
 from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
-from .shared.utils import format_bytes
+from .shared.utils import datetime_to_gmail_query, format_bytes, parse_age
 
 
 def version_callback(value: bool) -> None:
@@ -117,17 +117,46 @@ def archive(
     """
     out = ctx.output
 
-    # Generate default output filename if not provided
-    if not output:
-        timestamp = datetime.now().strftime("%Y%m%d")
-        extension = ".mbox"
-        if compress == "gzip":
-            extension = ".mbox.gz"
-        elif compress == "lzma":
-            extension = ".mbox.xz"
-        elif compress == "zstd":
-            extension = ".mbox.zst"
-        output = f"archive_{timestamp}{extension}"
+    # Generate Gmail query from age threshold (needed for partial session lookup)
+    try:
+        cutoff_date = parse_age(age_threshold)
+        gmail_query = f"before:{datetime_to_gmail_query(cutoff_date)}"
+    except ValueError:
+        ctx.fail_and_exit(
+            title="Invalid Age Threshold",
+            message=f"Could not parse age threshold: {age_threshold}",
+            suggestion="Use formats like '3y', '6m', '2w', '30d' or ISO date 'YYYY-MM-DD'",
+        )
+        return  # For type checker
+
+    # Check for existing partial session with same query (for resuming)
+    existing_partial: dict[str, Any] | None = None
+    if not output:  # Only auto-resume if user didn't specify output explicitly
+        assert ctx.storage is not None
+
+        async def _check_partial() -> dict[str, Any] | None:
+            return await ctx.storage.db.get_session_by_query(gmail_query, compress)
+
+        existing_partial = asyncio.run(_check_partial())
+
+        if existing_partial:
+            # Resume existing partial - use its target file
+            output = existing_partial["target_file"]
+            processed = existing_partial.get("processed_count", 0)
+            total = existing_partial.get("total_count", 0)
+            ctx.info(f"Resuming partial archive: {output}")
+            ctx.info(f"Progress: {processed:,}/{total:,} messages already archived")
+        else:
+            # Generate new output filename
+            timestamp = datetime.now().strftime("%Y%m%d")
+            extension = ".mbox"
+            if compress == "gzip":
+                extension = ".mbox.gz"
+            elif compress == "lzma":
+                extension = ".mbox.xz"
+            elif compress == "zstd":
+                extension = ".mbox.zst"
+            output = f"archive_{timestamp}{extension}"
 
     # Phase 1: Authentication - get OAuth credentials (client created in async workflow)
     with ctx.ui.spinner("Authenticating with Gmail") as task:
@@ -236,6 +265,7 @@ def archive(
                                     output_file=output,
                                     compress=compress,
                                     operation=task,
+                                    gmail_query=gmail_query,
                                 )
 
                                 if result.get("interrupted"):

@@ -48,6 +48,7 @@ class MessageWriter:
         output_file: str,
         compress: str | None = None,
         operation: OperationHandle | None = None,
+        gmail_query: str | None = None,
     ) -> dict[str, Any]:
         """Archive messages to mbox file with hybrid storage.
 
@@ -56,6 +57,7 @@ class MessageWriter:
             output_file: Output mbox file path
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
             operation: Optional operation handle for progress tracking
+            gmail_query: The Gmail search query used (for session tracking/resume)
 
         Returns:
             Dict with keys:
@@ -77,8 +79,9 @@ class MessageWriter:
             }
 
         # Create session for tracking progress
+        # Use the actual Gmail query if provided, otherwise generate a generic one
         session_id = str(uuid.uuid4())
-        query = f"archive_messages({len(message_ids)} messages)"
+        query = gmail_query or f"archive_messages({len(message_ids)} messages)"
         await self.storage.db.create_session(
             session_id=session_id,
             target_file=output_file,
