@@ -348,7 +348,6 @@ class MigrationManager:
         Raises:
             MigrationError: If migration fails
         """
-        import mailbox
 
         conn = await self._connect()
 

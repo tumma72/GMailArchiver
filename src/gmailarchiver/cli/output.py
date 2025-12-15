@@ -1536,21 +1536,21 @@ class OutputManager:
         self.console.print(table)
 
     def suggest_next_steps(self, suggestions: Sequence[str]) -> None:
-        """Show actionable next steps.
+        """Show actionable suggestions for the user.
 
         Args:
             suggestions: List of suggested commands or actions
         """
         if self.json_mode:
-            self._json_events.append({"event": "next_steps", "suggestions": list(suggestions)})
+            self._json_events.append({"event": "suggestions", "suggestions": list(suggestions)})
             return
 
         if self.quiet or not self.console:
             return
 
-        self.console.print("\n[bold cyan]Next steps:[/bold cyan]")
-        for i, suggestion in enumerate(suggestions, 1):
-            self.console.print(f"  {i}. {suggestion}")
+        self.console.print("\n💡 [bold cyan]Suggestions:[/bold cyan]")
+        for suggestion in suggestions:
+            self.console.print(f"   • {suggestion}")
         self.console.print()
 
     def set_json_payload(self, payload: Any) -> None:
@@ -1661,6 +1661,9 @@ class OutputManager:
     ) -> None:
         """Show validation results in a structured Rich Panel.
 
+        Shows detailed check descriptions to explain what each validation does.
+        The panel is shown on failures (always) or with --verbose (success case).
+
         Args:
             results: Validation results dict with check results and errors
             title: Report title
@@ -1678,21 +1681,46 @@ class OutputManager:
         if self.quiet or not self.console:
             return
 
-        # Build check results table
+        # Check descriptions for verbose output
+        message_count = results.get("expected_count", 0)
+        spot_check_count = results.get("spot_check_count", 10)
+
+        # Build check results with descriptions
         checks = [
-            ("Count Check", results.get("count_check", False)),
-            ("Database Check", results.get("database_check", False)),
-            ("Integrity Check", results.get("integrity_check", False)),
-            ("Spot Check", results.get("spot_check", False)),
+            (
+                "count_check",
+                "Count check",
+                f"Verified {message_count:,} messages exist in mbox file",
+            ),
+            (
+                "database_check",
+                "Database check",
+                "All message IDs in database found in archive",
+            ),
+            (
+                "integrity_check",
+                "Integrity check",
+                "SHA256 checksums match for all messages",
+            ),
+            (
+                "spot_check",
+                "Spot check",
+                f"Random sample of {spot_check_count} messages fully readable",
+            ),
         ]
 
-        table = Table(show_header=False, box=None, padding=(0, 2))
-        table.add_column("Check", style="bold")
-        table.add_column("Status")
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("Status", width=3)
+        table.add_column("Check", style="bold", width=16)
+        table.add_column("Description", style="dim")
 
-        for name, passed in checks:
-            status = "[green]✓ PASSED[/green]" if passed else "[red]✗ FAILED[/red]"
-            table.add_row(name, status)
+        for key, name, description in checks:
+            passed = results.get(key, False)
+            if passed:
+                status = "[green]✓[/green]"
+            else:
+                status = "[red]✗[/red]"
+            table.add_row(status, name, description)
 
         # Build content with table and errors
         content_parts: list[Any] = [table]
@@ -1706,16 +1734,7 @@ class OutputManager:
 
         # Determine panel style based on overall result
         passed = results.get("passed", False)
-        if passed:
-            border_style = "green"
-            status_text = "[bold green]✓ VALIDATION PASSED[/bold green]"
-        else:
-            border_style = "red"
-            status_text = "[bold red]✗ VALIDATION FAILED[/bold red]"
-
-        # Add status at bottom
-        content_parts.append(Text())
-        content_parts.append(Text.from_markup(status_text))
+        border_style = "green" if passed else "red"
 
         panel = Panel(
             Group(*content_parts),

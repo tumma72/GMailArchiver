@@ -208,6 +208,7 @@ class ValidatorFacade:
         Returns:
             Validation results dictionary
         """
+        expected_count = len(expected_message_ids)
         results: dict[str, Any] = {
             "count_check": False,
             "database_check": False,
@@ -215,13 +216,14 @@ class ValidatorFacade:
             "spot_check": False,
             "errors": [],
             "passed": False,
+            "expected_count": expected_count,
+            "spot_check_count": min(sample_size, expected_count),
         }
 
         mbox_path, is_temp = self._decompressor.get_mbox_path(self.archive_path)
 
         try:
             # Count and integrity check
-            expected_count = len(expected_message_ids)
             is_valid, error = self._counter.validate_count(mbox_path, expected_count)
             if is_valid:
                 results["count_check"] = True

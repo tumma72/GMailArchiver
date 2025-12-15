@@ -236,7 +236,7 @@ class TestSuggestNextSteps:
         suggestions = ["Run command A", "Run command B"]
         output.suggest_next_steps(suggestions)
         assert len(output._json_events) == 1
-        assert output._json_events[0]["event"] == "next_steps"
+        assert output._json_events[0]["event"] == "suggestions"
         assert output._json_events[0]["suggestions"] == suggestions
 
 

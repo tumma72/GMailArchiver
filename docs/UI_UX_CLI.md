@@ -2,7 +2,7 @@
 
 This document defines the visual language, interaction patterns, and composable components for Gmail Archiver's command-line interface. All commands MUST follow these guidelines to ensure a consistent, professional user experience.
 
-**Status**: Iteration 4 - Comprehensive Task Migration
+**Status**: Iteration 5 - Output Consolidation & Contextual Suggestions
 
 ---
 
@@ -147,6 +147,39 @@ Suggestion: Check the file path and try again
 
 **API**: `ctx.error("message", suggestion="optional suggestion")`
 
+### 4.5 Success Message Consolidation
+
+**Principle**: Each successful phase should have ONE success indicator, not multiple.
+
+**Anti-pattern (redundant):**
+```
+✓ Validating archive: Passed all checks
+╭── Validation Panel ──╮
+│ ✓ Check 1: PASSED    │
+│ ✓ Check 2: PASSED    │
+│ ✓ VALIDATION PASSED  │  ← Redundant inside panel
+╰──────────────────────╯
+✓ Archive validation passed    ← Redundant after panel
+✓ Archive completed!           ← Third success message
+```
+
+**Better pattern:**
+```
+✓ Validating archive: Passed 4/4 checks
+
+📦 Archive Summary
+   Messages: 42
+   File: archive.mbox
+   Size: 12.3 MB
+
+✓ Archive completed!
+```
+
+**Rules:**
+- Panel content should NOT repeat the panel title's status
+- After showing a detailed panel, don't add a standalone success message repeating the same info
+- One final "completed" message per command is sufficient
+
 ---
 
 ## 5. Panel Components
@@ -163,6 +196,49 @@ When: Multi-check validation results.
 - **USE**: Final results, errors requiring attention, multi-item summaries
 - **DON'T USE**: Progress updates, simple confirmations, inline status
 
+### 5.4 Validation Display Design
+
+Validation output adapts based on mode and outcome:
+
+**Normal mode: Task completion only (no panel)**
+```
+✓ Validating archive: Passed 4/4 checks
+```
+
+**With --verbose: Detailed panel explaining each check**
+```
+✓ Validating archive: Passed 4/4 checks
+
+╭── Validation Details ──────────────────────────────────────────────╮
+│ ✓ Count check       Verified 19,334 messages exist in mbox file   │
+│ ✓ Database check    All message IDs in database found in archive  │
+│ ✓ Integrity check   SHA256 checksums match for all messages       │
+│ ✓ Spot check        Random sample of 10 messages fully readable   │
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+**With failures (always show panel, even without --verbose):**
+```
+✗ Validating archive: Failed 1/4 checks
+
+╭── Validation Details ──────────────────────────────────────────────╮
+│ ✓ Count check       Verified 19,334 messages exist in mbox file   │
+│ ✗ Database check    5 message IDs missing from archive            │
+│ ✓ Integrity check   SHA256 checksums match for all messages       │
+│ ○ Spot check        Skipped (previous check failed)               │
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+**Principle**: `--verbose` adds MORE INFORMATION about what each check does, not just different formatting.
+
+**Check explanations for --verbose:**
+| Check | Description shown in verbose |
+|-------|------------------------------|
+| Count | "Verified N messages exist in mbox file" |
+| Database | "All message IDs in database found in archive" or details on mismatches |
+| Integrity | "SHA256 checksums match for all messages" |
+| Spot check | "Random sample of N messages fully readable" |
+
 ---
 
 ## 6. Tables & Reports
@@ -174,6 +250,35 @@ For summary data with labels and values.
 
 ### 6.2 Tabular Data
 For multi-row data with headers.
+
+### 6.3 Command Summary Layout
+
+Final summaries should be visually scannable with strategic emoji for engagement:
+
+```
+📦 Archive Summary
+   Archived     42 messages
+   Skipped      10 duplicates
+   File         archive_20251201.mbox
+   Size         2.3 GB
+   Gmail        Moved to trash (30-day recovery)
+
+✓ Archive completed!
+
+💡 Suggestions:
+   • Permanently delete from Gmail: gmailarchiver retry-delete archive_20251201.mbox --permanent
+```
+
+**Strategic emoji usage:**
+| Context | Emoji | Example |
+|---------|-------|---------|
+| Archive/Storage | 📦 | 📦 Archive Summary |
+| Suggestions | 💡 | 💡 Suggestions: |
+| Warning context | ⚠️ | Used in warning panels |
+| Time/Duration | ⏱️ | ⏱️ Duration: 5m 23s |
+| Size/Space | 💾 | 💾 Size: 2.3 GB |
+
+**Note**: Emojis are optional enhancements for section headers. The UI must work without them. Core status symbols (✓/✗/⚠/ℹ) remain unchanged.
 
 ---
 
@@ -332,11 +437,113 @@ def authenticate_gmail(
 - Handles all error cases with proper error panels
 - Supports both `@with_context(requires_gmail=True)` and manual calls
 
+### 7.6 Multi-Phase Operations with Different Checks
+
+When operations have multiple filtering phases with different semantics:
+- **Combine semantically related checks** where possible to avoid user confusion
+- **If checks must be separate**, make the distinction clear in task names
+- **Exit early** when no work remains rather than proceeding with empty batches
+
+**Anti-pattern (confusing):**
+```
+✓ Phase 1 check: 10 items to process
+✓ Phase 2: Processed 0 items (10 filtered)
+```
+User expects 10 items to be processed, but all are filtered in Phase 2.
+
+**Better pattern:**
+```
+✓ Checking items: 10 found, all already processed
+ℹ Nothing to do
+```
+
+**Archive command example:**
+```
+# Bad: Messages pass Phase 1 but all filtered in Phase 2
+✓ Checking for already archived: 10 to archive (19,324 already archived)
+✓ Archiving messages: No messages archived
+⚠ Skipped (duplicate): [10 messages listed]
+
+# Good: All filtering combined, early exit
+✓ Checking for already archived: 19,324 archived, 10 duplicates
+ℹ Nothing to archive - all messages already in archive
+```
+
 ---
 
 ## 8. Suggestions & Next Steps
 
-*[Placeholder - Iteration 2]*
+### 8.1 Wording
+
+Use "Suggestions:" or "You might want to:" instead of "Next steps:" which implies mandatory actions.
+
+**Anti-pattern:**
+```
+Next steps:
+  1. Check archive status: gmailarchiver status
+  2. Verify integrity: gmailarchiver verify-integrity
+```
+
+**Better:**
+```
+💡 Suggestions:
+   • Check archive status: gmailarchiver status
+   • Verify integrity: gmailarchiver verify-integrity
+```
+
+Or with context:
+```
+💡 Since 10 duplicates were skipped, you might want to:
+   • Review duplicates: gmailarchiver dedupe --dry-run
+```
+
+### 8.2 Contextual Suggestions
+
+Suggestions should be contextual to what happened:
+
+| Outcome | Suggestion |
+|---------|------------|
+| **0 messages archived** | Don't suggest "check status" - nothing changed |
+| **Messages archived successfully** | Suggest verification or permanent deletion |
+| **Duplicates found** | Suggest dedupe review |
+| **Validation passed (with --trash)** | Suggest permanent deletion |
+| **Errors occurred** | Suggest retry or repair commands |
+
+**Examples:**
+
+```
+# After successful archive with --trash
+💡 Suggestions:
+   • Permanently delete from Gmail: gmailarchiver retry-delete archive.mbox --permanent
+
+# After archive found all duplicates
+💡 Since all messages were duplicates, you might want to:
+   • Review your archives: gmailarchiver status
+   • Check for duplicate cleanup: gmailarchiver dedupe --dry-run
+
+# After validation failure
+💡 To fix the issues:
+   • Run repair: gmailarchiver repair --archive archive.mbox
+   • Re-validate: gmailarchiver validate archive.mbox
+```
+
+### 8.3 Suggestion Styling
+
+**API**: `ctx.show_suggestions(suggestions, context=None)`
+
+```python
+# Simple suggestions list
+ctx.show_suggestions([
+    "Check archive status: gmailarchiver status",
+    "Verify integrity: gmailarchiver verify-integrity"
+])
+
+# With contextual header
+ctx.show_suggestions(
+    suggestions=["Review duplicates: gmailarchiver dedupe --dry-run"],
+    context="Since 10 duplicates were skipped"
+)
+```
 
 ---
 

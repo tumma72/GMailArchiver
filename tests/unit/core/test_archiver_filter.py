@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from gmailarchiver.core.archiver._filter import MessageFilter
+from gmailarchiver.core.archiver._filter import FilterResult, MessageFilter
 
 
 @pytest.mark.unit
@@ -25,6 +25,8 @@ class TestMessageFilter:
         db.conn = Mock()
         db.conn.execute = AsyncMock(return_value=cursor)
         db.close = AsyncMock()
+        # Mock get_all_rfc_message_ids to return empty set (no RFC-ID duplicates)
+        db.get_all_rfc_message_ids = AsyncMock(return_value=set())
         return db
 
     @pytest.fixture
@@ -37,21 +39,25 @@ class TestMessageFilter:
         """Test that incremental=False returns all messages."""
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=False)
+        result = await filter_module.filter_archived(message_ids, incremental=False)
 
-        assert filtered == message_ids
-        assert skipped == 0
+        assert result.to_archive == message_ids
+        assert result.already_archived_count == 0
+        assert result.duplicate_count == 0
+        assert result.total_skipped == 0
 
     @pytest.mark.asyncio
     async def test_filter_with_incremental_true(self, filter_module, mock_db_manager):
         """Test filtering out already-archived messages."""
         message_ids = ["msg001", "msg002", "msg003", "msg004"]
 
-        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
+        result = await filter_module.filter_archived(message_ids, incremental=True)
 
         # msg001 and msg002 should be filtered out
-        assert filtered == ["msg003", "msg004"]
-        assert skipped == 2
+        assert result.to_archive == ["msg003", "msg004"]
+        assert result.already_archived_count == 2
+        assert result.duplicate_count == 0
+        assert result.total_skipped == 2
 
         # Should query database for archived IDs
         mock_db_manager.conn.execute.assert_called_once()
@@ -67,14 +73,16 @@ class TestMessageFilter:
         cursor.fetchall = AsyncMock(return_value=[])
         mock_db.conn = Mock()
         mock_db.conn.execute = AsyncMock(return_value=cursor)
+        mock_db.get_all_rfc_message_ids = AsyncMock(return_value=set())
 
         filter_module = MessageFilter(db_manager=mock_db)
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
+        result = await filter_module.filter_archived(message_ids, incremental=True)
 
-        assert filtered == message_ids
-        assert skipped == 0
+        assert result.to_archive == message_ids
+        assert result.already_archived_count == 0
+        assert result.duplicate_count == 0
 
     @pytest.mark.asyncio
     async def test_filter_with_all_archived(self):
@@ -84,14 +92,16 @@ class TestMessageFilter:
         cursor.fetchall = AsyncMock(return_value=[("msg001",), ("msg002",), ("msg003",)])
         mock_db.conn = Mock()
         mock_db.conn.execute = AsyncMock(return_value=cursor)
+        mock_db.get_all_rfc_message_ids = AsyncMock(return_value=set())
 
         filter_module = MessageFilter(db_manager=mock_db)
         message_ids = ["msg001", "msg002", "msg003"]
 
-        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
+        result = await filter_module.filter_archived(message_ids, incremental=True)
 
-        assert filtered == []
-        assert skipped == 3
+        assert result.to_archive == []
+        assert result.already_archived_count == 3
+        assert result.duplicate_count == 0
 
     @pytest.mark.asyncio
     async def test_filter_handles_database_error(self):
@@ -104,18 +114,20 @@ class TestMessageFilter:
         message_ids = ["msg001", "msg002", "msg003"]
 
         # Should return all messages if database fails
-        filtered, skipped = await filter_module.filter_archived(message_ids, incremental=True)
+        result = await filter_module.filter_archived(message_ids, incremental=True)
 
-        assert filtered == message_ids
-        assert skipped == 0
+        assert result.to_archive == message_ids
+        assert result.already_archived_count == 0
+        assert result.duplicate_count == 0
 
     @pytest.mark.asyncio
     async def test_filter_with_empty_message_list(self, filter_module):
         """Test filtering with empty message list."""
-        filtered, skipped = await filter_module.filter_archived([], incremental=True)
+        result = await filter_module.filter_archived([], incremental=True)
 
-        assert filtered == []
-        assert skipped == 0
+        assert result.to_archive == []
+        assert result.already_archived_count == 0
+        assert result.duplicate_count == 0
 
     @pytest.mark.asyncio
     async def test_filter_excludes_null_gmail_ids(self, filter_module):
@@ -125,3 +137,26 @@ class TestMessageFilter:
         # Should include WHERE clause to exclude NULL gmail_ids
         query = filter_module.db_manager.conn.execute.call_args[0][0]
         assert "gmail_id IS NOT NULL" in query
+
+
+@pytest.mark.unit
+class TestFilterResult:
+    """Unit tests for FilterResult dataclass."""
+
+    def test_total_skipped_property(self):
+        """Test that total_skipped returns sum of archived and duplicates."""
+        result = FilterResult(
+            to_archive=["msg001"],
+            already_archived_count=5,
+            duplicate_count=3,
+        )
+        assert result.total_skipped == 8
+
+    def test_total_skipped_with_zeros(self):
+        """Test total_skipped when counts are zero."""
+        result = FilterResult(
+            to_archive=["msg001", "msg002"],
+            already_archived_count=0,
+            duplicate_count=0,
+        )
+        assert result.total_skipped == 0

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from gmailarchiver.core.archiver import ArchiverFacade
+from gmailarchiver.core.archiver._filter import FilterResult
 from gmailarchiver.shared.input_validator import InvalidInputError
 
 pytestmark = pytest.mark.asyncio
@@ -118,7 +119,11 @@ class TestArchive:
             db_path = Path(tmpdir) / "state.db"
             archiver = await ArchiverFacade.create(mock_client, str(db_path))
             # All messages filtered (already archived)
-            archiver._filter.filter_archived = AsyncMock(return_value=([], 2))
+            archiver._filter.filter_archived = AsyncMock(
+                return_value=FilterResult(
+                    to_archive=[], already_archived_count=2, duplicate_count=0
+                )
+            )
             result = await archiver.archive("3y", "test.mbox", incremental=True)
 
             assert result["found_count"] == 2

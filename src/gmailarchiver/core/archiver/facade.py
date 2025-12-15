@@ -19,7 +19,7 @@ from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.input_validator import InvalidInputError
 from gmailarchiver.shared.utils import datetime_to_gmail_query, parse_age
 
-from ._filter import MessageFilter
+from ._filter import FilterResult, MessageFilter
 from ._writer import MessageWriter
 
 
@@ -140,19 +140,23 @@ class ArchiverFacade:
         self,
         message_ids: list[str],
         incremental: bool = True,
-    ) -> tuple[list[str], int]:
-        """Filter out already-archived messages.
+    ) -> FilterResult:
+        """Filter out already-archived messages and duplicates.
 
-        Delegates to MessageFilter for implementation.
+        Delegates to MessageFilter for implementation. Two-phase filtering:
+        1. Check Gmail IDs against database (fast, local)
+        2. For remaining messages, check RFC Message-IDs (requires Gmail API)
 
         Args:
             message_ids: List of Gmail message IDs to filter
             incremental: If True, filter out already archived (default: True)
 
         Returns:
-            Tuple of (filtered_message_ids, skipped_count)
+            FilterResult with to_archive list and skip counts
         """
-        return await self._filter.filter_archived(message_ids, incremental=incremental)
+        return await self._filter.filter_archived(
+            message_ids, incremental=incremental, gmail_client=self.gmail_client
+        )
 
     async def archive_messages(
         self,
@@ -239,8 +243,8 @@ class ArchiverFacade:
                 "interrupted": False,
             }
 
-        # Phase 2: Filter already-archived messages
-        filtered_ids, skipped_count = await self.filter_already_archived(
+        # Phase 2: Filter already-archived messages and duplicates
+        filter_result = await self.filter_already_archived(
             message_ids, incremental=incremental
         )
 
@@ -249,18 +253,22 @@ class ArchiverFacade:
             return {
                 "query": query,
                 "found_count": len(message_ids),
-                "skipped_count": skipped_count,
+                "already_archived_count": filter_result.already_archived_count,
+                "duplicate_count": filter_result.duplicate_count,
+                "skipped_count": filter_result.total_skipped,
                 "archived_count": 0,
                 "failed_count": 0,
                 "interrupted": False,
             }
 
         # Handle all messages filtered
-        if not filtered_ids:
+        if not filter_result.to_archive:
             return {
                 "query": query,
                 "found_count": len(message_ids),
-                "skipped_count": skipped_count,
+                "already_archived_count": filter_result.already_archived_count,
+                "duplicate_count": filter_result.duplicate_count,
+                "skipped_count": filter_result.total_skipped,
                 "archived_count": 0,
                 "failed_count": 0,
                 "interrupted": False,
@@ -268,14 +276,16 @@ class ArchiverFacade:
 
         # Phase 3: Archive messages
         result = await self.archive_messages(
-            filtered_ids, output_file, compress=compress, operation=operation
+            filter_result.to_archive, output_file, compress=compress, operation=operation
         )
 
         # Combine results from all phases
         return {
             "query": query,
             "found_count": len(message_ids),
-            "skipped_count": skipped_count,
+            "already_archived_count": filter_result.already_archived_count,
+            "duplicate_count": filter_result.duplicate_count,
+            "skipped_count": filter_result.total_skipped,
             **result,
         }
 
