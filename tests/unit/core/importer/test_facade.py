@@ -143,6 +143,8 @@ class TestImporterFacadeImportArchive:
         mock_reader.extract_metadata.return_value = Mock(
             rfc_message_id="<test@example.com>", gmail_id=None
         )
+        # Mock the new scan_rfc_message_ids method
+        mock_reader.scan_rfc_message_ids.return_value = [("<test@example.com>", 0, 100)]
         mock_reader_class.return_value = mock_reader
 
         mock_lookup = Mock()
@@ -161,6 +163,7 @@ class TestImporterFacadeImportArchive:
         # Import
         mock_db = Mock()
         mock_db.commit = AsyncMock()
+        mock_db.get_all_rfc_message_ids = AsyncMock(return_value=set())  # No existing messages
         facade = ImporterFacade(db_manager=mock_db)
         result = await facade.import_archive("/tmp/test.mbox")
 

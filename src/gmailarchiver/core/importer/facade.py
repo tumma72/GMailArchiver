@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ScanResult:
+    """Result of scanning an archive for messages to import."""
+
+    archive_file: str
+    total_messages: int
+    new_messages: int  # Messages not in database
+    duplicate_messages: int  # Messages already in database
+    # Internal: list of (rfc_message_id, offset, length) for new messages
+    messages_to_import: list[tuple[str, int, int]] = field(default_factory=list)
+
+
+@dataclass
 class ImportResult:
     """Result of importing a single archive."""
 
@@ -94,23 +106,99 @@ class ImporterFacade:
         finally:
             scanner.cleanup_temp_file(mbox_path, is_temp)
 
+    async def scan_archive(
+        self,
+        archive_path: str | Path,
+        progress_callback: Callable[[int, int], None] | None = None,
+        skip_duplicates: bool = True,
+    ) -> ScanResult:
+        """Scan archive and identify messages to import (Phase 1).
+
+        Fast scan that extracts RFC Message-IDs and compares with database.
+        Does NOT connect to Gmail - that's done in import phase if needed.
+
+        Args:
+            archive_path: Path to mbox archive file
+            progress_callback: Optional callback(current, total) for progress
+            skip_duplicates: If True, filter out messages already in database
+
+        Returns:
+            ScanResult with counts and list of messages to import
+
+        Raises:
+            FileNotFoundError: If archive file doesn't exist
+        """
+        archive_path = Path(archive_path)
+        if not archive_path.exists():
+            raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+        scanner = FileScanner()
+        reader = MboxReader()
+
+        # Decompress if needed
+        mbox_path, is_temp = scanner.decompress_to_temp(archive_path)
+
+        try:
+            # Fast scan: extract RFC Message-IDs with offsets
+            scanned_messages = reader.scan_rfc_message_ids(mbox_path, progress_callback)
+            total_messages = len(scanned_messages)
+
+            if skip_duplicates:
+                # Get existing IDs from database (single query)
+                existing_ids = await self.db_manager.get_all_rfc_message_ids()
+
+                # Identify new messages (not in database)
+                messages_to_import: list[tuple[str, int, int]] = []
+                for rfc_id, offset, length in scanned_messages:
+                    if rfc_id not in existing_ids:
+                        messages_to_import.append((rfc_id, offset, length))
+
+                return ScanResult(
+                    archive_file=str(archive_path),
+                    total_messages=total_messages,
+                    new_messages=len(messages_to_import),
+                    duplicate_messages=total_messages - len(messages_to_import),
+                    messages_to_import=messages_to_import,
+                )
+            else:
+                # When skip_duplicates=False, import all messages
+                return ScanResult(
+                    archive_file=str(archive_path),
+                    total_messages=total_messages,
+                    new_messages=total_messages,
+                    duplicate_messages=0,
+                    messages_to_import=scanned_messages,
+                )
+
+        finally:
+            scanner.cleanup_temp_file(mbox_path, is_temp)
+
     async def import_archive(
         self,
         archive_path: str | Path,
         account_id: str = "default",
         skip_duplicates: bool = True,
         progress_callback: Callable[[int, int, str], None] | None = None,
+        scan_callback: Callable[[int, int], None] | None = None,
+        gmail_lookup_callback: Callable[[int, int], None] | None = None,
+        scan_result: ScanResult | None = None,
     ) -> ImportResult:
         """Import single mbox archive into database.
 
-        Parses mbox file, extracts metadata, calculates byte offsets,
-        and populates database with all required fields.
+        Multi-phase workflow:
+        1. Scan mbox for RFC Message-IDs (if scan_result not provided)
+        2. Compare with database to identify new messages
+        3. Batch lookup Gmail IDs for new messages (if gmail_client provided)
+        4. Import new messages to database
 
         Args:
             archive_path: Path to mbox archive file
             account_id: Account identifier (default: 'default')
             skip_duplicates: Skip messages that already exist (default: True)
-            progress_callback: Optional callback(current, total, status) for progress
+            progress_callback: Optional callback(current, total, status) for import progress
+            scan_callback: Optional callback(current, total) for scan progress
+            gmail_lookup_callback: Optional callback(current, total) for Gmail lookup progress
+            scan_result: Pre-computed scan result (skips Phase 1 if provided)
 
         Returns:
             ImportResult with statistics and errors
@@ -133,51 +221,55 @@ class ImporterFacade:
 
         start_time = time.time()
 
-        # Initialize modules
+        # Phase 1: Scan archive (or use pre-computed result)
+        if scan_result is None:
+            scan_result = await self.scan_archive(archive_path, scan_callback, skip_duplicates)
+
+        # Early exit if nothing to import
+        if scan_result.new_messages == 0:
+            result.messages_skipped = scan_result.duplicate_messages
+            result.execution_time_ms = (time.time() - start_time) * 1000
+            return result
+
+        # Phase 2: Batch Gmail ID lookup (if client available)
+        gmail_id_map: dict[str, str | None] = {}
+        if self.gmail_client is not None:
+            rfc_ids_to_lookup = [msg[0] for msg in scan_result.messages_to_import]
+            gmail_id_map = await self.gmail_client.search_by_rfc_message_ids_batch(
+                rfc_ids_to_lookup,
+                progress_callback=gmail_lookup_callback,
+            )
+            result.gmail_ids_found = sum(1 for v in gmail_id_map.values() if v is not None)
+            result.gmail_ids_not_found = len(gmail_id_map) - result.gmail_ids_found
+
+        # Phase 3: Import messages to database
         scanner = FileScanner()
         reader = MboxReader()
-        gmail_lookup = GmailLookup(self.gmail_client)
-
-        # Decompress if needed
         mbox_path, is_temp = scanner.decompress_to_temp(archive_path)
 
         try:
-            # Initialize database writer
             writer = DatabaseWriter(self.db_manager)
             await writer.load_existing_ids()
 
-            # Read messages with offset tracking
-            messages = list(reader.read_messages(mbox_path, str(archive_path)))
-            total_messages = len(messages)
+            # Build a map of offset -> (rfc_id, length) for quick lookup
+            offset_map = {offset: (rfc_id, length) for rfc_id, offset, length in scan_result.messages_to_import}
 
-            # Process each message
-            for msg_index, mbox_msg in enumerate(messages):
+            # Read messages and import only those in our import list
+            total_to_import = len(scan_result.messages_to_import)
+            imported_count = 0
+
+            for mbox_msg in reader.read_messages(mbox_path, str(archive_path)):
+                if mbox_msg.offset not in offset_map:
+                    continue  # Skip messages not in our import list
+
+                rfc_message_id, length = offset_map[mbox_msg.offset]
+                imported_count += 1
+
                 try:
-                    # Extract RFC Message-ID
-                    rfc_message_id = reader.extract_rfc_message_id(mbox_msg.message)
+                    # Get Gmail ID from our batch lookup
+                    gmail_id = gmail_id_map.get(rfc_message_id)
 
-                    # Skip duplicates early if enabled
-                    if skip_duplicates and writer.is_duplicate(rfc_message_id):
-                        result.messages_skipped += 1
-                        if progress_callback:
-                            progress_callback(msg_index + 1, total_messages, "Skipped duplicate")
-                        continue
-
-                    # Look up Gmail ID if enabled
-                    gmail_id = None
-                    if gmail_lookup.is_enabled():
-                        if progress_callback:
-                            progress_callback(
-                                msg_index + 1, total_messages, "Looking up Gmail ID..."
-                            )
-                        lookup_result = await gmail_lookup.lookup_gmail_id(rfc_message_id)
-                        gmail_id = lookup_result.gmail_id
-                        if lookup_result.found:
-                            result.gmail_ids_found += 1
-                        else:
-                            result.gmail_ids_not_found += 1
-
-                    # Extract metadata
+                    # Extract full metadata
                     metadata = reader.extract_metadata(
                         msg=mbox_msg.message,
                         archive_path=str(archive_path),
@@ -193,27 +285,25 @@ class ImporterFacade:
                     if write_result == WriteResult.IMPORTED:
                         result.messages_imported += 1
                         if progress_callback:
-                            gmail_status = (
-                                f"Gmail ID: {gmail_id[:8]}..." if gmail_id else "No Gmail ID"
-                            )
-                            progress_callback(
-                                msg_index + 1, total_messages, f"Imported ({gmail_status})"
-                            )
+                            gmail_status = f"Gmail ID: {gmail_id[:8]}..." if gmail_id else "No Gmail ID"
+                            progress_callback(imported_count, total_to_import, f"Imported ({gmail_status})")
                     elif write_result == WriteResult.SKIPPED:
                         result.messages_skipped += 1
                         if progress_callback:
-                            progress_callback(msg_index + 1, total_messages, "Skipped duplicate")
-                    else:  # FAILED
+                            progress_callback(imported_count, total_to_import, "Skipped duplicate")
+                    else:
                         result.messages_failed += 1
                         if progress_callback:
-                            progress_callback(msg_index + 1, total_messages, "DB error")
+                            progress_callback(imported_count, total_to_import, "DB error")
 
                 except Exception as e:
                     result.messages_failed += 1
-                    error_msg = f"Message {msg_index}: {str(e)}"
-                    result.errors.append(error_msg)
+                    result.errors.append(f"Message {rfc_message_id}: {str(e)}")
                     if progress_callback:
-                        progress_callback(msg_index + 1, total_messages, "Error")
+                        progress_callback(imported_count, total_to_import, "Error")
+
+            # Add duplicates from scan phase
+            result.messages_skipped += scan_result.duplicate_messages
 
             # Record archive run if any messages were imported
             if result.messages_imported > 0:
@@ -227,7 +317,6 @@ class ImporterFacade:
             await self.db_manager.commit()
 
         finally:
-            # Clean up temporary file if created
             scanner.cleanup_temp_file(mbox_path, is_temp)
 
         result.execution_time_ms = (time.time() - start_time) * 1000

@@ -7,7 +7,7 @@ metadata extraction. Part of importer package's internal implementation.
 import email
 import hashlib
 import mailbox
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,6 +89,54 @@ class MboxReader:
             return len(mbox)
         finally:
             mbox.close()
+
+    def scan_rfc_message_ids(
+        self, mbox_path: Path, progress_callback: Callable[[int, int], None] | None = None
+    ) -> list[tuple[str, int, int]]:
+        """Scan mbox and extract RFC Message-IDs with offsets (fast scan).
+
+        This is a lightweight scan that only extracts Message-IDs without
+        full metadata extraction. Used for duplicate detection before import.
+
+        Args:
+            mbox_path: Path to mbox file
+            progress_callback: Optional callback(current, total) for progress
+
+        Returns:
+            List of (rfc_message_id, offset, length) tuples
+        """
+        mbox = mailbox.mbox(str(mbox_path))
+        result: list[tuple[str, int, int]] = []
+
+        try:
+            all_keys = list(mbox.keys())
+            total_messages = len(all_keys)
+            file_size = mbox_path.stat().st_size
+
+            for msg_index, key in enumerate(all_keys):
+                # Get offset from mbox's internal table of contents
+                offset: int = mbox._toc[key][0]  # type: ignore[attr-defined]
+
+                # Calculate message length
+                if msg_index < total_messages - 1:
+                    next_key = all_keys[msg_index + 1]
+                    next_offset = mbox._toc[next_key][0]  # type: ignore[attr-defined]
+                    length = next_offset - offset
+                else:
+                    length = file_size - offset
+
+                # Read message and extract Message-ID
+                msg = mbox[key]
+                rfc_message_id = self.extract_rfc_message_id(msg)
+                result.append((rfc_message_id, offset, length))
+
+                if progress_callback:
+                    progress_callback(msg_index + 1, total_messages)
+
+        finally:
+            mbox.close()
+
+        return result
 
     def extract_rfc_message_id(self, msg: email.message.Message) -> str:
         """Extract RFC 2822 Message-ID from email message.

@@ -2281,6 +2281,12 @@ def import_cmd(
     Parses mbox files, extracts metadata with accurate byte offset tracking,
     and populates the v1.1 database for fast message access and searching.
 
+    Workflow:
+    1. Scan archive for messages (with progress)
+    2. Compare with database to identify new messages
+    3. Connect to Gmail (only if new messages found and --skip-gmail-lookup not set)
+    4. Import new messages to database
+
     By default, imports look up real Gmail IDs for each message to enable instant
     deduplication during future archiving. Use --skip-gmail-lookup for offline imports.
 
@@ -2296,6 +2302,8 @@ def import_cmd(
     import glob
     import time
 
+    from gmailarchiver.core.importer.facade import ScanResult
+
     db_path = Path(state_db)
 
     # Expand glob pattern first (sync - fast I/O)
@@ -2309,16 +2317,10 @@ def import_cmd(
 
     ctx.info(f"Found {len(files)} file(s) to import")
 
-    # Set up Gmail client for Gmail ID lookup (unless skipped)
-    gmail_client = None
-    if not skip_gmail_lookup:
-        gmail_client = ctx.authenticate_gmail(credentials=credentials, required=False)
-        if gmail_client is None:
-            ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
-
     async def _import_workflow() -> dict[str, Any]:
-        """Single async workflow for import command."""
+        """Multi-phase async workflow for import command."""
         assert ctx.storage is not None, "Storage should be initialized by @with_context"
+        nonlocal skip_gmail_lookup
 
         try:
             # Handle database schema using centralized SchemaManager
@@ -2327,7 +2329,6 @@ def import_cmd(
                 version = await schema_mgr.detect_version()
 
                 if version == SchemaVersion.NONE:
-                    # Empty database file exists - delete it and let DBManager create a fresh one
                     try:
                         db_path.unlink()
                     except Exception as e:
@@ -2345,7 +2346,6 @@ def import_cmd(
                         "suggestion": "Delete the database or use --state-db with a different path",
                     }
                 elif await schema_mgr.needs_migration():
-                    # Auto-migrate to current version
                     try:
                         await schema_mgr.auto_migrate_if_needed(
                             progress_callback=lambda msg: ctx.info(msg)
@@ -2358,30 +2358,75 @@ def import_cmd(
                             "suggestion": "Run 'gmailarchiver migrate' manually for more details",
                         }
 
-            # Import each file
-            importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
-            results: list[Any] = []
+            # Phase 1: Scan archives and identify new messages (NO Gmail connection yet)
+            importer = ImporterFacade(ctx.storage.db, gmail_client=None)  # No Gmail client for scan
+            scan_results: list[ScanResult] = []
             start_time = time.perf_counter()
 
-            # Count messages first (sync operation in importer)
-            file_message_counts: list[int] = []
+            total_new = 0
+            total_duplicates = 0
             total_messages = 0
-            for file_path in files:
-                count = importer.count_messages(file_path)
-                file_message_counts.append(count)
-                total_messages += count
 
-            # Import each file
-            import_errors: list[str] = []
             for file_idx, file_path in enumerate(files):
+                ctx.info(f"Scanning {Path(file_path).name}...")
+                scan_result = await importer.scan_archive(file_path, None, skip_duplicates)
+                scan_results.append(scan_result)
+                total_new += scan_result.new_messages
+                total_duplicates += scan_result.duplicate_messages
+                total_messages += scan_result.total_messages
+
+            # Show scan results
+            ctx.success(f"Scanned {total_messages:,} messages: {total_new:,} new, {total_duplicates:,} already in database")
+
+            # Early exit if nothing to import
+            if total_new == 0:
+                return {
+                    "status": "success",
+                    "results": [],
+                    "total_time": time.perf_counter() - start_time,
+                    "total_messages": total_messages,
+                    "total_new": 0,
+                    "total_duplicates": total_duplicates,
+                    "import_errors": [],
+                    "verify_issues": None,
+                    "early_exit": True,
+                }
+
+            # Phase 2: Connect to Gmail for ID lookups (only if needed and not skipped)
+            gmail_client = None
+            if not skip_gmail_lookup:
+                gmail_client = ctx.authenticate_gmail(credentials=credentials, required=False)
+                if gmail_client is None:
+                    ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
+                    skip_gmail_lookup = True
+
+            # Create importer with Gmail client (if available)
+            importer = ImporterFacade(ctx.storage.db, gmail_client=gmail_client)
+
+            # Phase 3: Import new messages
+            results: list[Any] = []
+            import_errors: list[str] = []
+
+            for file_idx, (file_path, scan_result) in enumerate(zip(files, scan_results, strict=True)):
+                if scan_result.new_messages == 0:
+                    continue  # Skip files with nothing to import
+
+                ctx.info(f"Importing {Path(file_path).name} ({scan_result.new_messages} messages)...")
+
                 try:
                     result = await importer.import_archive(
                         file_path,
                         account_id=account_id,
                         skip_duplicates=skip_duplicates,
-                        progress_callback=None,  # Progress handled in sync UI
+                        progress_callback=None,
+                        gmail_lookup_callback=None,
+                        scan_result=scan_result,  # Reuse scan result
                     )
                     results.append(result)
+
+                    if result.messages_imported > 0:
+                        ctx.success(f"Imported {result.messages_imported:,} messages from {Path(file_path).name}")
+
                 except Exception as e:
                     import_errors.append(f"Error importing {file_path}: {e}")
 
@@ -2402,13 +2447,16 @@ def import_cmd(
                 "results": results,
                 "total_time": total_time,
                 "total_messages": total_messages,
-                "file_message_counts": file_message_counts,
+                "total_new": total_new,
+                "total_duplicates": total_duplicates,
                 "import_errors": import_errors,
                 "verify_issues": verify_issues,
+                "early_exit": False,
             }
 
         except Exception as e:
-            return {"status": "error", "error_message": str(e)}
+            import traceback
+            return {"status": "error", "error_message": str(e), "traceback": traceback.format_exc()}
 
     # Execute single async workflow
     workflow_result = asyncio.run(_import_workflow())
@@ -2420,16 +2468,17 @@ def import_cmd(
         suggestion = workflow_result.get("suggestion")
         ctx.fail_and_exit(error_title, error_message, suggestion=suggestion)
 
+    # Handle early exit (nothing to import)
+    if workflow_result.get("early_exit"):
+        ctx.info("Nothing to import - all messages already in database")
+        return
+
     # Extract results
     results = workflow_result["results"]
     total_time = workflow_result["total_time"]
     total_messages = workflow_result["total_messages"]
     import_errors = workflow_result.get("import_errors", [])
     verify_issues = workflow_result.get("verify_issues")
-
-    # Show progress info
-    ctx.success(f"Counted {total_messages:,} messages across {len(files)} file(s)")
-    ctx.success(f"Imported messages from {len(results)} file(s)")
 
     # Show import errors
     for error in import_errors:
@@ -2442,19 +2491,27 @@ def import_cmd(
 
     # Build report data
     report_data: dict[str, str | int] = {
-        "Files Imported": len(files),
-        "Total Messages Imported": total_imported,
-        "Skipped Duplicates": total_skipped,
-        "Failed": total_failed,
+        "Files Processed": len(files),
+        "Messages Imported": total_imported,
+        "Already in Database": total_skipped,
     }
+    if total_failed > 0:
+        report_data["Failed"] = total_failed
+
+    # Add Gmail lookup stats if applicable
+    total_gmail_found = sum(r.gmail_ids_found for r in results)
+    total_gmail_not_found = sum(r.gmail_ids_not_found for r in results)
+    if total_gmail_found > 0 or total_gmail_not_found > 0:
+        report_data["Gmail IDs Found"] = total_gmail_found
+        report_data["Gmail IDs Not Found"] = total_gmail_not_found
 
     # Add performance metrics
     if total_imported > 0 and total_time > 0:
         rate = total_imported / total_time
         report_data["Performance"] = f"{rate:.1f} messages/second"
 
-    # High-level summary across all files
-    ctx.show_report("Import Summary", report_data)
+    # High-level summary
+    ctx.show_report("📦 Import Summary", report_data)
 
     # Per-file summary table so users can see which archives were processed
     if results:
