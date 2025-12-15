@@ -76,46 +76,48 @@ def display_search_results_rich(
         output_mgr.warning("No results found")
         return
 
-    # Header
-    output_mgr.info(f"\nSearch Results ({total_results} found)\n")
-
     if with_preview:
-        # Display with preview (list format)
+        # Display with preview (list format) - includes all details
+        output_mgr.info(f"\nSearch Results ({total_results} found)\n")
         for idx, result in enumerate(results, 1):
             preview = _truncate_preview(result.body_preview)
             subject = result.subject or "(no subject)"
-            date_str = result.date[:10] if result.date else "N/A"
 
             output_mgr.info(f"{idx}. Subject: {subject}")
             output_mgr.info(f"   From: {result.from_addr}")
-            output_mgr.info(f"   Date: {date_str}")
+            output_mgr.info(f"   Date: {result.date or 'N/A'}")
+            output_mgr.info(f"   RFC Message-ID: {result.rfc_message_id}")
+            output_mgr.info(f"   Gmail ID: {result.gmail_id or 'N/A'}")
+            output_mgr.info(f"   Archive: {result.archive_file}")
             output_mgr.info(f"   Preview: {preview}")
-            output_mgr.info(f"   Gmail ID: {result.gmail_id}")
             output_mgr.info("")
     else:
-        # Display in table format (default) via OutputManager.show_table
-        headers = ["Date", "From", "Subject", "Archive"]
+        # Display in table format using smart table with full terminal width
+        # Key columns (never truncated): Message ID, From, Archive
+        # Truncatable columns: Subject (gets remaining space)
+        column_specs = [
+            {"header": "RFC Message-ID", "key": True, "style": "dim", "no_wrap": True},
+            {"header": "Date", "key": True, "style": "cyan", "no_wrap": True},
+            {"header": "From", "key": True, "style": "cyan"},
+            {"header": "Subject", "key": False, "style": "white", "ratio": 2},
+            {"header": "Archive", "key": True, "style": "dim"},
+        ]
+
         rows: list[list[str]] = []
-
         for result in results:
-            from_display = result.from_addr or ""
-            if len(from_display) > 28:
-                from_display = from_display[:28] + "..."
-
-            subject_display = result.subject or "(no subject)"
-            if len(subject_display) > 38:
-                subject_display = subject_display[:38] + "..."
-
-            archive_display = Path(result.archive_file).name
-
             rows.append(
                 [
-                    result.date[:10] if result.date else "N/A",
-                    from_display,
-                    subject_display,
-                    archive_display,
+                    result.rfc_message_id or "(no id)",
+                    result.date or "N/A",
+                    result.from_addr or "",
+                    result.subject or "(no subject)",
+                    Path(result.archive_file).name,
                 ]
             )
 
-        # Use OutputManager to render the table (or record as JSON event in future)
-        output_mgr.show_table(f"Search Results ({total_results} found)", headers, rows)
+        # Use smart table for full-width, intelligent column sizing
+        output_mgr.show_smart_table(
+            f"Search Results ({total_results} found)",
+            column_specs,
+            rows,
+        )

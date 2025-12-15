@@ -1293,7 +1293,8 @@ class OutputManager:
         """
         self.json_mode = json_mode
         self.quiet = quiet
-        self.console = Console() if not json_mode else None
+        # force_terminal=True ensures proper width detection even in non-interactive shells
+        self.console = Console(force_terminal=True) if not json_mode else None
         self._completed_tasks: list[TaskResult] = []
         self._json_events: list[dict[str, Any]] = []
         # Optional top-level JSON payload for commands that want to control
@@ -1530,6 +1531,99 @@ class OutputManager:
         for header in headers:
             table.add_column(header, style="cyan")
 
+        for row in rows:
+            table.add_row(*[str(value) for value in row])
+
+        self.console.print(table)
+
+    def show_smart_table(
+        self,
+        title: str,
+        column_specs: Sequence[dict[str, Any]],
+        rows: Sequence[Sequence[Any]],
+        expand: bool = True,
+    ) -> None:
+        """Render a table with intelligent column sizing using full terminal width.
+
+        This method creates tables that:
+        - Use full terminal width (when expand=True)
+        - Don't truncate "key" columns (message IDs, email addresses, file paths)
+        - Truncate only designated "truncatable" columns (like subject)
+        - Apply consistent styling across all CLI commands
+
+        Args:
+            title: Table title
+            column_specs: List of column specifications, each a dict with:
+                - header: Column header text (required)
+                - key: If True, column won't be truncated (default: False)
+                - style: Rich style string (default: "cyan" for headers)
+                - overflow: How to handle overflow - "ellipsis", "fold", or "ignore"
+                  (default: "ellipsis" for truncatable, "fold" for key columns)
+                - min_width: Minimum column width (optional)
+                - max_width: Maximum column width (optional, only for truncatable)
+                - ratio: Relative width ratio for flexible columns (optional)
+            rows: Table rows (each row is a sequence of values)
+            expand: If True, table expands to terminal width (default: True)
+
+        Example:
+            output_mgr.show_smart_table(
+                "Search Results",
+                [
+                    {"header": "Message ID", "key": True, "style": "dim"},
+                    {"header": "From", "key": True},
+                    {"header": "Subject", "key": False, "ratio": 2},
+                    {"header": "Date", "key": True, "max_width": 12},
+                ],
+                rows=data_rows
+            )
+        """
+        if self.json_mode:
+            headers = [spec["header"] for spec in column_specs]
+            self._json_events.append(
+                {
+                    "event": "table",
+                    "title": title,
+                    "headers": headers,
+                    "rows": [[str(value) for value in row] for row in rows],
+                }
+            )
+            return
+
+        if self.quiet or not self.console:
+            return
+
+        # Create table with full width expansion
+        table = Table(title=title, expand=expand, show_lines=False)
+
+        # Add columns with appropriate settings
+        for spec in column_specs:
+            header = spec["header"]
+            is_key = spec.get("key", False)
+            style = spec.get("style", "cyan")
+            min_width = spec.get("min_width")
+            max_width = spec.get("max_width")
+            ratio = spec.get("ratio")
+
+            # Key columns: no truncation, allow wrapping if needed
+            # Truncatable columns: use ellipsis overflow
+            if is_key:
+                overflow = spec.get("overflow", "fold")
+                no_wrap = spec.get("no_wrap", False)
+            else:
+                overflow = spec.get("overflow", "ellipsis")
+                no_wrap = spec.get("no_wrap", True)
+
+            table.add_column(
+                header,
+                style=style,
+                overflow=overflow,
+                no_wrap=no_wrap,
+                min_width=min_width,
+                max_width=max_width,
+                ratio=ratio,
+            )
+
+        # Add rows
         for row in rows:
             table.add_row(*[str(value) for value in row])
 
