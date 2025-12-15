@@ -308,15 +308,60 @@ def archive(
         # Build contextual message based on what was filtered
         if duplicate_count > 0 and already_archived_count > 0:
             ctx.info(
-                f"Nothing to archive: {already_archived_count:,} already archived, "
+                f"Nothing new to archive: {already_archived_count:,} already archived, "
                 f"{duplicate_count:,} duplicates"
             )
         elif duplicate_count > 0:
-            ctx.info(f"Nothing to archive: all {duplicate_count:,} messages are duplicates")
+            ctx.info(f"Nothing new to archive: all {duplicate_count:,} messages are duplicates")
         else:
             ctx.info(
-                f"Nothing to archive: all {already_archived_count:,} messages already archived"
+                f"Nothing new to archive: all {already_archived_count:,} messages already archived"
             )
+
+        # If --trash or --delete was requested, offer to delete already-archived messages
+        if (trash or delete) and Path(output).exists():
+            assert ctx.storage is not None
+            archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(output))
+
+            if archived_ids:
+                archive_count = len(archived_ids)
+                ctx.info(f"\nFound {archive_count:,} messages in {output}")
+
+                if delete:
+                    # Permanent deletion requires explicit confirmation
+                    ctx.warning("WARNING: PERMANENT DELETION")
+                    ctx.warning("This action CANNOT be undone!")
+
+                    confirmation = typer.prompt(
+                        f"\nType 'DELETE {archive_count} MESSAGES' to confirm"
+                    )
+                    if confirmation != f"DELETE {archive_count} MESSAGES":
+                        ctx.info("Deletion cancelled")
+                        return
+
+                    async def _delete_existing() -> None:
+                        async with GmailClient(oauth_creds) as gmail:
+                            await gmail.delete_messages_permanent(list(archived_ids))
+
+                    with out.progress_context("Permanently deleting messages", total=None):
+                        asyncio.run(_delete_existing())
+                    ctx.success(f"Permanently deleted {archive_count:,} messages from Gmail")
+
+                elif trash:
+                    if not typer.confirm(
+                        f"Move {archive_count:,} messages to trash? (30-day recovery period)"
+                    ):
+                        ctx.info("Cancelled")
+                        return
+
+                    async def _trash_existing() -> None:
+                        async with GmailClient(oauth_creds) as gmail:
+                            await gmail.trash_messages(list(archived_ids))
+
+                    with out.progress_context("Moving messages to trash", total=None):
+                        asyncio.run(_trash_existing())
+                    ctx.success(f"Moved {archive_count:,} messages to trash")
+
         return
 
     # Handle interrupted archive (Ctrl+C)
