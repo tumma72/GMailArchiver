@@ -84,7 +84,7 @@ jobs:
             --cov-fail-under=90
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
