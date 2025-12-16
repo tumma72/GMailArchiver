@@ -8,10 +8,13 @@ import asyncio
 import base64
 import logging
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from google.oauth2.credentials import Credentials
+
+if TYPE_CHECKING:
+    from gmailarchiver.connectors.auth import GmailAuthenticator
 
 from gmailarchiver.connectors.rate_limiter import AdaptiveRateLimiter
 from gmailarchiver.shared.input_validator import validate_gmail_query
@@ -59,6 +62,55 @@ class GmailClient:
 
         # Lock for thread-safe token refresh (prevents concurrent refresh attempts)
         self._refresh_lock: asyncio.Lock | None = None
+
+        # Optional authenticator (set by create() factory method)
+        self._authenticator: GmailAuthenticator | None = None
+
+    @classmethod
+    async def create(
+        cls,
+        credentials_file: str | None = None,
+        batch_size: int = 10,
+        max_retries: int = 5,
+        output: Any | None = None,
+    ) -> GmailClient:
+        """Create and authenticate a GmailClient instance.
+
+        This factory method handles authentication automatically and returns
+        a ready-to-use client. This is the recommended way to create a
+        GmailClient for most use cases.
+
+        Args:
+            credentials_file: Optional custom OAuth2 credentials file path.
+                If None (default), uses bundled application credentials.
+            batch_size: Messages per batch (default: 10, max: 100)
+            max_retries: Maximum retries for failed requests (default: 5)
+            output: Optional OutputManager for structured logging during auth
+
+        Returns:
+            Authenticated and connected GmailClient instance
+
+        Raises:
+            FileNotFoundError: If bundled credentials are missing
+            Exception: If OAuth flow fails
+        """
+        from gmailarchiver.connectors.auth import GmailAuthenticator
+
+        authenticator = GmailAuthenticator(
+            credentials_file=credentials_file,
+            output=output,
+        )
+        creds = await authenticator.authenticate_async()
+
+        instance = cls(
+            credentials=creds,
+            batch_size=batch_size,
+            max_retries=max_retries,
+        )
+        instance._authenticator = authenticator
+        await instance.connect()
+
+        return instance
 
     async def connect(self) -> GmailClient:
         """Initialize HTTP client for making API requests.

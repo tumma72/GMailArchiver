@@ -389,18 +389,16 @@ class TestWithContextDecorator:
 
         with (
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
-            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
             patch("gmailarchiver.cli.command_context.GmailClient") as MockGmail,
         ):
             mock_output = MagicMock(spec=OutputManager)
             # Add console attribute for UIBuilder (used by authenticate_gmail)
             mock_output.console = MagicMock()
             MockOutput.return_value = mock_output
-            mock_auth = MagicMock()
-            MockAuth.return_value = mock_auth
             mock_gmail = MagicMock()
-            mock_gmail.connect = AsyncMock(return_value=mock_gmail)
-            MockGmail.return_value = mock_gmail
+            mock_gmail._credentials = MagicMock()
+            mock_gmail._authenticator = None
+            MockGmail.create = AsyncMock(return_value=mock_gmail)
 
             test_cmd()
 
@@ -416,13 +414,13 @@ class TestWithContextDecorator:
 
         with (
             patch("gmailarchiver.cli.command_context.OutputManager") as MockOutput,
-            patch("gmailarchiver.cli.command_context.GmailAuthenticator") as MockAuth,
+            patch("gmailarchiver.cli.command_context.GmailClient") as MockGmail,
         ):
             mock_output = MagicMock(spec=OutputManager)
             # Add console attribute for UIBuilder (used by authenticate_gmail)
             mock_output.console = MagicMock()
             MockOutput.return_value = mock_output
-            MockAuth.return_value.authenticate.side_effect = Exception("Auth failed")
+            MockGmail.create = AsyncMock(side_effect=Exception("Auth failed"))
 
             with pytest.raises(typer.Exit) as exc_info:
                 test_cmd()

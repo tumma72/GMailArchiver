@@ -1,37 +1,61 @@
 # Connectors Layer
 
-**Status:** Complete (v1.5.0+)
+**Status:** Complete (v1.6.0+)
 
 The connectors layer provides external system integrations: Gmail API access, OAuth2 authentication, and platform-specific scheduling.
 
 ## Quick Start
 
+### Gmail API (Recommended: Factory Pattern)
+
 ```python
-from gmailarchiver.connectors import (
-    GmailAuthenticator,
-    GmailClient,
-    Scheduler,
-    get_platform_scheduler,
-)
+import asyncio
+from gmailarchiver.connectors import GmailClient
 
-# Authentication
-auth = GmailAuthenticator()
-creds = auth.authenticate()
+async def main():
+    # Factory method handles authentication automatically
+    async with GmailClient.create() as client:
+        async for msg in client.list_messages("before:2022/01/01"):
+            print(msg["id"])
 
-# Gmail API access
-client = GmailClient(creds)
-messages = client.list_messages("before:2022/01/01")
+asyncio.run(main())
+```
 
-# Scheduling
-scheduler = Scheduler("schedules.db")
-entry = scheduler.create_schedule(
-    command="archive 3y",
-    frequency="weekly",
-    day_of_week=0,  # Sunday
-    time="02:00",
-)
+### Gmail API (Alternative: Explicit Auth)
 
-# Platform-specific scheduling
+```python
+import asyncio
+from gmailarchiver.connectors import GmailAuthenticator, GmailClient
+
+async def main():
+    # Step 1: Authenticate
+    auth = GmailAuthenticator()
+    creds = await auth.authenticate_async()
+
+    # Step 2: Create client with credentials
+    async with GmailClient(creds) as client:
+        async for msg in client.list_messages("before:2022/01/01"):
+            print(msg["id"])
+
+asyncio.run(main())
+```
+
+### Scheduling
+
+```python
+from gmailarchiver.connectors import Scheduler, get_platform_scheduler
+
+# Create schedule in database
+with Scheduler("schedules.db") as scheduler:
+    schedule_id = scheduler.add_schedule(
+        command="archive 3y",
+        frequency="weekly",
+        day_of_week=0,  # Sunday
+        time="02:00",
+    )
+    entry = scheduler.get_schedule(schedule_id)
+
+# Install on platform (systemd/launchd/Task Scheduler)
 platform = get_platform_scheduler()
 platform.install(entry)
 ```
@@ -41,7 +65,8 @@ platform.install(entry)
 | Component | Purpose | Test Coverage |
 |-----------|---------|---------------|
 | `GmailAuthenticator` | OAuth2 authentication | `tests/connectors/test_auth.py` |
-| `GmailClient` | Gmail API wrapper | `tests/connectors/test_gmail_client.py` |
+| `GmailClient` | Async Gmail API wrapper (HTTP/2) | `tests/connectors/test_gmail_client.py` |
+| `AdaptiveRateLimiter` | Token bucket rate limiting | `tests/connectors/test_gmail_client.py` |
 | `Scheduler` | Schedule CRUD operations | `tests/connectors/test_scheduler.py` |
 | `PlatformScheduler` | Platform-specific scheduling | `tests/connectors/test_platform_scheduler.py` |
 
@@ -53,7 +78,8 @@ connectors/
 ├── ARCHITECTURE.md          # Design specification
 ├── README.md                # This file
 ├── auth.py                  # GmailAuthenticator
-├── gmail_client.py          # GmailClient
+├── gmail_client.py          # GmailClient (async, HTTP/2)
+├── rate_limiter.py          # AdaptiveRateLimiter
 ├── scheduler.py             # Scheduler, ScheduleEntry
 ├── platform_scheduler.py    # Platform-specific implementations
 └── config/
@@ -70,8 +96,11 @@ GmailAuthenticator
 Credentials
 SCOPES
 
-# Gmail API
+# Gmail API (async)
 GmailClient
+
+# Rate Limiting
+AdaptiveRateLimiter
 
 # Scheduling
 Scheduler
@@ -105,19 +134,32 @@ get_platform_scheduler
 5. Save token for future use
 
 ```python
+# Sync (blocks during browser auth)
 auth = GmailAuthenticator()
-creds = auth.authenticate()  # Handles all cases automatically
+creds = auth.authenticate()
+
+# Async (non-blocking via thread pool)
+creds = await auth.authenticate_async()
 ```
 
-### Retry Logic
+### Factory Pattern (Recommended)
 
-Gmail API calls use exponential backoff:
+The `GmailClient.create()` factory method encapsulates authentication:
 
 ```python
-# On rate limit (429) or server error (500/503):
-# wait = 2^retry + random_jitter
-# max_retries = 5 (configurable)
+# Handles auth + connection automatically
+async with GmailClient.create() as client:
+    ...
 ```
+
+### Adaptive Rate Limiting
+
+GmailClient uses `AdaptiveRateLimiter` (token bucket algorithm):
+
+- **Normal**: Bursts up to 20 requests, sustains 10/sec
+- **On 429**: Reduce rate by 50%, wait for `Retry-After`
+- **On 5xx**: Short backoff (transient error)
+- **Recovery**: After 10 successes, increase rate by 10%
 
 ### Platform Detection
 

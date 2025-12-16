@@ -3,7 +3,6 @@ from pathlib import Path
 import typer
 
 from gmailarchiver.cli.command_context import CommandContext
-from gmailarchiver.connectors.auth import GmailAuthenticator
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.core.workflows.archive import ArchiveConfig, ArchiveWorkflow
 
@@ -25,15 +24,19 @@ async def archive_command(
     out = ctx.output
     assert ctx.storage is not None  # Guaranteed by requires_storage=True
 
-    # Phase 1: Authentication
+    # Phase 1: Authentication & Connection
     with ctx.ui.spinner("Authenticating with Gmail") as task:
         try:
-            authenticator = GmailAuthenticator(credentials_file=credentials)
-            # authenticate is sync, but we are in async context.
-            # Ideally it should be async, but for now we call it as is.
-            # If it blocks too long, it should be run in executor, but likely it just does local file check or browser launch.
-            oauth_creds = authenticator.authenticate()
+            gmail = await GmailClient.create(credentials_file=credentials)
             task.complete("Connected")
+        except FileNotFoundError as e:
+            task.fail("Credentials not found")
+            ctx.fail_and_exit(
+                "Credentials Not Found",
+                str(e),
+                suggestion="Reinstall the application or provide --credentials",
+            )
+            return
         except Exception as e:
             task.fail("Authentication failed")
             ctx.fail_and_exit(
@@ -54,7 +57,7 @@ async def archive_command(
         delete=delete,
     )
 
-    async with GmailClient(oauth_creds) as gmail:
+    async with gmail:
         workflow = ArchiveWorkflow(gmail, ctx.storage, out, ctx.ui)
 
         try:
@@ -116,7 +119,8 @@ async def archive_command(
                 details=result.validation_details.get("errors", [])
                 if result.validation_details
                 else [],
-                suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
+                suggestion="Check disk space and file permissions. "
+                "DO NOT delete Gmail messages yet.",
             )
         elif verbose and result.validation_details:
             out.show_validation_report(result.validation_details, title="Archive Validation")
@@ -141,11 +145,13 @@ async def archive_command(
                 )
             elif result.duplicate_count > 0:
                 ctx.info(
-                    f"Nothing new to archive: all {result.duplicate_count:,} messages are duplicates"
+                    f"Nothing new to archive: all {result.duplicate_count:,} "
+                    "messages are duplicates"
                 )
             else:
                 ctx.info(
-                    f"Nothing new to archive: all {result.skipped_count:,} messages already archived"
+                    f"Nothing new to archive: all {result.skipped_count:,} "
+                    "messages already archived"
                 )
 
             # Offer deletion for existing messages (if user requested trash/delete)

@@ -47,6 +47,7 @@ class TestWithContextGmailAuth:
 
     def test_with_context_accepts_requires_gmail_param(self) -> None:
         """Test with_context decorator accepts requires_gmail parameter."""
+
         # Should not raise - decorator accepts the parameter
         @with_context(requires_gmail=True)
         def dummy_command(ctx: CommandContext) -> None:
@@ -55,18 +56,19 @@ class TestWithContextGmailAuth:
         # Decorator should create a wrapper
         assert callable(dummy_command)
 
-    @patch("gmailarchiver.cli.command_context.GmailAuthenticator")
-    def test_with_context_initializes_async_gmail_client(
-        self, mock_auth_cls: MagicMock
-    ) -> None:
+    @patch("gmailarchiver.cli.command_context.GmailClient")
+    def test_with_context_initializes_async_gmail_client(self, mock_gmail_cls: MagicMock) -> None:
         """Test with_context initializes GmailClient when requires_gmail=True."""
-        # Mock the authenticator
-        mock_auth = MagicMock()
+        from unittest.mock import AsyncMock
+
+        # Mock GmailClient.create() to return a mock client
+        mock_client = MagicMock(spec=GmailClient)
         mock_creds = MagicMock()
         mock_creds.token = "test_token"
-        mock_creds.expired = False
-        mock_auth.authenticate.return_value = mock_creds
-        mock_auth_cls.return_value = mock_auth
+        mock_client._credentials = mock_creds
+        mock_client._authenticator = None
+        mock_client.close = AsyncMock()
+        mock_gmail_cls.create = AsyncMock(return_value=mock_client)
 
         captured_ctx: CommandContext | None = None
 
@@ -78,37 +80,37 @@ class TestWithContextGmailAuth:
         # Call the command
         test_command(json_output=True)
 
-        # Context should have gmail set to GmailClient
+        # Context should have gmail set
         assert captured_ctx is not None
         assert captured_ctx.gmail is not None
-        assert isinstance(captured_ctx.gmail, GmailClient)
+        # GmailClient.create was called
+        mock_gmail_cls.create.assert_called_once()
 
-    @patch("gmailarchiver.cli.command_context.GmailAuthenticator")
-    def test_async_gmail_client_properly_closed_on_exit(
-        self, mock_auth_cls: MagicMock
-    ) -> None:
+    @patch("gmailarchiver.cli.command_context.GmailClient")
+    def test_async_gmail_client_properly_closed_on_exit(self, mock_gmail_cls: MagicMock) -> None:
         """Test GmailClient is properly closed when command exits."""
-        mock_auth = MagicMock()
+        from unittest.mock import AsyncMock
+
+        # Track if close was called
+        close_called = False
+
+        async def tracked_close() -> None:
+            nonlocal close_called
+            close_called = True
+
+        # Mock GmailClient.create() to return a mock client
+        mock_client = MagicMock(spec=GmailClient)
         mock_creds = MagicMock()
         mock_creds.token = "test_token"
-        mock_creds.expired = False
-        mock_auth.authenticate.return_value = mock_creds
-        mock_auth_cls.return_value = mock_auth
-
-        close_called = False
+        mock_client._credentials = mock_creds
+        mock_client._authenticator = None
+        mock_client.close = tracked_close
+        mock_gmail_cls.create = AsyncMock(return_value=mock_client)
 
         @with_context(requires_gmail=True)
         def test_command(ctx: CommandContext) -> None:
-            nonlocal close_called
-            # Patch close method to track if it's called
-            original_close = ctx.gmail.close
-
-            async def tracked_close() -> None:
-                nonlocal close_called
-                close_called = True
-                await original_close()
-
-            ctx.gmail.close = tracked_close
+            # Command body - gmail client should be available
+            assert ctx.gmail is not None
 
         test_command(json_output=True)
 

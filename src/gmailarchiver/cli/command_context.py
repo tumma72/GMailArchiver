@@ -36,7 +36,6 @@ from typing import Any, NoReturn, ParamSpec, TypeVar
 
 import typer
 
-from gmailarchiver.connectors.auth import GmailAuthenticator
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
@@ -161,13 +160,13 @@ class CommandContext:
         required: bool = True,
         validate_deletion_scope: bool = False,
     ) -> GmailClient | None:
-        """Authenticate with Gmail using consistent UI pattern.
+        """Authenticate with Gmail using GmailClient.create() factory.
 
-        Handles the full authentication flow with proper spinner UI:
-        - Shows spinner while authenticating
-        - Shows success/failure result
-        - Optionally validates deletion permissions
-        - Optionally exits on failure
+        Uses the GmailClient.create() factory method which handles OAuth2
+        authentication automatically. Shows spinner UI during auth.
+
+        Note: This is a sync wrapper for use in sync command contexts. For async
+        code, use authenticate_gmail_async() or gmail_session() instead.
 
         Args:
             credentials: Optional custom OAuth2 credentials file path.
@@ -198,13 +197,13 @@ class CommandContext:
         """
         with self.ui.spinner("Authenticating with Gmail") as task:
             try:
-                authenticator = GmailAuthenticator(credentials_file=credentials)
-                creds = authenticator.authenticate()
+                gmail = asyncio.run(GmailClient.create(credentials_file=credentials))
 
                 # Validate deletion scope if requested
-                if validate_deletion_scope:
-                    if not authenticator.validate_scopes(["https://mail.google.com/"]):
+                if validate_deletion_scope and gmail._authenticator:
+                    if not gmail._authenticator.validate_scopes(["https://mail.google.com/"]):
                         task.fail("Missing deletion permission")
+                        asyncio.run(gmail.close())
                         if required:
                             self.fail_and_exit(
                                 "Missing deletion permission",
@@ -217,10 +216,8 @@ class CommandContext:
                             )
                         return None
 
-                gmail = GmailClient(creds)
-                asyncio.run(gmail.connect())  # Explicit initialization
                 self.gmail = gmail
-                self._gmail_credentials = creds
+                self._gmail_credentials = gmail._credentials
                 task.complete("Connected")
                 return gmail
             except FileNotFoundError as e:
@@ -250,8 +247,9 @@ class CommandContext:
     ) -> GmailClient | None:
         """Async version of authenticate_gmail for use inside async workflows.
 
-        Use this instead of authenticate_gmail() when calling from within
-        an async function that's already running in an event loop.
+        Uses GmailClient.create() factory method which handles authentication
+        automatically. Use this instead of authenticate_gmail() when calling
+        from within an async function that's already running in an event loop.
 
         Args:
             credentials: Optional custom OAuth2 credentials file path.
@@ -263,13 +261,13 @@ class CommandContext:
         """
         with self.ui.spinner("Authenticating with Gmail") as task:
             try:
-                authenticator = GmailAuthenticator(credentials_file=credentials)
-                creds = authenticator.authenticate()
+                gmail = await GmailClient.create(credentials_file=credentials)
 
                 # Validate deletion scope if requested
-                if validate_deletion_scope:
-                    if not authenticator.validate_scopes(["https://mail.google.com/"]):
+                if validate_deletion_scope and gmail._authenticator:
+                    if not gmail._authenticator.validate_scopes(["https://mail.google.com/"]):
                         task.fail("Missing deletion permission")
+                        await gmail.close()
                         if required:
                             self.fail_and_exit(
                                 "Missing deletion permission",
@@ -282,10 +280,8 @@ class CommandContext:
                             )
                         return None
 
-                gmail = GmailClient(creds)
-                await gmail.connect()  # Use await instead of asyncio.run()
                 self.gmail = gmail
-                self._gmail_credentials = creds
+                self._gmail_credentials = gmail._credentials
                 task.complete("Connected")
                 return gmail
             except FileNotFoundError as e:
@@ -318,6 +314,9 @@ class CommandContext:
         This is the preferred way to use GmailClient - it ensures proper
         initialization and cleanup of the HTTP client using async with.
 
+        Uses GmailClient.create() factory method which handles authentication
+        automatically.
+
         Args:
             credentials: Path to credentials file (uses bundled if None)
             validate_deletion_scope: Require deletion permission
@@ -333,16 +332,41 @@ class CommandContext:
                 async for msg in gmail.list_messages("before:2022/01/01"):
                     print(msg["id"])
         """
-        # Authenticate if not already done
-        if self._gmail_credentials is None:
-            self.authenticate_gmail(
-                credentials=credentials,
-                validate_deletion_scope=validate_deletion_scope,
-                required=True,
-            )
+        with self.ui.spinner("Authenticating with Gmail") as task:
+            try:
+                client = await GmailClient.create(credentials_file=credentials)
+                task.complete("Connected")
+            except FileNotFoundError as e:
+                task.fail("Credentials not found")
+                self.fail_and_exit(
+                    "Credentials Not Found",
+                    str(e),
+                    suggestion="Reinstall the application or provide --credentials",
+                )
+            except Exception as e:
+                task.fail("Authentication failed")
+                self.fail_and_exit(
+                    "Authentication Failed",
+                    f"Failed to authenticate with Gmail: {e}",
+                    suggestion="Run 'gmailarchiver auth-reset' and try again",
+                )
 
-        # Use proper async context manager pattern
-        async with GmailClient(self._gmail_credentials) as client:
+        # Validate deletion scope if requested
+        if validate_deletion_scope and client._authenticator:
+            if not client._authenticator.validate_scopes(["https://mail.google.com/"]):
+                await client.close()
+                self.fail_and_exit(
+                    "Missing deletion permission",
+                    "Your current authorization doesn't include permission to delete messages",
+                    details=["This was likely caused by using an older version of the app"],
+                    suggestion="Run 'gmailarchiver auth-reset' then retry",
+                )
+
+        # Store for potential reuse
+        self.gmail = client
+        self._gmail_credentials = client._credentials
+
+        async with client:
             yield client
 
     # ==================== PROGRESS METHODS ====================

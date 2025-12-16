@@ -400,9 +400,7 @@ class TestGmailClientListMessages:
     async def test_list_messages_yields_all_messages(self) -> None:
         """Test list_messages yields all messages from response."""
         responses = [
-            MockResponse(
-                data={"messages": [{"id": "msg1"}, {"id": "msg2"}, {"id": "msg3"}]}
-            )
+            MockResponse(data={"messages": [{"id": "msg1"}, {"id": "msg2"}, {"id": "msg3"}]})
         ]
 
         async with FakeGmailClient(mock_credentials(), responses) as client:
@@ -417,12 +415,8 @@ class TestGmailClientListMessages:
     async def test_list_messages_handles_pagination(self) -> None:
         """Test list_messages follows nextPageToken across pages."""
         responses = [
-            MockResponse(
-                data={"messages": [{"id": "msg1"}], "nextPageToken": "page2_token"}
-            ),
-            MockResponse(
-                data={"messages": [{"id": "msg2"}], "nextPageToken": "page3_token"}
-            ),
+            MockResponse(data={"messages": [{"id": "msg1"}], "nextPageToken": "page2_token"}),
+            MockResponse(data={"messages": [{"id": "msg2"}], "nextPageToken": "page3_token"}),
             MockResponse(data={"messages": [{"id": "msg3"}]}),
         ]
 
@@ -516,9 +510,7 @@ class TestGmailClientGetMessagesBatch:
         ]
 
         async with FakeGmailClient(mock_credentials(), responses) as client:
-            messages = [
-                msg async for msg in client.get_messages_batch(["msg1", "msg2", "msg3"])
-            ]
+            messages = [msg async for msg in client.get_messages_batch(["msg1", "msg2", "msg3"])]
 
         assert len(messages) == 3
         assert [m["id"] for m in messages] == ["msg1", "msg2", "msg3"]
@@ -527,18 +519,12 @@ class TestGmailClientGetMessagesBatch:
     async def test_get_messages_batch_respects_batch_size(self) -> None:
         """Test batch fetch respects configured batch_size."""
         # With batch_size=2, should process in chunks of 2
-        responses = [
-            MockResponse(data={"id": f"msg{i}", "raw": f"data{i}"}) for i in range(5)
-        ]
+        responses = [MockResponse(data={"id": f"msg{i}", "raw": f"data{i}"}) for i in range(5)]
 
-        async with FakeGmailClient(
-            mock_credentials(), responses, batch_size=2
-        ) as client:
+        async with FakeGmailClient(mock_credentials(), responses, batch_size=2) as client:
             messages = [
                 msg
-                async for msg in client.get_messages_batch(
-                    ["msg0", "msg1", "msg2", "msg3", "msg4"]
-                )
+                async for msg in client.get_messages_batch(["msg0", "msg1", "msg2", "msg3", "msg4"])
             ]
 
         assert len(messages) == 5
@@ -665,3 +651,156 @@ class TestGmailClientSearchByRfcMessageId:
 
         assert gmail_id is None
         assert len(client.requests) == 0  # Should not make request
+
+
+# =============================================================================
+# GmailClient.create() Factory Method Tests
+# =============================================================================
+
+
+class TestGmailClientCreate:
+    """Tests for GmailClient.create() factory method.
+
+    These tests verify that the factory method correctly:
+    1. Creates a GmailAuthenticator instance
+    2. Calls authenticate_async() to get credentials
+    3. Creates a GmailClient with those credentials
+    4. Calls connect() to initialize the HTTP client
+    5. Returns a usable client as an async context manager
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_returns_authenticated_client(self) -> None:
+        """Test factory creates working client with authentication."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            client = await GmailClient.create()
+            try:
+                # Verify client was created with credentials
+                assert client is not None
+                assert client._credentials == mock_creds
+                # Verify authentication was called
+                mock_auth.authenticate_async.assert_called_once()
+                # Verify HTTP client was initialized
+                assert client._http_client is not None
+            finally:
+                await client.close()
+
+    @pytest.mark.asyncio
+    async def test_create_uses_default_credentials(self) -> None:
+        """Test factory uses bundled credentials when none specified."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            await GmailClient.create()
+
+            # Verify authenticator was created with default parameters
+            mock_auth_cls.assert_called_once()
+            call_kwargs = mock_auth_cls.call_args[1]
+            assert "credentials_file" not in call_kwargs or call_kwargs["credentials_file"] is None
+
+    @pytest.mark.asyncio
+    async def test_create_with_custom_credentials_file(self) -> None:
+        """Test factory passes credentials_file to authenticator."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+        custom_file = "/path/to/custom_oauth.json"
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            client = await GmailClient.create(credentials_file=custom_file)
+            try:
+                # Verify authenticator was created with custom credentials file
+                mock_auth_cls.assert_called_once()
+                call_kwargs = mock_auth_cls.call_args[1]
+                assert call_kwargs["credentials_file"] == custom_file
+            finally:
+                await client.close()
+
+    @pytest.mark.asyncio
+    async def test_create_propagates_auth_failure(self) -> None:
+        """Test factory propagates authentication errors."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(
+                side_effect=FileNotFoundError("Credentials not found")
+            )
+
+            with pytest.raises(FileNotFoundError, match="Credentials not found"):
+                await GmailClient.create()
+
+    @pytest.mark.asyncio
+    async def test_create_client_is_connected(self) -> None:
+        """Test factory returns client with initialized HTTP client."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            client = await GmailClient.create()
+            try:
+                # Verify HTTP client is initialized (connect() was called)
+                assert client._http_client is not None
+                # Verify refresh lock is initialized
+                assert client._refresh_lock is not None
+            finally:
+                await client.close()
+
+    @pytest.mark.asyncio
+    async def test_create_with_custom_batch_size(self) -> None:
+        """Test factory respects custom batch_size parameter."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            client = await GmailClient.create(batch_size=50)
+            try:
+                # Verify custom batch size was set
+                assert client.batch_size == 50
+            finally:
+                await client.close()
+
+    @pytest.mark.asyncio
+    async def test_create_client_usable_as_context_manager(self) -> None:
+        """Test factory returns client usable with async with."""
+        from unittest.mock import AsyncMock, patch
+
+        mock_creds = mock_credentials()
+
+        with patch("gmailarchiver.connectors.auth.GmailAuthenticator") as mock_auth_cls:
+            mock_auth = mock_auth_cls.return_value
+            mock_auth.authenticate_async = AsyncMock(return_value=mock_creds)
+
+            # Create and use as context manager
+            client = await GmailClient.create()
+
+            # Should support async context manager protocol
+            assert hasattr(client, "__aenter__")
+            assert hasattr(client, "__aexit__")
+
+            # Verify we can enter/exit context (idempotent since already connected)
+            async with client:
+                assert client._http_client is not None
