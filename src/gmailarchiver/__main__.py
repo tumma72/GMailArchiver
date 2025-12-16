@@ -1,7 +1,6 @@
 """Gmail Archiver CLI application."""
 
 import asyncio
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,10 +8,11 @@ from typing import Any
 import typer
 
 from ._version import __version__
+from .cli.archive import archive_command
 from .cli.command_context import CommandContext, with_context
 from .cli.output import OutputManager
+from .cli.status import status_command
 from .connectors.auth import GmailAuthenticator
-from .connectors.gmail_client import GmailClient
 from .core.archiver import ArchiverFacade
 from .core.compressor.facade import ArchiveCompressor
 from .core.consolidator.facade import ArchiveConsolidator
@@ -24,7 +24,7 @@ from .core.search.facade import SearchFacade
 from .core.validator.facade import ValidatorFacade
 from .data.migration import MigrationManager
 from .data.schema_manager import SchemaCapability, SchemaManager, SchemaVersion
-from .shared.utils import datetime_to_gmail_query, format_bytes, parse_age
+from .shared.utils import format_bytes
 
 
 def version_callback(value: bool) -> None:
@@ -92,9 +92,7 @@ def archive(
         False, "--delete", help="Permanently delete archived messages (IRREVERSIBLE!)"
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview without making changes"),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Show detailed validation output"
-    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation output"),
     credentials: str | None = typer.Option(
         None,
         "--credentials",
@@ -115,422 +113,21 @@ def archive(
     $ gmailarchiver archive 3y --trash
     $ gmailarchiver archive 3y --json
     """
-    out = ctx.output
-
-    # Generate Gmail query from age threshold (needed for partial session lookup)
-    try:
-        cutoff_date = parse_age(age_threshold)
-        gmail_query = f"before:{datetime_to_gmail_query(cutoff_date)}"
-    except ValueError:
-        ctx.fail_and_exit(
-            title="Invalid Age Threshold",
-            message=f"Could not parse age threshold: {age_threshold}",
-            suggestion="Use formats like '3y', '6m', '2w', '30d' or ISO date 'YYYY-MM-DD'",
+    asyncio.run(
+        archive_command(
+            ctx,
+            age_threshold,
+            output,
+            compress,
+            incremental,
+            trash,
+            delete,
+            dry_run,
+            verbose,
+            credentials,
+            json_output,
         )
-        return  # For type checker
-
-    # Check for existing partial session with same query (for resuming)
-    existing_partial: dict[str, Any] | None = None
-    if not output:  # Only auto-resume if user didn't specify output explicitly
-        assert ctx.storage is not None
-
-        async def _check_partial() -> dict[str, Any] | None:
-            return await ctx.storage.db.get_session_by_query(gmail_query, compress)
-
-        existing_partial = asyncio.run(_check_partial())
-
-        if existing_partial:
-            # Resume existing partial - use its target file
-            output = existing_partial["target_file"]
-            processed = existing_partial.get("processed_count", 0)
-            total = existing_partial.get("total_count", 0)
-            ctx.info(f"Resuming partial archive: {output}")
-            ctx.info(f"Progress: {processed:,}/{total:,} messages already archived")
-        else:
-            # Generate new output filename
-            timestamp = datetime.now().strftime("%Y%m%d")
-            extension = ".mbox"
-            if compress == "gzip":
-                extension = ".mbox.gz"
-            elif compress == "lzma":
-                extension = ".mbox.xz"
-            elif compress == "zstd":
-                extension = ".mbox.zst"
-            output = f"archive_{timestamp}{extension}"
-
-    # Phase 1: Authentication - get OAuth credentials (client created in async workflow)
-    with ctx.ui.spinner("Authenticating with Gmail") as task:
-        try:
-            authenticator = GmailAuthenticator(credentials_file=credentials)
-            oauth_creds = authenticator.authenticate()
-            task.complete("Connected")
-        except Exception as e:
-            task.fail("Authentication failed")
-            ctx.fail_and_exit(
-                "Authentication Failed",
-                f"Failed to authenticate with Gmail: {e}",
-                suggestion="Run 'gmailarchiver auth-reset' and try again",
-            )
-
-    # Phase 2: Discovery and Archiving - single async workflow for proper resource management
-    message_list: list[dict[str, str]] = []
-    messages_to_archive: list[str] = []
-    skipped_count: int = 0
-    already_archived_count: int = 0
-    duplicate_count: int = 0
-    result: dict[str, Any] | None = None
-    archive_error: Exception | None = None
-    scan_count: int = 0  # Track messages scanned during listing
-
-    # Single async workflow using proper context manager for Gmail client
-    async def _archive_workflow() -> tuple[
-        list[dict[str, str]], list[str], int, int, int, dict[str, Any] | None, Exception | None
-    ]:
-        nonlocal message_list, messages_to_archive, skipped_count, already_archived_count
-        nonlocal duplicate_count, result, archive_error, scan_count
-
-        # Use async context manager for proper HTTP client lifecycle
-        async with GmailClient(oauth_creds) as gmail:
-            # Create archiver with the properly initialized client
-            archiver = await ArchiverFacade.create(
-                gmail_client=gmail,
-                state_db_path="archive_state.db",
-                output_manager=out,
-            )
-
-            try:
-                # Task 1: Scan messages from Gmail
-                with ctx.ui.task_sequence(show_logs=True) as seq:
-                    with seq.task("Scanning messages from Gmail") as task:
-                        try:
-
-                            def scan_progress(count: int, page: int) -> None:
-                                nonlocal scan_count
-                                scan_count = count
-                                task.set_status(f"Scanning messages from Gmail... {count:,} found")
-
-                            _query, message_list = await archiver.list_messages_for_archive(
-                                age_threshold, progress_callback=scan_progress
-                            )
-
-                            if message_list:
-                                task.complete(f"Found {len(message_list):,} messages")
-                            else:
-                                task.complete("No messages found matching criteria")
-
-                        except Exception as e:
-                            task.fail(f"Scan failed: {e}")
-                            archive_error = e
-
-                    # Task 2: Filter already archived and check for duplicates
-                    if message_list and not archive_error:
-                        with seq.task("Checking for already archived") as task:
-                            try:
-                                all_ids = [msg["id"] for msg in message_list]
-                                filter_result = await archiver.filter_already_archived(
-                                    all_ids, incremental
-                                )
-                                messages_to_archive = filter_result.to_archive
-                                skipped_count = filter_result.total_skipped
-                                already_archived_count = filter_result.already_archived_count
-                                duplicate_count = filter_result.duplicate_count
-
-                                # Build completion message based on what was filtered
-                                parts = []
-                                if already_archived_count > 0:
-                                    parts.append(f"{already_archived_count:,} already archived")
-                                if duplicate_count > 0:
-                                    parts.append(f"{duplicate_count:,} duplicates")
-
-                                if parts:
-                                    task.complete(
-                                        f"{', '.join(parts)}, "
-                                        f"{len(messages_to_archive):,} to archive"
-                                    )
-                                else:
-                                    task.complete(
-                                        f"{len(messages_to_archive):,} to archive"
-                                    )
-
-                            except Exception as e:
-                                task.fail(f"Filter failed: {e}")
-                                archive_error = e
-
-                    # Task 3: Archive messages
-                    if messages_to_archive and not archive_error and not dry_run:
-                        with seq.task("Archiving messages", total=len(messages_to_archive)) as task:
-                            try:
-                                result = await archiver.archive_messages(
-                                    message_ids=messages_to_archive,
-                                    output_file=output,
-                                    compress=compress,
-                                    operation=task,
-                                    gmail_query=gmail_query,
-                                )
-
-                                if result.get("interrupted"):
-                                    task.complete(
-                                        f"Interrupted after {result['archived_count']:,} messages"
-                                    )
-                                elif result["archived_count"] > 0:
-                                    task.complete(f"Archived {result['archived_count']:,} messages")
-                                else:
-                                    task.complete("No messages archived")
-
-                            except KeyboardInterrupt:
-                                task.log("Archive interrupted by user", "WARNING")
-                                task.complete("Interrupted")
-                                result = {"interrupted": True, "archived_count": 0}
-
-                            except Exception as e:
-                                task.fail(f"Archive failed: {e}")
-                                archive_error = e
-            finally:
-                # Clean up archiver resources
-                await archiver.close()
-
-        return (
-            message_list,
-            messages_to_archive,
-            skipped_count,
-            already_archived_count,
-            duplicate_count,
-            result,
-            archive_error,
-        )
-
-    # Run the entire workflow in a single event loop
-    asyncio.run(_archive_workflow())
-
-    # Handle errors (outside live context)
-    if archive_error:
-        ctx.fail_and_exit(
-            title="Archive Failed",
-            message=str(archive_error),
-            suggestion="Check your network connection and Gmail API access",
-        )
-
-    # Handle dry run result
-    if dry_run:
-        ctx.warning("DRY RUN completed - no changes made")
-        report_data = {
-            "Messages Found": len(message_list),
-            "Messages to Archive": len(messages_to_archive),
-            "Already Archived": skipped_count,
-            "Output File": output,
-            "Mode": "Dry Run (no changes made)",
-        }
-        ctx.show_report("Archive Preview", report_data)
-        return
-
-    # Handle no messages case (after dry run check)
-    if not message_list:
-        ctx.warning("No messages found matching criteria")
-        ctx.suggest_next_steps(
-            [
-                "Check your age threshold",
-                "Verify messages exist in Gmail matching the criteria",
-            ]
-        )
-        return
-
-    if not messages_to_archive:
-        # Build contextual message based on what was filtered
-        if duplicate_count > 0 and already_archived_count > 0:
-            ctx.info(
-                f"Nothing new to archive: {already_archived_count:,} already archived, "
-                f"{duplicate_count:,} duplicates"
-            )
-        elif duplicate_count > 0:
-            ctx.info(f"Nothing new to archive: all {duplicate_count:,} messages are duplicates")
-        else:
-            ctx.info(
-                f"Nothing new to archive: all {already_archived_count:,} messages already archived"
-            )
-
-        # If --trash or --delete was requested, offer to delete already-archived messages
-        if (trash or delete) and Path(output).exists():
-            assert ctx.storage is not None
-            archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(output))
-
-            if archived_ids:
-                archive_count = len(archived_ids)
-                ctx.info(f"\nFound {archive_count:,} messages in {output}")
-
-                if delete:
-                    # Permanent deletion requires explicit confirmation
-                    ctx.warning("WARNING: PERMANENT DELETION")
-                    ctx.warning("This action CANNOT be undone!")
-
-                    confirmation = typer.prompt(
-                        f"\nType 'DELETE {archive_count} MESSAGES' to confirm"
-                    )
-                    if confirmation != f"DELETE {archive_count} MESSAGES":
-                        ctx.info("Deletion cancelled")
-                        return
-
-                    async def _delete_existing() -> None:
-                        async with GmailClient(oauth_creds) as gmail:
-                            await gmail.delete_messages_permanent(list(archived_ids))
-
-                    with out.progress_context("Permanently deleting messages", total=None):
-                        asyncio.run(_delete_existing())
-                    ctx.success(f"Permanently deleted {archive_count:,} messages from Gmail")
-
-                elif trash:
-                    if not typer.confirm(
-                        f"Move {archive_count:,} messages to trash? (30-day recovery period)"
-                    ):
-                        ctx.info("Cancelled")
-                        return
-
-                    async def _trash_existing() -> None:
-                        async with GmailClient(oauth_creds) as gmail:
-                            await gmail.trash_messages(list(archived_ids))
-
-                    with out.progress_context("Moving messages to trash", total=None):
-                        asyncio.run(_trash_existing())
-                    ctx.success(f"Moved {archive_count:,} messages to trash")
-
-        return
-
-    # Handle interrupted archive (Ctrl+C)
-    if result and result.get("interrupted", False):
-        actual_file = result.get("actual_file", output)
-        ctx.warning("Archive was interrupted (Ctrl+C)")
-        ctx.info(f"Partial archive saved: {actual_file}")
-        ctx.info(f"Progress: {result['archived_count']} messages archived")
-        ctx.suggest_next_steps(
-            [
-                f"Resume: gmailarchiver archive {age_threshold}",
-                "Cleanup: gmailarchiver cleanup --list",
-            ]
-        )
-        return
-
-    # Phase 5: Validation (with spinner for UI feedback)
-    # Get the actual file that was written
-    actual_file = result.get("actual_file", output) if result else output
-
-    # Get the actual message IDs that were archived
-    # (ctx.storage is guaranteed by requires_storage=True)
-    assert ctx.storage is not None
-
-    validation_results: dict[str, Any] = {}
-    with ctx.ui.spinner("Validating archive") as task:
-        archived_ids = asyncio.run(ctx.storage.get_message_ids_for_archive(actual_file))
-
-        # Validate using ValidatorFacade directly
-        validator = ValidatorFacade(actual_file, "archive_state.db", output=out)
-        try:
-            validation_results = validator.validate_comprehensive(archived_ids)
-            # Count passed checks for display
-            check_keys = ["count_check", "database_check", "integrity_check", "spot_check"]
-            passed_count = sum(1 for k in check_keys if validation_results.get(k, False))
-            total_count = len(check_keys)
-
-            if validation_results["passed"]:
-                task.complete(f"Passed {passed_count}/{total_count} checks")
-            else:
-                task.fail(f"Failed {total_count - passed_count}/{total_count} checks")
-        finally:
-            asyncio.run(validator.close())
-
-    # Show detailed validation panel only on failure or with --verbose
-    if not validation_results["passed"] or verbose:
-        out.show_validation_report(validation_results, title="Archive Validation")
-
-    if not validation_results["passed"]:
-        ctx.fail_and_exit(
-            title="Validation Failed",
-            message="Archive validation did not pass all checks",
-            details=validation_results.get("errors", []),
-            suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
-        )
-
-    # Get archived count from result
-    archived_count = result.get("archived_count", 0) if result else 0
-
-    # Phase 6: Deletion (if requested)
-    if (trash or delete) and archived_count > 0:
-        if delete:
-            # Permanent deletion requires explicit confirmation
-            ctx.warning("WARNING: PERMANENT DELETION")
-            ctx.warning(f"This will permanently delete {archived_count} messages.")
-            ctx.warning("This action CANNOT be undone!")
-
-            confirmation = typer.prompt(f"\nType 'DELETE {archived_count} MESSAGES' to confirm")
-
-            if confirmation != f"DELETE {archived_count} MESSAGES":
-                ctx.info("Deletion cancelled")
-                return
-
-            # Perform permanent deletion with proper async resource management
-            async def _delete_messages() -> None:
-                async with GmailClient(oauth_creds) as gmail:
-                    await gmail.delete_messages_permanent(list(archived_ids))
-
-            with out.progress_context("Permanently deleting messages", total=None):
-                asyncio.run(_delete_messages())
-            ctx.success("Messages permanently deleted")
-
-        elif trash:
-            # Move to trash with confirmation
-            if not typer.confirm(
-                f"\nMove {archived_count} messages to trash? (30-day recovery period)"
-            ):
-                ctx.info("Cancelled")
-                return
-
-            # Trash messages with proper async resource management
-            async def _trash_messages() -> None:
-                async with GmailClient(oauth_creds) as gmail:
-                    await gmail.trash_messages(list(archived_ids))
-
-            with out.progress_context("Moving messages to trash", total=None):
-                asyncio.run(_trash_messages())
-            ctx.success("Messages moved to trash")
-
-    # Phase 7: Final report with contextual summary
-    report_data = {
-        "Archived": f"{archived_count:,} messages",
-        "File": output,
-    }
-
-    if already_archived_count > 0 or duplicate_count > 0:
-        skipped_parts = []
-        if already_archived_count > 0:
-            skipped_parts.append(f"{already_archived_count:,} already archived")
-        if duplicate_count > 0:
-            skipped_parts.append(f"{duplicate_count:,} duplicates")
-        report_data["Skipped"] = ", ".join(skipped_parts)
-
-    if compress:
-        report_data["Compression"] = compress
-
-    if trash:
-        report_data["Gmail"] = "Moved to trash (30-day recovery)"
-    elif delete:
-        report_data["Gmail"] = "Permanently deleted"
-
-    ctx.show_report("📦 Archive Summary", report_data)
-    ctx.success("Archive completed!")
-
-    # Contextual suggestions based on what happened
-    suggestions: list[str] = []
-
-    if archived_count > 0 and not trash and not delete:
-        # Suggest deletion options if messages were archived but not deleted
-        suggestions.append(
-            f"Move to trash (recoverable): gmailarchiver archive {age_threshold} --trash"
-        )
-
-    if duplicate_count > 0:
-        # Suggest dedupe review when duplicates were found
-        suggestions.append("Review duplicates: gmailarchiver dedupe --dry-run")
-
-    if suggestions:
-        ctx.suggest_next_steps(suggestions)
+    )
 
 
 @app.command()
@@ -541,9 +138,7 @@ def validate(
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Show detailed validation output"
-    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation output"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """
@@ -587,9 +182,7 @@ def validate(
             assert ctx.storage is not None, "Storage should be initialized by @with_context"
             ids = await ctx.storage.get_message_ids_for_archive(archive_file)
             # validate_comprehensive is sync, run via to_thread to not block
-            validation_results = await asyncio.to_thread(
-                validator.validate_comprehensive, ids
-            )
+            validation_results = await asyncio.to_thread(validator.validate_comprehensive, ids)
             return ids, validation_results
         finally:
             await validator.close()
@@ -748,7 +341,9 @@ def retry_delete_cmd(
             await archiver.delete_archived_messages(message_ids, permanent=permanent)
             return len(message_ids), False, True
 
-        message_count, deletion_cancelled, deletion_completed = asyncio.run(_retry_delete_workflow())
+        message_count, deletion_cancelled, deletion_completed = asyncio.run(
+            _retry_delete_workflow()
+        )
 
         if message_count == 0:
             ctx.fail_and_exit(
@@ -798,125 +393,7 @@ def status(
         $ gmailarchiver status --verbose
         $ gmailarchiver status --json
     """
-    # Check if database exists
-    db_path = Path(state_db)
-    if not db_path.exists():
-        ctx.warning("No archive database found")
-        ctx.suggest_next_steps(
-            [
-                "Archive emails: gmailarchiver archive 3y",
-                "Import existing archive: gmailarchiver import archive.mbox",
-            ]
-        )
-        raise typer.Exit(0)
-
-    # Detect schema version
-    manager = MigrationManager(db_path)
-
-    def _get_status_data_sync(schema_version: str, run_limit: int) -> tuple[int, list[dict[str, Any]]]:
-        """Sync helper to query database statistics."""
-        conn = sqlite3.connect(state_db)
-        conn.row_factory = sqlite3.Row
-
-        # Get message count - handle both v1.0 (archived_messages) and v1.1+ (messages)
-        table_name = "messages" if schema_version in ("1.1", "1.2") else "archived_messages"
-        cursor = conn.execute(f"SELECT COUNT(*) FROM {table_name}")
-        result = cursor.fetchone()
-        total_archived = int(result[0]) if result else 0
-
-        # Get recent runs
-        cursor = conn.execute(
-            """
-            SELECT run_id, run_timestamp as timestamp, query,
-                   messages_archived, archive_file
-            FROM archive_runs
-            ORDER BY run_id DESC
-            LIMIT ?
-            """,
-            (run_limit,),
-        )
-        recent_runs = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return total_archived, recent_runs
-
-    async def _status_workflow() -> tuple[str, int, list[dict[str, Any]]]:
-        """Single async workflow for status command."""
-        try:
-            version = await manager.detect_schema_version()
-            run_limit = 10 if verbose else 5
-            total_archived, recent_runs = await asyncio.to_thread(
-                _get_status_data_sync, version, run_limit
-            )
-            return version, total_archived, recent_runs
-        finally:
-            await manager._close()
-
-    try:
-        version, total_archived, recent_runs = asyncio.run(_status_workflow())
-        db_size = db_path.stat().st_size
-
-        # Get unique archive files from runs
-        archive_files = set(run["archive_file"] for run in recent_runs if run.get("archive_file"))
-
-        # Build report data - always show schema version and db size
-        report_data: dict[str, str] = {
-            "Schema Version": version,
-            "Database Size": format_bytes(db_size),
-            "Total Messages": f"{total_archived:,}",
-            "Archive Files": str(len(archive_files)),
-        }
-
-        # Add verbose details (more detail about same info)
-        if verbose and archive_files:
-            sorted_files = sorted(archive_files)
-            if sorted_files:
-                report_data["Archive Files"] = (
-                    f"{len(archive_files)} (recent: {sorted_files[-1][:25]}...)"
-                )
-
-        ctx.show_report("Archive Status", report_data)
-
-        # Display recent runs table
-        run_limit = 10 if verbose else 5
-        if recent_runs:
-            # Include query column in verbose mode
-            if verbose:
-                headers = ["Run ID", "Timestamp", "Query", "Messages", "Archive File"]
-                rows: list[list[str]] = []
-                for run in recent_runs:
-                    rows.append(
-                        [
-                            str(run["run_id"]),
-                            run["timestamp"][:19],
-                            run["query"][:30] if run["query"] else "",
-                            str(run["messages_archived"]),
-                            run["archive_file"],
-                        ]
-                    )
-            else:
-                headers = ["Run ID", "Timestamp", "Messages", "Archive File"]
-                rows = []
-                for run in recent_runs:
-                    rows.append(
-                        [
-                            str(run["run_id"]),
-                            run["timestamp"][:19],
-                            str(run["messages_archived"]),
-                            run["archive_file"],
-                        ]
-                    )
-
-            table_title = f"Recent Archive Runs (Last {run_limit})"
-            ctx.show_table(table_title, headers, rows)
-        else:
-            ctx.warning("No archive runs found")
-
-    except Exception as e:
-        ctx.fail_and_exit(
-            title="Status Error",
-            message=f"Error reading database: {e}",
-            suggestion="Check database file integrity or run 'gmailarchiver doctor'",
-        )
+    asyncio.run(status_command(ctx, state_db, verbose, json_output))
 
 
 @app.command()
@@ -985,8 +462,7 @@ def cleanup(
         def _confirm_cleanup(num_sessions: int) -> bool:
             """Sync confirmation for cleanup."""
             ctx.warning(
-                f"This will delete {num_sessions} partial session(s) "
-                "and their associated data"
+                f"This will delete {num_sessions} partial session(s) and their associated data"
             )
             return typer.confirm("Continue?")
 
@@ -1872,7 +1348,6 @@ def search(
         $ gmailarchiver search "important" --interactive
     """
     import time
-    from datetime import datetime
 
     # Validate flags
     if extract and not output_dir:
@@ -1993,9 +1468,7 @@ def search(
 
             # Execute search
             async with await SearchFacade.create(state_db) as search_facade:
-                results: SearchResults = await search_facade.search(
-                    effective_query, limit=limit
-                )
+                results: SearchResults = await search_facade.search(effective_query, limit=limit)
 
             execution_time_ms = (time.perf_counter() - start_time) * 1000
 
@@ -2368,15 +1841,22 @@ def import_cmd(
             total_messages = 0
 
             for file_idx, file_path in enumerate(files):
-                ctx.info(f"Scanning {Path(file_path).name}...")
-                scan_result = await importer.scan_archive(file_path, None, skip_duplicates)
-                scan_results.append(scan_result)
-                total_new += scan_result.new_messages
-                total_duplicates += scan_result.duplicate_messages
-                total_messages += scan_result.total_messages
+                file_name = Path(file_path).name
+                with ctx.ui.spinner(f"Scanning {file_name}") as task:
+                    scan_result = await importer.scan_archive(file_path, None, skip_duplicates)
+                    scan_results.append(scan_result)
+                    total_new += scan_result.new_messages
+                    total_duplicates += scan_result.duplicate_messages
+                    total_messages += scan_result.total_messages
+                    msg_count = scan_result.total_messages
+                    new_count = scan_result.new_messages
+                    task.complete(f"Found {msg_count:,} messages ({new_count:,} new)")
 
-            # Show scan results
-            ctx.success(f"Scanned {total_messages:,} messages: {total_new:,} new, {total_duplicates:,} already in database")
+            # Show overall scan summary
+            ctx.success(
+                f"Scanned {total_messages:,} messages: "
+                f"{total_new:,} new, {total_duplicates:,} already in database"
+            )
 
             # Early exit if nothing to import
             if total_new == 0:
@@ -2395,9 +1875,14 @@ def import_cmd(
             # Phase 2: Connect to Gmail for ID lookups (only if needed and not skipped)
             gmail_client = None
             if not skip_gmail_lookup:
-                gmail_client = ctx.authenticate_gmail(credentials=credentials, required=False)
+                # Use async version since we're inside an async workflow
+                gmail_client = await ctx.authenticate_gmail_async(
+                    credentials=credentials, required=False
+                )
                 if gmail_client is None:
-                    ctx.warning("Continuing without Gmail ID lookup (messages will have NULL gmail_id)")
+                    ctx.warning(
+                        "Continuing without Gmail ID lookup (messages will have NULL gmail_id)"
+                    )
                     skip_gmail_lookup = True
 
             # Create importer with Gmail client (if available)
@@ -2407,11 +1892,15 @@ def import_cmd(
             results: list[Any] = []
             import_errors: list[str] = []
 
-            for file_idx, (file_path, scan_result) in enumerate(zip(files, scan_results, strict=True)):
+            for file_idx, (file_path, scan_result) in enumerate(
+                zip(files, scan_results, strict=True)
+            ):
                 if scan_result.new_messages == 0:
                     continue  # Skip files with nothing to import
 
-                ctx.info(f"Importing {Path(file_path).name} ({scan_result.new_messages} messages)...")
+                ctx.info(
+                    f"Importing {Path(file_path).name} ({scan_result.new_messages} messages)..."
+                )
 
                 try:
                     result = await importer.import_archive(
@@ -2425,7 +1914,9 @@ def import_cmd(
                     results.append(result)
 
                     if result.messages_imported > 0:
-                        ctx.success(f"Imported {result.messages_imported:,} messages from {Path(file_path).name}")
+                        ctx.success(
+                            f"Imported {result.messages_imported:,} messages from {Path(file_path).name}"
+                        )
 
                 except Exception as e:
                     import_errors.append(f"Error importing {file_path}: {e}")
@@ -2456,6 +1947,7 @@ def import_cmd(
 
         except Exception as e:
             import traceback
+
             return {"status": "error", "error_message": str(e), "traceback": traceback.format_exc()}
 
     # Execute single async workflow
@@ -4289,7 +3781,9 @@ def doctor(
         """Single async workflow for doctor command."""
         try:
             # Initialize doctor
-            doctor_instance = await Doctor.create(state_db, validate_schema=False, auto_create=False)
+            doctor_instance = await Doctor.create(
+                state_db, validate_schema=False, auto_create=False
+            )
 
             try:
                 # Run diagnostics
@@ -4545,9 +4039,7 @@ def backfill_gmail_ids_cmd(
             if storage_db.conn is None:
                 return {"status": "error", "error_message": "Database connection not initialized"}
 
-            cursor = await storage_db.conn.execute(
-                "SELECT gmail_id, rfc_message_id FROM messages"
-            )
+            cursor = await storage_db.conn.execute("SELECT gmail_id, rfc_message_id FROM messages")
             rows = await cursor.fetchall()
             all_messages = [(row[0], row[1]) for row in rows]
 

@@ -626,17 +626,33 @@ class TestArchitectureCompliance:
 
         assert outer_func is not None, f"Could not find function {command_name}"
 
-        # Look for inner async function definitions
+        # Look for inner async function definitions OR direct calls to imported async functions
         has_inner_async = False
+        has_asyncio_run_call = False
+
         for node in ast.walk(outer_func):
             if isinstance(node, ast.AsyncFunctionDef):
-                # Found an async function defined inside the command
+                # Found an async function defined inside the command (Legacy Pattern)
                 has_inner_async = True
                 break
 
-        assert has_inner_async, (
-            f"{command_name} should define an inner async function for workflow. "
-            "Per ADR-006, all async logic should be in a single inner async function "
+            # Check for asyncio.run(some_command(...)) (New Pattern)
+            if isinstance(node, ast.Call):
+                # Check if it's asyncio.run
+                is_asyncio_run = False
+                if isinstance(node.func, ast.Attribute) and node.func.attr == "run":
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio":
+                        is_asyncio_run = True
+
+                if is_asyncio_run:
+                    # Check if it's calling another function
+                    if node.args and isinstance(node.args[0], ast.Call):
+                        has_asyncio_run_call = True
+                        break
+
+        assert has_inner_async or has_asyncio_run_call, (
+            f"{command_name} should define an inner async function OR call an imported async command. "
+            "Per ADR-006, all async logic should be in a single async context "
             "called via asyncio.run()."
         )
 

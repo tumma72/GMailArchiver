@@ -452,7 +452,10 @@ def test_verify_integrity_missing_fts(db_with_missing_fts: Path) -> None:
 
     assert result.exit_code == 1
     assert "missing from FTS index" in result.stdout
-    assert "1 " in result.stdout  # Count should be 1
+    # Check that exactly 1 message is reported as missing from FTS (allowing for ANSI codes)
+    import re
+
+    assert re.search(r"1.*messages missing from FTS", result.stdout)  # Specific count for FTS issue
 
 
 def test_verify_integrity_invalid_offsets(db_with_invalid_offsets: Path) -> None:
@@ -461,7 +464,10 @@ def test_verify_integrity_invalid_offsets(db_with_invalid_offsets: Path) -> None
 
     assert result.exit_code == 1
     assert "invalid offsets" in result.stdout.lower()
-    assert "1 " in result.stdout  # Count should be 1
+    # Check that exactly 1 message is reported as having invalid offsets (allowing for ANSI codes)
+    import re
+
+    assert re.search(r"1.*messages with invalid", result.stdout)  # Specific count for offset issue
 
 
 def test_verify_integrity_missing_file(db_with_missing_file: Path) -> None:

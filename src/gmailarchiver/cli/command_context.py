@@ -242,6 +242,71 @@ class CommandContext:
                     )
                 return None
 
+    async def authenticate_gmail_async(
+        self,
+        credentials: str | None = None,
+        required: bool = True,
+        validate_deletion_scope: bool = False,
+    ) -> GmailClient | None:
+        """Async version of authenticate_gmail for use inside async workflows.
+
+        Use this instead of authenticate_gmail() when calling from within
+        an async function that's already running in an event loop.
+
+        Args:
+            credentials: Optional custom OAuth2 credentials file path.
+            required: If True (default), calls fail_and_exit on auth failure.
+            validate_deletion_scope: If True, validates deletion permission.
+
+        Returns:
+            GmailClient instance on success, None on failure (if required=False)
+        """
+        with self.ui.spinner("Authenticating with Gmail") as task:
+            try:
+                authenticator = GmailAuthenticator(credentials_file=credentials)
+                creds = authenticator.authenticate()
+
+                # Validate deletion scope if requested
+                if validate_deletion_scope:
+                    if not authenticator.validate_scopes(["https://mail.google.com/"]):
+                        task.fail("Missing deletion permission")
+                        if required:
+                            self.fail_and_exit(
+                                "Missing deletion permission",
+                                "Your current authorization doesn't include "
+                                "permission to delete messages",
+                                details=[
+                                    "This was likely caused by using an older version of the app",
+                                ],
+                                suggestion="Run 'gmailarchiver auth-reset' then retry",
+                            )
+                        return None
+
+                gmail = GmailClient(creds)
+                await gmail.connect()  # Use await instead of asyncio.run()
+                self.gmail = gmail
+                self._gmail_credentials = creds
+                task.complete("Connected")
+                return gmail
+            except FileNotFoundError as e:
+                task.fail("Credentials not found")
+                if required:
+                    self.fail_and_exit(
+                        "Credentials Not Found",
+                        str(e),
+                        suggestion="Reinstall the application or provide --credentials",
+                    )
+                return None
+            except Exception as e:
+                task.fail("Authentication failed")
+                if required:
+                    self.fail_and_exit(
+                        "Authentication Failed",
+                        f"Failed to authenticate with Gmail: {e}",
+                        suggestion="Run 'gmailarchiver auth-reset' and try again",
+                    )
+                return None
+
     @asynccontextmanager
     async def gmail_session(
         self,
