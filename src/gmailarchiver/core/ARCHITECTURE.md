@@ -11,9 +11,26 @@ The core layer contains business logic for email archiving operations: archiving
 | Property | Value |
 |----------|-------|
 | **Dependencies** | `shared`, `data`, `connectors` layers |
-| **Dependents** | `cli` layer only |
+| **Dependents** | `cli` layer, `workflows` module |
 | **Responsibility** | Business logic for all archiving operations |
 | **Thread Safety** | Components are not thread-safe (use separate instances per thread) |
+
+### Critical Architecture Rule
+
+**ALL database access MUST go through HybridStorage.**
+
+```mermaid
+flowchart TD
+    Core -->|ONLY| HybridStorage
+    HybridStorage --> DBManager
+    Core -.->|NEVER| DBManager
+```
+
+**Rationale:**
+- HybridStorage provides transactional guarantees
+- Ensures atomic operations across mbox + database
+- Centralizes validation and integrity checking
+- Maintains the single entry point principle
 
 ---
 
@@ -27,13 +44,12 @@ Main archiving orchestrator - coordinates Gmail fetch, mbox write, and database 
 classDiagram
     class GmailArchiver {
         +client: GmailClient
-        +state_db_path: str
+        +storage: HybridStorage
         +archive(age, output, compression, ...) ArchiveResult
         +archive_messages(messages, output, ...) int
     }
     GmailArchiver --> GmailClient
     GmailArchiver --> HybridStorage
-    GmailArchiver --> DBManager
 ```
 
 ### ArchiveValidator
@@ -44,7 +60,7 @@ Multi-layer archive validation before deletion.
 classDiagram
     class ArchiveValidator {
         +archive_path: Path
-        +state_db_path: Path
+        +storage: HybridStorage
         +validate() bool
         +verify_offsets() OffsetVerificationResult
         +verify_consistency() ConsistencyReport
@@ -70,7 +86,7 @@ Import existing mbox archives into database.
 ```mermaid
 classDiagram
     class ArchiveImporter {
-        +db_path: Path
+        +storage: HybridStorage
         +import_archive(path) ImportResult
         +import_multiple(patterns) MultiImportResult
     }
@@ -89,7 +105,7 @@ Merge multiple archives into one.
 ```mermaid
 classDiagram
     class ArchiveConsolidator {
-        +db_path: Path
+        +storage: HybridStorage
         +consolidate(sources, output, dedupe) ConsolidationResult
     }
     class ConsolidationResult {
@@ -106,7 +122,7 @@ Message-ID based deduplication across archives.
 ```mermaid
 classDiagram
     class MessageDeduplicator {
-        +db_path: Path
+        +storage: HybridStorage
         +find_duplicates() DeduplicationReport
         +deduplicate(archive, output) DeduplicationResult
     }
@@ -124,7 +140,7 @@ Full-text search via SQLite FTS5.
 ```mermaid
 classDiagram
     class SearchEngine {
-        +db_path: Path
+        +storage: HybridStorage
         +search(query, limit) SearchResults
     }
     class SearchResults {
@@ -147,7 +163,7 @@ Extract messages from archives by ID or criteria.
 ```mermaid
 classDiagram
     class MessageExtractor {
-        +db_path: Path
+        +storage: HybridStorage
         +extract_by_id(gmail_id, output) bytes
         +extract_by_query(query, output) ExtractStats
     }
@@ -178,7 +194,7 @@ System diagnostics and auto-repair.
 ```mermaid
 classDiagram
     class Doctor {
-        +db_path: Path
+        +storage: HybridStorage
         +run_diagnostics() DoctorReport
         +fix_all() list~FixResult~
     }
@@ -211,6 +227,7 @@ graph TB
         EXT[MessageExtractor]
         COMP[ArchiveCompressor]
         DOC[Doctor]
+        WORKFLOWS[Workflows]
     end
 
     subgraph "Data Layer"
@@ -225,15 +242,95 @@ graph TB
 
     ARCH --> GMAIL
     ARCH --> HS
-    ARCH --> DB
-    VAL --> DB
-    IMP --> DB
+    VAL --> HS
+    IMP --> HS
     CON --> HS
-    DED --> DB
-    SEARCH --> DB
-    EXT --> DB
-    DOC --> DB
+    DED --> HS
+    SEARCH --> HS
+    EXT --> HS
+    DOC --> HS
     DOC --> AUTH
+    WORKFLOWS --> ARCH
+    WORKFLOWS --> VAL
+    WORKFLOWS --> IMP
+    WORKFLOWS --> CON
+    WORKFLOWS --> SEARCH
+    WORKFLOWS --> EXT
+    WORKFLOWS --> COMP
+    WORKFLOWS --> DOC
+    HS --> DB
+```
+
+## Workflows Module
+
+The workflows module contains async business logic for CLI commands:
+
+```mermaid
+classDiagram
+    class Workflows {
+        +archive_workflow(ctx, params) dict
+        +status_workflow(ctx, params) dict
+        +validate_workflow(ctx, params) dict
+        +search_workflow(ctx, params) dict
+        +import_workflow(ctx, params) dict
+        +consolidate_workflow(ctx, params) dict
+        +dedupe_workflow(ctx, params) dict
+        +repair_workflow(ctx, params) dict
+        +doctor_workflow(ctx, params) dict
+    }
+
+    class CommandContext {
+        +output: OutputManager
+        +storage: HybridStorage
+        +gmail: GmailClient
+        +ui: UIBuilder
+    }
+
+    Workflows ..> CommandContext : uses
+    Workflows ..> GmailArchiver : orchestrates
+    Workflows ..> SearchEngine : queries
+    Workflows ..> ArchiveValidator : validates
+```
+
+### Workflow Pattern
+
+Each workflow:
+- Is **async** (business logic)
+- Takes **CommandContext** for dependencies
+- Returns **structured data** for CLI formatting
+- Uses **facades** for core operations
+- Reports **progress** via CommandContext
+
+**Example:**
+```python
+async def archive_workflow(
+    ctx: CommandContext,
+    age_threshold: str,
+    output: str | None,
+    compress: str | None,
+    # ... other params
+) -> dict[str, Any]:
+    """Async implementation of archive command."""
+    
+    # Use facades for business logic
+    archiver = ArchiverFacade(ctx.gmail, ctx.storage)
+    
+    # Report progress
+    with ctx.ui.task_sequence() as seq:
+        with seq.task("Authenticating") as t:
+            await ctx.authenticate_gmail()
+            t.complete("Connected")
+            
+        with seq.task("Archiving") as t:
+            result = await archiver.archive(age_threshold, output, compress)
+            t.complete(f"Archived {result.count} messages")
+    
+    # Return structured data for CLI
+    return {
+        "status": "success",
+        "archived": result.count,
+        "output_file": result.file,
+    }
 ```
 
 ---
@@ -251,5 +348,6 @@ graph TB
 | `MessageExtractor` | Offset-based retrieval, compression support |
 | `ArchiveCompressor` | All formats, streaming, integrity |
 | `Doctor` | Diagnostics, auto-fix, edge cases |
+| `Workflows` | Business logic orchestration, error handling, progress reporting |
 
 See `tests/core/` for test implementations.

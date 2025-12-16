@@ -9,6 +9,7 @@ The CLI layer provides:
 1. **OutputManager**: Unified output system (Rich terminal / JSON modes)
 2. **CommandContext**: Dependency injection for CLI commands
 3. **Search Output**: Formatted search result display
+4. **Workflows**: Business logic orchestration (in core/workflows/)
 
 ```mermaid
 graph TB
@@ -18,6 +19,10 @@ graph TB
         SearchOutput["_output_search.py<br/>Search Formatting"]
     end
 
+    subgraph Core["core/ - Business Logic"]
+        Workflows["workflows/<br/>Async Workflows"]
+    end
+
     subgraph Entry["Entry Point"]
         Main["__main__.py<br/>Typer CLI"]
     end
@@ -25,7 +30,9 @@ graph TB
     Main --> Output
     Main --> Context
     Main --> SearchOutput
+    Main --> Workflows
     Context --> Output
+    Workflows --> Core
 ```
 
 ## Component Design
@@ -203,6 +210,29 @@ from gmailarchiver.cli.output import OperationHandle
 
 ## Design Decisions
 
+### Thin Client Pattern
+
+The CLI layer follows a thin client pattern where:
+1. **CLI commands are synchronous** (Typer limitation)
+2. **Business logic is async** in workflows
+3. **Single `asyncio.run()` call per command** bridges sync/async
+4. **Workflows are in `core/workflows/`** not in CLI
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as CLI Command (sync)
+    participant Workflow as Async Workflow
+    participant Core as Core Facade
+
+    User->>CLI: gmailarchiver archive 3y
+    CLI->>Workflow: asyncio.run(archive_workflow(...))
+    Workflow->>Core: await archiver.archive(...)
+    Core-->>Workflow: result
+    Workflow-->>CLI: result
+    CLI->>User: formatted output
+```
+
 ### Why Separate CLI Layer?
 
 1. **Separation of Concerns**: CLI-specific logic (formatting, progress, user interaction)
@@ -224,3 +254,31 @@ OutputManager is in CLI because:
 - Python convention for `python -m gmailarchiver`
 - Typer app definition is the natural entry point
 - CLI layer provides supporting infrastructure
+
+### Workflow Pattern
+
+All business logic should be in async workflows:
+- **Location**: `src/gmailarchiver/core/workflows/`
+- **Pattern**: Single async function per command
+- **Signature**: `async def workflow_name(ctx: CommandContext, **params) -> ResultType`
+- **Calling**: CLI commands call via `asyncio.run(workflow(...))`
+
+**Example:**
+```python
+# In src/gmailarchiver/core/workflows/archive.py
+async def archive_workflow(
+    ctx: CommandContext,
+    age_threshold: str,
+    output: str | None,
+    compress: str | None,
+    # ... other params
+) -> dict[str, Any]:
+    """Async implementation of archive command."""
+    # Business logic here
+    return {"status": "success", "archived": 42}
+
+# In CLI command (sync)
+def archive(ctx: CommandContext, age_threshold: str, ...):
+    result = asyncio.run(archive_workflow(ctx, age_threshold, ...))
+    # Format output
+```
