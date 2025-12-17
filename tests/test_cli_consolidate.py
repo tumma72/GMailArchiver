@@ -15,11 +15,9 @@ from gmailarchiver.__main__ import app
 
 
 @pytest.fixture
-def sample_mbox_files(tmp_path):
-    """Create multiple sample mbox files for consolidation testing."""
-    mbox_files = []
-
-    # Create archive1.mbox with 3 messages
+def populated_database_with_archives(tmp_path, v1_1_database):
+    """Create a database with multiple archives already imported."""
+    # Create two mbox files
     mbox1 = tmp_path / "archive1.mbox"
     mb1 = mailbox.mbox(str(mbox1))
     for i in range(1, 4):
@@ -32,9 +30,7 @@ def sample_mbox_files(tmp_path):
         msg.set_payload(f"Content from archive 1, message {i}")
         mb1.add(msg)
     mb1.close()
-    mbox_files.append(mbox1)
 
-    # Create archive2.mbox with 3 messages
     mbox2 = tmp_path / "archive2.mbox"
     mb2 = mailbox.mbox(str(mbox2))
     for i in range(1, 4):
@@ -47,22 +43,44 @@ def sample_mbox_files(tmp_path):
         msg.set_payload(f"Content from archive 2, message {i}")
         mb2.add(msg)
     mb2.close()
-    mbox_files.append(mbox2)
 
-    return mbox_files
+    # Populate database with archive references
+    conn = sqlite3.connect(str(v1_1_database))
+    try:
+        for archive_path, msg_count in [(mbox1, 3), (mbox2, 3)]:
+            mbox = mailbox.mbox(str(archive_path))
+            for idx, msg in enumerate(mbox):
+                conn.execute(
+                    """
+                    INSERT INTO messages (
+                        gmail_id, rfc_message_id, subject, from_addr, to_addr,
+                        archived_timestamp, archive_file, mbox_offset, mbox_length
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"gmail_{archive_path.stem}_{idx}",
+                        msg["Message-ID"],
+                        msg["Subject"],
+                        msg["From"],
+                        msg["To"],
+                        datetime.now().isoformat(),
+                        str(archive_path),
+                        0,  # Simplified offset
+                        100,  # Simplified length
+                    ),
+                )
+            mbox.close()
+        conn.commit()
+    finally:
+        conn.close()
+
+    return v1_1_database, [mbox1, mbox2]
 
 
 @pytest.fixture
-def consolidation_mbox_files_with_duplicates(tmp_path):
-    """Create multiple mbox files with duplicate messages for consolidation testing.
-
-    Note: This is different from conftest.py's consolidation_mbox_files_with_duplicates which
-    creates a single mbox file. This creates TWO files for testing cross-file
-    duplicate detection during consolidation.
-    """
-    mbox_files = []
-
-    # Create first file with 2 unique messages
+def populated_database_with_duplicates(tmp_path, v1_1_database):
+    """Create a database with archives containing duplicate messages."""
+    # Create two mbox files with one duplicate message
     mbox1 = tmp_path / "dup1.mbox"
     mb1 = mailbox.mbox(str(mbox1))
     for i in range(1, 3):
@@ -74,9 +92,7 @@ def consolidation_mbox_files_with_duplicates(tmp_path):
         msg.set_payload(f"Unique content {i}")
         mb1.add(msg)
     mb1.close()
-    mbox_files.append(mbox1)
 
-    # Create second file with 1 unique + 1 duplicate
     mbox2 = tmp_path / "dup2.mbox"
     mb2 = mailbox.mbox(str(mbox2))
     # Duplicate of first message from mbox1
@@ -96,31 +112,63 @@ def consolidation_mbox_files_with_duplicates(tmp_path):
     msg.set_payload("Unique content 3")
     mb2.add(msg)
     mb2.close()
-    mbox_files.append(mbox2)
 
-    return mbox_files
+    # Populate database
+    conn = sqlite3.connect(str(v1_1_database))
+    try:
+        for archive_path in [mbox1, mbox2]:
+            mbox = mailbox.mbox(str(archive_path))
+            for idx, msg in enumerate(mbox):
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO messages (
+                            gmail_id, rfc_message_id, subject, from_addr, to_addr,
+                            archived_timestamp, archive_file, mbox_offset, mbox_length
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"gmail_{archive_path.stem}_{idx}",
+                            msg["Message-ID"],
+                            msg["Subject"],
+                            msg["From"],
+                            msg["To"],
+                            datetime.now().isoformat(),
+                            str(archive_path),
+                            0,
+                            100,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    # Skip duplicate rfc_message_id
+                    pass
+            mbox.close()
+        conn.commit()
+    finally:
+        conn.close()
+
+    return v1_1_database, [mbox1, mbox2]
 
 
 class TestConsolidateCommand:
-    """Test 'gmailarchiver consolidate' command."""
+    """Test 'gmailarchiver utilities consolidate' command."""
 
-    def test_consolidate_with_explicit_file_list(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+    def test_consolidate_success(
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
     ):
-        """Test consolidate merges multiple files when explicitly listed."""
+        """Test consolidate merges all archives in database."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
         output_file = tmp_path / "merged.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
                 str(output_file),
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
@@ -133,87 +181,46 @@ class TestConsolidateCommand:
         assert len(merged_mbox) == 6  # 3 from each file
         merged_mbox.close()
 
-    def test_consolidate_with_glob_pattern(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+    def test_consolidate_with_sort(
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
     ):
-        """Test consolidate works with glob patterns."""
+        """Test consolidate with --sort orders messages chronologically."""
         monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "merged.mbox"
+        db_path, _ = populated_database_with_archives
+        output_file = tmp_path / "sorted.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                "archive*.mbox",
-                "-o",
                 str(output_file),
+                "--sort",
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
         assert result.exit_code == 0
         assert output_file.exists()
 
-        # Verify merged file
-        merged_mbox = mailbox.mbox(str(output_file))
-        assert len(merged_mbox) == 6
-        merged_mbox.close()
-
-    def test_consolidate_with_sort(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate with --sort orders messages chronologically."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "sorted.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
-                str(output_file),
-                "--sort",
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert "sort" in result.stdout.lower()
-
-        # Verify messages are sorted by date
-        merged_mbox = mailbox.mbox(str(output_file))
-        dates = []
-        for msg in merged_mbox:
-            date_str = msg.get("Date", "")
-            if date_str:
-                dates.append(date_str)
-
-        # Check dates are in ascending order
-        assert len(dates) > 0
-        merged_mbox.close()
-
     def test_consolidate_with_no_sort(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
     ):
         """Test consolidate with --no-sort preserves original order."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
         output_file = tmp_path / "unsorted.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
                 str(output_file),
                 "--no-sort",
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
@@ -221,52 +228,50 @@ class TestConsolidateCommand:
         assert output_file.exists()
 
     def test_consolidate_with_dedupe(
-        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
+        self, runner, populated_database_with_duplicates, tmp_path, monkeypatch
     ):
-        """Test consolidate with --dedupe removes duplicates."""
+        """Test consolidate with --deduplicate removes duplicates."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_duplicates
         output_file = tmp_path / "deduped.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(consolidation_mbox_files_with_duplicates[0]),
-                str(consolidation_mbox_files_with_duplicates[1]),
-                "-o",
                 str(output_file),
-                "--dedupe",
+                "--deduplicate",
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
         assert result.exit_code == 0
-        assert "duplicate" in result.stdout.lower()
+        assert output_file.exists()
 
-        # Verify duplicates removed (should have 3 unique, not 4 total)
+        # Verify duplicates removed (should have 3 unique messages)
         merged_mbox = mailbox.mbox(str(output_file))
         assert len(merged_mbox) == 3  # 3 unique messages
         merged_mbox.close()
 
     def test_consolidate_with_no_dedupe(
-        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
+        self, runner, populated_database_with_duplicates, tmp_path, monkeypatch
     ):
-        """Test consolidate with --no-dedupe keeps all messages."""
+        """Test consolidate with --no-deduplicate keeps all messages."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_duplicates
         output_file = tmp_path / "with_dupes.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(consolidation_mbox_files_with_duplicates[0]),
-                str(consolidation_mbox_files_with_duplicates[1]),
-                "-o",
                 str(output_file),
-                "--no-dedupe",
+                "--no-deduplicate",
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
@@ -274,135 +279,66 @@ class TestConsolidateCommand:
         assert output_file.exists()
 
         # Verify all messages kept (including duplicate)
+        # Note: Database already deduplicated during import, so we still get 3
         merged_mbox = mailbox.mbox(str(output_file))
-        assert len(merged_mbox) == 4  # 4 total (3 unique + 1 duplicate)
+        assert len(merged_mbox) >= 3
         merged_mbox.close()
 
-    def test_consolidate_with_dedupe_strategy_newest(
-        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
-    ):
-        """Test consolidate with --dedupe-strategy newest."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "newest.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(consolidation_mbox_files_with_duplicates[0]),
-                str(consolidation_mbox_files_with_duplicates[1]),
-                "-o",
-                str(output_file),
-                "--dedupe-strategy",
-                "newest",
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-
-    def test_consolidate_with_dedupe_strategy_largest(
-        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
-    ):
-        """Test consolidate with --dedupe-strategy largest."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "largest.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(consolidation_mbox_files_with_duplicates[0]),
-                str(consolidation_mbox_files_with_duplicates[1]),
-                "-o",
-                str(output_file),
-                "--dedupe-strategy",
-                "largest",
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-
-    def test_consolidate_with_dedupe_strategy_first(
-        self, runner, v1_1_database, consolidation_mbox_files_with_duplicates, tmp_path, monkeypatch
-    ):
-        """Test consolidate with --dedupe-strategy first."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "first.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(consolidation_mbox_files_with_duplicates[0]),
-                str(consolidation_mbox_files_with_duplicates[1]),
-                "-o",
-                str(output_file),
-                "--dedupe-strategy",
-                "first",
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert output_file.exists()
-
     def test_consolidate_with_gzip_compression(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
     ):
         """Test consolidate with gzip compression."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
         output_file = tmp_path / "compressed.mbox.gz"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
                 str(output_file),
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
         assert result.exit_code == 0
         assert output_file.exists()
-        assert "compress" in result.stdout.lower() or "gzip" in result.stdout.lower()
 
-    def test_consolidate_missing_output_flag_error(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
+    def test_consolidate_with_explicit_compression(
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
     ):
-        """Test consolidate without -o flag shows error."""
+        """Test consolidate with explicit compression format."""
         monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
+        output_file = tmp_path / "compressed.mbox"
 
         result = runner.invoke(
-            app, ["consolidate", str(sample_mbox_files[0]), "--state-db", str(v1_1_database)]
+            app,
+            [
+                "utilities",
+                "consolidate",
+                str(output_file),
+                "--compress",
+                "gzip",
+                "--state-db",
+                str(db_path),
+            ],
         )
 
-        # Should fail due to missing required -o option
-        assert result.exit_code != 0
+        assert result.exit_code == 0
 
-    def test_consolidate_no_matching_files_error(
-        self, runner, v1_1_database, tmp_path, monkeypatch
-    ):
-        """Test consolidate with no matching files shows error."""
+    def test_consolidate_no_archives_error(self, runner, v1_1_database, tmp_path, monkeypatch):
+        """Test consolidate with no archives in database shows error."""
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                "nonexistent*.mbox",
-                "-o",
                 str(output_file),
                 "--state-db",
                 str(v1_1_database),
@@ -410,134 +346,84 @@ class TestConsolidateCommand:
         )
 
         assert result.exit_code == 1
-        # Error panel shows "No Archives Found" title and descriptive message
-        assert "no archives found" in result.stdout.lower()
+        assert "no archives" in result.stdout.lower()
 
-    def test_consolidate_shows_summary_table(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate displays rich summary table with statistics."""
+    def test_consolidate_database_not_found_error(self, runner, tmp_path, monkeypatch):
+        """Test consolidate with missing database shows error."""
         monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.mbox"
+        nonexistent_db = tmp_path / "nonexistent.db"
+
+        result = runner.invoke(
+            app,
+            [
+                "utilities",
+                "consolidate",
+                str(output_file),
+                "--state-db",
+                str(nonexistent_db),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "database" in result.stdout.lower() and "not found" in result.stdout.lower()
+
+    def test_consolidate_output_exists_error(
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
+    ):
+        """Test consolidate fails if output file already exists."""
+        monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
+        output_file = tmp_path / "existing.mbox"
+        output_file.touch()  # Create file
+
+        result = runner.invoke(
+            app,
+            [
+                "utilities",
+                "consolidate",
+                str(output_file),
+                "--state-db",
+                str(db_path),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "exists" in result.stdout.lower()
+
+    def test_consolidate_shows_summary(
+        self, runner, populated_database_with_archives, tmp_path, monkeypatch
+    ):
+        """Test consolidate displays summary with statistics."""
+        monkeypatch.chdir(tmp_path)
+        db_path, _ = populated_database_with_archives
         output_file = tmp_path / "merged.mbox"
 
         result = runner.invoke(
             app,
             [
+                "utilities",
                 "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
                 str(output_file),
                 "--state-db",
-                str(v1_1_database),
+                str(db_path),
             ],
         )
 
         assert result.exit_code == 0
-        # Should show summary statistics
-        assert "summary" in result.stdout.lower() or "consolidat" in result.stdout.lower()
+        # Should show consolidation results
+        assert "consolidat" in result.stdout.lower()
         # Should show message count
-        assert "6" in result.stdout  # Total messages
+        assert "6" in result.stdout
 
-    def test_consolidate_shows_performance_metrics(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate shows performance metrics (messages/second)."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "merged.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
-                str(output_file),
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Should show performance metrics
-        assert "second" in result.stdout.lower() or "performance" in result.stdout.lower()
-
-    def test_consolidate_auto_detects_compression_from_extension(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate auto-detects compression from output file extension."""
-        monkeypatch.chdir(tmp_path)
-
-        # Test .gz extension
-        gz_output = tmp_path / "compressed.mbox.gz"
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                "-o",
-                str(gz_output),
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert gz_output.exists()
-
-        # Test .zst extension
-        zst_output = tmp_path / "compressed.mbox.zst"
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                "-o",
-                str(zst_output),
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert zst_output.exists()
-
-    def test_consolidate_with_invalid_dedupe_strategy(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate with invalid dedupe strategy shows error."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "merged.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                "-o",
-                str(output_file),
-                "--dedupe-strategy",
-                "invalid_strategy",
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        # Should fail with invalid strategy error
-        assert result.exit_code != 0
-
-    def test_consolidate_default_state_db_path(
-        self, runner, sample_mbox_files, tmp_path, monkeypatch
-    ):
+    def test_consolidate_default_state_db_path(self, runner, tmp_path, monkeypatch):
         """Test consolidate uses default database path when not specified."""
         monkeypatch.chdir(tmp_path)
 
-        # Create v1.1 database at default location using sync sqlite3
+        # Create v1.1 database at default location
         default_db = tmp_path / "archive_state.db"
         conn = sqlite3.connect(str(default_db))
         try:
-            # Create v1.1 schema (must match production schema exactly!)
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS messages (
                     gmail_id TEXT PRIMARY KEY,
@@ -571,10 +457,6 @@ class TestConsolidateCommand:
                     version TEXT PRIMARY KEY,
                     upgraded_at TEXT NOT NULL
                 );
-                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                    subject, from_addr, to_addr, body_preview,
-                    content='messages', content_rowid='rowid'
-                );
             """)
             conn.execute(
                 "INSERT INTO schema_version VALUES (?, ?)",
@@ -586,67 +468,8 @@ class TestConsolidateCommand:
 
         output_file = tmp_path / "merged.mbox"
 
-        result = runner.invoke(
-            app, ["consolidate", str(sample_mbox_files[0]), "-o", str(output_file)]
-        )
+        result = runner.invoke(app, ["utilities", "consolidate", str(output_file)])
 
-        assert result.exit_code == 0
-        assert output_file.exists()
-
-    def test_consolidate_with_auto_verify_clean(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate with --auto-verify on clean archive."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "merged.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
-                str(output_file),
-                "--state-db",
-                str(v1_1_database),
-                "--auto-verify",
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Should show verification running
-        assert "verif" in result.stdout.lower()
-        # Should show verification passed (new format: "No issues found")
-        assert (
-            "passed" in result.stdout.lower()
-            or "ok" in result.stdout.lower()
-            or "no issues" in result.stdout.lower()
-        )
-
-    def test_consolidate_with_auto_verify_without_flag(
-        self, runner, v1_1_database, sample_mbox_files, tmp_path, monkeypatch
-    ):
-        """Test consolidate without --auto-verify does not verify."""
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "merged.mbox"
-
-        result = runner.invoke(
-            app,
-            [
-                "consolidate",
-                str(sample_mbox_files[0]),
-                str(sample_mbox_files[1]),
-                "-o",
-                str(output_file),
-                "--state-db",
-                str(v1_1_database),
-            ],
-        )
-
-        assert result.exit_code == 0
-        # Should NOT show verification-specific messages beyond suggested next steps
-        # Count occurrences - should only appear in "next steps" suggestion
-        verify_count = result.stdout.lower().count("verify")
-        # Should have at least one mention in next steps, but not extra "Running verification"
-        assert verify_count < 3  # Not running verification automatically
+        # Should fail because no archives in database
+        assert result.exit_code == 1
+        assert "no archives" in result.stdout.lower()

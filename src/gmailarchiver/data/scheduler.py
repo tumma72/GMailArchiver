@@ -1,19 +1,20 @@
 """Scheduler module for managing automated maintenance tasks.
 
 This module provides the core scheduling logic for Gmail Archiver, including:
-- Schedule storage in SQLite database
+- Schedule storage in SQLite database (via HybridStorage)
 - Schedule validation
 - CRUD operations for schedules
 - Last run timestamp tracking
 
 Platform-specific scheduling (systemd, launchd, Task Scheduler) is handled by
-the platform_scheduler module.
+the connectors.platform_scheduler module.
 """
 
-import sqlite3
 from dataclasses import asdict, dataclass
-from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 class ScheduleValidationError(Exception):
@@ -56,57 +57,32 @@ class ScheduleEntry:
 class Scheduler:
     """Manages scheduled tasks for Gmail Archiver.
 
-    Stores schedules in SQLite database and provides CRUD operations.
-    Does not handle platform-specific scheduling - use PlatformScheduler for that.
+    Stores schedules in SQLite database via HybridStorage and provides
+    async CRUD operations.
 
     Usage:
-        scheduler = Scheduler("state.db")
-        schedule_id = scheduler.add_schedule(
+        scheduler = Scheduler(storage)
+        schedule_id = await scheduler.add_schedule(
             command="check",
             frequency="daily",
             time="02:00"
         )
-        schedules = scheduler.list_schedules()
-        scheduler.close()
+        schedules = await scheduler.list_schedules()
 
-    Or as context manager:
-        with Scheduler("state.db") as scheduler:
-            scheduler.add_schedule(...)
+    Note:
+        For platform-specific scheduling (systemd, launchd, Task Scheduler),
+        use PlatformScheduler from the connectors layer.
     """
 
-    def __init__(self, db_path: str) -> None:
-        """Initialize scheduler with database path.
+    def __init__(self, storage: HybridStorage) -> None:
+        """Initialize scheduler with HybridStorage.
 
         Args:
-            db_path: Path to SQLite database file
-
-        Creates database and schedules table if they don't exist.
+            storage: HybridStorage instance for data access
         """
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self._create_table()
+        self.storage = storage
 
-    def _create_table(self) -> None:
-        """Create schedules table if it doesn't exist."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schedules (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                command TEXT NOT NULL,
-                frequency TEXT NOT NULL,
-                day_of_week INTEGER,
-                day_of_month INTEGER,
-                time TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
-                created_at TEXT NOT NULL,
-                last_run TEXT
-            )
-            """
-        )
-        self.conn.commit()
-
-    def add_schedule(
+    async def add_schedule(
         self,
         command: str,
         frequency: str,
@@ -131,22 +107,13 @@ class Scheduler:
         """
         self._validate_schedule(command, frequency, time, day_of_week, day_of_month)
 
-        cursor = self.conn.cursor()
-        created_at = datetime.now().isoformat()
-
-        cursor.execute(
-            """
-            INSERT INTO schedules
-            (command, frequency, day_of_week, day_of_month, time, enabled, created_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
-            """,
-            (command, frequency, day_of_week, day_of_month, time, created_at),
+        return await self.storage.db.add_schedule(
+            command=command,
+            frequency=frequency,
+            time=time,
+            day_of_week=day_of_week,
+            day_of_month=day_of_month,
         )
-        self.conn.commit()
-
-        schedule_id = cursor.lastrowid
-        assert schedule_id is not None, "Failed to get lastrowid from database"
-        return schedule_id
 
     def _validate_schedule(
         self,
@@ -221,7 +188,7 @@ class Scheduler:
         except ValueError:
             return False
 
-    def list_schedules(self, enabled_only: bool = False) -> list[ScheduleEntry]:
+    async def list_schedules(self, enabled_only: bool = False) -> list[ScheduleEntry]:
         """List all schedules.
 
         Args:
@@ -230,47 +197,23 @@ class Scheduler:
         Returns:
             List of ScheduleEntry objects
         """
-        cursor = self.conn.cursor()
-
-        if enabled_only:
-            cursor.execute(
-                """
-                SELECT id, command, frequency, day_of_week, day_of_month,
-                       time, enabled, created_at, last_run
-                FROM schedules
-                WHERE enabled = 1
-                ORDER BY id
-                """
+        rows = await self.storage.db.list_schedules(enabled_only=enabled_only)
+        return [
+            ScheduleEntry(
+                id=row["id"],
+                command=row["command"],
+                frequency=row["frequency"],
+                day_of_week=row["day_of_week"],
+                day_of_month=row["day_of_month"],
+                time=row["time"],
+                enabled=bool(row["enabled"]),
+                created_at=row["created_at"],
+                last_run=row["last_run"],
             )
-        else:
-            cursor.execute(
-                """
-                SELECT id, command, frequency, day_of_week, day_of_month,
-                       time, enabled, created_at, last_run
-                FROM schedules
-                ORDER BY id
-                """
-            )
+            for row in rows
+        ]
 
-        schedules = []
-        for row in cursor.fetchall():
-            schedules.append(
-                ScheduleEntry(
-                    id=row[0],
-                    command=row[1],
-                    frequency=row[2],
-                    day_of_week=row[3],
-                    day_of_month=row[4],
-                    time=row[5],
-                    enabled=bool(row[6]),
-                    created_at=row[7],
-                    last_run=row[8],
-                )
-            )
-
-        return schedules
-
-    def get_schedule(self, schedule_id: int) -> ScheduleEntry | None:
+    async def get_schedule(self, schedule_id: int) -> ScheduleEntry | None:
         """Get a specific schedule by ID.
 
         Args:
@@ -279,34 +222,23 @@ class Scheduler:
         Returns:
             ScheduleEntry if found, None otherwise
         """
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, command, frequency, day_of_week, day_of_month,
-                   time, enabled, created_at, last_run
-            FROM schedules
-            WHERE id = ?
-            """,
-            (schedule_id,),
-        )
-
-        row = cursor.fetchone()
+        row = await self.storage.db.get_schedule(schedule_id)
         if row is None:
             return None
 
         return ScheduleEntry(
-            id=row[0],
-            command=row[1],
-            frequency=row[2],
-            day_of_week=row[3],
-            day_of_month=row[4],
-            time=row[5],
-            enabled=bool(row[6]),
-            created_at=row[7],
-            last_run=row[8],
+            id=row["id"],
+            command=row["command"],
+            frequency=row["frequency"],
+            day_of_week=row["day_of_week"],
+            day_of_month=row["day_of_month"],
+            time=row["time"],
+            enabled=bool(row["enabled"]),
+            created_at=row["created_at"],
+            last_run=row["last_run"],
         )
 
-    def remove_schedule(self, schedule_id: int) -> bool:
+    async def remove_schedule(self, schedule_id: int) -> bool:
         """Remove a schedule.
 
         Args:
@@ -315,13 +247,9 @@ class Scheduler:
         Returns:
             True if schedule was removed, False if not found
         """
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
-        self.conn.commit()
+        return await self.storage.db.remove_schedule(schedule_id)
 
-        return cursor.rowcount > 0
-
-    def enable_schedule(self, schedule_id: int) -> bool:
+    async def enable_schedule(self, schedule_id: int) -> bool:
         """Enable a schedule.
 
         Args:
@@ -330,13 +258,9 @@ class Scheduler:
         Returns:
             True if schedule was enabled, False if not found
         """
-        cursor = self.conn.cursor()
-        cursor.execute("UPDATE schedules SET enabled = 1 WHERE id = ?", (schedule_id,))
-        self.conn.commit()
+        return await self.storage.db.enable_schedule(schedule_id)
 
-        return cursor.rowcount > 0
-
-    def disable_schedule(self, schedule_id: int) -> bool:
+    async def disable_schedule(self, schedule_id: int) -> bool:
         """Disable a schedule.
 
         Args:
@@ -345,44 +269,12 @@ class Scheduler:
         Returns:
             True if schedule was disabled, False if not found
         """
-        cursor = self.conn.cursor()
-        cursor.execute("UPDATE schedules SET enabled = 0 WHERE id = ?", (schedule_id,))
-        self.conn.commit()
+        return await self.storage.db.disable_schedule(schedule_id)
 
-        return cursor.rowcount > 0
-
-    def update_last_run(self, schedule_id: int) -> None:
+    async def update_last_run(self, schedule_id: int) -> None:
         """Update the last_run timestamp for a schedule.
 
         Args:
             schedule_id: Schedule ID to update
         """
-        cursor = self.conn.cursor()
-        last_run = datetime.now().isoformat()
-        cursor.execute("UPDATE schedules SET last_run = ? WHERE id = ?", (last_run, schedule_id))
-        self.conn.commit()
-
-    def close(self) -> None:
-        """Close database connection."""
-        if self.conn:
-            self.conn.close()
-
-    def __enter__(self) -> Scheduler:
-        """Context manager entry."""
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
-        """Context manager exit."""
-        self.close()
-
-    def __del__(self) -> None:
-        """Ensure database connection is closed on garbage collection."""
-        try:
-            self.close()
-        except Exception:
-            pass
+        await self.storage.db.update_schedule_last_run(schedule_id)

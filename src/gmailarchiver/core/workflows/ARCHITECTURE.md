@@ -1,9 +1,9 @@
 # Workflows Architecture
 
-**Last Updated:** 2025-12-08
-**Status:** Production (v1.7.0+)
+**Last Updated:** 2025-12-16
+**Status:** Production (v1.8.0+)
 
-This document defines the architecture of the workflows module, which contains the async business logic for all CLI commands.
+This document defines the architecture of the workflows module, which contains the async business logic for all CLI commands. Workflows are **class-based** with a `run()` method and use **protocol-based dependency injection** to maintain layer boundaries.
 
 ## Design Principles
 
@@ -14,41 +14,50 @@ The workflows module implements the **thin client pattern** where:
 1. **CLI commands are synchronous** (due to Typer limitations)
 2. **Workflows are asynchronous** (business logic)
 3. **Single `asyncio.run()` call per command** bridges the sync/async boundary
-4. **Workflows contain no CLI-specific code** (no Typer, no OutputManager)
+4. **Workflows depend on protocols, not CLI types** (ProgressReporter, not OutputManager)
 
 ```mermaid
 classDiagram
-    class Workflow {
-        +async def execute(ctx: CommandContext, **params) Result
-        -_validate_inputs(params)
-        -_execute_business_logic()
-        -_handle_errors()
+    class WorkflowProtocol~TConfig, TResult~ {
+        <<protocol>>
+        +async run(config: TConfig) TResult
     }
 
-    class CommandContext {
-        +output: OutputManager
+    class ProgressReporter {
+        <<protocol>>
+        +info(message: str)
+        +warning(message: str)
+        +task_sequence() ContextManager~TaskSequence~
+    }
+
+    class ArchiveWorkflow {
         +storage: HybridStorage
-        +gmail: GmailClient
+        +client: GmailClient
+        +progress: ProgressReporter | None
+        +async run(config: ArchiveConfig) ArchiveResult
+    }
+
+    class CLIProgressAdapter {
+        +output: OutputManager
         +ui: UIBuilder
+        +info(message: str)
+        +warning(message: str)
+        +task_sequence() ContextManager
     }
 
-    class CLICommand {
-        +def execute_sync(ctx: CommandContext, **params)
-        -_call_workflow()
-        -_format_output(result)
-    }
-
-    Workflow ..> CommandContext : uses
-    CLICommand --> Workflow : calls via asyncio.run()
+    ArchiveWorkflow ..|> WorkflowProtocol : implements
+    CLIProgressAdapter ..|> ProgressReporter : implements
+    ArchiveWorkflow ..> ProgressReporter : depends on (protocol)
 ```
 
 ### Single Responsibility Principle
 
 Each workflow:
 - Handles **one command**
-- Has **one public async function**
+- Has **one public method: `async def run(config: TConfig) -> TResult`**
 - Contains **business logic only** (no CLI formatting)
-- Returns **structured data** for CLI to format
+- Returns **typed Result dataclass** for CLI to format
+- Implements **WorkflowProtocol[TConfig, TResult]**
 
 ### Workflow Lifecycle
 
@@ -67,39 +76,75 @@ stateDiagram-v2
 
 ## Component Design
 
-### Workflow Function Signature
+### Workflow Class Pattern
+
+Workflows are **classes** with typed Config and Result dataclasses:
 
 ```python
-async def workflow_name(
-    ctx: CommandContext,
-    param1: Type1,
-    param2: Type2,
-    # ... other parameters
-) -> ResultType:
-    """Async implementation of [command] command.
-    
-    Args:
-        ctx: CommandContext with dependencies
-        param1: Description
-        param2: Description
-        
-    Returns:
-        Structured result data for CLI formatting
-        
-    Raises:
-        WorkflowError: On business logic failures
+from dataclasses import dataclass
+from typing import Any
+
+@dataclass
+class ArchiveConfig:
+    """Configuration for archive workflow."""
+    age_threshold: str
+    output_file: str | None = None
+    compress: str | None = None
+    incremental: bool = True
+    dry_run: bool = False
+
+@dataclass
+class ArchiveResult:
+    """Result from archive workflow."""
+    archived_count: int
+    skipped_count: int
+    output_file: str
+    validation_passed: bool
+    validation_details: dict[str, Any] | None = None
+
+class ArchiveWorkflow:
+    """Workflow for archiving Gmail messages.
+
+    Dependencies are injected via constructor for testability
+    and explicit contracts.
     """
+
+    def __init__(
+        self,
+        storage: HybridStorage,
+        client: GmailClient,
+        progress: ProgressReporter | None = None,
+    ) -> None:
+        self.storage = storage
+        self.client = client
+        self.progress = progress
+
+    async def run(self, config: ArchiveConfig) -> ArchiveResult:
+        """Execute the archive workflow.
+
+        Args:
+            config: Archive configuration dataclass
+
+        Returns:
+            ArchiveResult with operation outcomes
+
+        Raises:
+            ArchiveWorkflowError: On business logic failures
+        """
+        ...
 ```
 
-### CommandContext Usage
+### Dependency Injection Pattern
 
-Workflows receive `CommandContext` for:
-- **Database access**: `ctx.storage` (HybridStorage)
-- **Gmail client**: `ctx.gmail` (GmailClient)
-- **Output**: `ctx.output` (OutputManager) - for progress reporting only
-- **UI**: `ctx.ui` (UIBuilder) - for task sequences
+Workflows receive dependencies via **constructor injection**, not CommandContext:
 
-**Important**: Workflows should NOT use `ctx.output` for final formatting - that's the CLI's responsibility.
+| Dependency | Type | Purpose |
+|------------|------|---------|
+| `storage` | `HybridStorage` | Data access (REQUIRED) |
+| `client` | `GmailClient` | Gmail API access (as needed) |
+| `progress` | `ProgressReporter` | Progress reporting (OPTIONAL) |
+
+**Key Principle**: Workflows depend on the `ProgressReporter` **protocol**, not concrete CLI types like `OutputManager`. This maintains layer boundaries.
 
 ### Error Handling
 
@@ -119,6 +164,60 @@ class ArchiveWorkflowError(WorkflowError):
     pass
 ```
 
+### ProgressReporter Protocol
+
+The `ProgressReporter` protocol abstracts progress reporting, allowing workflows to remain independent of CLI types:
+
+```python
+from typing import Protocol, ContextManager
+
+class TaskHandle(Protocol):
+    """Protocol for individual task progress."""
+    def set_status(self, status: str) -> None: ...
+    def complete(self, message: str) -> None: ...
+    def fail(self, message: str, reason: str | None = None) -> None: ...
+
+class TaskSequence(Protocol):
+    """Protocol for multi-step operation sequences."""
+    def task(self, description: str, total: int | None = None) -> ContextManager[TaskHandle]: ...
+
+class ProgressReporter(Protocol):
+    """Protocol for reporting workflow progress.
+
+    Implementations:
+    - CLIProgressAdapter: Rich terminal output (CLI layer)
+    - TestProgressReporter: Captures calls for testing
+    - NoOpProgressReporter: Silent fallback
+    """
+    def info(self, message: str) -> None: ...
+    def warning(self, message: str) -> None: ...
+    def task_sequence(self) -> ContextManager[TaskSequence]: ...
+```
+
+**CLI Adapter Implementation** (in `cli/` layer):
+
+```python
+class CLIProgressAdapter:
+    """Adapts OutputManager/UIBuilder to ProgressReporter protocol."""
+
+    def __init__(self, output: OutputManager, ui: UIBuilder | None = None) -> None:
+        self._output = output
+        self._ui = ui
+
+    def info(self, message: str) -> None:
+        self._output.info(message)
+
+    def warning(self, message: str) -> None:
+        self._output.warning(message)
+
+    @contextmanager
+    def task_sequence(self) -> ContextManager[TaskSequence]:
+        if self._ui:
+            yield self._ui.task_sequence()
+        else:
+            yield NoOpTaskSequence()
+```
+
 ## Data Flow
 
 ### Command Execution Flow
@@ -127,52 +226,60 @@ class ArchiveWorkflowError(WorkflowError):
 sequenceDiagram
     participant User
     participant CLI as CLI Command
-    participant Workflow as Async Workflow
-    participant Core as Core Facade
-    participant Data as Data Layer
+    participant Adapter as CLIProgressAdapter
+    participant Workflow as ArchiveWorkflow
+    participant Facade as ArchiverFacade
+    participant Storage as HybridStorage
 
     User->>CLI: gmailarchiver archive 3y
-    CLI->>Workflow: asyncio.run(archive_workflow(...))
-    
-    Workflow->>Core: await archiver.archive(...)
-    Core->>Data: db.record_archived_message(...)
-    Data-->>Core: result
-    Core-->>Workflow: result
-    
-    Workflow-->>CLI: {"status": "success", "archived": 42}
+    CLI->>Adapter: CLIProgressAdapter(output, ui)
+    CLI->>Workflow: ArchiveWorkflow(storage, client, adapter)
+    CLI->>Workflow: asyncio.run(workflow.run(config))
+
+    Workflow->>Facade: await archiver.archive(...)
+    Facade->>Storage: await storage.archive_messages(...)
+    Storage-->>Facade: result
+    Facade-->>Workflow: result
+
+    Workflow-->>CLI: ArchiveResult(archived_count=42, ...)
     CLI->>User: "✓ Archived 42 messages"
 ```
 
 ### Progress Reporting
 
-Workflows can report progress using `ctx.output`:
+Workflows report progress using the injected `ProgressReporter` protocol:
 
 ```python
-async def archive_workflow(ctx: CommandContext, ...):
-    with ctx.output.progress_context("Archiving messages", total=count) as progress:
-        task = progress.add_task("Archiving", total=count)
-        
-        for message in messages:
-            await archiver.archive(message)
-            progress.update(task, advance=1)
-            
-        progress.update(task, completed=count)
+class ArchiveWorkflow:
+    def __init__(self, storage: HybridStorage, client: GmailClient,
+                 progress: ProgressReporter | None = None) -> None:
+        self.storage = storage
+        self.client = client
+        self.progress = progress
+
+    async def run(self, config: ArchiveConfig) -> ArchiveResult:
+        # Report progress via protocol (if available)
+        if self.progress:
+            self.progress.info(f"Starting archive with threshold: {config.age_threshold}")
 ```
 
 ### Task Sequences
 
-For multi-step operations, use `ctx.ui.task_sequence()`:
+For multi-step operations, use `progress.task_sequence()`:
 
 ```python
-async def archive_workflow(ctx: CommandContext, ...):
-    with ctx.ui.task_sequence() as seq:
-        with seq.task("Authenticating") as t:
-            await authenticate()
-            t.complete("Connected")
-            
-        with seq.task("Archiving messages") as t:
-            result = await archiver.archive()
-            t.complete(f"Archived {result.count} messages")
+async def run(self, config: ArchiveConfig) -> ArchiveResult:
+    if self.progress:
+        with self.progress.task_sequence() as seq:
+            with seq.task("Scanning messages") as t:
+                messages = await self._scan_messages(config.age_threshold)
+                t.complete(f"Found {len(messages):,} messages")
+
+            with seq.task("Archiving messages", total=len(messages)) as t:
+                result = await self._archive_batch(messages, config)
+                t.complete(f"Archived {result.archived_count:,} messages")
+
+    return ArchiveResult(...)
 ```
 
 ### Facade Pattern
@@ -212,8 +319,10 @@ graph TB
 **Correct Architecture Flow:**
 ```
 CLI Command (sync)
-  → asyncio.run(workflow(...))
-  → Workflow (async)
+  → Create adapter: CLIProgressAdapter(output, ui)
+  → Create workflow: ArchiveWorkflow(storage, client, adapter)
+  → asyncio.run(workflow.run(config))
+  → Workflow.run() (async)
   → Core Facade (async)
   → HybridStorage (async)
   → DBManager (async) + mbox (sync via to_thread)
@@ -221,19 +330,32 @@ CLI Command (sync)
 
 **Example with proper facade usage:**
 ```python
-async def archive_workflow(ctx: CommandContext, age_threshold: str, ...):
-    # Use facade from core layer (NOT direct core components)
-    archiver = ArchiverFacade(ctx.gmail, ctx.storage)
-    
-    # Facade handles business logic and uses HybridStorage internally
-    result = await archiver.archive(age_threshold, output, compress)
-    
-    # Return structured data for CLI formatting
-    return {
-        "status": "success",
-        "archived": result.count,
-        "output_file": result.file,
-    }
+class ArchiveWorkflow:
+    def __init__(self, storage: HybridStorage, client: GmailClient,
+                 progress: ProgressReporter | None = None) -> None:
+        self.storage = storage
+        self.client = client
+        self.progress = progress
+        # Initialize facade with injected dependencies
+        self.archiver = ArchiverFacade(
+            gmail_client=client,
+            db_manager=storage.db,
+            storage=storage,
+        )
+
+    async def run(self, config: ArchiveConfig) -> ArchiveResult:
+        # Facade handles business logic and uses HybridStorage internally
+        result = await self.archiver.archive(
+            config.age_threshold, config.output_file, config.compress
+        )
+
+        # Return typed result dataclass for CLI formatting
+        return ArchiveResult(
+            archived_count=result.count,
+            skipped_count=result.skipped,
+            output_file=result.file,
+            validation_passed=result.validated,
+        )
 ```
 
 **Why this matters:**
@@ -241,6 +363,7 @@ async def archive_workflow(ctx: CommandContext, age_threshold: str, ...):
 - HybridStorage ensures atomic operations
 - No direct DBManager access from workflows
 - Maintains layer boundaries
+- **ProgressReporter protocol** keeps workflows CLI-agnostic
 
 ## Integration Points
 
@@ -258,25 +381,47 @@ from gmailarchiver.core.extractor import MessageExtractor
 from gmailarchiver.core.compressor import ArchiveCompressor
 from gmailarchiver.core.doctor import DoctorFacade
 
-# From CLI layer (CommandContext only)
-from gmailarchiver.cli.command_context import CommandContext
+# From data layer (via constructor injection)
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
-# NEVER import these directly in workflows:
-# ❌ from gmailarchiver.data import DBManager  # Use via HybridStorage
-# ❌ from gmailarchiver.data import HybridStorage  # Use via facades
-# ❌ from gmailarchiver.core import GmailArchiver  # Use facades
+# From connectors layer (via constructor injection)
+from gmailarchiver.connectors.gmail_client import GmailClient
+
+# From shared layer (protocols)
+from gmailarchiver.core.workflows.protocols import ProgressReporter
+
+# NEVER import these in workflows:
+# ❌ from gmailarchiver.cli.output import OutputManager  # CLI-specific
+# ❌ from gmailarchiver.cli.command_context import CommandContext  # CLI-specific
+# ❌ from gmailarchiver.cli.ui_builder import UIBuilder  # CLI-specific
+# ❌ from gmailarchiver.data import DBManager  # Use via HybridStorage/facades
 ```
 
 ### Dependents
 
 ```python
-# CLI commands import and call workflows
-from gmailarchiver.core.workflows import archive_workflow
+# CLI commands import workflow classes and create adapters
+from gmailarchiver.core.workflows import ArchiveWorkflow, ArchiveConfig
+from gmailarchiver.cli.adapters import CLIProgressAdapter
 
 @app.command()
-def archive(ctx: CommandContext, ...):
-    result = asyncio.run(archive_workflow(ctx, ...))
-    # Format and display result
+def archive(age_threshold: str, ...):
+    # 1. Create dependencies
+    storage = HybridStorage(db_path)
+    client = GmailClient(credentials)
+    adapter = CLIProgressAdapter(output, ui)
+
+    # 2. Create workflow with constructor injection
+    workflow = ArchiveWorkflow(storage, client, progress=adapter)
+
+    # 3. Create typed config
+    config = ArchiveConfig(age_threshold=age_threshold, ...)
+
+    # 4. Execute workflow (single asyncio.run)
+    result = asyncio.run(workflow.run(config))
+
+    # 5. Format and display result (CLI responsibility)
+    output.success(f"Archived {result.archived_count} messages")
 ```
 
 ## Testing Strategy
@@ -290,47 +435,60 @@ def archive(ctx: CommandContext, ...):
 
 ### Test Patterns
 
-**Workflow Tests:**
+**Workflow Tests (with mock dependencies):**
 ```python
 @pytest.mark.asyncio
 async def test_archive_workflow_success():
-    # Arrange
-    ctx = create_test_context()
-    
+    # Arrange - create mock dependencies
+    storage = Mock(spec=HybridStorage)
+    client = Mock(spec=GmailClient)
+    progress = Mock(spec=ProgressReporter)
+
+    workflow = ArchiveWorkflow(storage, client, progress)
+    config = ArchiveConfig(age_threshold="3y", output_file="output.mbox")
+
     # Act
-    result = await archive_workflow(ctx, "3y", "output.mbox")
-    
-    # Assert
-    assert result["status"] == "success"
-    assert result["archived"] > 0
+    result = await workflow.run(config)
+
+    # Assert - typed result
+    assert isinstance(result, ArchiveResult)
+    assert result.archived_count > 0
+    assert result.validation_passed
 ```
 
-**CLI Command Tests:**
+**CLI Command Tests (workflow is mocked):**
 ```python
 def test_archive_command_calls_workflow():
     # Arrange
-    ctx = create_test_context()
-    
-    # Act
-    with patch("gmailarchiver.core.workflows.archive_workflow") as mock_workflow:
-        mock_workflow.return_value = {"status": "success"}
-        archive_command(ctx, "3y", "output.mbox")
-    
-    # Assert
-    mock_workflow.assert_called_once()
+    with patch("gmailarchiver.core.workflows.ArchiveWorkflow") as MockWorkflow:
+        mock_instance = MockWorkflow.return_value
+        mock_instance.run = AsyncMock(return_value=ArchiveResult(
+            archived_count=42, skipped_count=0, output_file="out.mbox",
+            validation_passed=True
+        ))
+
+        # Act
+        archive_command("3y", "output.mbox")
+
+        # Assert
+        MockWorkflow.assert_called_once()
+        mock_instance.run.assert_called_once()
 ```
 
 ## Migration Checklist
 
-When moving code from CLI to workflows:
+When creating or migrating a workflow:
 
-1. [ ] Create workflow function in `core/workflows/`
-2. [ ] Move business logic from CLI command to workflow
-3. [ ] Update CLI command to call workflow via `asyncio.run()`
-4. [ ] Ensure workflow returns structured data
-5. [ ] Update CLI command to format workflow results
-6. [ ] Verify single `asyncio.run()` call per command
-7. [ ] Update tests to cover both workflow and CLI layers
+1. [ ] Create workflow **class** in `core/workflows/` with `run()` method
+2. [ ] Define **Config dataclass** for workflow parameters
+3. [ ] Define **Result dataclass** for typed return values
+4. [ ] Use **constructor injection** for dependencies (storage, client, progress)
+5. [ ] Depend on **ProgressReporter protocol**, not CLI types
+6. [ ] Move business logic from CLI command to workflow
+7. [ ] Create **CLIProgressAdapter** in CLI layer
+8. [ ] Update CLI command to instantiate workflow and call `asyncio.run(workflow.run(config))`
+9. [ ] Ensure **single `asyncio.run()` call** per command
+10. [ ] Update tests with mock dependencies
 
 ## Related Documentation
 

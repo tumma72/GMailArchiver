@@ -27,13 +27,14 @@ class SchemaVersion(Enum):
     V1_0 = "1.0"
     V1_1 = "1.1"
     V1_2 = "1.2"
+    V1_3 = "1.3"
     NONE = "none"  # Empty or missing database
     UNKNOWN = "unknown"  # Unrecognized schema
 
     def __lt__(self, other: SchemaVersion) -> bool:
         if not isinstance(other, SchemaVersion):
             return NotImplemented
-        order = [self.NONE, self.V1_0, self.V1_1, self.V1_2, self.UNKNOWN]
+        order = [self.NONE, self.V1_0, self.V1_1, self.V1_2, self.V1_3, self.UNKNOWN]
         return order.index(self) < order.index(other)
 
     def __le__(self, other: SchemaVersion) -> bool:
@@ -73,6 +74,7 @@ class SchemaCapability(Enum):
     FTS_SEARCH = auto()  # v1.1+: Full-text search
     RFC_MESSAGE_ID = auto()  # v1.1+: RFC 2822 Message-ID tracking
     NULLABLE_GMAIL_ID = auto()  # v1.2+: gmail_id can be NULL
+    SCHEDULING = auto()  # v1.3+: Scheduled task management
 
 
 # Capabilities per version - SINGLE SOURCE OF TRUTH
@@ -92,6 +94,14 @@ _VERSION_CAPABILITIES: dict[SchemaVersion, set[SchemaCapability]] = {
         SchemaCapability.FTS_SEARCH,
         SchemaCapability.RFC_MESSAGE_ID,
         SchemaCapability.NULLABLE_GMAIL_ID,
+    },
+    SchemaVersion.V1_3: {
+        SchemaCapability.BASIC_ARCHIVING,
+        SchemaCapability.MBOX_OFFSETS,
+        SchemaCapability.FTS_SEARCH,
+        SchemaCapability.RFC_MESSAGE_ID,
+        SchemaCapability.NULLABLE_GMAIL_ID,
+        SchemaCapability.SCHEDULING,
     },
 }
 
@@ -120,13 +130,13 @@ class SchemaManager:
     """
 
     # SINGLE SOURCE OF TRUTH: Current schema version
-    CURRENT_VERSION = SchemaVersion.V1_2
+    CURRENT_VERSION = SchemaVersion.V1_3
 
     # Minimum version for any operation
     MIN_SUPPORTED_VERSION = SchemaVersion.V1_0
 
     # Versions that can be automatically migrated to CURRENT_VERSION
-    AUTO_MIGRATE_FROM = frozenset({SchemaVersion.V1_0, SchemaVersion.V1_1})
+    AUTO_MIGRATE_FROM = frozenset({SchemaVersion.V1_0, SchemaVersion.V1_1, SchemaVersion.V1_2})
 
     def __init__(self, db_path: Path | str):
         """Initialize schema manager.
@@ -358,6 +368,16 @@ class SchemaManager:
                 # (nullable gmail_id is already supported structurally)
                 await self._upgrade_v1_1_to_v1_2()
 
+                # After v1.1 -> v1.2, check if we need to go to v1.3
+                self.invalidate_cache()
+                version = await self.detect_version()
+
+            if version == SchemaVersion.V1_2:
+                if progress_callback:
+                    progress_callback("Upgrading v1.2 to v1.3...")
+                # v1.2 to v1.3 adds the schedules table
+                await self._upgrade_v1_2_to_v1_3()
+
             await migrator._close()
             self.invalidate_cache()
 
@@ -388,6 +408,39 @@ class SchemaManager:
             await conn.commit()
             logger.info("Upgraded schema version from 1.1 to 1.2")
 
+    async def _upgrade_v1_2_to_v1_3(self) -> None:
+        """Upgrade from v1.2 to v1.3 (adds schedules table)."""
+        async with aiosqlite.connect(str(self.db_path)) as conn:
+            cursor = await conn.cursor()
+
+            # Create schedules table for task scheduling
+            await cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT NOT NULL,
+                    frequency TEXT NOT NULL,
+                    day_of_week INTEGER,
+                    day_of_month INTEGER,
+                    time TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    last_run TEXT
+                )
+            """
+            )
+
+            # Update schema version
+            await cursor.execute("DELETE FROM schema_version")
+            await cursor.execute(
+                """
+                INSERT INTO schema_version (version, migrated_timestamp)
+                VALUES ('1.3', datetime('now'))
+            """
+            )
+            await conn.commit()
+            logger.info("Upgraded schema version from 1.2 to 1.3 (added schedules table)")
+
     @classmethod
     def version_from_string(cls, version_str: str) -> SchemaVersion:
         """Convert version string to SchemaVersion enum.
@@ -405,7 +458,7 @@ class SchemaManager:
         """Get the current schema version as a string.
 
         Returns:
-            Current version string (e.g., "1.2")
+            Current version string (e.g., "1.3")
         """
         return cls.CURRENT_VERSION.value
 

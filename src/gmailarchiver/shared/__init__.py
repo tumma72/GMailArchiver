@@ -7,6 +7,7 @@ Components:
 - utils: Date/time parsing, formatting, list utilities
 - input_validator: User input validation and sanitization
 - path_validator: File path security (traversal prevention)
+- protocols: Cross-layer communication protocols
 """
 
 from .input_validator import (
@@ -20,6 +21,13 @@ from .path_validator import (
     PathTraversalError,
     validate_file_path,
     validate_file_path_for_writing,
+)
+from .protocols import (
+    NoOpTaskHandle,
+    NoOpTaskSequence,
+    ProgressReporter,
+    TaskHandle,
+    TaskSequence,
 )
 from .utils import chunk_list, datetime_to_gmail_query, format_bytes, parse_age
 
@@ -39,4 +47,10 @@ __all__ = [
     "PathTraversalError",
     "validate_file_path",
     "validate_file_path_for_writing",
+    # protocols
+    "ProgressReporter",
+    "TaskSequence",
+    "TaskHandle",
+    "NoOpTaskSequence",
+    "NoOpTaskHandle",
 ]

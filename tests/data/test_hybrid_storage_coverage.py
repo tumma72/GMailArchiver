@@ -140,6 +140,7 @@ class TestHybridStorageInterruptHandling:
         # Background thread sets interrupt after short delay
         def set_interrupt_after_delay():
             import time
+
             time.sleep(0.001)  # 1ms delay to let processing start
             interrupt_event.set()
 

@@ -6,12 +6,12 @@ It coordinates internal modules for comprehensive validation.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from gmailarchiver.core.validator._checksum import ChecksumValidator
 from gmailarchiver.core.validator._counter import MessageCounter
 from gmailarchiver.core.validator._decompressor import Decompressor
 from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.shared.protocols import ProgressReporter
 
 
 @dataclass
@@ -63,7 +63,7 @@ class ValidatorFacade:
         self,
         archive_path: str | Path,
         state_db_path: str | Path = "archive_state.db",
-        output: Any | None = None,
+        progress: ProgressReporter | None = None,
         db_manager: DBManager | None = None,
     ) -> None:
         """Initialize validator facade.
@@ -71,12 +71,12 @@ class ValidatorFacade:
         Args:
             archive_path: Path to mbox archive file
             state_db_path: Path to SQLite database file
-            output: Optional OutputManager for structured logging
+            progress: Optional ProgressReporter for structured logging
             db_manager: Optional DBManager for database operations (will create if not provided)
         """
         self.archive_path = Path(archive_path)
         self.state_db_path = Path(state_db_path)
-        self.output = output
+        self.progress = progress
         self.errors: list[str] = []
 
         # Database manager (create if not provided)
@@ -117,23 +117,19 @@ class ValidatorFacade:
             self._db_manager = None
 
     def _log(self, message: str, level: str = "INFO") -> None:
-        """Log message through OutputManager if available.
+        """Log message through ProgressReporter if available.
 
         Args:
             message: Message to log
-            level: Severity level (INFO, WARNING, ERROR, SUCCESS)
+            level: Severity level (INFO, WARNING, ERROR)
         """
-        if self.output:
+        if self.progress:
             if level == "WARNING":
-                self.output.warning(message)
+                self.progress.warning(message)
             elif level == "ERROR":
-                self.output.error(message, exit_code=0)
-            elif level == "SUCCESS":
-                self.output.success(message)
+                self.progress.error(message)
             else:  # INFO
-                self.output.info(message)
-        else:
-            print(message)
+                self.progress.info(message)
 
     def validate_all(self) -> bool:
         """Quick validation to check if archive is readable and non-empty.
@@ -193,7 +189,7 @@ class ValidatorFacade:
 
     def validate_comprehensive(
         self, expected_message_ids: set[str], sample_size: int = 100
-    ) -> dict[str, Any]:
+    ) -> ValidationResult:
         """Perform comprehensive multi-layer validation.
 
         Note: This is a simplified version. Full implementation will include:
@@ -206,19 +202,10 @@ class ValidatorFacade:
             sample_size: Number of messages to spot-check
 
         Returns:
-            Validation results dictionary
+            ValidationResult with detailed check status
         """
         expected_count = len(expected_message_ids)
-        results: dict[str, Any] = {
-            "count_check": False,
-            "database_check": False,
-            "integrity_check": False,
-            "spot_check": False,
-            "errors": [],
-            "passed": False,
-            "expected_count": expected_count,
-            "spot_check_count": min(sample_size, expected_count),
-        }
+        result = ValidationResult()
 
         mbox_path, is_temp = self._decompressor.get_mbox_path(self.archive_path)
 
@@ -226,66 +213,66 @@ class ValidatorFacade:
             # Count and integrity check
             is_valid, error = self._counter.validate_count(mbox_path, expected_count)
             if is_valid:
-                results["count_check"] = True
+                result.count_check = True
             else:
-                results["errors"].append(error)
+                result.errors.append(error)
 
             # Readability check
             is_valid, error = self._counter.check_readability(mbox_path)
             if is_valid:
-                results["integrity_check"] = True
+                result.integrity_check = True
             else:
-                results["errors"].append(error)
+                result.errors.append(error)
 
             # Database and spot checks would go here (simplified for now)
-            results["database_check"] = True  # Placeholder
-            results["spot_check"] = True  # Placeholder - full implementation would spot-check
+            result.database_check = True  # Placeholder
+            result.spot_check = True  # Placeholder - full implementation would spot-check
 
-            results["passed"] = all(
+            result.passed = all(
                 [
-                    results["count_check"],
-                    results["database_check"],
-                    results["integrity_check"],
-                    results["spot_check"],
+                    result.count_check,
+                    result.database_check,
+                    result.integrity_check,
+                    result.spot_check,
                 ]
             )
 
-            return results
+            return result
         except Exception as e:
-            results["errors"].append(f"Failed to read archive: {e}")
-            return results
+            result.errors.append(f"Failed to read archive: {e}")
+            return result
         finally:
             self._decompressor.cleanup_temp_file(mbox_path, is_temp)
 
-    def report(self, results: dict[str, Any]) -> None:
+    def report(self, result: ValidationResult) -> None:
         """Print validation report.
 
         Args:
-            results: Validation results from validate_comprehensive()
+            result: ValidationResult from validate_comprehensive()
         """
         self._log("\n" + "=" * 60, "INFO")
         self._log("ARCHIVE VALIDATION REPORT", "INFO")
         self._log("=" * 60, "INFO")
 
         checks = [
-            ("Count Check", results["count_check"]),
-            ("Database Check", results["database_check"]),
-            ("Integrity Check", results["integrity_check"]),
-            ("Spot Check", results["spot_check"]),
+            ("Count Check", result.count_check),
+            ("Database Check", result.database_check),
+            ("Integrity Check", result.integrity_check),
+            ("Spot Check", result.spot_check),
         ]
 
         for name, passed in checks:
             status = "✓ PASSED" if passed else "✗ FAILED"
             self._log(f"{name:20s} {status}", "INFO")
 
-        if results["errors"]:
+        if result.errors:
             self._log("\nErrors:", "INFO")
-            for error in results["errors"]:
+            for error in result.errors:
                 self._log(f"  - {error}", "WARNING")
 
         self._log("\n" + "=" * 60, "INFO")
-        if results["passed"]:
-            self._log("VALIDATION: ✓ PASSED", "SUCCESS")
+        if result.passed:
+            self._log("VALIDATION: ✓ PASSED", "INFO")
         else:
             self._log("VALIDATION: ✗ FAILED", "ERROR")
         self._log("=" * 60 + "\n", "INFO")

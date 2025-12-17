@@ -16,10 +16,10 @@ from email import policy
 from pathlib import Path
 from typing import Any
 
-from gmailarchiver.cli.output import OperationHandle
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.input_validator import validate_compression_format
+from gmailarchiver.shared.protocols import TaskHandle
 from gmailarchiver.shared.utils import format_bytes
 
 
@@ -47,7 +47,7 @@ class MessageWriter:
         message_ids: list[str],
         output_file: str,
         compress: str | None = None,
-        operation: OperationHandle | None = None,
+        task: TaskHandle | None = None,
         gmail_query: str | None = None,
     ) -> dict[str, Any]:
         """Archive messages to mbox file with hybrid storage.
@@ -56,7 +56,7 @@ class MessageWriter:
             message_ids: List of Gmail message IDs to archive
             output_file: Output mbox file path
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
-            operation: Optional operation handle for progress tracking
+            task: Optional task handle for progress tracking
             gmail_query: The Gmail search query used (for session tracking/resume)
 
         Returns:
@@ -95,7 +95,7 @@ class MessageWriter:
             message_ids,
             output_file,
             compress,
-            operation,
+            task,
             session_id=session_id,
         )
 
@@ -112,7 +112,7 @@ class MessageWriter:
         message_ids: list[str],
         output_file: str,
         compress: str | None = None,
-        operation: OperationHandle | None = None,
+        task: TaskHandle | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
         """Archive messages using HybridStorage batch operation.
@@ -124,7 +124,7 @@ class MessageWriter:
             message_ids: List of Gmail message IDs
             output_file: Output file path (final destination)
             compress: Compression format
-            operation: Optional operation handle for progress tracking
+            task: Optional task handle for progress tracking
             session_id: Optional session ID for resumable operations
 
         Returns:
@@ -140,19 +140,11 @@ class MessageWriter:
         # This is I/O bound (network) so we do it first
         batch_messages: list[tuple[email.message.Message, str, str | None, str | None]] = []
 
-        # Set up progress tracking for fetch phase
-        if operation:
-            operation.set_total(len(message_ids), "Fetching messages from Gmail")
-
         try:
             async for message in self.client.get_messages_batch(message_ids):
                 # Check for interrupt during fetch
                 if self._interrupted.is_set():
-                    self._log(
-                        "Interrupt during fetch - archiving fetched messages...",
-                        "WARNING",
-                        operation=operation,
-                    )
+                    self._log("Interrupt during fetch - archiving fetched messages...")
                     break
 
                 try:
@@ -178,45 +170,28 @@ class MessageWriter:
                     )
 
                     # Update progress for fetch phase
-                    if operation:
-                        operation.update_progress(1)
+                    if task:
+                        task.advance(1)
 
                 except Exception as e:
                     # Log error but continue fetching
                     msg_id = message.get("id", "unknown")
                     error_msg = f"Failed to fetch/parse message {msg_id}: {e}"
-                    if operation:
-                        operation.log(error_msg, "ERROR")
-                        operation.update_progress(1)  # Still count toward total
-                    else:
-                        self._log(f"Warning: {error_msg}", "WARNING")
+                    self._log(f"Warning: {error_msg}")
                     fetch_failed_count += 1
+                    # Still advance progress even on failure
+                    if task:
+                        task.advance(1)
 
         except KeyboardInterrupt:
-            self._log(
-                "Interrupt during fetch - archiving fetched messages...",
-                "WARNING",
-                operation=operation,
-            )
-
-        # Log fetch completion
-        if operation:
-            operation.log(f"Fetched {len(batch_messages)} messages, archiving...", "INFO")
-            operation.set_total(len(batch_messages), "Archiving messages")
+            self._log("Interrupt during fetch - archiving fetched messages...")
 
         # Phase 2: Archive all messages in a single batch operation
         # This is the performance-critical part - O(n) instead of O(n²)
         def progress_callback(gmail_id: str, subject: str, status: str) -> None:
             """Report progress for each message."""
-            if operation:
-                truncated_subject = subject[:60] if len(subject) > 60 else subject
-                if status == "success":
-                    operation.log(f"Archived: {truncated_subject}", "SUCCESS")
-                elif status == "skipped":
-                    operation.log(f"Skipped (duplicate): {truncated_subject}", "WARNING")
-                elif status == "error":
-                    operation.log(f"Failed: {truncated_subject}", "ERROR")
-                operation.update_progress(1)
+            if task:
+                task.advance(1)
 
         try:
             result = await self.storage.archive_messages_batch(
@@ -237,16 +212,12 @@ class MessageWriter:
 
             # Handle interrupted state
             if interrupted:
-                self._log(
-                    f"Progress saved: {archived_count}/{len(batch_messages)} messages",
-                    "INFO",
-                    operation=operation,
-                )
-                self._log("Run the same command again to resume", "INFO", operation=operation)
+                self._log(f"Progress saved: {archived_count}/{len(batch_messages)} messages")
+                self._log("Run the same command again to resume")
 
         except KeyboardInterrupt:
             # Handle KeyboardInterrupt at outer level
-            self._log("Interrupt received - saving progress...", "WARNING", operation=operation)
+            self._log("Interrupt received - saving progress...")
             return {
                 "archived": 0,
                 "failed": fetch_failed_count,
@@ -259,16 +230,15 @@ class MessageWriter:
             # Restore original SIGINT handler
             self._restore_sigint_handler()
 
-        # Print summary (route through operation handle if available)
+        # Print summary
         file_size = final_path.stat().st_size if final_path.exists() else 0
-        self._log(f"Archived {archived_count} messages", "SUCCESS", operation=operation)
+        self._log(f"Archived {archived_count} messages")
         if skipped_count > 0:
-            self._log(f"Skipped: {skipped_count} duplicates", "INFO", operation=operation)
+            self._log(f"Skipped: {skipped_count} duplicates")
         if failed_count > 0:
-            fail_msg = f"Failed: {failed_count} messages (errors during archiving)"
-            self._log(fail_msg, "WARNING", operation=operation)
-        self._log(f"File: {final_path}", operation=operation)
-        self._log(f"Size: {format_bytes(file_size)}", operation=operation)
+            self._log(f"Failed: {failed_count} messages (errors during archiving)")
+        self._log(f"File: {final_path}")
+        self._log(f"Size: {format_bytes(file_size)}")
 
         return {
             "archived": archived_count,
@@ -278,14 +248,9 @@ class MessageWriter:
             "actual_file": str(final_path),
         }
 
-    def _log(
-        self, message: str, level: str = "INFO", operation: OperationHandle | None = None
-    ) -> None:
-        """Log a message either through operation handle or print."""
-        if operation:
-            operation.log(message, level)
-        else:
-            print(message)
+    def _log(self, message: str) -> None:
+        """Log a message to stdout."""
+        print(message)
 
     def _install_sigint_handler(self) -> None:
         """Install SIGINT handler for graceful interruption."""

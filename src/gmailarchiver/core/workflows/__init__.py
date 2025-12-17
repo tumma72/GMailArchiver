@@ -15,13 +15,46 @@ Dependencies: core layer only (not CLI layer)
 
 # Import workflows for CLI commands to use
 from .archive import ArchiveConfig, ArchiveResult, ArchiveWorkflow
+from .consolidate import ConsolidateConfig, ConsolidateResult, ConsolidateWorkflow
+from .dedupe import DedupeConfig, DedupeResult, DedupeWorkflow
+from .import_ import ImportConfig, ImportResult, ImportWorkflow
+from .migrate import MigrateConfig, MigrateResult, MigrateWorkflow
+from .repair import RepairConfig, RepairResult, RepairWorkflow
+from .search import SearchConfig, SearchResult, SearchWorkflow
 from .status import StatusConfig, StatusResult, StatusWorkflow
+from .validate import ValidateConfig, ValidateResult, ValidateWorkflow
+from .verify import VerifyConfig, VerifyResult, VerifyType, VerifyWorkflow
 
 __all__ = [
     "ArchiveConfig",
     "ArchiveResult",
     "ArchiveWorkflow",
+    "ConsolidateConfig",
+    "ConsolidateResult",
+    "ConsolidateWorkflow",
+    "DedupeConfig",
+    "DedupeResult",
+    "DedupeWorkflow",
+    "ImportConfig",
+    "ImportResult",
+    "ImportWorkflow",
+    "MigrateConfig",
+    "MigrateResult",
+    "MigrateWorkflow",
+    "RepairConfig",
+    "RepairResult",
+    "RepairWorkflow",
+    "SearchConfig",
+    "SearchResult",
+    "SearchWorkflow",
     "StatusConfig",
     "StatusResult",
     "StatusWorkflow",
+    "ValidateConfig",
+    "ValidateResult",
+    "ValidateWorkflow",
+    "VerifyConfig",
+    "VerifyResult",
+    "VerifyType",
+    "VerifyWorkflow",
 ]

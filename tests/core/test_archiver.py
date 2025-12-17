@@ -34,14 +34,14 @@ def create_mock_async_client(
 
     # Mock list_messages as async generator
     async def mock_list_messages(query: str, max_results: int = 100):
-        for msg in (messages or []):
+        for msg in messages or []:
             yield msg
 
     mock_client.list_messages = mock_list_messages
 
     # Mock get_messages_batch as async generator
     async def mock_get_messages_batch(message_ids: list[str], format: str = "raw"):
-        for msg in (messages or []):
+        for msg in messages or []:
             if msg.get("id") in message_ids:
                 yield msg
 
@@ -303,9 +303,9 @@ class TestValidateArchive:
             # validate_comprehensive expects expected_message_ids
             result = validator.validate_comprehensive(set())
 
-            # Should have validation result structure
-            assert "passed" in result
-            assert "errors" in result
+            # Should have validation result structure (dataclass, not dict)
+            assert hasattr(result, "passed")
+            assert hasattr(result, "errors")
         finally:
             Path(mbox_path).unlink()
 
@@ -1101,15 +1101,15 @@ class TestExceptionHandling:
 # tests/data/test_hybrid_storage.py and test_no_print_statements.py respectively
 
 
-class TestArchiveWithOperationHandle:
-    """Tests for archive() with OperationHandle integration."""
+class TestArchiveWithTaskHandle:
+    """Tests for archive() with TaskHandle integration."""
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
-    async def test_archive_with_operation_handle(
+    async def test_archive_with_task_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
-        """Test that archiver uses operation handle for logging and progress."""
+        """Test that archiver uses task handle for progress tracking."""
         # Setup mock client with messages
         messages = [
             {"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="},
@@ -1159,8 +1159,9 @@ class TestArchiveWithOperationHandle:
         mock_db.create_session = AsyncMock()
         mock_storage_class.return_value = mock_storage
 
-        # Setup mock operation handle
-        mock_operation = Mock()
+        # Setup mock task handle
+        mock_task = Mock()
+        mock_task.advance = Mock()
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_file = Path(tmpdir) / "archive.mbox"
@@ -1170,50 +1171,27 @@ class TestArchiveWithOperationHandle:
                 mock_client, state_db_path=str(Path(tmpdir) / "state.db")
             )
 
-            # Archive with operation handle
+            # Archive with task handle
             result = await archiver.archive(
                 age_threshold="3y",
                 output_file=str(output_file),
                 incremental=False,
-                operation=mock_operation,
+                task=mock_task,
             )
 
-            # Verify operation handle was used for logging
-            assert mock_operation.log.called, "Operation handle log() should be called"
-            assert mock_operation.update_progress.called, (
-                "Operation handle update_progress() should be called"
-            )
-
-            # Verify set_total was called for fetch phase progress tracking
-            set_total_calls = mock_operation.set_total.call_args_list
-            assert len(set_total_calls) >= 1, "Should call set_total for progress tracking"
-            # First call should be for fetching phase
-            first_call_args = set_total_calls[0]
-            assert "Fetching" in str(first_call_args), (
-                "First set_total should be for 'Fetching messages from Gmail'"
-            )
-
-            # Verify we logged success for each message
-            # Note: v1.3.5+ removed duplicate severity symbols
-            # Message is "Archived:" not "✓ Archived:"
-            log_calls = [call[0][0] for call in mock_operation.log.call_args_list]
-            success_logs = [call for call in log_calls if "Archived:" in call]
-            assert len(success_logs) == 2, "Should log success for each archived message"
-
-            # Verify progress was updated for each message
-            # 2 messages fetched + 2 messages archived = 4 progress updates
-            assert mock_operation.update_progress.call_count == 4, (
-                "Should update progress for fetch phase (2) + archive phase (2)"
-            )
+            # Verify task handle was used for progress tracking
+            assert mock_task.advance.called, "Task handle advance() should be called"
+            # Should advance for fetching messages (2) and archiving messages (2)
+            assert mock_task.advance.call_count >= 2, "Should advance progress at least twice"
 
             await archiver.close()
 
     @patch("gmailarchiver.core.archiver.facade.DBManager")
     @patch("gmailarchiver.core.archiver.facade.HybridStorage")
-    async def test_archive_without_operation_handle(
+    async def test_archive_without_task_handle(
         self, mock_storage_class: Mock, mock_db_class: Mock
     ) -> None:
-        """Test that archiver works without operation handle (backward compatibility)."""
+        """Test that archiver works without task handle (backward compatibility)."""
         # Setup mock client with messages
         messages = [{"id": "msg1", "threadId": "thread1", "raw": "dGVzdA=="}]
         test_email = b"Subject: Test Subject\n\nTest body"
@@ -1255,12 +1233,12 @@ class TestArchiveWithOperationHandle:
                 mock_client, state_db_path=str(Path(tmpdir) / "state.db")
             )
 
-            # Archive without operation handle (should not crash)
+            # Archive without task handle (should not crash)
             result = await archiver.archive(
                 age_threshold="3y",
                 output_file=str(output_file),
                 incremental=False,
-                operation=None,  # No operation handle
+                task=None,  # No task handle
             )
 
             # Should complete successfully

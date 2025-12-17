@@ -264,11 +264,11 @@ class TestMessageWriter:
 
     @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")
-    async def test_archive_messages_with_operation_handle(self, mock_uuid, writer):
-        """Test that operation handle is passed to helper method."""
+    async def test_archive_messages_with_task_handle(self, mock_uuid, writer):
+        """Test that task handle is passed to helper method."""
         mock_uuid.return_value = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
-        mock_operation = Mock()
+        mock_task = Mock()
 
         with patch.object(
             writer,
@@ -281,12 +281,12 @@ class TestMessageWriter:
                 "actual_file": "/tmp/test.mbox",
             },
         ) as mock_helper:
-            await writer.archive_messages(["msg001"], "/tmp/test.mbox", operation=mock_operation)
+            await writer.archive_messages(["msg001"], "/tmp/test.mbox", task=mock_task)
 
-        # Should pass operation handle to _archive_messages
+        # Should pass task handle to _archive_messages
         mock_helper.assert_called_once()
         call_args = mock_helper.call_args
-        assert call_args[0][3] == mock_operation  # 4th positional arg
+        assert call_args[0][3] == mock_task  # 4th positional arg
 
     @pytest.mark.asyncio
     @patch("gmailarchiver.core.archiver._writer.uuid.uuid4")

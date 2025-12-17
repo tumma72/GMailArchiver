@@ -38,6 +38,7 @@ class TestSchemaVersion:
         assert SchemaVersion.from_string("1.0") == SchemaVersion.V1_0
         assert SchemaVersion.from_string("1.1") == SchemaVersion.V1_1
         assert SchemaVersion.from_string("1.2") == SchemaVersion.V1_2
+        assert SchemaVersion.from_string("1.3") == SchemaVersion.V1_3
         assert SchemaVersion.from_string("2.0") == SchemaVersion.UNKNOWN
         assert SchemaVersion.from_string("invalid") == SchemaVersion.UNKNOWN
 
@@ -46,6 +47,7 @@ class TestSchemaVersion:
         assert SchemaVersion.V1_0.is_valid
         assert SchemaVersion.V1_1.is_valid
         assert SchemaVersion.V1_2.is_valid
+        assert SchemaVersion.V1_3.is_valid
         assert not SchemaVersion.NONE.is_valid
         assert not SchemaVersion.UNKNOWN.is_valid
 
@@ -327,11 +329,11 @@ class TestSchemaManagerMigration:
 
     async def test_no_migration_needed_current(self, tmp_path):
         """Test current version doesn't need migration."""
-        db_path = tmp_path / "v1_2.db"
+        db_path = tmp_path / "v1_3.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE messages (gmail_id TEXT)")
         conn.execute("CREATE TABLE schema_version (version TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO schema_version VALUES ('1.2')")
+        conn.execute("INSERT INTO schema_version VALUES ('1.3')")
         conn.commit()
         conn.close()
 
@@ -355,6 +357,7 @@ class TestSchemaManagerMigration:
         assert await manager.is_supported(SchemaVersion.V1_0)
         assert await manager.is_supported(SchemaVersion.V1_1)
         assert await manager.is_supported(SchemaVersion.V1_2)
+        assert await manager.is_supported(SchemaVersion.V1_3)
         assert not await manager.is_supported(SchemaVersion.NONE)
         assert not await manager.is_supported(SchemaVersion.UNKNOWN)
 
@@ -389,13 +392,14 @@ class TestSchemaManagerClassMethods:
     async def test_get_current_version_string(self):
         """Test getting current version as string."""
         version_str = SchemaManager.get_current_version_string()
-        assert version_str == "1.2"
+        assert version_str == "1.3"
 
     async def test_version_from_string(self):
         """Test version string conversion."""
         assert SchemaManager.version_from_string("1.0") == SchemaVersion.V1_0
         assert SchemaManager.version_from_string("1.1") == SchemaVersion.V1_1
         assert SchemaManager.version_from_string("1.2") == SchemaVersion.V1_2
+        assert SchemaManager.version_from_string("1.3") == SchemaVersion.V1_3
 
 
 class TestSchemaVersionComparisons:

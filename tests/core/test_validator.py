@@ -230,12 +230,12 @@ class TestValidateComprehensive:
             expected_ids = {"msg1", "msg2"}
             results = validator.validate_comprehensive(expected_ids, sample_size=2)
 
-            assert results["count_check"] is True
-            assert results["database_check"] is True
-            assert results["integrity_check"] is True
-            assert results["spot_check"] is True
-            assert results["passed"] is True
-            assert results["errors"] == []
+            assert results.count_check is True
+            assert results.database_check is True
+            assert results.integrity_check is True
+            assert results.spot_check is True
+            assert results.passed is True
+            assert results.errors == []
 
         finally:
             mbox_path.unlink()
@@ -292,9 +292,9 @@ class TestValidateComprehensive:
             expected_ids = {"msg1", "msg2"}
             results = validator.validate_comprehensive(expected_ids, sample_size=2)
 
-            assert results["count_check"] is False
-            assert results["passed"] is False
-            assert any("Count mismatch" in err for err in results["errors"])
+            assert results.count_check is False
+            assert results.passed is False
+            assert any("Count mismatch" in err for err in results.errors)
 
         finally:
             mbox_path.unlink()
@@ -316,8 +316,8 @@ class TestValidateComprehensive:
 
             # TODO: Implement database existence check in ValidatorFacade
             # For now, database_check is a placeholder that returns True
-            assert results["database_check"] is True  # Placeholder behavior
-            # assert any("State database not found" in err for err in results["errors"])
+            assert results.database_check is True  # Placeholder behavior
+            # assert any("State database not found" in err for err in results.errors)
 
         finally:
             mbox_path.unlink()
@@ -335,7 +335,7 @@ class TestValidateComprehensive:
             results = validator.validate_comprehensive({"msg1"}, sample_size=10)
 
             # Should fail gracefully
-            assert results["passed"] is False
+            assert results.passed is False
 
         finally:
             mbox_path.unlink()
@@ -376,8 +376,8 @@ class TestValidateComprehensive:
             # Spot check should be skipped for empty expected_ids
             # Overall validation considers: spot_check OR not expected_message_ids
             # So it should still be able to pass other checks
-            assert results["count_check"] is True  # 0 == 0
-            assert results["database_check"] is True  # 0 >= 0
+            assert results.count_check is True  # 0 == 0
+            assert results.database_check is True  # 0 >= 0
 
         finally:
             mbox_path.unlink()
@@ -464,49 +464,64 @@ class TestComputeChecksum:
 class TestReport:
     """Tests for report method."""
 
-    @patch("builtins.print")
-    async def test_report_success(self, mock_print: patch) -> None:
+    async def test_report_success(self) -> None:
         """Test report with successful validation."""
-        validator = ValidatorFacade("archive.mbox")
-        results = {
-            "count_check": True,
-            "database_check": True,
-            "integrity_check": True,
-            "spot_check": True,
-            "errors": [],
-            "passed": True,
-        }
+        from unittest.mock import MagicMock
+
+        from gmailarchiver.core.validator.facade import ValidationResult
+
+        # Create a mock progress reporter to capture log messages
+        mock_progress = MagicMock()
+        validator = ValidatorFacade("archive.mbox", progress=mock_progress)
+        results = ValidationResult(
+            count_check=True,
+            database_check=True,
+            integrity_check=True,
+            spot_check=True,
+            passed=True,
+            errors=[],
+        )
 
         validator.report(results)
 
-        # Verify print was called (report prints the validation status)
-        assert mock_print.called
-        # Check that success message appears
-        calls = [str(call) for call in mock_print.call_args_list]
+        # Verify progress reporter was called with info messages
+        assert mock_progress.info.called
+        # Check that success message appears in calls
+        calls = [str(call) for call in mock_progress.info.call_args_list]
         full_output = " ".join(calls)
         assert "PASSED" in full_output
         await validator.close()
 
-    @patch("builtins.print")
-    async def test_report_failure(self, mock_print: patch) -> None:
+    async def test_report_failure(self) -> None:
         """Test report with failed validation."""
-        validator = ValidatorFacade("archive.mbox")
-        results = {
-            "count_check": False,
-            "database_check": True,
-            "integrity_check": True,
-            "spot_check": False,
-            "errors": ["Count mismatch", "Spot check failed"],
-            "passed": False,
-        }
+        from unittest.mock import MagicMock
+
+        from gmailarchiver.core.validator.facade import ValidationResult
+
+        # Create a mock progress reporter to capture log messages
+        mock_progress = MagicMock()
+        validator = ValidatorFacade("archive.mbox", progress=mock_progress)
+        results = ValidationResult(
+            count_check=False,
+            database_check=True,
+            integrity_check=True,
+            spot_check=False,
+            passed=False,
+            errors=["Count mismatch", "Spot check failed"],
+        )
 
         validator.report(results)
 
-        # Verify print was called
-        assert mock_print.called
+        # Verify progress reporter was called (info, warning, error methods)
+        assert (
+            mock_progress.info.called or mock_progress.warning.called or mock_progress.error.called
+        )
         # Check that failure message and errors appear
-        calls = [str(call) for call in mock_print.call_args_list]
-        full_output = " ".join(calls)
+        all_calls = []
+        all_calls.extend([str(call) for call in mock_progress.info.call_args_list])
+        all_calls.extend([str(call) for call in mock_progress.warning.call_args_list])
+        all_calls.extend([str(call) for call in mock_progress.error.call_args_list])
+        full_output = " ".join(all_calls)
         assert "FAILED" in full_output
         assert "Count mismatch" in full_output
         await validator.close()
@@ -1251,7 +1266,7 @@ class TestValidatorSimpleCases:
             # Empty mbox should fail integrity check
             results = validator.validate_comprehensive(set(["msg1"]))
 
-            assert "readable messages" in " ".join(results["errors"]).lower()
+            assert "readable messages" in " ".join(results.errors).lower()
         await validator.close()
 
     async def test_validate_comprehensive_spot_check_pass(self) -> None:
@@ -1285,7 +1300,7 @@ class TestValidatorSimpleCases:
             results = validator.validate_comprehensive(set(["msg1"]))
 
             # spot_check should pass
-            assert results["spot_check"] is True or results["passed"] is True
+            assert results.spot_check is True or results.passed is True
         await validator.close()
 
     async def test_validate_all_exception(self) -> None:
@@ -1337,7 +1352,7 @@ class TestValidatorMissingCoverage:
             results = validator.validate_comprehensive(set(["msg1"]))
 
             # Should handle v1.0 schema
-            assert "database_check" in results
+            assert hasattr(results, "database_check")
         await validator.close()
 
     async def test_validate_count_exception(self) -> None:
@@ -1391,70 +1406,62 @@ async def test_validator_empty_archive_integrity_check() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should fail integrity check
-        assert results["integrity_check"] is False, "Empty archive should fail integrity check"
+        assert results.integrity_check is False, "Empty archive should fail integrity check"
 
         # Should have error mentioning no messages or empty
-        error_text = " ".join(results.get("errors", [])).lower()
+        error_text = " ".join(results.errors).lower()
         assert "no readable messages" in error_text or "empty" in error_text, (
-            f"Expected error about no messages, got: {results.get('errors', [])}"
+            f"Expected error about no messages, got: {results.errors}"
         )
     await validator.close()
 
 
-async def test_validator_log_with_output_manager() -> None:
-    """Test validator._log uses OutputManager methods when available (lines 76-78).
+async def test_validator_log_with_progress_reporter() -> None:
+    """Test validator._log uses ProgressReporter methods when available.
 
-    When validator has an OutputManager, it should use output.warning/error/success/info
+    When validator has a ProgressReporter, it should use progress.warning/error/info
     instead of print statements.
     """
     import tempfile
 
-    from gmailarchiver.cli.output import OutputManager
+    from gmailarchiver.shared.protocols import NoOpProgressReporter
 
     with tempfile.TemporaryDirectory() as tmpdir:
         archive_path = Path(tmpdir) / "test.mbox"
         archive_path.touch()
 
-        # Create validator with OutputManager
-        output_mgr = OutputManager(json_mode=False)
-        validator = ValidatorFacade(str(archive_path), output=output_mgr)
+        # Create validator with ProgressReporter
+        progress_reporter = NoOpProgressReporter()
+        validator = ValidatorFacade(str(archive_path), progress=progress_reporter)
 
         # Test each log level
         validator._log("Info message", level="INFO")
         validator._log("Warning message", level="WARNING")
         validator._log("Error message", level="ERROR")
-        validator._log("Success message", level="SUCCESS")
     await validator.close()
 
-        # If we got here without crashes, the paths are covered
+    # If we got here without crashes, the paths are covered
 
 
-async def test_validator_log_fallback_without_output_manager() -> None:
-    """Test validator._log falls back to print when no OutputManager (lines 76, 78).
+async def test_validator_log_fallback_without_progress_reporter() -> None:
+    """Test validator._log is silent when no ProgressReporter.
 
-    When validator has no OutputManager (output=None), it should use print
-    for backward compatibility.
+    When validator has no ProgressReporter (progress=None), _log should be silent
+    (no output).
     """
-    import io
-    import sys
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmpdir:
         archive_path = Path(tmpdir) / "test.mbox"
         archive_path.touch()
 
-        # Create validator without OutputManager
-        validator = ValidatorFacade(str(archive_path), output=None)
+        # Create validator without ProgressReporter
+        validator = ValidatorFacade(str(archive_path), progress=None)
 
-        # Capture print output
-        old_stdout = sys.stdout
-        sys.stdout = buffer = io.StringIO()
-        try:
-            validator._log("Test message", level="INFO")
-            output = buffer.getvalue()
-            assert "Test message" in output, "Should print message via fallback path"
-        finally:
-            sys.stdout = old_stdout
+        # Calling _log should not crash (it's silent without progress reporter)
+        validator._log("Test message", level="INFO")
+        validator._log("Warning", level="WARNING")
+        validator._log("Error", level="ERROR")
     await validator.close()
 
 
@@ -1479,10 +1486,10 @@ async def test_validator_comprehensive_with_corrupt_archive() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should have errors
-        assert len(results["errors"]) > 0, "Should have errors for corrupt archive"
-        error_text = " ".join(results["errors"]).lower()
+        assert len(results.errors) > 0, "Should have errors for corrupt archive"
+        error_text = " ".join(results.errors).lower()
         assert "failed" in error_text or "no readable messages" in error_text, (
-            f"Expected failure error, got: {results['errors']}"
+            f"Expected failure error, got: {results.errors}"
         )
     await validator.close()
 
@@ -1507,10 +1514,10 @@ async def test_validator_comprehensive_empty_message_list() -> None:
         results = validator.validate_comprehensive(expected_message_ids=set())
 
         # Should fail integrity check
-        assert results["integrity_check"] is False
+        assert results.integrity_check is False
 
         # Should mention no readable messages
-        error_text = " ".join(results.get("errors", [])).lower()
+        error_text = " ".join(results.errors).lower()
         assert "no readable messages" in error_text
     await validator.close()
 
@@ -1545,11 +1552,11 @@ async def test_validator_comprehensive_database_missing() -> None:
         results = validator.validate_comprehensive(expected_message_ids={"<test@example.com>"})
 
         # Should pass integrity check
-        assert results["integrity_check"] is True
+        assert results.integrity_check is True
 
         # TODO: Database check is a placeholder that always returns True
         # This should be updated when proper database validation is implemented
-        assert results.get("database_check") is True  # Placeholder behavior
+        assert results.database_check is True  # Placeholder behavior
     await validator.close()
 
 
@@ -1559,7 +1566,7 @@ class TestValidatorErrorHandling:
     async def test_integrity_check_inner_exception(self) -> None:
         """Test integrity check handles inner exceptions (lines 181-182)."""
         import tempfile
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1581,8 +1588,8 @@ class TestValidatorErrorHandling:
                 results = validator.validate_comprehensive(expected_message_ids=set())
 
                 # Should handle exception and add error
-                assert "errors" in results
-                assert any("Integrity check failed" in err for err in results["errors"])
+                assert hasattr(results, "errors")
+                assert any("Integrity check failed" in err for err in results.errors)
         await validator.close()
 
     async def test_spot_check_exception(self) -> None:
@@ -1591,7 +1598,6 @@ class TestValidatorErrorHandling:
         import mailbox
         import sqlite3
         import tempfile
-        from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / "test.mbox"
@@ -1641,9 +1647,9 @@ class TestValidatorErrorHandling:
                 )
 
                 # Should handle spot check exception
-                assert "errors" in results
+                assert hasattr(results, "errors")
                 # May have spot check error
-                errors_text = " ".join(results["errors"])
+                errors_text = " ".join(results.errors)
         await validator.close()
 
     async def test_compute_checksum_exception(self) -> None:
@@ -1708,8 +1714,8 @@ class TestValidatorErrorHandling:
             results = validator.validate_comprehensive(expected_message_ids={"msg1", "msg2"})
 
             # Should detect mismatch
-            assert "errors" in results
-            errors_text = " ".join(results["errors"])
+            assert hasattr(results, "errors")
+            errors_text = " ".join(results.errors)
             # DB has 2, mbox has 1
             assert "mismatch" in errors_text.lower() or "count" in errors_text.lower()
         await validator.close()
@@ -1746,7 +1752,7 @@ class TestValidatorErrorHandling:
             results = validator.validate_comprehensive(expected_message_ids={"msg1"})
         await validator.close()
 
-            # Validation should pass (checksum mismatch is not critical in comprehensive)
+        # Validation should pass (checksum mismatch is not critical in comprehensive)
 
     async def test_validate_all_nonexistent_file_returns_false(self) -> None:
         """Test validate_all returns False for nonexistent archive (lines 307-309).

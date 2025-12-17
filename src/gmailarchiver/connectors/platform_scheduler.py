@@ -16,7 +16,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
-from .scheduler import ScheduleEntry
+from gmailarchiver.data.scheduler import ScheduleEntry
 
 
 class UnsupportedPlatformError(Exception):

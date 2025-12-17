@@ -197,15 +197,20 @@ class HybridStorage:
 
             # Phase 1: CPU-bound mbox work in thread pool
             # This prevents blocking the event loop during mbox I/O and checksum calculations
-            results, new_rfc_ids, skipped_messages, skipped_count, failed_count, mbox_interrupted = (
-                await asyncio.to_thread(
-                    self._write_messages_to_mbox_sync,
-                    messages,
-                    mbox_path,
-                    archive_file,
-                    self._known_rfc_ids.copy(),  # Pass copy to avoid thread safety issues
-                    interrupt_event,
-                )
+            (
+                results,
+                new_rfc_ids,
+                skipped_messages,
+                skipped_count,
+                failed_count,
+                mbox_interrupted,
+            ) = await asyncio.to_thread(
+                self._write_messages_to_mbox_sync,
+                messages,
+                mbox_path,
+                archive_file,
+                self._known_rfc_ids.copy(),  # Pass copy to avoid thread safety issues
+                interrupt_event,
             )
 
             # Report skipped messages first (for progress callbacks)

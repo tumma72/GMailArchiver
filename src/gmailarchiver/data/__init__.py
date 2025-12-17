@@ -5,6 +5,7 @@ This layer manages all persistent state:
 - Schema version management (SchemaManager)
 - Atomic mbox + database operations (HybridStorage)
 - Database migrations (MigrationManager)
+- Task scheduling (Scheduler)
 
 Dependencies: shared layer only
 """
@@ -18,6 +19,7 @@ from .hybrid_storage import (
     IntegrityError,
 )
 from .migration import MigrationManager
+from .scheduler import ScheduleEntry, Scheduler, ScheduleValidationError
 from .schema_manager import (
     SchemaCapability,
     SchemaManager,
@@ -43,4 +45,8 @@ __all__ = [
     "ArchiveStats",
     # MigrationManager
     "MigrationManager",
+    # Scheduler
+    "Scheduler",
+    "ScheduleEntry",
+    "ScheduleValidationError",
 ]

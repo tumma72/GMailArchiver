@@ -3097,7 +3097,7 @@ class TestStatisticsOperations:
         assert stats is not None
         assert stats.total_messages == 0
         assert len(stats.archive_files) == 0
-        assert stats.schema_version in ["1.1", "1.2"]
+        assert stats.schema_version in ["1.1", "1.2", "1.3"]
         assert stats.database_size_bytes > 0  # Database file exists even if empty
         assert isinstance(stats.recent_runs, list)
 
@@ -3139,7 +3139,7 @@ class TestStatisticsOperations:
         assert len(stats.archive_files) == 2
         assert str(mbox1) in stats.archive_files
         assert str(mbox2) in stats.archive_files
-        assert stats.schema_version in ["1.1", "1.2"]
+        assert stats.schema_version in ["1.1", "1.2", "1.3"]
         assert stats.database_size_bytes > 0
 
     async def test_get_message_ids_for_archive(self, db_manager: DBManager, temp_dir: Path) -> None:

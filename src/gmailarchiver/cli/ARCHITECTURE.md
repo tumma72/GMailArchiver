@@ -93,26 +93,48 @@ shared resources across all commands.
 classDiagram
     class CommandContext {
         +output: OutputManager
-        +db_path: Path
+        +ui: UIBuilder
+        +storage: HybridStorage
         +json_mode: bool
         +verbose: bool
-        +get_db_manager() DBManager
-        +get_authenticator() GmailAuthenticator
-        +get_client() GmailClient
-        +handle_error(error: Exception)
+        +dry_run: bool
+        +info(message: str)
+        +warning(message: str)
+        +success(message: str)
+        +fail_and_exit(title, message, suggestion)
+        +show_report(title, data)
     }
 
     CommandContext --> OutputManager : owns
-    CommandContext --> DBManager : creates
-    CommandContext --> GmailAuthenticator : creates
-    CommandContext --> GmailClient : creates
+    CommandContext --> UIBuilder : owns
+    CommandContext --> HybridStorage : owns (via @with_context)
 ```
 
 **Key Features:**
-- Lazy initialization of expensive resources
+- Lazy initialization via `@with_context` decorator
+- **HybridStorage** access (NOT DBManager directly)
 - Consistent error handling across commands
-- Shared configuration (db path, verbosity, JSON mode)
-- Clean resource cleanup on exit
+- Shared configuration (verbosity, JSON mode, dry-run)
+
+**Note:** CommandContext does NOT expose GmailClient or GmailAuthenticator directly.
+Gmail connectivity is handled separately using the factory pattern (see below).
+
+### GmailClient Factory Pattern
+
+GmailClient uses an async context manager pattern for clean connection management:
+
+```python
+# GmailClient encapsulates authentication internally
+async with GmailClient.connect(credentials_file=credentials) as client:
+    # Client is authenticated and ready to use
+    messages = await client.list_messages(query)
+```
+
+This pattern:
+- Encapsulates `GmailAuthenticator` internally (not exposed to CLI)
+- Handles OAuth flow automatically
+- Ensures clean resource cleanup on exit
+- Makes testing easier (mock the factory)
 
 ### Search Output (_output_search.py)
 
@@ -170,7 +192,7 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     Input[Command Output] --> Check{JSON Mode?}
-    Check -->|Yes| JSON[json_output()]
+    Check -->|Yes| JSON["json_output()"]
     Check -->|No| Rich[Rich Console]
 
     Rich --> Table[Tables]
@@ -214,22 +236,26 @@ from gmailarchiver.cli.output import OperationHandle
 
 The CLI layer follows a thin client pattern where:
 1. **CLI commands are synchronous** (Typer limitation)
-2. **Business logic is async** in workflows
+2. **Business logic is async** in class-based workflows
 3. **Single `asyncio.run()` call per command** bridges sync/async
 4. **Workflows are in `core/workflows/`** not in CLI
+5. **CLIProgressAdapter** bridges CLI output to workflow protocol
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLI as CLI Command (sync)
-    participant Workflow as Async Workflow
+    participant Adapter as CLIProgressAdapter
+    participant Workflow as ArchiveWorkflow
     participant Core as Core Facade
 
     User->>CLI: gmailarchiver archive 3y
-    CLI->>Workflow: asyncio.run(archive_workflow(...))
+    CLI->>Adapter: CLIProgressAdapter(output, ui)
+    CLI->>Workflow: ArchiveWorkflow(storage, client, adapter)
+    CLI->>Workflow: asyncio.run(workflow.run(config))
     Workflow->>Core: await archiver.archive(...)
     Core-->>Workflow: result
-    Workflow-->>CLI: result
+    Workflow-->>CLI: ArchiveResult
     CLI->>User: formatted output
 ```
 
@@ -257,28 +283,94 @@ OutputManager is in CLI because:
 
 ### Workflow Pattern
 
-All business logic should be in async workflows:
+All business logic should be in async workflow **classes**:
 - **Location**: `src/gmailarchiver/core/workflows/`
-- **Pattern**: Single async function per command
-- **Signature**: `async def workflow_name(ctx: CommandContext, **params) -> ResultType`
-- **Calling**: CLI commands call via `asyncio.run(workflow(...))`
+- **Pattern**: Class with `async def run(config: TConfig) -> TResult`
+- **Dependencies**: Constructor injection (storage, client, progress)
+- **Progress Protocol**: Workflows depend on `ProgressReporter` protocol, not CLI types
+- **Calling**: CLI creates adapter, creates workflow, calls `asyncio.run(workflow.run(config))`
 
 **Example:**
 ```python
 # In src/gmailarchiver/core/workflows/archive.py
-async def archive_workflow(
-    ctx: CommandContext,
-    age_threshold: str,
-    output: str | None,
-    compress: str | None,
-    # ... other params
-) -> dict[str, Any]:
-    """Async implementation of archive command."""
-    # Business logic here
-    return {"status": "success", "archived": 42}
+class ArchiveWorkflow:
+    def __init__(
+        self,
+        storage: HybridStorage,
+        client: GmailClient,
+        progress: ProgressReporter | None = None,
+    ) -> None:
+        self.storage = storage
+        self.client = client
+        self.progress = progress
 
-# In CLI command (sync)
-def archive(ctx: CommandContext, age_threshold: str, ...):
-    result = asyncio.run(archive_workflow(ctx, age_threshold, ...))
-    # Format output
+    async def run(self, config: ArchiveConfig) -> ArchiveResult:
+        """Execute archive workflow."""
+        # Business logic here
+        return ArchiveResult(archived_count=42, ...)
+
+# In CLI command (sync) - shows full dependency flow
+@with_context(requires_storage=True, has_progress=True)
+def archive(ctx: CommandContext, age_threshold: str, credentials: str | None, ...):
+    # Create progress adapter from CommandContext
+    adapter = CLIProgressAdapter(ctx.output, ctx.ui)
+
+    # Define async workflow execution
+    async def _run_archive():
+        # GmailClient is created HERE using factory pattern (not in CommandContext)
+        async with GmailClient.connect(credentials_file=credentials) as client:
+            # Create workflow with all dependencies
+            workflow = ArchiveWorkflow(
+                storage=ctx.storage,  # From CommandContext
+                client=client,        # From factory
+                progress=adapter,     # CLI adapter
+            )
+
+            # Create typed config and execute
+            config = ArchiveConfig(age_threshold=age_threshold, ...)
+            return await workflow.run(config)
+
+    # Single asyncio.run() call bridges sync/async
+    result = asyncio.run(_run_archive())
+
+    # Format typed result (CLI responsibility)
+    ctx.success(f"Archived {result.archived_count} messages")
 ```
+
+**Key Points:**
+- `CommandContext` provides: `storage` (HybridStorage), `output`, `ui`
+- `GmailClient` is created via factory pattern inside async context
+- `CLIProgressAdapter` bridges CLI output to workflow protocol
+- Workflow receives all dependencies via constructor
+
+### CLIProgressAdapter
+
+The CLI layer provides `CLIProgressAdapter` that implements the `ProgressReporter` protocol:
+
+```python
+class CLIProgressAdapter:
+    """Adapts CLI output types to ProgressReporter protocol.
+
+    This allows workflows to report progress without depending on
+    CLI-specific types (OutputManager, UIBuilder).
+    """
+
+    def __init__(self, output: OutputManager, ui: UIBuilder | None = None) -> None:
+        self._output = output
+        self._ui = ui
+
+    def info(self, message: str) -> None:
+        self._output.info(message)
+
+    def warning(self, message: str) -> None:
+        self._output.warning(message)
+
+    @contextmanager
+    def task_sequence(self) -> ContextManager[TaskSequence]:
+        if self._ui:
+            yield self._ui.task_sequence()
+        else:
+            yield NoOpTaskSequence()
+```
+
+This pattern ensures workflows remain independent of CLI implementation details.

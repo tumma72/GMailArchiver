@@ -70,9 +70,7 @@ class TestGmailLookupLookupGmailId:
     async def test_lookup_gmail_id_api_error(self) -> None:
         """Test lookup when API raises exception."""
         mock_client = Mock()
-        mock_client.search_by_rfc_message_id = AsyncMock(
-            side_effect=Exception("API rate limit")
-        )
+        mock_client.search_by_rfc_message_id = AsyncMock(side_effect=Exception("API rate limit"))
 
         lookup = GmailLookup(mock_client)
         result = await lookup.lookup_gmail_id("<test@example.com>")

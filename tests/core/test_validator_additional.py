@@ -80,8 +80,8 @@ class TestValidatorComprehensiveExceptions:
                 results = validator.validate_comprehensive(set(["msg1"]))
 
                 # Should handle exception
-                assert "errors" in results
-                assert len(results["errors"]) > 0
+                assert hasattr(results, "errors")
+                assert len(results.errors) > 0
 
 
 class TestValidatorOffsetVerification:

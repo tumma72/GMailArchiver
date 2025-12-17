@@ -107,7 +107,6 @@ class TestImporterFacadeImportArchive:
     @pytest.mark.asyncio
     @patch("gmailarchiver.core.importer.facade.FileScanner")
     @patch("gmailarchiver.core.importer.facade.MboxReader")
-    @patch("gmailarchiver.core.importer.facade.GmailLookup")
     @patch("gmailarchiver.core.importer.facade.DatabaseWriter")
     @patch("gmailarchiver.core.importer.facade.time")
     @patch("gmailarchiver.core.importer.facade.Path.exists")
@@ -116,7 +115,6 @@ class TestImporterFacadeImportArchive:
         mock_exists: Mock,
         mock_time: Mock,
         mock_writer_class: Mock,
-        mock_lookup_class: Mock,
         mock_reader_class: Mock,
         mock_scanner_class: Mock,
     ) -> None:
@@ -146,10 +144,6 @@ class TestImporterFacadeImportArchive:
         # Mock the new scan_rfc_message_ids method
         mock_reader.scan_rfc_message_ids.return_value = [("<test@example.com>", 0, 100)]
         mock_reader_class.return_value = mock_reader
-
-        mock_lookup = Mock()
-        mock_lookup.is_enabled.return_value = False
-        mock_lookup_class.return_value = mock_lookup
 
         from gmailarchiver.core.importer._writer import WriteResult
 

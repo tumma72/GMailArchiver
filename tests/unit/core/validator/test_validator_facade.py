@@ -147,8 +147,8 @@ class TestValidatorFacade:
             facade = ValidatorFacade(str(mbox_path))
             results = facade.validate_comprehensive({"msg1"})
 
-            assert "count_check" in results
-            assert "integrity_check" in results
-            assert "passed" in results
+            assert hasattr(results, "count_check")
+            assert hasattr(results, "integrity_check")
+            assert hasattr(results, "passed")
         finally:
             mbox_path.unlink()

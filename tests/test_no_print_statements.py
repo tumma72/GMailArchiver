@@ -82,9 +82,7 @@ class TestNoPrintStatements:
 
         # Patch print to detect if it's called
         with patch("builtins.print") as mock_print:
-            count = asyncio.run(
-                archiver.delete_archived_messages(["msg1"], permanent=True)
-            )
+            count = asyncio.run(archiver.delete_archived_messages(["msg1"], permanent=True))
 
             # Should complete successfully
             assert count == 5
@@ -111,30 +109,33 @@ class TestNoPrintStatements:
             assert dest.exists()
             assert dest.stat().st_size > 0
 
-    def test_validator_uses_output_manager_not_print(self) -> None:
-        """Test that ArchiveValidator uses OutputManager instead of print()."""
+    def test_validator_uses_progress_reporter_not_print(self) -> None:
+        """Test that ValidatorFacade uses ProgressReporter instead of print()."""
+        from gmailarchiver.core.validator.facade import ValidationResult
+        from gmailarchiver.shared.protocols import NoOpProgressReporter
+
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             mbox_path = temp_path / "test.mbox"
             mbox_path.touch()
 
-            output = OutputManager()
-            validator = ValidatorFacade(str(mbox_path), output=output)
+            progress = NoOpProgressReporter()
+            validator = ValidatorFacade(str(mbox_path), progress=progress)
 
-            results = {
-                "count_check": True,
-                "database_check": True,
-                "integrity_check": True,
-                "spot_check": True,
-                "errors": [],
-                "passed": True,
-            }
+            results = ValidationResult(
+                count_check=True,
+                database_check=True,
+                integrity_check=True,
+                spot_check=True,
+                passed=True,
+                errors=[],
+            )
 
             # Patch print to detect if it's called
             with patch("builtins.print") as mock_print:
                 validator.report(results)
 
-                # print() should NOT be called - all output through OutputManager
+                # print() should NOT be called - all output through ProgressReporter
                 assert not mock_print.called, (
                     f"print() was called {mock_print.call_count} times in validator.py"
                 )
@@ -158,37 +159,37 @@ class TestBackwardCompatibility:
         )
 
         # Should complete successfully even without OutputManager
-        count = asyncio.run(
-            archiver.delete_archived_messages(["msg1"], permanent=True)
-        )
+        count = asyncio.run(archiver.delete_archived_messages(["msg1"], permanent=True))
 
         # Should return correct count
         assert count == 5
 
-    def test_validator_falls_back_to_print(self) -> None:
-        """Test that validator falls back to print() when no OutputManager."""
+    def test_validator_silent_without_progress_reporter(self) -> None:
+        """Test that validator is silent when no ProgressReporter is provided."""
+        from gmailarchiver.core.validator.facade import ValidationResult
+
         with tempfile.TemporaryDirectory() as tmpdir:
             temp_path = Path(tmpdir)
             mbox_path = temp_path / "test.mbox"
             mbox_path.touch()
 
-            # No OutputManager provided (backward compat)
+            # No ProgressReporter provided
             validator = ValidatorFacade(str(mbox_path))
 
-            results = {
-                "count_check": True,
-                "database_check": True,
-                "integrity_check": True,
-                "spot_check": True,
-                "errors": [],
-                "passed": True,
-            }
+            results = ValidationResult(
+                count_check=True,
+                database_check=True,
+                integrity_check=True,
+                spot_check=True,
+                passed=True,
+                errors=[],
+            )
 
-            # Should use print() as fallback
+            # Should be silent (no print() calls)
             with patch("builtins.print") as mock_print:
                 validator.report(results)
 
-                # print() SHOULD be called as fallback
-                assert mock_print.called, (
-                    "print() should be called as fallback when no OutputManager"
+                # print() should NOT be called - validator is silent without ProgressReporter
+                assert not mock_print.called, (
+                    "print() should not be called when no ProgressReporter is provided"
                 )

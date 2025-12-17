@@ -21,7 +21,7 @@ from gmailarchiver.connectors.platform_scheduler import (
     UnsupportedPlatformError,
     get_platform_scheduler,
 )
-from gmailarchiver.connectors.scheduler import ScheduleEntry
+from gmailarchiver.data.scheduler import ScheduleEntry
 
 
 class TestPlatformDetection:

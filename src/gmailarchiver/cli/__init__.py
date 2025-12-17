@@ -1,5 +1,6 @@
 """CLI layer - user interface and output formatting."""
 
+from .adapters import CLIProgressAdapter
 from .command_context import CommandContext
 from .output import (
     OperationHandle,
@@ -8,6 +9,7 @@ from .output import (
 )
 
 __all__ = [
+    "CLIProgressAdapter",
     "CommandContext",
     "OperationHandle",
     "OutputManager",

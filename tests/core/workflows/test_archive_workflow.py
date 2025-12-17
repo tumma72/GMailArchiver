@@ -3,11 +3,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gmailarchiver.cli.output import OutputManager
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.core.archiver._filter import FilterResult
 from gmailarchiver.core.workflows.archive import ArchiveConfig, ArchiveResult, ArchiveWorkflow
 from gmailarchiver.data.hybrid_storage import HybridStorage
+from gmailarchiver.shared.protocols import NoOpTaskSequence
 
 
 @pytest.fixture
@@ -30,13 +30,20 @@ def mock_storage():
 
 
 @pytest.fixture
-def mock_output():
-    return MagicMock(spec=OutputManager)
+def mock_progress():
+    """Mock ProgressReporter that returns NoOpTaskSequence."""
+    progress = MagicMock()
+    progress.info = MagicMock()
+    progress.warning = MagicMock()
+    progress.error = MagicMock()
+    progress.task_sequence.return_value.__enter__ = MagicMock(return_value=NoOpTaskSequence())
+    progress.task_sequence.return_value.__exit__ = MagicMock(return_value=None)
+    return progress
 
 
 @pytest.fixture
-def workflow(mock_client, mock_storage, mock_output):
-    return ArchiveWorkflow(mock_client, mock_storage, mock_output)
+def workflow(mock_client, mock_storage, mock_progress):
+    return ArchiveWorkflow(mock_client, mock_storage, mock_progress)
 
 
 @pytest.mark.asyncio

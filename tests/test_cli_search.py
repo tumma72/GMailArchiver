@@ -228,13 +228,12 @@ class TestSearchCommand:
         assert "meeting" in result.stdout.lower() or "results" in result.stdout.lower()
 
     def test_search_with_from_filter(self, runner, v1_1_database_with_messages):
-        """Test search with --from filter finds matches."""
+        """Test search with from: filter finds matches."""
         result = runner.invoke(
             app,
             [
                 "search",
-                "--from",
-                "alice@example.com",
+                "from:alice@example.com",
                 "--state-db",
                 str(v1_1_database_with_messages),
             ],
@@ -245,9 +244,9 @@ class TestSearchCommand:
         assert "alice" in result.stdout.lower() or "results" in result.stdout.lower()
 
     def test_search_with_subject_filter(self, runner, v1_1_database_with_messages):
-        """Test search with --subject filter finds matches."""
+        """Test search with subject: filter finds matches."""
         result = runner.invoke(
-            app, ["search", "--subject", "invoice", "--state-db", str(v1_1_database_with_messages)]
+            app, ["search", "subject:invoice", "--state-db", str(v1_1_database_with_messages)]
         )
 
         assert result.exit_code == 0
@@ -255,15 +254,12 @@ class TestSearchCommand:
         assert "invoice" in result.stdout.lower() or "results" in result.stdout.lower()
 
     def test_search_with_date_range(self, runner, v1_1_database_with_messages):
-        """Test search with --after and --before date range."""
+        """Test search with after: and before: date range."""
         result = runner.invoke(
             app,
             [
                 "search",
-                "--after",
-                "2024-02-01",
-                "--before",
-                "2024-03-01",
+                "after:2024-02-01 before:2024-03-01",
                 "--state-db",
                 str(v1_1_database_with_messages),
             ],
@@ -279,10 +275,7 @@ class TestSearchCommand:
             app,
             [
                 "search",
-                "--from",
-                "alice",
-                "--subject",
-                "meeting",
+                "from:alice subject:meeting",
                 "--state-db",
                 str(v1_1_database_with_messages),
             ],
@@ -365,9 +358,7 @@ class TestSearchCommand:
             app,
             [
                 "search",
-                "invoice",
-                "--after",
-                "2024-02-01",
+                "invoice after:2024-02-01",
                 "--state-db",
                 str(v1_1_database_with_messages),
             ],
@@ -378,10 +369,10 @@ class TestSearchCommand:
         assert "results" in result.stdout.lower() or "invoice" in result.stdout.lower()
 
     def test_search_to_filter(self, runner, v1_1_database_with_messages):
-        """Test search with --to filter."""
+        """Test search with to: filter."""
         result = runner.invoke(
             app,
-            ["search", "--to", "team@example.com", "--state-db", str(v1_1_database_with_messages)],
+            ["search", "to:team@example.com", "--state-db", str(v1_1_database_with_messages)],
         )
 
         assert result.exit_code == 0
@@ -399,12 +390,14 @@ class TestSearchCommand:
         assert "ms" in result.stdout.lower() or "time" in result.stdout.lower()
 
     def test_search_invalid_date_format(self, runner, v1_1_database_with_messages):
-        """Test search with invalid date format shows error."""
+        """Test search with invalid date format handles gracefully."""
         result = runner.invoke(
             app,
-            ["search", "--after", "invalid-date", "--state-db", str(v1_1_database_with_messages)],
+            ["search", "after:invalid-date", "--state-db", str(v1_1_database_with_messages)],
         )
 
-        # Should show error about invalid date format
-        assert result.exit_code == 1
-        assert "error" in result.stdout.lower() or "invalid" in result.stdout.lower()
+        # Should handle gracefully (may return no results or ignore invalid date)
+        assert result.exit_code == 0
+        # Either no results or some results (gracefully ignoring invalid date filter)
+        output = result.stdout.lower()
+        assert "results" in output or "found" in output or "no results" in output

@@ -135,9 +135,7 @@ class MessageFilter:
         non_duplicates: list[str] = []
 
         # Fetch message metadata (headers only, not full content)
-        async for msg_data in gmail_client.get_messages_batch(
-            message_ids, format="metadata"
-        ):
+        async for msg_data in gmail_client.get_messages_batch(message_ids, format="metadata"):
             gmail_id = msg_data.get("id", "")
             rfc_message_id = self._extract_message_id_header(msg_data)
 

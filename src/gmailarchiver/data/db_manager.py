@@ -108,10 +108,13 @@ class DBManager:
 
     async def _create_new_database(self) -> None:
         """
-        Create a new v1.2 database with complete schema.
+        Create a new v1.3 database with complete schema.
 
         This is called automatically from initialize() when database doesn't exist.
         Creates all tables, indexes, triggers, and schema_version.
+
+        v1.3 Schema Change (from v1.2):
+        - Added schedules table for task scheduling
 
         v1.2 Schema Change (from v1.1):
         - PRIMARY KEY changed from gmail_id to rfc_message_id
@@ -266,6 +269,21 @@ class DBManager:
                     ON archive_sessions(status)
                 """)
 
+                # Create schedules table (v1.3+)
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS schedules (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        command TEXT NOT NULL,
+                        frequency TEXT NOT NULL,
+                        day_of_week INTEGER,
+                        day_of_month INTEGER,
+                        time TEXT NOT NULL,
+                        enabled INTEGER DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        last_run TEXT
+                    )
+                """)
+
                 # Create schema_version table
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS schema_version (
@@ -274,17 +292,17 @@ class DBManager:
                     )
                 """)
 
-                # Set schema version to 1.2
+                # Set schema version to 1.3
                 await conn.execute(
                     """
                     INSERT OR REPLACE INTO schema_version (version, migrated_timestamp)
-                    VALUES ('1.2', ?)
+                    VALUES ('1.3', ?)
                 """,
                     (datetime.now().isoformat(),),
                 )
 
                 await conn.commit()
-                logger.info("Successfully created new v1.2 database")
+                logger.info("Successfully created new v1.3 database")
 
             except Exception as e:
                 await conn.rollback()
@@ -1468,6 +1486,165 @@ class DBManager:
             (gmail_id,),
         )
         return await cursor.fetchone() is not None
+
+    # ==================== SCHEDULE OPERATIONS ====================
+
+    async def add_schedule(
+        self,
+        command: str,
+        frequency: str,
+        time: str,
+        day_of_week: int | None = None,
+        day_of_month: int | None = None,
+        created_at: str | None = None,
+    ) -> int:
+        """
+        Add a new schedule to the database.
+
+        Args:
+            command: Command to execute (e.g., "check", "archive 3y")
+            frequency: "daily", "weekly", or "monthly"
+            time: Time in HH:MM format
+            day_of_week: For weekly schedules (0=Sunday, 6=Saturday)
+            day_of_month: For monthly schedules (1-31)
+            created_at: ISO 8601 timestamp (defaults to now)
+
+        Returns:
+            Schedule ID of newly created schedule
+        """
+        if created_at is None:
+            created_at = datetime.now().isoformat()
+
+        cursor = await self._conn.execute(
+            """
+            INSERT INTO schedules
+            (command, frequency, day_of_week, day_of_month, time, enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            """,
+            (command, frequency, day_of_week, day_of_month, time, created_at),
+        )
+        await self._conn.commit()
+
+        assert cursor.lastrowid is not None, "Failed to get lastrowid from database"
+        return cursor.lastrowid
+
+    async def list_schedules(self, enabled_only: bool = False) -> list[dict[str, Any]]:
+        """
+        List all schedules.
+
+        Args:
+            enabled_only: If True, only return enabled schedules
+
+        Returns:
+            List of schedule dictionaries
+        """
+        if enabled_only:
+            cursor = await self._conn.execute(
+                """
+                SELECT id, command, frequency, day_of_week, day_of_month,
+                       time, enabled, created_at, last_run
+                FROM schedules
+                WHERE enabled = 1
+                ORDER BY id
+                """
+            )
+        else:
+            cursor = await self._conn.execute(
+                """
+                SELECT id, command, frequency, day_of_week, day_of_month,
+                       time, enabled, created_at, last_run
+                FROM schedules
+                ORDER BY id
+                """
+            )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_schedule(self, schedule_id: int) -> dict[str, Any] | None:
+        """
+        Get a specific schedule by ID.
+
+        Args:
+            schedule_id: Schedule ID to retrieve
+
+        Returns:
+            Schedule dictionary if found, None otherwise
+        """
+        cursor = await self._conn.execute(
+            """
+            SELECT id, command, frequency, day_of_week, day_of_month,
+                   time, enabled, created_at, last_run
+            FROM schedules
+            WHERE id = ?
+            """,
+            (schedule_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def remove_schedule(self, schedule_id: int) -> bool:
+        """
+        Remove a schedule.
+
+        Args:
+            schedule_id: Schedule ID to remove
+
+        Returns:
+            True if schedule was removed, False if not found
+        """
+        cursor = await self._conn.execute(
+            "DELETE FROM schedules WHERE id = ?",
+            (schedule_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def enable_schedule(self, schedule_id: int) -> bool:
+        """
+        Enable a schedule.
+
+        Args:
+            schedule_id: Schedule ID to enable
+
+        Returns:
+            True if schedule was enabled, False if not found
+        """
+        cursor = await self._conn.execute(
+            "UPDATE schedules SET enabled = 1 WHERE id = ?",
+            (schedule_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def disable_schedule(self, schedule_id: int) -> bool:
+        """
+        Disable a schedule.
+
+        Args:
+            schedule_id: Schedule ID to disable
+
+        Returns:
+            True if schedule was disabled, False if not found
+        """
+        cursor = await self._conn.execute(
+            "UPDATE schedules SET enabled = 0 WHERE id = ?",
+            (schedule_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_schedule_last_run(self, schedule_id: int) -> None:
+        """
+        Update the last_run timestamp for a schedule.
+
+        Args:
+            schedule_id: Schedule ID to update
+        """
+        last_run = datetime.now().isoformat()
+        await self._conn.execute(
+            "UPDATE schedules SET last_run = ? WHERE id = ?",
+            (last_run, schedule_id),
+        )
+        await self._conn.commit()
 
     # ==================== CONTEXT MANAGER ====================
 

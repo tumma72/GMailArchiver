@@ -12,11 +12,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from gmailarchiver.cli.output import OperationHandle, OutputManager
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.input_validator import InvalidInputError
+from gmailarchiver.shared.protocols import ProgressReporter, TaskHandle
 from gmailarchiver.shared.utils import datetime_to_gmail_query, parse_age
 
 from ._filter import FilterResult, MessageFilter
@@ -51,7 +51,7 @@ class ArchiverFacade:
         gmail_client: GmailClient,
         db_manager: DBManager,
         storage: HybridStorage,
-        output_manager: OutputManager | None = None,
+        progress: ProgressReporter | None = None,
     ) -> None:
         """Initialize facade with dependencies (internal - use create() instead).
 
@@ -59,12 +59,12 @@ class ArchiverFacade:
             gmail_client: Authenticated async Gmail client for API calls
             db_manager: Initialized DBManager instance
             storage: HybridStorage instance for atomic operations
-            output_manager: Optional output manager for progress reporting
+            progress: Optional progress reporter for progress reporting
         """
         self.gmail_client = gmail_client
         self.db_manager = db_manager
         self.state_db_path = str(db_manager.db_path)
-        self.output_manager = output_manager
+        self.progress = progress
         self.storage = storage
 
         # Initialize internal modules with injected dependencies
@@ -76,14 +76,14 @@ class ArchiverFacade:
         cls,
         gmail_client: GmailClient,
         state_db_path: str = "~/.local/share/gmailarchiver/archive.db",
-        output_manager: OutputManager | None = None,
+        progress: ProgressReporter | None = None,
     ) -> ArchiverFacade:
         """Create and initialize archiver facade.
 
         Args:
             gmail_client: Authenticated async Gmail client for API calls
             state_db_path: Path to state database for tracking archived messages
-            output_manager: Optional output manager for progress reporting
+            progress: Optional progress reporter for progress reporting
 
         Returns:
             Initialized ArchiverFacade instance
@@ -95,7 +95,7 @@ class ArchiverFacade:
         await db_manager.initialize()
         storage = HybridStorage(db_manager)
 
-        return cls(gmail_client, db_manager, storage, output_manager)
+        return cls(gmail_client, db_manager, storage, progress)
 
     async def list_messages_for_archive(
         self,
@@ -163,7 +163,7 @@ class ArchiverFacade:
         message_ids: list[str],
         output_file: str,
         compress: str | None = None,
-        operation: OperationHandle | None = None,
+        task: TaskHandle | None = None,
         gmail_query: str | None = None,
     ) -> dict[str, Any]:
         """Archive messages to mbox file.
@@ -174,7 +174,7 @@ class ArchiverFacade:
             message_ids: List of Gmail message IDs to archive
             output_file: Output mbox file path
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
-            operation: Optional operation handle for progress tracking
+            task: Optional task handle for progress tracking
             gmail_query: The Gmail search query used (for session tracking/resume)
 
         Returns:
@@ -185,8 +185,11 @@ class ArchiverFacade:
                 - actual_file: Actual file path where messages were written
         """
         return await self._writer.archive_messages(
-            message_ids, output_file, compress=compress, operation=operation,
-            gmail_query=gmail_query
+            message_ids,
+            output_file,
+            compress=compress,
+            task=task,
+            gmail_query=gmail_query,
         )
 
     async def archive(
@@ -196,7 +199,7 @@ class ArchiverFacade:
         compress: str | None = None,
         incremental: bool = True,
         dry_run: bool = False,
-        operation: OperationHandle | None = None,
+        task: TaskHandle | None = None,
     ) -> dict[str, Any]:
         """Archive Gmail messages to mbox file (full workflow).
 
@@ -211,7 +214,7 @@ class ArchiverFacade:
             compress: Compression format ('gzip', 'lzma', 'zstd', None)
             incremental: If True, skip already-archived messages (default: True)
             dry_run: If True, preview without archiving (default: False)
-            operation: Optional operation handle for progress tracking
+            task: Optional task handle for progress tracking
 
         Returns:
             Dict with keys:
@@ -227,7 +230,7 @@ class ArchiverFacade:
             InvalidInputError: If parameters are invalid
         """
         # Phase 1: List messages from Gmail
-        progress_callback = getattr(operation, "progress_callback", None) if operation else None
+        progress_callback = getattr(task, "progress_callback", None) if task else None
         query, message_list = await self.list_messages_for_archive(
             age_threshold, progress_callback=progress_callback
         )
@@ -247,9 +250,7 @@ class ArchiverFacade:
             }
 
         # Phase 2: Filter already-archived messages and duplicates
-        filter_result = await self.filter_already_archived(
-            message_ids, incremental=incremental
-        )
+        filter_result = await self.filter_already_archived(message_ids, incremental=incremental)
 
         # Handle dry-run mode (no archiving)
         if dry_run:
@@ -279,7 +280,7 @@ class ArchiverFacade:
 
         # Phase 3: Archive messages
         result = await self.archive_messages(
-            filter_result.to_archive, output_file, compress=compress, operation=operation
+            filter_result.to_archive, output_file, compress=compress, task=task
         )
 
         # Combine results from all phases

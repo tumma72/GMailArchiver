@@ -81,9 +81,7 @@ class TestArchiverFacadeWithAsyncClient:
             archiver = await ArchiverFacade.create(async_client, str(db_path))
 
             # Now async-only: use delete_archived_messages directly
-            count = await archiver.delete_archived_messages(
-                ["msg1", "msg2"], permanent=False
-            )
+            count = await archiver.delete_archived_messages(["msg1", "msg2"], permanent=False)
 
             assert count == 2
             async_client.trash_messages.assert_called_once_with(["msg1", "msg2"])
@@ -111,9 +109,7 @@ class TestArchiverFacadeWithAsyncClient:
             )
 
             assert count == 3
-            async_client.delete_messages_permanent.assert_called_once_with(
-                ["msg1", "msg2", "msg3"]
-            )
+            async_client.delete_messages_permanent.assert_called_once_with(["msg1", "msg2", "msg3"])
 
             await archiver.close()
 

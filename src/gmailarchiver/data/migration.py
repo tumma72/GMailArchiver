@@ -750,23 +750,25 @@ class MigrationManager:
                             message_bytes = msg.as_bytes()
                             checksum = hashlib.sha256(message_bytes).hexdigest()
 
-                            records.append({
-                                "gmail_id": gmail_id,
-                                "rfc_message_id": rfc_message_id,
-                                "thread_id": thread_id,
-                                "subject": msg.get("Subject"),
-                                "from_addr": msg.get("From"),
-                                "to_addr": msg.get("To"),
-                                "cc_addr": msg.get("Cc"),
-                                "date": msg.get("Date"),
-                                "archived_timestamp": old_meta["archived_timestamp"],
-                                "archive_file": str(archive_path),
-                                "mbox_offset": offset,
-                                "mbox_length": length,
-                                "body_preview": body_preview,
-                                "checksum": checksum,
-                                "size_bytes": len(message_bytes),
-                            })
+                            records.append(
+                                {
+                                    "gmail_id": gmail_id,
+                                    "rfc_message_id": rfc_message_id,
+                                    "thread_id": thread_id,
+                                    "subject": msg.get("Subject"),
+                                    "from_addr": msg.get("From"),
+                                    "to_addr": msg.get("To"),
+                                    "cc_addr": msg.get("Cc"),
+                                    "date": msg.get("Date"),
+                                    "archived_timestamp": old_meta["archived_timestamp"],
+                                    "archive_file": str(archive_path),
+                                    "mbox_offset": offset,
+                                    "mbox_length": length,
+                                    "body_preview": body_preview,
+                                    "checksum": checksum,
+                                    "size_bytes": len(message_bytes),
+                                }
+                            )
 
                     except Exception as e:
                         warnings.append(f"Failed to process message {key}: {e}")
@@ -776,8 +778,7 @@ class MigrationManager:
             # Handle any remaining old_messages that weren't in mbox
             if remaining_messages:
                 warnings.append(
-                    f"{len(remaining_messages)} messages from v1.0 DB "
-                    f"not found in {archive_path}"
+                    f"{len(remaining_messages)} messages from v1.0 DB not found in {archive_path}"
                 )
                 skipped += len(remaining_messages)
 

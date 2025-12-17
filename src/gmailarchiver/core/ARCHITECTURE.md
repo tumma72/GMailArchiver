@@ -1,6 +1,6 @@
 # Core Layer Architecture
 
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-16
 
 The core layer contains business logic for email archiving operations: archiving, validation, consolidation, deduplication, search, extraction, compression, and diagnostics.
 
@@ -11,13 +11,13 @@ The core layer contains business logic for email archiving operations: archiving
 | Property | Value |
 |----------|-------|
 | **Dependencies** | `shared`, `data`, `connectors` layers |
-| **Dependents** | `cli` layer, `workflows` module |
+| **Dependents** | `cli` layer (via workflows) |
 | **Responsibility** | Business logic for all archiving operations |
 | **Thread Safety** | Components are not thread-safe (use separate instances per thread) |
 
-### Critical Architecture Rule
+### Critical Architecture Rules
 
-**ALL database access MUST go through HybridStorage.**
+**Rule 1: ALL database access MUST go through HybridStorage.**
 
 ```mermaid
 flowchart TD
@@ -26,31 +26,64 @@ flowchart TD
     Core -.->|NEVER| DBManager
 ```
 
+**Rule 2: Core layer MUST NOT import from CLI layer.**
+
+```mermaid
+flowchart TD
+    CLI -->|imports| Core
+    Core -.->|NEVER imports| CLI
+    Core -->|uses protocol| ProgressReporter
+    CLI -->|implements| CLIProgressAdapter
+    CLIProgressAdapter -->|satisfies| ProgressReporter
+```
+
+For progress reporting, core components should depend on `ProgressReporter` protocol (not `OutputManager`).
+
 **Rationale:**
 - HybridStorage provides transactional guarantees
 - Ensures atomic operations across mbox + database
 - Centralizes validation and integrity checking
-- Maintains the single entry point principle
+- Maintains layer boundaries and testability
+- Enables alternative UIs (GUI, API) without changing core
+
+### Known Layer Violations (to fix)
+
+| Component | Violation | Fix |
+|-----------|-----------|-----|
+| `ArchiverFacade` | Imports `OperationHandle`, `OutputManager` from CLI | Use `ProgressReporter` protocol |
+| `workflows/archive.py` | Imports `OutputManager` from CLI | Use `ProgressReporter` protocol |
 
 ---
 
 ## Components
 
-### GmailArchiver
+### ArchiverFacade (archiver/facade.py)
 
 Main archiving orchestrator - coordinates Gmail fetch, mbox write, and database operations.
+This is the **public API** for archiving operations.
 
 ```mermaid
 classDiagram
-    class GmailArchiver {
-        +client: GmailClient
+    class ArchiverFacade {
+        +gmail_client: GmailClient
         +storage: HybridStorage
-        +archive(age, output, compression, ...) ArchiveResult
-        +archive_messages(messages, output, ...) int
+        +list_messages_for_archive(age_threshold, progress_callback) tuple
+        +filter_already_archived(message_ids, incremental) FilterResult
+        +archive_messages(message_ids, output_file, compress, ...) dict
+        +archive(age_threshold, output_file, compress, ...) dict
+        +delete_archived_messages(message_ids, permanent) int
     }
-    GmailArchiver --> GmailClient
-    GmailArchiver --> HybridStorage
+    ArchiverFacade --> GmailClient : uses
+    ArchiverFacade --> HybridStorage : uses
+    ArchiverFacade --> MessageFilter : internal
+    ArchiverFacade --> MessageWriter : internal
 ```
+
+**Internal Modules** (implementation details, not public API):
+- `_filter.py`: `MessageFilter` - filters already-archived messages
+- `_writer.py`: `MessageWriter` - writes messages to mbox with atomic operations
+
+**Note:** ArchiverFacade currently imports `OperationHandle` from CLI layer - this is a layer violation that should be fixed by using `ProgressReporter` protocol instead.
 
 ### ArchiveValidator
 
@@ -218,7 +251,7 @@ classDiagram
 ```mermaid
 graph TB
     subgraph "Core Layer"
-        ARCH[GmailArchiver]
+        ARCH[ArchiverFacade]
         VAL[ArchiveValidator]
         IMP[ArchiveImporter]
         CON[ArchiveConsolidator]
@@ -263,75 +296,87 @@ graph TB
 
 ## Workflows Module
 
-The workflows module contains async business logic for CLI commands:
+The workflows module contains **class-based** async business logic orchestrators:
 
 ```mermaid
 classDiagram
-    class Workflows {
-        +archive_workflow(ctx, params) dict
-        +status_workflow(ctx, params) dict
-        +validate_workflow(ctx, params) dict
-        +search_workflow(ctx, params) dict
-        +import_workflow(ctx, params) dict
-        +consolidate_workflow(ctx, params) dict
-        +dedupe_workflow(ctx, params) dict
-        +repair_workflow(ctx, params) dict
-        +doctor_workflow(ctx, params) dict
+    class WorkflowProtocol~TConfig, TResult~ {
+        <<protocol>>
+        +async run(config: TConfig) TResult
     }
 
-    class CommandContext {
-        +output: OutputManager
+    class ProgressReporter {
+        <<protocol>>
+        +info(message: str)
+        +warning(message: str)
+        +task_sequence() ContextManager
+    }
+
+    class ArchiveWorkflow {
         +storage: HybridStorage
-        +gmail: GmailClient
-        +ui: UIBuilder
+        +client: GmailClient
+        +progress: ProgressReporter | None
+        +async run(config: ArchiveConfig) ArchiveResult
     }
 
-    Workflows ..> CommandContext : uses
-    Workflows ..> GmailArchiver : orchestrates
-    Workflows ..> SearchEngine : queries
-    Workflows ..> ArchiveValidator : validates
+    class StatusWorkflow {
+        +storage: HybridStorage
+        +progress: ProgressReporter | None
+        +async run(config: StatusConfig) StatusResult
+    }
+
+    ArchiveWorkflow ..|> WorkflowProtocol : implements
+    StatusWorkflow ..|> WorkflowProtocol : implements
+    ArchiveWorkflow ..> ArchiverFacade : uses
+    StatusWorkflow ..> HybridStorage : uses
 ```
 
 ### Workflow Pattern
 
 Each workflow:
-- Is **async** (business logic)
-- Takes **CommandContext** for dependencies
-- Returns **structured data** for CLI formatting
+- Is a **class** implementing `WorkflowProtocol[TConfig, TResult]`
+- Has a **`run(config)` method** (not `execute`)
+- Receives dependencies via **constructor injection**
+- Depends on **ProgressReporter protocol** (not CLI types)
+- Returns **typed Result dataclass**
 - Uses **facades** for core operations
-- Reports **progress** via CommandContext
 
 **Example:**
 ```python
-async def archive_workflow(
-    ctx: CommandContext,
-    age_threshold: str,
-    output: str | None,
-    compress: str | None,
-    # ... other params
-) -> dict[str, Any]:
-    """Async implementation of archive command."""
-    
-    # Use facades for business logic
-    archiver = ArchiverFacade(ctx.gmail, ctx.storage)
-    
-    # Report progress
-    with ctx.ui.task_sequence() as seq:
-        with seq.task("Authenticating") as t:
-            await ctx.authenticate_gmail()
-            t.complete("Connected")
-            
-        with seq.task("Archiving") as t:
-            result = await archiver.archive(age_threshold, output, compress)
-            t.complete(f"Archived {result.count} messages")
-    
-    # Return structured data for CLI
-    return {
-        "status": "success",
-        "archived": result.count,
-        "output_file": result.file,
-    }
+class ArchiveWorkflow:
+    """Workflow for archiving Gmail messages."""
+
+    def __init__(
+        self,
+        storage: HybridStorage,
+        client: GmailClient,
+        progress: ProgressReporter | None = None,
+    ) -> None:
+        self.storage = storage
+        self.client = client
+        self.progress = progress
+
+    async def run(self, config: ArchiveConfig) -> ArchiveResult:
+        """Execute archive workflow."""
+        # Report progress via protocol (if available)
+        if self.progress:
+            with self.progress.task_sequence() as seq:
+                with seq.task("Archiving") as t:
+                    result = await self._do_archive(config)
+                    t.complete(f"Archived {result.count} messages")
+
+        # Return typed result dataclass
+        return ArchiveResult(
+            archived_count=result.count,
+            output_file=result.file,
+            validation_passed=result.validated,
+        )
 ```
+
+**Key Design Decisions:**
+- Workflows depend on `ProgressReporter` **protocol**, not CLI types
+- CLI layer creates `CLIProgressAdapter` that implements the protocol
+- This maintains layer boundaries and enables testability
 
 ---
 
@@ -339,7 +384,7 @@ async def archive_workflow(
 
 | Component | Test Focus |
 |-----------|------------|
-| `GmailArchiver` | Atomic operations, incremental mode, compression |
+| `ArchiverFacade` | Atomic operations, incremental mode, compression |
 | `ArchiveValidator` | Offset verification, consistency checks |
 | `ArchiveImporter` | Glob patterns, deduplication, error handling |
 | `ArchiveConsolidator` | Merge operations, offset updates |

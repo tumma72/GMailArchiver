@@ -3,11 +3,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from gmailarchiver.cli.output import OutputManager
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.core.archiver import ArchiverFacade
 from gmailarchiver.core.validator.facade import ValidatorFacade
 from gmailarchiver.data.hybrid_storage import HybridStorage
+from gmailarchiver.shared.protocols import ProgressReporter
 from gmailarchiver.shared.utils import datetime_to_gmail_query, parse_age
 
 
@@ -47,19 +47,16 @@ class ArchiveWorkflow:
         self,
         client: GmailClient,
         storage: HybridStorage,
-        output: OutputManager,
-        ui: Any = None,
+        progress: ProgressReporter | None = None,
     ) -> None:
         self.client = client
         self.storage = storage
-        self.output = output
-        self.ui = ui
+        self.progress = progress
         # Initialize facade with existing storage/client
         self.archiver = ArchiverFacade(
             gmail_client=client,
             db_manager=storage.db,
             storage=storage,
-            output_manager=output,
         )
 
     async def run(self, config: ArchiveConfig) -> ArchiveResult:
@@ -147,8 +144,9 @@ class ArchiveWorkflow:
             target = existing_partial["target_file"]
             processed = existing_partial.get("processed_count", 0)
             total = existing_partial.get("total_count", 0)
-            self.output.info(f"Resuming partial archive: {target}")
-            self.output.info(f"Progress: {processed:,}/{total:,} messages already archived")
+            if self.progress:
+                self.progress.info(f"Resuming partial archive: {target}")
+                self.progress.info(f"Progress: {processed:,}/{total:,} messages already archived")
             return str(target)
 
         # Generate new filename
@@ -167,15 +165,11 @@ class ArchiveWorkflow:
         messages: list[dict[str, Any]] = []
         query = ""
 
-        if self.ui:
-            with self.ui.task_sequence() as seq:
+        if self.progress:
+            with self.progress.task_sequence() as seq:
                 with seq.task("Scanning messages from Gmail") as task:
-
-                    def progress(count: int, page: int) -> None:
-                        task.set_status(f"Scanning messages from Gmail... {count:,} found")
-
                     query, messages = await self.archiver.list_messages_for_archive(
-                        age_threshold, progress_callback=progress
+                        age_threshold, progress_callback=None
                     )
                     if messages:
                         task.complete(f"Found {len(messages):,} messages")
@@ -183,8 +177,6 @@ class ArchiveWorkflow:
                         task.complete("No messages found matching criteria")
         else:
             query, messages = await self.archiver.list_messages_for_archive(age_threshold)
-            if messages:
-                self.output.info(f"Found {len(messages):,} messages")
 
         return {"query": query, "messages": messages}
 
@@ -194,8 +186,8 @@ class ArchiveWorkflow:
         """Filter messages with UI feedback."""
         all_ids = [msg["id"] for msg in message_list]
 
-        if self.ui:
-            with self.ui.task_sequence() as seq:
+        if self.progress:
+            with self.progress.task_sequence() as seq:
                 with seq.task("Checking for already archived") as task:
                     filter_result = await self.archiver.filter_already_archived(
                         all_ids, incremental
@@ -225,8 +217,8 @@ class ArchiveWorkflow:
         self, messages: list[str], output_file: str, compress: str | None, gmail_query: str
     ) -> dict[str, Any]:
         """Archive messages with UI feedback."""
-        if self.ui:
-            with self.ui.task_sequence() as seq:
+        if self.progress:
+            with self.progress.task_sequence() as seq:
                 with seq.task("Archiving messages", total=len(messages)) as task:
                     try:
                         result = await self.archiver.archive_messages(
@@ -243,40 +235,44 @@ class ArchiveWorkflow:
                         task.fail(f"Archive failed: {e}")
                         raise
         else:
-            # Fallback output
-            self.output.info(f"Archiving {len(messages)} messages...")
             return await self.archiver.archive_messages(
                 messages, output_file, compress, None, gmail_query
             )
 
     async def _validate_archive(self, actual_file: str) -> dict[str, Any]:
         """Validate archive with UI feedback."""
-        validator = ValidatorFacade(actual_file, str(self.storage.db.db_path), output=self.output)
+        validator = ValidatorFacade(
+            actual_file, str(self.storage.db.db_path), progress=self.progress
+        )
         try:
-            if self.ui:
-                with self.ui.task_sequence() as seq:
-                    with seq.task("Validating archive") as task:
-                        archived_ids = await self.storage.get_message_ids_for_archive(actual_file)
-                        results = await asyncio.to_thread(
-                            validator.validate_comprehensive, archived_ids
-                        )
+            archived_ids = await self.storage.get_message_ids_for_archive(actual_file)
+            result = await asyncio.to_thread(validator.validate_comprehensive, archived_ids)
 
+            if self.progress:
+                with self.progress.task_sequence() as seq:
+                    with seq.task("Validating archive") as task:
                         check_keys = [
-                            "count_check",
-                            "database_check",
-                            "integrity_check",
-                            "spot_check",
+                            result.count_check,
+                            result.database_check,
+                            result.integrity_check,
+                            result.spot_check,
                         ]
-                        passed_count = sum(1 for k in check_keys if results.get(k, False))
+                        passed_count = sum(1 for check in check_keys if check)
                         total = len(check_keys)
 
-                        if results["passed"]:
+                        if result.passed:
                             task.complete(f"Passed {passed_count}/{total} checks")
                         else:
                             task.fail(f"Failed {total - passed_count}/{total} checks")
-                        return results
-            else:
-                archived_ids = await self.storage.get_message_ids_for_archive(actual_file)
-                return await asyncio.to_thread(validator.validate_comprehensive, archived_ids)
+
+            # Convert ValidationResult to dict for backward compatibility
+            return {
+                "count_check": result.count_check,
+                "database_check": result.database_check,
+                "integrity_check": result.integrity_check,
+                "spot_check": result.spot_check,
+                "passed": result.passed,
+                "errors": result.errors,
+            }
         finally:
             await validator.close()
