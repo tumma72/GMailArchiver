@@ -292,6 +292,37 @@ class TestNoOpTaskHandle:
         handle.advance(5)
         handle.fail("test")
 
+    def test_log_method_accepts_message(self) -> None:
+        """Test log method accepts message and level."""
+        handle = NoOpTaskHandle()
+        handle.log("test message", "INFO")  # Should not raise
+
+    def test_log_method_with_default_level(self) -> None:
+        """Test log method with default level."""
+        handle = NoOpTaskHandle()
+        handle.log("test message")  # Should not raise, level defaults to INFO
+
+    def test_log_method_with_various_levels(self) -> None:
+        """Test log method with various log levels."""
+        handle = NoOpTaskHandle()
+        for level in ["INFO", "SUCCESS", "WARNING", "ERROR"]:
+            handle.log(f"message at {level}", level)  # Should not raise
+
+    def test_set_total_method_accepts_total(self) -> None:
+        """Test set_total method accepts total value."""
+        handle = NoOpTaskHandle()
+        handle.set_total(100)  # Should not raise
+
+    def test_set_total_method_with_description(self) -> None:
+        """Test set_total method accepts total and description."""
+        handle = NoOpTaskHandle()
+        handle.set_total(100, description="New description")  # Should not raise
+
+    def test_set_total_method_with_none_description(self) -> None:
+        """Test set_total method with None description."""
+        handle = NoOpTaskHandle()
+        handle.set_total(100, description=None)  # Should not raise
+
 
 # ============================================================================
 # NoOpTaskSequence Tests

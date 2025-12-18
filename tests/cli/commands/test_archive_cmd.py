@@ -88,9 +88,11 @@ def create_mock_ui() -> Mock:
     """Create a mock UIBuilder for testing.
 
     Returns:
-        Mock UIBuilder with spinner support
+        Mock UIBuilder with spinner and task_sequence support
     """
     ui = Mock()
+
+    # Mock spinner
     spinner_task = Mock()
     spinner_task.complete = Mock()
     spinner_task.fail = Mock()
@@ -100,6 +102,28 @@ def create_mock_ui() -> Mock:
     spinner_context.__exit__ = Mock()
 
     ui.spinner = Mock(return_value=spinner_context)
+
+    # Mock task_sequence - needed for workflow_sequence() in CLIProgressAdapter
+    task_handle = Mock()
+    task_handle.complete = Mock()
+    task_handle.fail = Mock()
+    task_handle.advance = Mock()
+    task_handle.log = Mock()
+    task_handle.set_total = Mock()
+
+    task_context = Mock()
+    task_context.__enter__ = Mock(return_value=task_handle)
+    task_context.__exit__ = Mock(return_value=None)
+
+    sequence = Mock()
+    sequence.task = Mock(return_value=task_context)
+
+    sequence_context = Mock()
+    sequence_context.__enter__ = Mock(return_value=sequence)
+    sequence_context.__exit__ = Mock(return_value=None)
+
+    ui.task_sequence = Mock(return_value=sequence_context)
+
     return ui
 
 

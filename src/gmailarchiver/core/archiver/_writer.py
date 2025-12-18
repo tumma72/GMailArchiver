@@ -189,9 +189,18 @@ class MessageWriter:
         # Phase 2: Archive all messages in a single batch operation
         # This is the performance-critical part - O(n) instead of O(n²)
         def progress_callback(gmail_id: str, subject: str, status: str) -> None:
-            """Report progress for each message."""
+            """Report progress for each message with Log Window pattern."""
             if task:
-                task.advance(1)
+                # Map status to log level for Log Window (UI_UX_CLI.md Section 7.4)
+                truncated_subject = (subject[:50] + "...") if len(subject) > 50 else subject
+                if status == "archived":
+                    task.log(f"Archived: {truncated_subject}", "SUCCESS")
+                elif status == "skipped":
+                    task.log(f"Skipped (duplicate): {truncated_subject}", "WARNING")
+                elif status == "failed":
+                    task.log(f"Failed: {truncated_subject}", "ERROR")
+                else:
+                    task.log(f"{status}: {truncated_subject}", "INFO")
 
         try:
             result = await self.storage.archive_messages_batch(

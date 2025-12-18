@@ -209,7 +209,7 @@ class TaskSequenceImpl:
             self._live = Live(
                 self._render(),
                 console=self._console,
-                auto_refresh=False,  # Manual control - prevents flickering
+                refresh_per_second=10,  # Animate spinner at 10fps
                 transient=False,  # Keep output visible after exit
             )
             self._live.__enter__()
@@ -303,6 +303,12 @@ class TaskSequenceImpl:
 
     def _render(self) -> Group:
         """Render all tasks and optional log window to a Rich Group."""
+        # Update animation frame on each render for smooth spinner
+        now = time.time()
+        if now - self._last_refresh >= 0.1:  # 10 fps
+            self._animation_frame = (self._animation_frame + 1) % len(SPINNER_FRAMES)
+            self._last_refresh = now
+
         renderables: list[Text | Rule] = []
 
         # Render tasks

@@ -110,9 +110,11 @@ async def _run_archive(
             delete=delete,
         )
 
-        # Phase 4: Execute workflow
+        # Phase 4: Execute workflow with shared task sequence (Log Window pattern)
+        # This creates a single Live context that all workflow steps share
         try:
-            result = await workflow.run(config)
+            with progress.workflow_sequence(show_logs=True, max_logs=5):
+                result = await workflow.run(config)
         except ValueError as e:
             ctx.fail_and_exit(
                 title="Invalid Input",

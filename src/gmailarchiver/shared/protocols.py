@@ -98,6 +98,26 @@ class TaskHandle(Protocol):
         """
         ...  # pragma: no cover
 
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log a message within the task context.
+
+        For Log Window pattern (UI_UX_CLI.md Section 7.4).
+
+        Args:
+            message: Log message
+            level: Log level (INFO, SUCCESS, WARNING, ERROR)
+        """
+        ...  # pragma: no cover
+
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """Set total for progress tracking (late binding).
+
+        Args:
+            total: Total number of items
+            description: Optional new description
+        """
+        ...  # pragma: no cover
+
 
 class NoOpTaskSequence:
     """No-op implementation of TaskSequence for when UI is not available."""
@@ -128,6 +148,14 @@ class NoOpTaskHandle:
 
     def advance(self, n: int = 1) -> None:
         """No-op advance."""
+        pass
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """No-op log."""
+        pass
+
+    def set_total(self, total: int, description: str | None = None) -> None:
+        """No-op set_total."""
         pass
 
 
