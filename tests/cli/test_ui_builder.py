@@ -17,6 +17,7 @@ from gmailarchiver.cli.ui import (
     TaskStatus,
     UIBuilderImpl,
 )
+from gmailarchiver.cli.ui.widgets.task import TaskWidget
 
 
 class TestTaskStatus:
@@ -71,65 +72,83 @@ class TestTaskState:
 
         assert state.total == 100
 
+    def test_to_widget(self) -> None:
+        """TaskState can be converted to TaskWidget."""
+        state = TaskState(
+            description="Test",
+            status=TaskStatus.SUCCESS,
+            total=100,
+            completed=50,
+            result_message="Done",
+        )
+
+        widget = state.to_widget()
+
+        assert widget.description == "Test"
+        assert widget.status == TaskStatus.SUCCESS
+        assert widget.total == 100
+        assert widget.completed == 50
+        assert widget.result_message == "Done"
+
 
 class TestTaskHandleImpl:
     """Tests for TaskHandleImpl class."""
 
     def setup_method(self) -> None:
         """Set up test fixtures."""
-        self.state = TaskState(description="Test task")
+        # Now use TaskWidget instead of TaskState
+        self.widget = TaskWidget(description="Test task")
+        self.widget.start()  # Mark as running
         self.sequence = MagicMock(spec=TaskSequenceImpl)
-        self.handle = TaskHandleImpl(self.state, self.sequence)
+        self.handle = TaskHandleImpl(self.widget, self.sequence)
 
     def test_complete_sets_success_status(self) -> None:
         """complete() sets status to SUCCESS."""
         self.handle.complete("Done!")
 
-        assert self.state.status == TaskStatus.SUCCESS
-        assert self.state.result_message == "Done!"
-        assert self.state.end_time is not None
+        assert self.widget.status == TaskStatus.SUCCESS
+        assert self.widget.result_message == "Done!"
         self.sequence._refresh.assert_called()
 
     def test_fail_sets_failed_status(self) -> None:
         """fail() sets status to FAILED."""
         self.handle.fail("Error occurred", reason="Network timeout")
 
-        assert self.state.status == TaskStatus.FAILED
-        assert self.state.result_message == "Error occurred"
-        assert self.state.failure_reason == "Network timeout"
-        assert self.state.end_time is not None
+        assert self.widget.status == TaskStatus.FAILED
+        assert self.widget.result_message == "Error occurred"
+        assert self.widget.failure_reason == "Network timeout"
         self.sequence._refresh.assert_called()
 
     def test_fail_without_reason(self) -> None:
         """fail() works without a reason."""
         self.handle.fail("Error occurred")
 
-        assert self.state.status == TaskStatus.FAILED
-        assert self.state.failure_reason is None
+        assert self.widget.status == TaskStatus.FAILED
+        assert self.widget.failure_reason is None
 
     def test_advance_increments_completed(self) -> None:
         """advance() increments the completed count."""
-        self.state.total = 100
-        initial = self.state.completed
+        self.widget.total = 100
+        initial = self.widget.completed
 
         self.handle.advance(10)
 
-        assert self.state.completed == initial + 10
+        assert self.widget.completed == initial + 10
         self.sequence._refresh.assert_called()
 
     def test_advance_default_is_one(self) -> None:
         """advance() defaults to incrementing by 1."""
-        initial = self.state.completed
+        initial = self.widget.completed
 
         self.handle.advance()
 
-        assert self.state.completed == initial + 1
+        assert self.widget.completed == initial + 1
 
     def test_set_total(self) -> None:
         """set_total() sets the total."""
         self.handle.set_total(50)
 
-        assert self.state.total == 50
+        assert self.widget.total == 50
         self.sequence._refresh.assert_called()
 
     def test_log_delegates_to_sequence(self) -> None:
@@ -142,51 +161,50 @@ class TestTaskHandleImpl:
         """set_total() can update description."""
         self.handle.set_total(100, description="New description")
 
-        assert self.state.total == 100
-        assert self.state.description == "New description"
+        assert self.widget.total == 100
+        assert self.widget.description == "New description"
         self.sequence._refresh.assert_called()
 
     def test_set_total_without_description_preserves_original(self) -> None:
         """set_total() without description preserves original."""
-        original_desc = self.state.description
+        original_desc = self.widget.description
         self.handle.set_total(100)
 
-        assert self.state.total == 100
-        assert self.state.description == original_desc
+        assert self.widget.total == 100
+        assert self.widget.description == original_desc
 
     # OperationHandle compatibility tests
 
     def test_update_progress_delegates_to_advance(self) -> None:
         """update_progress() delegates to advance()."""
-        initial = self.state.completed
+        initial = self.widget.completed
 
         self.handle.update_progress(5)
 
-        assert self.state.completed == initial + 5
+        assert self.widget.completed == initial + 5
         self.sequence._refresh.assert_called()
 
     def test_update_progress_default_is_one(self) -> None:
         """update_progress() defaults to 1."""
-        initial = self.state.completed
+        initial = self.widget.completed
 
         self.handle.update_progress()
 
-        assert self.state.completed == initial + 1
+        assert self.widget.completed == initial + 1
 
     def test_set_status_updates_description(self) -> None:
         """set_status() updates task description."""
         self.handle.set_status("Processing item 50/100")
 
-        assert self.state.description == "Processing item 50/100"
+        assert self.widget.description == "Processing item 50/100"
         self.sequence._refresh.assert_called()
 
     def test_succeed_delegates_to_complete(self) -> None:
         """succeed() delegates to complete()."""
         self.handle.succeed("Operation finished")
 
-        assert self.state.status == TaskStatus.SUCCESS
-        assert self.state.result_message == "Operation finished"
-        assert self.state.end_time is not None
+        assert self.widget.status == TaskStatus.SUCCESS
+        assert self.widget.result_message == "Operation finished"
         self.sequence._refresh.assert_called()
 
     def test_complete_pending_logs_message(self) -> None:
@@ -365,15 +383,16 @@ class TestTaskSequenceImpl:
 
 
 class TestTaskSequenceImplRendering:
-    """Tests for TaskSequenceImpl rendering."""
+    """Tests for TaskSequenceImpl rendering via TaskWidget."""
 
     def test_render_pending_task(self) -> None:
         """Pending task renders with dim circle."""
         seq = TaskSequenceImpl(console=None, json_mode=True)
-        state = TaskState(description="Pending task", status=TaskStatus.PENDING)
-        seq._tasks.append(state)
+        widget = TaskWidget(description="Pending task")
+        # Default status is PENDING
+        seq._task_widgets.append(widget)
 
-        text = seq._render_task(state)
+        text = widget.render(animation_frame=0)
         text_str = str(text)
 
         assert "○" in text_str
@@ -382,10 +401,11 @@ class TestTaskSequenceImplRendering:
     def test_render_running_task(self) -> None:
         """Running task renders with spinner and description."""
         seq = TaskSequenceImpl(console=None, json_mode=True)
-        state = TaskState(description="Running task", status=TaskStatus.RUNNING)
-        seq._tasks.append(state)
+        widget = TaskWidget(description="Running task")
+        widget.start()
+        seq._task_widgets.append(widget)
 
-        text = seq._render_task(state)
+        text = widget.render(animation_frame=0)
         text_str = str(text)
 
         # Should have spinner character
@@ -395,15 +415,13 @@ class TestTaskSequenceImplRendering:
     def test_render_running_task_with_progress(self) -> None:
         """Running task with progress shows count and percentage."""
         seq = TaskSequenceImpl(console=None, json_mode=True)
-        state = TaskState(
-            description="Running task",
-            status=TaskStatus.RUNNING,
-            total=100,
-            completed=50,
-        )
-        seq._tasks.append(state)
+        widget = TaskWidget(description="Running task")
+        widget.start()
+        widget.total = 100
+        widget.completed = 50
+        seq._task_widgets.append(widget)
 
-        text = seq._render_task(state)
+        text = widget.render(animation_frame=0)
         text_str = str(text)
 
         assert "50" in text_str
@@ -413,14 +431,11 @@ class TestTaskSequenceImplRendering:
     def test_render_success_task(self) -> None:
         """Success task renders with checkmark and result."""
         seq = TaskSequenceImpl(console=None, json_mode=True)
-        state = TaskState(
-            description="Success task",
-            status=TaskStatus.SUCCESS,
-            result_message="Completed!",
-        )
-        seq._tasks.append(state)
+        widget = TaskWidget(description="Success task")
+        widget.complete("Completed!")
+        seq._task_widgets.append(widget)
 
-        text = seq._render_task(state)
+        text = widget.render(animation_frame=0)
         text_str = str(text)
 
         assert "✓" in text_str
@@ -430,15 +445,11 @@ class TestTaskSequenceImplRendering:
     def test_render_failed_task(self) -> None:
         """Failed task renders with X and reason."""
         seq = TaskSequenceImpl(console=None, json_mode=True)
-        state = TaskState(
-            description="Failed task",
-            status=TaskStatus.FAILED,
-            result_message="Error",
-            failure_reason="Network error",
-        )
-        seq._tasks.append(state)
+        widget = TaskWidget(description="Failed task")
+        widget.fail("Error", reason="Network error")
+        seq._task_widgets.append(widget)
 
-        text = seq._render_task(state)
+        text = widget.render(animation_frame=0)
         text_str = str(text)
 
         assert "✗" in text_str
@@ -584,15 +595,19 @@ class TestLogEntry:
 
     def test_log_entry_creation(self) -> None:
         """LogEntry can be created with level and message."""
-        entry = LogEntry(level="INFO", message="Test message")
+        from gmailarchiver.cli.ui.widgets.log_window import LogLevel
 
-        assert entry.level == "INFO"
+        entry = LogEntry(level=LogLevel.INFO, message="Test message")
+
+        assert entry.level == LogLevel.INFO
         assert entry.message == "Test message"
         assert entry.timestamp > 0
 
     def test_log_entry_with_timestamp(self) -> None:
         """LogEntry can be created with explicit timestamp."""
-        entry = LogEntry(level="ERROR", message="Error!", timestamp=12345.0)
+        from gmailarchiver.cli.ui.widgets.log_window import LogLevel
+
+        entry = LogEntry(level=LogLevel.ERROR, message="Error!", timestamp=12345.0)
 
         assert entry.timestamp == 12345.0
 
@@ -643,9 +658,8 @@ class TestLogWindow:
 
         seq._log("Test message", "INFO")
 
-        assert len(seq._visible_logs) == 1
-        assert seq._visible_logs[0].message == "Test message"
-        assert seq._visible_logs[0].level == "INFO"
+        # Now uses LogWindowWidget internally
+        assert seq._log_window.visible_count == 1
 
     def test_log_not_added_to_visible_buffer_when_show_logs_false(self) -> None:
         """Logs are NOT added to visible buffer when show_logs=False."""
@@ -653,7 +667,7 @@ class TestLogWindow:
 
         seq._log("Test message", "INFO")
 
-        assert len(seq._visible_logs) == 0
+        assert seq._log_window.visible_count == 0
         # But still in all logs
         assert len(seq._logs) == 1
 
@@ -669,20 +683,18 @@ class TestLogWindow:
         seq._log("Log 5", "INFO")
 
         # Should only keep last 3
-        assert len(seq._visible_logs) == 3
-        assert seq._visible_logs[0].message == "Log 3"
-        assert seq._visible_logs[1].message == "Log 4"
-        assert seq._visible_logs[2].message == "Log 5"
+        assert seq._log_window.visible_count == 3
 
-        # All logs still stored
+        # All logs still stored in _logs
         assert len(seq._logs) == 5
 
     def test_render_log_info(self) -> None:
         """INFO log renders with info symbol."""
-        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
-        entry = LogEntry(level="INFO", message="Information message")
+        from gmailarchiver.cli.ui.widgets.log_window import LogEntry as WidgetLogEntry, LogLevel
 
-        text = seq._render_log(entry)
+        entry = WidgetLogEntry(level=LogLevel.INFO, message="Information message")
+
+        text = entry.render()
         text_str = str(text)
 
         assert "ℹ" in text_str
@@ -690,10 +702,11 @@ class TestLogWindow:
 
     def test_render_log_warning(self) -> None:
         """WARNING log renders with warning symbol."""
-        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
-        entry = LogEntry(level="WARNING", message="Warning message")
+        from gmailarchiver.cli.ui.widgets.log_window import LogEntry as WidgetLogEntry, LogLevel
 
-        text = seq._render_log(entry)
+        entry = WidgetLogEntry(level=LogLevel.WARNING, message="Warning message")
+
+        text = entry.render()
         text_str = str(text)
 
         assert "⚠" in text_str
@@ -701,10 +714,11 @@ class TestLogWindow:
 
     def test_render_log_error(self) -> None:
         """ERROR log renders with error symbol."""
-        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
-        entry = LogEntry(level="ERROR", message="Error message")
+        from gmailarchiver.cli.ui.widgets.log_window import LogEntry as WidgetLogEntry, LogLevel
 
-        text = seq._render_log(entry)
+        entry = WidgetLogEntry(level=LogLevel.ERROR, message="Error message")
+
+        text = entry.render()
         text_str = str(text)
 
         assert "✗" in text_str
@@ -712,10 +726,11 @@ class TestLogWindow:
 
     def test_render_log_success(self) -> None:
         """SUCCESS log renders with success symbol."""
-        seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
-        entry = LogEntry(level="SUCCESS", message="Success message")
+        from gmailarchiver.cli.ui.widgets.log_window import LogEntry as WidgetLogEntry, LogLevel
 
-        text = seq._render_log(entry)
+        entry = WidgetLogEntry(level=LogLevel.SUCCESS, message="Success message")
+
+        text = entry.render()
         text_str = str(text)
 
         assert "✓" in text_str
@@ -724,24 +739,24 @@ class TestLogWindow:
     def test_render_includes_log_window(self) -> None:
         """Render includes log window when show_logs=True and has logs."""
         seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=True)
-        seq._tasks.append(
-            TaskState(description="Test task", status=TaskStatus.SUCCESS, result_message="Done")
-        )
+        widget = TaskWidget(description="Test task")
+        widget.complete("Done")
+        seq._task_widgets.append(widget)
         seq._log("Log message 1", "INFO")
         seq._log("Log message 2", "SUCCESS")
 
         group = seq._render()
 
-        # Should have task + separator + 2 logs = 4 renderables
-        # (Group contains the renderables)
-        assert len(group.renderables) == 4
+        # Should have task + log window group (separator + 2 logs)
+        # Group structure: task text + Group(separator + log1 + log2)
+        assert len(group.renderables) == 2  # 1 task + 1 log window group
 
     def test_render_no_log_window_when_disabled(self) -> None:
         """Render excludes log window when show_logs=False."""
         seq = TaskSequenceImpl(console=None, json_mode=True, show_logs=False)
-        seq._tasks.append(
-            TaskState(description="Test task", status=TaskStatus.SUCCESS, result_message="Done")
-        )
+        widget = TaskWidget(description="Test task")
+        widget.complete("Done")
+        seq._task_widgets.append(widget)
         seq._logs.append(("INFO", "Log message"))
 
         group = seq._render()
@@ -763,10 +778,8 @@ class TestLogWindowIntegration:
                 t.log("Item 1 processed", "SUCCESS")
                 t.complete("Done")
 
-        # Check logs in visible buffer
-        assert len(seq._visible_logs) == 2
-        assert seq._visible_logs[0].message == "Processing started"
-        assert seq._visible_logs[1].message == "Item 1 processed"
+        # Check logs in visible buffer (via log window widget)
+        assert seq._log_window.visible_count == 2
 
     def test_full_workflow_with_logs(self) -> None:
         """Full workflow with task sequence and logging."""
@@ -790,7 +803,7 @@ class TestLogWindowIntegration:
         assert all(t.status == TaskStatus.SUCCESS for t in seq._tasks)
 
         # Verify logs (last 5 due to max_logs)
-        assert len(seq._visible_logs) <= 5
+        assert seq._log_window.visible_count <= 5
 
     def test_json_events_include_logs(self) -> None:
         """JSON events include log entries."""

@@ -62,9 +62,14 @@ from gmailarchiver.cli.ui.adapters import CLIProgressAdapter
 # Widgets
 from gmailarchiver.cli.ui.widgets import (
     ErrorPanel,
+    LogLevel,
+    LogWindowWidget,
+    ProgressBarWidget,
     ProgressSummary,
     ReportCard,
     SuggestionList,
+    TaskWidget,
+    WorkflowProgressWidget,
 )
 
 __all__ = [
@@ -92,4 +97,9 @@ __all__ = [
     "SuggestionList",
     "ErrorPanel",
     "ProgressSummary",
+    "TaskWidget",
+    "ProgressBarWidget",
+    "LogWindowWidget",
+    "LogLevel",
+    "WorkflowProgressWidget",
 ]

@@ -16,74 +16,37 @@ Example usage:
                 process(msg)
                 t.advance()
             t.complete(f"Imported {count:,} messages")
+
+REFACTORED: Now uses composable widgets from gmailarchiver.cli.ui.widgets.
 """
 
 import time
-from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from typing import Any
 
 from rich.console import Console, Group
 from rich.live import Live
-from rich.rule import Rule
-from rich.text import Text
+
+# Import widgets - now the source of truth for task and log rendering
+from gmailarchiver.cli.ui.widgets.log_window import LogEntry, LogLevel, LogWindowWidget
+from gmailarchiver.cli.ui.widgets.task import (
+    SPINNER_FRAMES,
+    STATUS_SYMBOLS as SYMBOLS,
+    TaskStatus,
+    TaskWidget,
+)
 
 # =============================================================================
-# Enums and Data Classes
+# Backwards Compatibility Aliases
 # =============================================================================
 
+# Re-export TaskStatus enum from widgets (for backwards compatibility)
+# Alias SYMBOLS to STATUS_SYMBOLS for any code importing SYMBOLS
+# Note: TaskStatus enum values are the same
 
-class TaskStatus(Enum):
-    """Task execution states."""
-
-    PENDING = auto()  # Not started (○)
-    RUNNING = auto()  # In progress (spinner)
-    SUCCESS = auto()  # Completed successfully (✓)
-    FAILED = auto()  # Completed with error (✗)
-
-
-@dataclass
-class TaskState:
-    """Internal state for a single task."""
-
-    description: str
-    status: TaskStatus = TaskStatus.PENDING
-    total: int | None = None
-    completed: int = 0
-    result_message: str | None = None
-    failure_reason: str | None = None
-    start_time: float = field(default_factory=time.time)
-    end_time: float | None = None
-
-
-@dataclass
-class LogEntry:
-    """A single log entry with level, message, and timestamp."""
-
-    level: str
-    message: str
-    timestamp: float = field(default_factory=time.time)
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-# Spinner animation frames (braille pattern)
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-# Status symbols for tasks
-SYMBOLS = {
-    TaskStatus.PENDING: ("○", "dim"),
-    TaskStatus.RUNNING: (SPINNER_FRAMES[0], "cyan"),  # Will be animated
-    TaskStatus.SUCCESS: ("✓", "green"),
-    TaskStatus.FAILED: ("✗", "red"),
-}
-
-# Log level symbols and colors (matching docs/UI_UX_CLI.md)
+# Log level symbols and colors (for backwards compatibility)
 LOG_SYMBOLS = {
     "INFO": ("ℹ", "blue"),
     "WARNING": ("⚠", "yellow"),
@@ -96,6 +59,40 @@ DEFAULT_MAX_LOGS = 10
 
 
 # =============================================================================
+# Backwards Compatibility: TaskState wrapper
+# =============================================================================
+
+
+@dataclass
+class TaskState:
+    """Internal state for a single task.
+
+    DEPRECATED: This is a compatibility wrapper around TaskWidget.
+    New code should use TaskWidget directly.
+    """
+
+    description: str
+    status: TaskStatus = TaskStatus.PENDING
+    total: int | None = None
+    completed: int = 0
+    result_message: str | None = None
+    failure_reason: str | None = None
+    start_time: float = field(default_factory=time.time)
+    end_time: float | None = None
+
+    def to_widget(self) -> TaskWidget:
+        """Convert to TaskWidget."""
+        widget = TaskWidget(description=self.description)
+        widget.status = self.status
+        widget.total = self.total
+        widget.completed = self.completed
+        widget.result_message = self.result_message
+        widget.failure_reason = self.failure_reason
+        widget.start_time = self.start_time
+        return widget
+
+
+# =============================================================================
 # Implementation Classes
 # =============================================================================
 
@@ -103,36 +100,36 @@ DEFAULT_MAX_LOGS = 10
 class TaskHandleImpl:
     """Implementation of TaskHandle for controlling a single task.
 
-    This implementation is compatible with OperationHandle for backward
-    compatibility with existing code (e.g., archiver.py).
+    REFACTORED: Now wraps a TaskWidget for state management and rendering.
     """
 
     def __init__(
         self,
-        state: TaskState,
-        sequence: TaskSequenceImpl,
+        widget: TaskWidget,
+        sequence: "TaskSequenceImpl",
     ) -> None:
-        self._state = state
+        """Initialize with a TaskWidget and parent sequence.
+
+        Args:
+            widget: The TaskWidget managing task state and rendering
+            sequence: Parent TaskSequenceImpl for refresh coordination
+        """
+        self._widget = widget
         self._sequence = sequence
 
     def complete(self, message: str) -> None:
         """Mark task as successfully completed."""
-        self._state.status = TaskStatus.SUCCESS
-        self._state.result_message = message
-        self._state.end_time = time.time()
+        self._widget.complete(message)
         self._sequence._refresh()
 
     def fail(self, message: str, reason: str | None = None) -> None:
         """Mark task as failed."""
-        self._state.status = TaskStatus.FAILED
-        self._state.result_message = message
-        self._state.failure_reason = reason
-        self._state.end_time = time.time()
+        self._widget.fail(message, reason)
         self._sequence._refresh()
 
     def advance(self, n: int = 1) -> None:
         """Advance progress counter."""
-        self._state.completed += n
+        self._widget.advance(n)
         self._sequence._refresh()
 
     def set_total(self, total: int, description: str | None = None) -> None:
@@ -142,9 +139,9 @@ class TaskHandleImpl:
             total: Total number of items to process
             description: Optional new description for the task
         """
-        self._state.total = total
+        self._widget.total = total
         if description:
-            self._state.description = description
+            self._widget.description = description
         self._sequence._refresh()
 
     def log(self, message: str, level: str = "INFO") -> None:
@@ -159,7 +156,7 @@ class TaskHandleImpl:
 
     def set_status(self, status: str) -> None:
         """Update task description (OperationHandle compatibility)."""
-        self._state.description = status
+        self._widget.description = status
         self._sequence._refresh()
 
     def succeed(self, message: str) -> None:
@@ -173,6 +170,8 @@ class TaskHandleImpl:
 
 class TaskSequenceImpl:
     """Implementation of TaskSequence that manages Rich Live context.
+
+    REFACTORED: Now uses TaskWidget and LogWindowWidget for rendering.
 
     This class owns a single Rich Live context and manages all task
     rendering within it. This solves the flickering bug by having
@@ -195,15 +194,23 @@ class TaskSequenceImpl:
         self._title = title
         self._show_logs = show_logs
         self._max_logs = max_logs
-        self._tasks: list[TaskState] = []
-        self._logs: list[tuple[str, str]] = []  # All logs (for JSON mode)
-        self._visible_logs: deque[LogEntry] = deque(maxlen=max_logs)  # Ring buffer
+
+        # Task widgets (replaces _tasks list of TaskState)
+        self._task_widgets: list[TaskWidget] = []
+
+        # Log window widget (replaces _visible_logs deque)
+        self._log_window = LogWindowWidget(max_size=max_logs, show_separator=True)
+
+        # All logs for JSON mode
+        self._logs: list[tuple[str, str]] = []
         self._json_events: list[dict[str, Any]] = []
+
+        # Live display state
         self._live: Live | None = None
         self._animation_frame: int = 0
         self._last_refresh: float = 0
 
-    def __enter__(self) -> TaskSequenceImpl:
+    def __enter__(self) -> "TaskSequenceImpl":
         """Enter the task sequence context."""
         if not self._json_mode and self._console:
             self._live = Live(
@@ -224,12 +231,9 @@ class TaskSequenceImpl:
         """Exit the task sequence context."""
         # Auto-fail any running tasks on exception
         if exc_type is not None:
-            for task in self._tasks:
-                if task.status == TaskStatus.RUNNING:
-                    task.status = TaskStatus.FAILED
-                    task.result_message = "Interrupted"
-                    task.failure_reason = str(exc_val) if exc_val else None
-                    task.end_time = time.time()
+            for widget in self._task_widgets:
+                if widget.status == TaskStatus.RUNNING:
+                    widget.fail("Interrupted", str(exc_val) if exc_val else None)
 
         # Final refresh to show final state
         if self._live:
@@ -239,28 +243,26 @@ class TaskSequenceImpl:
     @contextmanager
     def task(self, description: str, total: int | None = None) -> Generator[TaskHandleImpl]:
         """Create a task within the sequence."""
-        # Create task state
-        state = TaskState(
-            description=description,
-            status=TaskStatus.RUNNING,
-            total=total,
-            start_time=time.time(),
-        )
-        self._tasks.append(state)
+        # Create task widget (already started)
+        widget = TaskWidget(description)
+        widget.start()
+        if total is not None:
+            widget.total = total
+        self._task_widgets.append(widget)
 
         # Emit JSON event
         if self._json_mode:
             event: dict[str, Any] = {
                 "event": "task_start",
                 "description": description,
-                "timestamp": state.start_time,
+                "timestamp": widget.start_time,
             }
             if total is not None:
                 event["total"] = total
             self._json_events.append(event)
 
         # Create handle
-        handle = TaskHandleImpl(state, self)
+        handle = TaskHandleImpl(widget, self)
 
         # Refresh to show new task
         self._refresh()
@@ -269,10 +271,8 @@ class TaskSequenceImpl:
             yield handle
         except Exception:
             # Auto-fail on uncaught exception if not already completed
-            if state.status == TaskStatus.RUNNING:
-                state.status = TaskStatus.FAILED
-                state.result_message = "Exception"
-                state.end_time = time.time()
+            if widget.status == TaskStatus.RUNNING:
+                widget.fail("Exception")
                 self._refresh()
             raise
         finally:
@@ -282,10 +282,10 @@ class TaskSequenceImpl:
                     {
                         "event": "task_complete",
                         "description": description,
-                        "success": state.status == TaskStatus.SUCCESS,
-                        "result": state.result_message,
-                        "reason": state.failure_reason,
-                        "elapsed": (state.end_time or time.time()) - state.start_time,
+                        "success": widget.status == TaskStatus.SUCCESS,
+                        "result": widget.result_message,
+                        "reason": widget.failure_reason,
+                        "elapsed": time.time() - widget.start_time,
                     }
                 )
 
@@ -302,132 +302,45 @@ class TaskSequenceImpl:
             self._live.refresh()
 
     def _render(self) -> Group:
-        """Render all tasks and optional log window to a Rich Group."""
+        """Render all tasks and optional log window to a Rich Group.
+
+        Uses TaskWidget.render() and LogWindowWidget.render() for consistent
+        rendering with the composable widget system.
+        """
         # Update animation frame on each render for smooth spinner
         now = time.time()
         if now - self._last_refresh >= 0.1:  # 10 fps
             self._animation_frame = (self._animation_frame + 1) % len(SPINNER_FRAMES)
             self._last_refresh = now
 
-        renderables: list[Text | Rule] = []
+        renderables: list[Any] = []
 
-        # Render tasks
-        for task in self._tasks:
-            line = self._render_task(task)
-            renderables.append(line)
+        # Render task widgets
+        for widget in self._task_widgets:
+            renderables.append(widget.render(self._animation_frame))
 
         # Render log window if enabled and has logs
-        if self._show_logs and self._visible_logs:
-            # Add separator
-            renderables.append(Rule(style="dim"))
+        if self._show_logs and self._log_window.has_entries:
+            renderables.append(self._log_window.render())
 
-            # Render visible logs
-            for entry in self._visible_logs:
-                log_line = self._render_log(entry)
-                renderables.append(log_line)
-
-        return Group(*renderables) if renderables else Group(Text(""))
-
-    def _render_log(self, entry: LogEntry) -> Text:
-        """Render a single log entry."""
-        text = Text()
-
-        # Get symbol and color for level
-        symbol, color = LOG_SYMBOLS.get(entry.level, ("?", "white"))
-        text.append(f"{symbol} ", style=color)
-        text.append(entry.message)
-
-        return text
-
-    def _render_task(self, task: TaskState) -> Text:
-        """Render a single task line."""
-        text = Text()
-
-        # Symbol with animation for running tasks
-        if task.status == TaskStatus.RUNNING:
-            symbol = SPINNER_FRAMES[self._animation_frame]
-            color = "cyan"
-        else:
-            symbol, color = SYMBOLS[task.status]
-
-        text.append(f"{symbol} ", style=color)
-
-        # Description
-        if task.status == TaskStatus.RUNNING:
-            text.append(task.description, style="bold")
-            # Show progress if total is known
-            if task.total is not None and task.total > 0:
-                pct = (task.completed / task.total) * 100
-
-                # Build graphical progress bar (UI/UX guidelines Section 7.2)
-                bar_width = 20
-                filled = int(bar_width * pct / 100)
-                bar_filled = "━" * filled
-                bar_empty = "─" * (bar_width - filled)
-
-                text.append(" [", style="dim")
-                text.append(bar_filled, style="green")
-                text.append(bar_empty, style="dim")
-                text.append("]", style="dim")
-                text.append(f" {pct:.0f}%", style="cyan")
-                text.append(" • ", style="dim")
-                text.append(f"{task.completed:,}/{task.total:,}", style="dim")
-
-                # Calculate and show ETA
-                eta = self._calculate_eta(task)
-                if eta:
-                    text.append(" • ", style="dim")
-                    text.append(eta, style="dim")
-            else:
-                text.append("...", style="dim")
-        elif task.status == TaskStatus.SUCCESS:
-            text.append(task.description)
-            if task.result_message:
-                text.append(f": {task.result_message}", style="green")
-        elif task.status == TaskStatus.FAILED:
-            text.append(task.description)
-            text.append(": FAILED", style="red bold")
-            if task.failure_reason:
-                text.append(f' → "{task.failure_reason}"', style="dim red")
-        else:  # PENDING
-            text.append(task.description, style="dim")
-
-        return text
-
-    def _calculate_eta(self, task: TaskState) -> str | None:
-        """Calculate estimated time remaining for a task."""
-        if task.total is None or task.completed == 0:
-            return None
-
-        elapsed = time.time() - task.start_time
-        if elapsed <= 0:
-            return None
-
-        rate = task.completed / elapsed
-        remaining = task.total - task.completed
-
-        if rate > 0:
-            eta_seconds = remaining / rate
-            if eta_seconds < 60:
-                return f"{eta_seconds:.0f}s remaining"
-            elif eta_seconds < 3600:
-                minutes = int(eta_seconds // 60)
-                seconds = int(eta_seconds % 60)
-                return f"{minutes}m {seconds}s remaining"
-            else:
-                hours = int(eta_seconds // 3600)
-                minutes = int((eta_seconds % 3600) // 60)
-                return f"{hours}h {minutes}m remaining"
-        return None
+        return Group(*renderables) if renderables else Group()
 
     def _log(self, message: str, level: str) -> None:
         """Store a log message and optionally display it in the log window."""
         timestamp = time.time()
         self._logs.append((level, message))
 
-        # Add to visible log buffer (ring buffer)
+        # Add to log window widget
         if self._show_logs:
-            self._visible_logs.append(LogEntry(level=level, message=message, timestamp=timestamp))
+            # Map string level to LogLevel enum
+            log_level = {
+                "INFO": LogLevel.INFO,
+                "SUCCESS": LogLevel.SUCCESS,
+                "WARNING": LogLevel.WARNING,
+                "ERROR": LogLevel.ERROR,
+            }.get(level, LogLevel.INFO)
+
+            self._log_window.log(message, log_level)
             self._refresh()
 
         # Emit JSON event
@@ -444,6 +357,27 @@ class TaskSequenceImpl:
     def get_json_events(self) -> list[dict[str, Any]]:
         """Get all JSON events emitted during the sequence."""
         return self._json_events
+
+    # Backwards compatibility: expose _tasks as property
+    @property
+    def _tasks(self) -> list[TaskState]:
+        """Return TaskState list for backwards compatibility.
+
+        DEPRECATED: Use _task_widgets directly.
+        """
+        result = []
+        for widget in self._task_widgets:
+            state = TaskState(
+                description=widget.description,
+                status=widget.status,
+                total=widget.total,
+                completed=widget.completed,
+                result_message=widget.result_message,
+                failure_reason=widget.failure_reason,
+                start_time=widget.start_time,
+            )
+            result.append(state)
+        return result
 
 
 class UIBuilderImpl:
