@@ -35,29 +35,24 @@ See cli/ui/ARCHITECTURE.md for complete design documentation.
 """
 
 # Protocols
+# Adapters
+from gmailarchiver.cli.ui.adapters import CLIProgressAdapter
+
+# Builders
+from gmailarchiver.cli.ui.builder import (
+    DEFAULT_MAX_LOGS,
+    LOG_SYMBOLS,
+    TaskHandleImpl,
+    TaskSequenceImpl,
+    TaskState,
+    UIBuilderImpl,
+)
 from gmailarchiver.cli.ui.protocols import (
     TaskHandle,
     TaskSequence,
     UIBuilder,
     Widget,
 )
-
-# Builders
-from gmailarchiver.cli.ui.builder import (
-    DEFAULT_MAX_LOGS,
-    LOG_SYMBOLS,
-    SPINNER_FRAMES,
-    SYMBOLS,
-    LogEntry,
-    TaskHandleImpl,
-    TaskSequenceImpl,
-    TaskState,
-    TaskStatus,
-    UIBuilderImpl,
-)
-
-# Adapters
-from gmailarchiver.cli.ui.adapters import CLIProgressAdapter
 
 # Widgets
 from gmailarchiver.cli.ui.widgets import (
@@ -70,6 +65,18 @@ from gmailarchiver.cli.ui.widgets import (
     SuggestionList,
     TaskWidget,
     WorkflowProgressWidget,
+)
+
+# Import LogEntry from log_window widget
+from gmailarchiver.cli.ui.widgets.log_window import LogEntry
+
+# Import SPINNER_FRAMES, TaskStatus, and SYMBOLS from widgets (source of truth)
+from gmailarchiver.cli.ui.widgets.task import (
+    SPINNER_FRAMES,
+    TaskStatus,
+)
+from gmailarchiver.cli.ui.widgets.task import (
+    STATUS_SYMBOLS as SYMBOLS,
 )
 
 __all__ = [

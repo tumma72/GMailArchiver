@@ -6,7 +6,7 @@ This module provides steps for interacting with Gmail API:
 - DeleteGmailMessagesStep: Delete or trash messages from Gmail
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from gmailarchiver.connectors.gmail_client import GmailClient
@@ -84,8 +84,12 @@ class ScanGmailMessagesStep:
             if progress:
                 with progress.task_sequence() as seq:
                     with seq.task("Scanning messages from Gmail") as task:
+                        # Create callback that updates task status with live count
+                        def on_progress(count: int, page: int) -> None:
+                            task.set_status(f"Scanning messages from Gmail: Found {count:,}")
+
                         query, messages = await self.archiver.list_messages_for_archive(
-                            age_threshold, progress_callback=None
+                            age_threshold, progress_callback=on_progress
                         )
                         if messages:
                             task.complete(f"Found {len(messages):,} messages")
@@ -200,7 +204,8 @@ class FilterGmailMessagesStep:
 
                         parts = []
                         if filter_result.already_archived_count > 0:
-                            parts.append(f"{filter_result.already_archived_count:,} already archived")
+                            count = filter_result.already_archived_count
+                            parts.append(f"{count:,} already archived")
                         if filter_result.duplicate_count > 0:
                             parts.append(f"{filter_result.duplicate_count:,} duplicates")
 

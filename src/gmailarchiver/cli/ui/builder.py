@@ -30,10 +30,9 @@ from rich.console import Console, Group
 from rich.live import Live
 
 # Import widgets - now the source of truth for task and log rendering
-from gmailarchiver.cli.ui.widgets.log_window import LogEntry, LogLevel, LogWindowWidget
+from gmailarchiver.cli.ui.widgets.log_window import LogLevel, LogWindowWidget
 from gmailarchiver.cli.ui.widgets.task import (
     SPINNER_FRAMES,
-    STATUS_SYMBOLS as SYMBOLS,
     TaskStatus,
     TaskWidget,
 )
@@ -106,7 +105,7 @@ class TaskHandleImpl:
     def __init__(
         self,
         widget: TaskWidget,
-        sequence: "TaskSequenceImpl",
+        sequence: TaskSequenceImpl,
     ) -> None:
         """Initialize with a TaskWidget and parent sequence.
 
@@ -179,6 +178,9 @@ class TaskSequenceImpl:
 
     Supports an optional log window that shows recent activity messages
     below the task list (for operations like archive that stream updates).
+
+    IMPORTANT: Implements __rich__() so Rich Live re-evaluates the renderable
+    on each auto-refresh cycle, enabling spinner animation during async waits.
     """
 
     def __init__(
@@ -210,11 +212,20 @@ class TaskSequenceImpl:
         self._animation_frame: int = 0
         self._last_refresh: float = 0
 
-    def __enter__(self) -> "TaskSequenceImpl":
+    def __rich__(self) -> Group:
+        """Rich protocol: Return renderable for Live auto-refresh.
+
+        This method is called by Rich Live on each refresh cycle (10fps),
+        allowing spinner animation to update even during async waits.
+        """
+        return self._render()
+
+    def __enter__(self) -> TaskSequenceImpl:
         """Enter the task sequence context."""
         if not self._json_mode and self._console:
+            # Pass self (implements __rich__) so Rich re-evaluates on each refresh
             self._live = Live(
-                self._render(),
+                self,  # TaskSequenceImpl.__rich__() called on each refresh
                 console=self._console,
                 refresh_per_second=10,  # Animate spinner at 10fps
                 transient=False,  # Keep output visible after exit

@@ -118,6 +118,16 @@ class TaskHandle(Protocol):
         """
         ...  # pragma: no cover
 
+    def set_status(self, status: str) -> None:
+        """Update task description/status message.
+
+        For live progress updates during operations.
+
+        Args:
+            status: New status message to display
+        """
+        ...  # pragma: no cover
+
 
 class NoOpTaskSequence:
     """No-op implementation of TaskSequence for when UI is not available."""
@@ -156,6 +166,10 @@ class NoOpTaskHandle:
 
     def set_total(self, total: int, description: str | None = None) -> None:
         """No-op set_total."""
+        pass
+
+    def set_status(self, status: str) -> None:
+        """No-op set_status."""
         pass
 
 
