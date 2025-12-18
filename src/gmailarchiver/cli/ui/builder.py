@@ -301,15 +301,14 @@ class TaskSequenceImpl:
                 )
 
     def _refresh(self) -> None:
-        """Refresh the display. Single point of control."""
-        if self._live:
-            # Update animation frame (throttled)
-            now = time.time()
-            if now - self._last_refresh >= 0.1:  # 10 fps max
-                self._animation_frame = (self._animation_frame + 1) % len(SPINNER_FRAMES)
-                self._last_refresh = now
+        """Refresh the display. Single point of control.
 
-            self._live.update(self._render())
+        Note: We only call refresh(), not update(). The Live was initialized
+        with `self` as the renderable, so Rich will call __rich__() on each
+        refresh cycle, which returns _render() with updated animation frame.
+        Calling update() would replace the renderable with a static Group.
+        """
+        if self._live:
             self._live.refresh()
 
     def _render(self) -> Group:
