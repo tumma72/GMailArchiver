@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from gmailarchiver.cli.ui import CLIProgressAdapter
 from gmailarchiver.cli.command_context import CommandContext
 from gmailarchiver.core.workflows.import_ import ImportConfig, ImportWorkflow
 
@@ -24,7 +25,10 @@ async def import_command(
         )
 
     assert ctx.storage is not None  # Guaranteed by requires_storage=True
-    workflow = ImportWorkflow(ctx.storage)
+
+    # Create progress adapter to provide step-by-step feedback
+    progress = CLIProgressAdapter(ctx.output, ctx.ui)
+    workflow = ImportWorkflow(ctx.storage, progress=progress)
     config = ImportConfig(archive_patterns=[archive_pattern], state_db=state_db, dedupe=deduplicate)
 
     with ctx.ui.task_sequence() as seq:

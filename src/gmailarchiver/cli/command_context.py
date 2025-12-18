@@ -46,7 +46,7 @@ from gmailarchiver.data.schema_manager import (
 )
 
 from .output import OperationHandle, OutputManager
-from .ui_builder import UIBuilder, UIBuilderImpl
+from .ui import UIBuilder, UIBuilderImpl
 
 logger = logging.getLogger(__name__)
 

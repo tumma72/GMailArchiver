@@ -32,9 +32,9 @@ This document defines testing standards, patterns, and best practices for the Gm
 
 ### Current Metrics
 
-- **Test Count:** 1200+ tests
-- **Coverage:** 96%+
-- **Execution Time:** ~10 seconds
+- **Test Count:** 1667 tests
+- **Coverage Target:** 95%+
+- **Execution Time:** ~8 seconds
 
 ---
 
@@ -234,22 +234,71 @@ def test_validate_schema_on_init(self):
 
 ## Fixture Patterns
 
-Before creating any new fixture use the command: `pytest --fixtures` to get a list of available fixtures. Prefer fixture composition over re-writing to reuse existing code and avoid duplication. 
+### ⚠️ CRITICAL: Avoid Fixture Duplication
+
+**Before creating ANY fixture:**
+
+1. **Run `uv run pytest --fixtures -q`** to list all available fixtures
+2. **Search conftest.py** for existing fixtures that match your needs
+3. **Compose existing fixtures** rather than creating new ones
+
+**Why this matters:** Duplicate fixtures (especially for database connections) cause:
+- Tests that hang indefinitely (unclosed connections)
+- Resource leaks and warnings
+- Inconsistent test behavior
+- Harder debugging
+
+### Fixture Location Rules
+
+| Fixture Type | Location | Example |
+|-------------|----------|---------|
+| Shared across all tests | `tests/conftest.py` | `db_manager`, `hybrid_storage`, `v11_db` |
+| Specific to one test file | Same test file | `mbox_with_messages` (if only used in one file) |
+| Specific to test directory | Directory's `conftest.py` | `tests/core/workflows/conftest.py` |
+
+**NEVER** define these fixtures locally in test files - always use from conftest.py:
+- `db_manager` - async DBManager with proper cleanup
+- `db_manager_with_messages` - DBManager with pre-populated messages
+- `hybrid_storage` - HybridStorage wrapping db_manager
+- `v11_db` - v1.1 schema database path
+- `temp_dir` - temporary directory
+
+### Async Fixture Cleanup Pattern
+
+Always use `yield` with proper cleanup for async fixtures:
+
 ```python
-@pytest.asyncio.fixture
-async def async_fixture() -> AsyncGenerator[None, None]:
-    """Async fixture example."""
-    await asyncio.sleep(0.1)
-    yield
-    await asyncio.sleep(0.1)
-    
-@pytest.asyncio.fixture
-async def composing_async_fixture(async_fixture) -> AsyncGenerator[None, None]:
-    """Composing async fixture example."""
-    await async_fixture()
-    # do something else
-    yield
-    await async_fixture()
+@pytest.fixture
+async def db_manager(v11_db: str) -> AsyncGenerator[DBManager]:
+    """Create a DBManager with proper async initialization and cleanup."""
+    manager = DBManager(v11_db)
+    await manager.initialize()
+    try:
+        yield manager
+    finally:
+        await manager.close()  # CRITICAL: Always close!
+```
+
+### Fixture Composition Example
+
+```python
+# CORRECT: Compose existing fixtures
+@pytest.fixture
+async def db_with_test_data(db_manager: DBManager) -> AsyncGenerator[DBManager]:
+    """Extend db_manager with test-specific data."""
+    # db_manager handles connection lifecycle
+    await db_manager._conn.execute("INSERT INTO messages ...")
+    await db_manager.commit()
+    yield db_manager
+    # No need to close - db_manager fixture handles cleanup
+
+# WRONG: Creating duplicate db_manager
+@pytest.fixture
+async def db_manager(v11_db: str) -> DBManager:  # DON'T DO THIS!
+    """This duplicates conftest.py's db_manager!"""
+    manager = DBManager(v11_db)
+    await manager.initialize()
+    return manager  # Missing cleanup - will cause hangs!
 ```
 
 ### Base Fixtures (conftest.py)

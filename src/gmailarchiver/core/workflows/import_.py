@@ -1,13 +1,19 @@
 """Workflow for importing existing mbox archives.
 
 This workflow coordinates the import of mbox files into the database,
-with support for deduplication and Gmail ID lookups.
+using composable Steps for scanning, filtering, and recording metadata.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
-from gmailarchiver.core.importer.facade import ImporterFacade
-from gmailarchiver.core.importer.facade import ImportResult as FacadeImportResult
+from gmailarchiver.core.importer._scanner import FileScanner
+from gmailarchiver.core.workflows.composer import WorkflowComposer
+from gmailarchiver.core.workflows.step import ContextKeys, StepContext, WorkflowError
+from gmailarchiver.core.workflows.steps.filter import CheckDuplicatesStep
+from gmailarchiver.core.workflows.steps.metadata import RecordMetadataStep
+from gmailarchiver.core.workflows.steps.scan import MboxScanInput, ScanMboxStep
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import ProgressReporter
 
@@ -30,13 +36,19 @@ class ImportResult:
     skipped_count: int
     duplicate_count: int
     files_processed: list[str]
-    errors: list[str]
+    errors: list[str] = field(default_factory=list)
     gmail_ids_found: int = 0
     gmail_ids_not_found: int = 0
 
 
 class ImportWorkflow:
-    """Workflow for importing existing mbox archives."""
+    """Workflow for importing existing mbox archives.
+
+    Uses Step composition to build a reusable import pipeline:
+    1. ScanMboxStep - Scan mbox for messages
+    2. CheckDuplicatesStep - Filter out duplicates
+    3. RecordMetadataStep - Write to database
+    """
 
     def __init__(self, storage: HybridStorage, progress: ProgressReporter | None = None) -> None:
         """Initialize import workflow.
@@ -47,11 +59,6 @@ class ImportWorkflow:
         """
         self.storage = storage
         self.progress = progress
-        # Initialize facade with storage's db_manager
-        self.importer = ImporterFacade(
-            db_manager=storage.db,
-            gmail_client=None,  # Optional, can be added later if needed
-        )
 
     async def run(self, config: ImportConfig) -> ImportResult:
         """Run the full import workflow.
@@ -67,17 +74,13 @@ class ImportWorkflow:
         duplicate_count = 0
         files_processed: list[str] = []
         errors: list[str] = []
-        gmail_ids_found = 0
-        gmail_ids_not_found = 0
 
         # Process each pattern
         for pattern in config.archive_patterns:
             if self.progress:
                 self.progress.info(f"Scanning pattern: {pattern}")
 
-            # Use scanner to find matching files
-            from gmailarchiver.core.importer._scanner import FileScanner
-
+            # Find matching files
             scanner = FileScanner()
             matching_files = scanner.scan_pattern(pattern)
 
@@ -86,41 +89,28 @@ class ImportWorkflow:
                     self.progress.warning(f"No files found matching: {pattern}")
                 continue
 
-            # Import each file
+            # Import each file using step-based workflow
             for file_path in matching_files:
                 try:
-                    if self.progress:
-                        with self.progress.task_sequence() as seq:
-                            with seq.task(f"Importing {file_path.name}") as task:
-                                result = await self._import_single_file(
-                                    str(file_path), config.account_id, config.dedupe
-                                )
-
-                                if result.messages_imported > 0:
-                                    task.complete(f"Imported {result.messages_imported:,} messages")
-                                elif result.messages_skipped > 0:
-                                    task.complete(
-                                        f"Skipped {result.messages_skipped:,} (duplicates)"
-                                    )
-                                else:
-                                    task.complete("No new messages")
-                    else:
-                        result = await self._import_single_file(
-                            str(file_path), config.account_id, config.dedupe
-                        )
+                    result = await self._import_single_file(
+                        str(file_path), config.account_id, config.dedupe
+                    )
 
                     # Aggregate statistics
-                    imported_count += result.messages_imported
-                    skipped_count += result.messages_skipped
-                    duplicate_count += result.messages_skipped  # Skipped = duplicates
-                    gmail_ids_found += result.gmail_ids_found
-                    gmail_ids_not_found += result.gmail_ids_not_found
+                    imported_count += result.get("imported_count", 0)
+                    skipped_count += result.get("skipped_count", 0)
+                    duplicate_count += result.get("duplicate_count", 0)
                     files_processed.append(str(file_path))
 
                     # Collect errors
-                    if result.errors:
-                        errors.extend(result.errors)
+                    if result.get("errors"):
+                        errors.extend(result["errors"])
 
+                except WorkflowError as e:
+                    error_msg = f"Failed to import {file_path}: {e}"
+                    errors.append(error_msg)
+                    if self.progress:
+                        self.progress.error(error_msg)
                 except Exception as e:
                     error_msg = f"Failed to import {file_path}: {str(e)}"
                     errors.append(error_msg)
@@ -133,14 +123,12 @@ class ImportWorkflow:
             duplicate_count=duplicate_count,
             files_processed=files_processed,
             errors=errors,
-            gmail_ids_found=gmail_ids_found,
-            gmail_ids_not_found=gmail_ids_not_found,
         )
 
     async def _import_single_file(
         self, file_path: str, account_id: str, skip_duplicates: bool
-    ) -> FacadeImportResult:
-        """Import a single file using the ImporterFacade.
+    ) -> dict[str, Any]:
+        """Import a single file using step-based workflow.
 
         Args:
             file_path: Path to archive file
@@ -148,11 +136,101 @@ class ImportWorkflow:
             skip_duplicates: Whether to skip duplicate messages
 
         Returns:
-            ImportResult from facade
+            Dictionary with import statistics
         """
-        return await self.importer.import_archive(
-            archive_path=file_path,
-            account_id=account_id,
-            skip_duplicates=skip_duplicates,
-            progress=self.progress,
+        # Build the import workflow from steps
+        workflow = (
+            WorkflowComposer("import_single")
+            .add_step(ScanMboxStep())
+            .add_step(CheckDuplicatesStep(self.storage.db))
+            .add_step(RecordMetadataStep(self.storage.db))
         )
+
+        # Initialize context with config
+        context = StepContext()
+        context.set("account_id", account_id)
+        context.set("skip_duplicates", skip_duplicates)
+
+        # Create input for first step
+        scan_input = MboxScanInput(archive_path=file_path)
+
+        # Execute workflow with progress reporting
+        await workflow.run(scan_input, progress=self.progress, context=context)
+
+        # Extract results from context
+        return {
+            "imported_count": context.get(ContextKeys.IMPORTED_COUNT, 0),
+            "skipped_count": context.get(ContextKeys.SKIPPED_COUNT, 0),
+            "duplicate_count": context.get(ContextKeys.DUPLICATE_COUNT, 0),
+            "errors": context.get("errors", []),
+        }
+
+
+class SingleFileImportWorkflow:
+    """Simplified workflow for importing a single mbox file.
+
+    Exposes the step-based workflow more directly for cases
+    where you're importing a single known file.
+    """
+
+    def __init__(self, storage: HybridStorage, progress: ProgressReporter | None = None) -> None:
+        """Initialize single-file import workflow.
+
+        Args:
+            storage: HybridStorage instance for data operations
+            progress: Optional progress reporter for status updates
+        """
+        self.storage = storage
+        self.progress = progress
+
+    async def run(
+        self,
+        archive_path: str | Path,
+        account_id: str = "default",
+        skip_duplicates: bool = True,
+    ) -> ImportResult:
+        """Import a single mbox file.
+
+        Args:
+            archive_path: Path to the mbox archive
+            account_id: Account identifier
+            skip_duplicates: Whether to skip duplicates
+
+        Returns:
+            ImportResult with operation statistics
+        """
+        archive_path = str(archive_path)
+
+        # Build workflow
+        workflow = (
+            WorkflowComposer("import_single")
+            .add_step(ScanMboxStep())
+            .add_step(CheckDuplicatesStep(self.storage.db))
+            .add_step(RecordMetadataStep(self.storage.db))
+        )
+
+        # Initialize context
+        context = StepContext()
+        context.set("account_id", account_id)
+        context.set("skip_duplicates", skip_duplicates)
+
+        try:
+            # Execute workflow
+            scan_input = MboxScanInput(archive_path=archive_path)
+            await workflow.run(scan_input, progress=self.progress, context=context)
+
+            return ImportResult(
+                imported_count=context.get(ContextKeys.IMPORTED_COUNT) or 0,
+                skipped_count=context.get(ContextKeys.SKIPPED_COUNT) or 0,
+                duplicate_count=context.get(ContextKeys.DUPLICATE_COUNT) or 0,
+                files_processed=[archive_path],
+            )
+
+        except WorkflowError as e:
+            return ImportResult(
+                imported_count=0,
+                skipped_count=0,
+                duplicate_count=0,
+                files_processed=[],
+                errors=[str(e)],
+            )

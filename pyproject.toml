@@ -105,6 +105,15 @@ markers = [
     "slow: Tests taking >1s",
 ]
 
+[tool.coverage.run]
+source = ["src/"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+
+
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",

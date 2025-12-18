@@ -77,9 +77,9 @@ class RepairWorkflow:
 
             issues_found = report.errors + report.warnings
 
-            # Collect details
+            # Collect details for non-OK checks
             for check in report.checks:
-                if check.severity.value != "ok":
+                if check.severity.value != "OK":
                     details.append(f"{check.name}: {check.message}")
 
             # If dry run, don't fix anything

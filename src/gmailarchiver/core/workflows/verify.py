@@ -88,13 +88,13 @@ class VerifyWorkflow:
             with self.progress.task_sequence() as seq:
                 with seq.task("Checking database integrity") as task:
                     check = await doctor.check_database_integrity()
-                    if check.severity.value == "ok":
+                    if check.severity.value == "OK":
                         task.complete("Database integrity check passed")
                     else:
                         task.fail("Database integrity check failed")
 
                     issues = []
-                    if check.severity.value != "ok":
+                    if check.severity.value != "OK":
                         issues.append(
                             {
                                 "name": check.name,
@@ -106,7 +106,7 @@ class VerifyWorkflow:
                         )
 
                     return VerifyResult(
-                        passed=check.severity.value == "ok",
+                        passed=check.severity.value == "OK",
                         issues_found=len(issues),
                         issues=issues,
                         verify_type=config.verify_type.value,
@@ -114,7 +114,7 @@ class VerifyWorkflow:
         else:
             check = await doctor.check_database_integrity()
             issues = []
-            if check.severity.value != "ok":
+            if check.severity.value != "OK":
                 issues.append(
                     {
                         "name": check.name,
@@ -126,7 +126,7 @@ class VerifyWorkflow:
                 )
 
             return VerifyResult(
-                passed=check.severity.value == "ok",
+                passed=check.severity.value == "OK",
                 issues_found=len(issues),
                 issues=issues,
                 verify_type=config.verify_type.value,
@@ -144,7 +144,7 @@ class VerifyWorkflow:
                         await doctor.check_archive_files_exist(),
                     ]
 
-                    passed = all(c.severity.value == "ok" for c in checks)
+                    passed = all(c.severity.value == "OK" for c in checks)
                     issues = [
                         {
                             "name": c.name,
@@ -154,7 +154,7 @@ class VerifyWorkflow:
                             "details": c.details,
                         }
                         for c in checks
-                        if c.severity.value != "ok"
+                        if c.severity.value != "OK"
                     ]
 
                     if passed:
@@ -175,7 +175,7 @@ class VerifyWorkflow:
                 await doctor.check_archive_files_exist(),
             ]
 
-            passed = all(c.severity.value == "ok" for c in checks)
+            passed = all(c.severity.value == "OK" for c in checks)
             issues = [
                 {
                     "name": c.name,
@@ -185,7 +185,7 @@ class VerifyWorkflow:
                     "details": c.details,
                 }
                 for c in checks
-                if c.severity.value != "ok"
+                if c.severity.value != "OK"
             ]
 
             return VerifyResult(
@@ -204,7 +204,7 @@ class VerifyWorkflow:
                     # This is a simplified version that checks if archives exist
                     check = await doctor.check_archive_files_exist()
 
-                    passed = check.severity.value == "ok"
+                    passed = check.severity.value == "OK"
                     issues = []
                     if not passed:
                         issues.append(
@@ -231,7 +231,7 @@ class VerifyWorkflow:
         else:
             check = await doctor.check_archive_files_exist()
 
-            passed = check.severity.value == "ok"
+            passed = check.severity.value == "OK"
             issues = []
             if not passed:
                 issues.append(

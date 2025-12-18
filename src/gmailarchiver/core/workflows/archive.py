@@ -1,11 +1,29 @@
-import asyncio
+"""Workflow for archiving Gmail messages.
+
+This workflow coordinates the archiving of Gmail messages using composable Steps:
+1. ScanGmailMessagesStep - Scan Gmail for messages matching age criteria
+2. FilterGmailMessagesStep - Filter out already-archived messages
+3. WriteMessagesStep - Archive messages to mbox file
+4. ValidateArchiveStep - Validate archive integrity
+"""
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from gmailarchiver.connectors.gmail_client import GmailClient
 from gmailarchiver.core.archiver import ArchiverFacade
-from gmailarchiver.core.validator.facade import ValidatorFacade
+from gmailarchiver.core.workflows.step import ContextKeys, StepContext
+from gmailarchiver.core.workflows.steps.gmail import (
+    DeleteGmailInput,
+    DeleteGmailMessagesStep,
+    FilterGmailInput,
+    FilterGmailMessagesStep,
+    ScanGmailInput,
+    ScanGmailMessagesStep,
+)
+from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep, ValidateInput
+from gmailarchiver.core.workflows.steps.write import WriteMessagesInput, WriteMessagesStep
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import ProgressReporter
 from gmailarchiver.shared.utils import datetime_to_gmail_query, parse_age
@@ -41,7 +59,15 @@ class ArchiveResult:
 
 
 class ArchiveWorkflow:
-    """Workflow for archiving Gmail messages."""
+    """Workflow for archiving Gmail messages.
+
+    Uses Step composition for reusable archive operations:
+    - ScanGmailMessagesStep for listing messages
+    - FilterGmailMessagesStep for duplicate detection
+    - WriteMessagesStep for archiving
+    - ValidateArchiveStep for integrity verification
+    - DeleteGmailMessagesStep for cleanup
+    """
 
     def __init__(
         self,
@@ -58,6 +84,12 @@ class ArchiveWorkflow:
             db_manager=storage.db,
             storage=storage,
         )
+        # Initialize steps
+        self._scan_step = ScanGmailMessagesStep(self.archiver)
+        self._filter_step = FilterGmailMessagesStep(self.archiver)
+        self._write_step = WriteMessagesStep(self.archiver)
+        self._validate_step = ValidateArchiveStep(storage.db)
+        self._delete_step = DeleteGmailMessagesStep(client, storage)
 
     async def run(self, config: ArchiveConfig) -> ArchiveResult:
         """Run the full archive workflow."""
@@ -72,10 +104,28 @@ class ArchiveWorkflow:
             config.output_file, config.compress, gmail_query
         )
 
-        # 2. Execute Archiving Steps
-        scan_result = await self._scan_messages(config.age_threshold)
-        message_list = scan_result["messages"]
+        # 2. Execute Archiving Steps using step composition
+        context = StepContext()
+        context.set("compress", config.compress)
+        context.set(ContextKeys.ARCHIVE_FILE, output_file)
 
+        # Step 1: Scan Gmail for messages
+        scan_result = await self._scan_step.execute(
+            context, ScanGmailInput(age_threshold=config.age_threshold), self.progress
+        )
+
+        if not scan_result.success or not scan_result.data:
+            return ArchiveResult(
+                archived_count=0,
+                skipped_count=0,
+                duplicate_count=0,
+                found_count=0,
+                actual_file=output_file,
+                gmail_query=gmail_query,
+                validation_passed=True,
+            )
+
+        message_list = scan_result.data.messages
         if not message_list:
             return ArchiveResult(
                 archived_count=0,
@@ -84,52 +134,101 @@ class ArchiveWorkflow:
                 found_count=0,
                 actual_file=output_file,
                 gmail_query=gmail_query,
-                validation_passed=True,  # Nothing to validate
+                validation_passed=True,
             )
 
-        # Filter
-        filter_result = await self._filter_messages(message_list, config.incremental)
-        messages_to_archive = filter_result["to_archive"]
+        # Step 2: Filter already-archived messages
+        message_ids = [msg["id"] for msg in message_list]
+        filter_result = await self._filter_step.execute(
+            context,
+            FilterGmailInput(message_ids=message_ids, incremental=config.incremental),
+            self.progress,
+        )
 
-        # Archive
-        archive_stats: dict[str, Any] = {"archived_count": 0, "interrupted": False}
+        if not filter_result.success or not filter_result.data:
+            return ArchiveResult(
+                archived_count=0,
+                skipped_count=0,
+                duplicate_count=0,
+                found_count=len(message_list),
+                actual_file=output_file,
+                gmail_query=gmail_query,
+                validation_passed=True,
+            )
+
+        messages_to_archive = filter_result.data.to_archive
+        skipped_count = filter_result.data.total_skipped
+        duplicate_count = filter_result.data.duplicate_count
+
+        # Step 3: Archive messages (if not dry run)
+        archived_count = 0
+        interrupted = False
+        actual_file = output_file
+
         if messages_to_archive and not config.dry_run:
-            archive_stats = await self._archive_messages(
-                messages_to_archive, output_file, config.compress, gmail_query
+            write_result = await self._write_step.execute(
+                context,
+                WriteMessagesInput(
+                    message_ids=messages_to_archive,
+                    output_file=output_file,
+                    compress=config.compress,
+                    gmail_query=gmail_query,
+                ),
+                self.progress,
             )
 
-        actual_file = str(archive_stats.get("actual_file", output_file))
-        archived_count = int(archive_stats.get("archived_count", 0))
+            if write_result.success and write_result.data:
+                archived_count = write_result.data.archived_count
+                interrupted = write_result.data.interrupted
+                actual_file = write_result.data.actual_file
 
-        # 3. Validate (if anything was archived)
-        validation_res: dict[str, Any] = {"passed": True}
+        # Step 4: Validate (if anything was archived)
+        validation_passed = True
+        validation_details: dict[str, Any] | None = None
+
         if archived_count > 0 and not config.dry_run:
-            validation_res = await self._validate_archive(actual_file)
+            validate_result = await self._validate_step.execute(
+                context, ValidateInput(archive_path=actual_file), self.progress
+            )
+
+            if validate_result.success and validate_result.data:
+                validation_passed = validate_result.data.passed
+                validation_details = {
+                    "count_check": validate_result.data.count_check,
+                    "database_check": validate_result.data.database_check,
+                    "integrity_check": validate_result.data.integrity_check,
+                    "spot_check": validate_result.data.spot_check,
+                    "passed": validate_result.data.passed,
+                    "errors": validate_result.data.errors,
+                }
 
         return ArchiveResult(
             archived_count=archived_count,
-            skipped_count=filter_result["skipped_count"],
-            duplicate_count=filter_result["duplicate_count"],
+            skipped_count=skipped_count,
+            duplicate_count=duplicate_count,
             found_count=len(message_list),
             actual_file=actual_file,
             gmail_query=gmail_query,
-            interrupted=bool(archive_stats.get("interrupted", False)),
-            validation_passed=bool(validation_res.get("passed", False)),
-            validation_details=validation_res,
+            interrupted=interrupted,
+            validation_passed=validation_passed,
+            validation_details=validation_details,
         )
 
     async def delete_messages(self, archive_file: str, permanent: bool) -> int:
-        """Delete messages that are in the archive file."""
-        archived_ids = await self.storage.get_message_ids_for_archive(archive_file)
-        if not archived_ids:
-            return 0
+        """Delete messages that are in the archive file.
 
-        if permanent:
-            await self.client.delete_messages_permanent(list(archived_ids))
-        else:
-            await self.client.trash_messages(list(archived_ids))
+        Uses DeleteGmailMessagesStep for the operation.
+        """
+        context = StepContext()
+        result = await self._delete_step.execute(
+            context,
+            DeleteGmailInput(archive_file=archive_file, permanent=permanent),
+            self.progress,
+        )
 
-        return len(archived_ids)
+        if result.success and result.data:
+            return result.data.deleted_count
+        return 0
 
     async def _determine_output_file(
         self, output_file: str | None, compress: str | None, gmail_query: str
@@ -160,119 +259,97 @@ class ArchiveWorkflow:
             extension = ".mbox.zst"
         return f"archive_{timestamp}{extension}"
 
+    # Backward compatibility: Keep private methods that delegate to steps
+    # These can be removed once all callers are updated
+
     async def _scan_messages(self, age_threshold: str) -> dict[str, Any]:
-        """Scan messages from Gmail with UI feedback."""
-        messages: list[dict[str, Any]] = []
-        query = ""
+        """Scan messages from Gmail with UI feedback.
 
-        if self.progress:
-            with self.progress.task_sequence() as seq:
-                with seq.task("Scanning messages from Gmail") as task:
-                    query, messages = await self.archiver.list_messages_for_archive(
-                        age_threshold, progress_callback=None
-                    )
-                    if messages:
-                        task.complete(f"Found {len(messages):,} messages")
-                    else:
-                        task.complete("No messages found matching criteria")
-        else:
-            query, messages = await self.archiver.list_messages_for_archive(age_threshold)
+        DEPRECATED: Use ScanGmailMessagesStep directly.
+        """
+        context = StepContext()
+        result = await self._scan_step.execute(
+            context, ScanGmailInput(age_threshold=age_threshold), self.progress
+        )
 
-        return {"query": query, "messages": messages}
+        if result.success and result.data:
+            return {"query": result.data.gmail_query, "messages": result.data.messages}
+        return {"query": "", "messages": []}
 
     async def _filter_messages(
         self, message_list: list[dict[str, Any]], incremental: bool
     ) -> dict[str, Any]:
-        """Filter messages with UI feedback."""
-        all_ids = [msg["id"] for msg in message_list]
+        """Filter messages with UI feedback.
 
-        if self.progress:
-            with self.progress.task_sequence() as seq:
-                with seq.task("Checking for already archived") as task:
-                    filter_result = await self.archiver.filter_already_archived(
-                        all_ids, incremental
-                    )
+        DEPRECATED: Use FilterGmailMessagesStep directly.
+        """
+        context = StepContext()
+        message_ids = [msg["id"] for msg in message_list]
+        result = await self._filter_step.execute(
+            context,
+            FilterGmailInput(message_ids=message_ids, incremental=incremental),
+            self.progress,
+        )
 
-                    parts = []
-                    if filter_result.already_archived_count > 0:
-                        parts.append(f"{filter_result.already_archived_count:,} already archived")
-                    if filter_result.duplicate_count > 0:
-                        parts.append(f"{filter_result.duplicate_count:,} duplicates")
-
-                    msg = f"{len(filter_result.to_archive):,} to archive"
-                    if parts:
-                        msg = f"{', '.join(parts)}, {msg}"
-                    task.complete(msg)
-        else:
-            filter_result = await self.archiver.filter_already_archived(all_ids, incremental)
-
+        if result.success and result.data:
+            return {
+                "to_archive": result.data.to_archive,
+                "skipped_count": result.data.total_skipped,
+                "already_archived_count": result.data.already_archived_count,
+                "duplicate_count": result.data.duplicate_count,
+            }
         return {
-            "to_archive": filter_result.to_archive,
-            "skipped_count": filter_result.total_skipped,
-            "already_archived_count": filter_result.already_archived_count,
-            "duplicate_count": filter_result.duplicate_count,
+            "to_archive": [],
+            "skipped_count": 0,
+            "already_archived_count": 0,
+            "duplicate_count": 0,
         }
 
     async def _archive_messages(
         self, messages: list[str], output_file: str, compress: str | None, gmail_query: str
     ) -> dict[str, Any]:
-        """Archive messages with UI feedback."""
-        if self.progress:
-            with self.progress.task_sequence() as seq:
-                with seq.task("Archiving messages", total=len(messages)) as task:
-                    try:
-                        result = await self.archiver.archive_messages(
-                            messages, output_file, compress, task, gmail_query
-                        )
-                        if result.get("interrupted"):
-                            task.complete("Interrupted")
-                        elif result["archived_count"] > 0:
-                            task.complete(f"Archived {result['archived_count']:,} messages")
-                        else:
-                            task.complete("No messages archived")
-                        return result
-                    except Exception as e:
-                        task.fail(f"Archive failed: {e}")
-                        raise
-        else:
-            return await self.archiver.archive_messages(
-                messages, output_file, compress, None, gmail_query
-            )
+        """Archive messages with UI feedback.
+
+        DEPRECATED: Use WriteMessagesStep directly.
+        """
+        context = StepContext()
+        result = await self._write_step.execute(
+            context,
+            WriteMessagesInput(
+                message_ids=messages,
+                output_file=output_file,
+                compress=compress,
+                gmail_query=gmail_query,
+            ),
+            self.progress,
+        )
+
+        if result.success and result.data:
+            return {
+                "archived_count": result.data.archived_count,
+                "failed_count": result.data.failed_count,
+                "actual_file": result.data.actual_file,
+                "interrupted": result.data.interrupted,
+            }
+        return {"archived_count": 0, "failed_count": 0, "actual_file": output_file, "interrupted": False}
 
     async def _validate_archive(self, actual_file: str) -> dict[str, Any]:
-        """Validate archive with UI feedback."""
-        validator = ValidatorFacade(
-            actual_file, str(self.storage.db.db_path), progress=self.progress
+        """Validate archive with UI feedback.
+
+        DEPRECATED: Use ValidateArchiveStep directly.
+        """
+        context = StepContext()
+        result = await self._validate_step.execute(
+            context, ValidateInput(archive_path=actual_file), self.progress
         )
-        try:
-            archived_ids = await self.storage.get_message_ids_for_archive(actual_file)
-            result = await asyncio.to_thread(validator.validate_comprehensive, archived_ids)
 
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task("Validating archive") as task:
-                        check_keys = [
-                            result.count_check,
-                            result.database_check,
-                            result.integrity_check,
-                            result.spot_check,
-                        ]
-                        passed_count = sum(1 for check in check_keys if check)
-                        total = len(check_keys)
-
-                        if result.passed:
-                            task.complete(f"Passed {passed_count}/{total} checks")
-                        else:
-                            task.fail(f"Failed {total - passed_count}/{total} checks")
-
-            # Convert ValidationResult to dict for backward compatibility
+        if result.success and result.data:
             return {
-                "count_check": result.count_check,
-                "database_check": result.database_check,
-                "integrity_check": result.integrity_check,
-                "spot_check": result.spot_check,
-                "passed": result.passed,
-                "errors": result.errors,
+                "count_check": result.data.count_check,
+                "database_check": result.data.database_check,
+                "integrity_check": result.data.integrity_check,
+                "spot_check": result.data.spot_check,
+                "passed": result.data.passed,
+                "errors": result.data.errors,
             }
-        finally:
-            await validator.close()
+        return {"passed": False, "errors": ["Validation step failed"]}

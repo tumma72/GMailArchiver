@@ -5,8 +5,8 @@ from pathlib import Path
 
 import typer
 
-from gmailarchiver.cli.adapters import CLIProgressAdapter
 from gmailarchiver.cli.command_context import CommandContext, with_context
+from gmailarchiver.cli.ui import CLIProgressAdapter, ErrorPanel, ReportCard
 from gmailarchiver.core.workflows.archive import (
     ArchiveConfig,
     ArchiveResult,
@@ -167,20 +167,18 @@ async def _run_archive(
             await _handle_deletion(ctx, workflow, result, trash, delete)
 
         # Phase 6: Final summary
-        _show_final_summary(ctx, result, output, compress, trash, delete, age_threshold)
+        _show_final_summary(ctx, result, output)
 
 
 def _handle_dry_run(ctx: CommandContext, result: ArchiveResult) -> None:
     """Handle dry run output."""
     ctx.warning("DRY RUN completed - no changes made")
-    report_data = {
-        "Messages Found": result.found_count,
-        "Messages to Archive": (result.found_count - result.skipped_count - result.duplicate_count),
-        "Already Archived": result.skipped_count + result.duplicate_count,
-        "Output File": result.actual_file,
-        "Mode": "Dry Run (no changes made)",
-    }
-    ctx.show_report("Archive Preview", report_data)
+    ReportCard("Archive Preview").add_field("Messages Found", result.found_count).add_field(
+        "Messages to Archive",
+        result.found_count - result.skipped_count - result.duplicate_count,
+    ).add_field("Already Archived", result.skipped_count + result.duplicate_count).add_field(
+        "Output File", result.actual_file
+    ).add_field("Mode", "Dry Run (no changes made)").render(ctx.output)
 
 
 def _handle_interrupted(ctx: CommandContext, result: ArchiveResult, age_threshold: str) -> None:
@@ -201,12 +199,11 @@ def _handle_validation_failure(ctx: CommandContext, result: ArchiveResult, verbo
     if verbose and result.validation_details:
         ctx.output.show_validation_report(result.validation_details, title="Archive Validation")
 
-    ctx.fail_and_exit(
-        title="Validation Failed",
-        message="Archive validation did not pass all checks",
-        details=result.validation_details.get("errors", []) if result.validation_details else [],
-        suggestion="Check disk space and file permissions. DO NOT delete Gmail messages yet.",
-    )
+    ErrorPanel("Validation Failed", "Archive validation did not pass all checks").add_details(
+        result.validation_details.get("errors", []) if result.validation_details else []
+    ).with_suggestion(
+        "Check disk space and file permissions. DO NOT delete Gmail messages yet."
+    ).render(ctx.output)
 
 
 async def _handle_no_new_messages(
@@ -297,17 +294,14 @@ async def _handle_deletion(
 def _show_final_summary(
     ctx: CommandContext,
     result: ArchiveResult,
-    output: str | None,
-    compress: str | None,
-    trash: bool,
-    delete: bool,
-    age_threshold: str,
+    output_file: str | None,
 ) -> None:
     """Show final summary report."""
-    report_data = {
-        "Archived": f"{result.archived_count:,} messages",
-        "File": output or result.actual_file,
-    }
+    card = (
+        ReportCard("Archive Summary")
+        .add_field("Archived", f"{result.archived_count:,} messages")
+        .add_field("File", output_file or result.actual_file)
+    )
 
     if result.skipped_count > 0 or result.duplicate_count > 0:
         skipped_parts = []
@@ -315,31 +309,7 @@ def _show_final_summary(
             skipped_parts.append(f"{result.skipped_count:,} already archived")
         if result.duplicate_count > 0:
             skipped_parts.append(f"{result.duplicate_count:,} duplicates")
-        report_data["Skipped"] = ", ".join(skipped_parts)
+        card.add_field("Skipped", ", ".join(skipped_parts))
 
-    if compress:
-        report_data["Compression"] = compress
-
-    if trash:
-        report_data["Gmail"] = "Moved to trash (30-day recovery)"
-    elif delete:
-        report_data["Gmail"] = "Permanently deleted"
-
-    ctx.show_report("Archive Summary", report_data)
+    card.render(ctx.output)
     ctx.success("Archive completed!")
-
-    # Contextual suggestions based on what happened
-    suggestions: list[str] = []
-
-    if result.archived_count > 0 and not trash and not delete:
-        # Suggest deletion options if messages were archived but not deleted
-        suggestions.append(
-            f"Move to trash (recoverable): gmailarchiver archive {age_threshold} --trash"
-        )
-
-    if result.duplicate_count > 0:
-        # Suggest dedupe review when duplicates were found
-        suggestions.append("Review duplicates: gmailarchiver dedupe --dry-run")
-
-    if suggestions:
-        ctx.suggest_next_steps(suggestions)

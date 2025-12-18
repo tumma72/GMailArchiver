@@ -21,7 +21,7 @@ class ProgressReporter(Protocol):
         Args:
             message: Info message text
         """
-        ...
+        ...  # pragma: no cover
 
     def warning(self, message: str) -> None:
         """Log a warning message.
@@ -29,7 +29,7 @@ class ProgressReporter(Protocol):
         Args:
             message: Warning message text
         """
-        ...
+        ...  # pragma: no cover
 
     def error(self, message: str) -> None:
         """Log an error message.
@@ -37,7 +37,7 @@ class ProgressReporter(Protocol):
         Args:
             message: Error message text
         """
-        ...
+        ...  # pragma: no cover
 
     def task_sequence(self) -> AbstractContextManager[TaskSequence]:
         """Create a task sequence for multi-step operations.
@@ -45,7 +45,7 @@ class ProgressReporter(Protocol):
         Returns:
             Context manager yielding a TaskSequence
         """
-        ...
+        ...  # pragma: no cover
 
 
 class TaskSequence(Protocol):
@@ -67,7 +67,7 @@ class TaskSequence(Protocol):
         Returns:
             Context manager yielding a TaskHandle
         """
-        ...
+        ...  # pragma: no cover
 
 
 class TaskHandle(Protocol):
@@ -79,7 +79,7 @@ class TaskHandle(Protocol):
         Args:
             message: Success message
         """
-        ...
+        ...  # pragma: no cover
 
     def fail(self, message: str, reason: str | None = None) -> None:
         """Mark task as failed.
@@ -88,7 +88,7 @@ class TaskHandle(Protocol):
             message: Failure message
             reason: Optional detailed reason
         """
-        ...
+        ...  # pragma: no cover
 
     def advance(self, n: int = 1) -> None:
         """Advance progress counter.
@@ -96,7 +96,7 @@ class TaskHandle(Protocol):
         Args:
             n: Number of items to advance
         """
-        ...
+        ...  # pragma: no cover
 
 
 class NoOpTaskSequence:

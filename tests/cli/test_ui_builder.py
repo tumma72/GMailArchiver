@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from gmailarchiver.cli.ui_builder import (
+from gmailarchiver.cli.ui import (
     DEFAULT_MAX_LOGS,
     LOG_SYMBOLS,
     SPINNER_FRAMES,

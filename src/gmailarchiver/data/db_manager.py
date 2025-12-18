@@ -590,6 +590,27 @@ class DBManager:
         )
         return [dict(row) for row in await cursor.fetchall()]
 
+    async def get_message_ids_for_archive(self, archive_file: str) -> list[str]:
+        """
+        Get all gmail IDs for messages in a specific archive file.
+
+        Args:
+            archive_file: Path to archive file
+
+        Returns:
+            List of gmail IDs
+        """
+        cursor = await self._conn.execute(
+            """
+            SELECT gmail_id
+            FROM messages
+            WHERE archive_file = ?
+            ORDER BY mbox_offset
+            """,
+            (archive_file,),
+        )
+        return [row[0] for row in await cursor.fetchall()]
+
     # ==================== DEDUPLICATION ====================
 
     async def find_duplicates(self) -> list[tuple[str, list[str]]]:

@@ -804,3 +804,541 @@ class TestGmailClientCreate:
             # Verify we can enter/exit context (idempotent since already connected)
             async with client:
                 assert client._http_client is not None
+
+
+# =============================================================================
+# Additional Coverage Tests for Missing Lines
+# =============================================================================
+
+
+class TestGmailClientGetHeaders:
+    """Tests for GmailClient._get_headers() method (line 172)."""
+
+    def test_get_headers_returns_authorization_header(self) -> None:
+        """Test _get_headers returns Authorization header with token."""
+        creds = mock_credentials()
+        creds.token = "test_token_abc123"
+        client = GmailClient(creds)
+
+        headers = client._get_headers()
+
+        assert headers["Authorization"] == "Bearer test_token_abc123"
+        assert headers["Content-Type"] == "application/json"
+
+
+class TestGmailClientEnsureValidToken:
+    """Tests for GmailClient._ensure_valid_token() method (lines 187-200)."""
+
+    @pytest.mark.asyncio
+    async def test_ensure_valid_token_returns_immediately_if_not_expired(self) -> None:
+        """Test _ensure_valid_token returns immediately when token is valid."""
+        creds = mock_credentials()
+        creds.expired = False
+        client = GmailClient(creds)
+
+        # Should complete without blocking (no refresh needed)
+        await client._ensure_valid_token()
+
+        # Token should still be the same
+        assert creds.token == "test_token_12345"
+
+    @pytest.mark.asyncio
+    async def test_ensure_valid_token_returns_if_no_refresh_token(self) -> None:
+        """Test _ensure_valid_token returns immediately if no refresh_token available."""
+        creds = mock_credentials()
+        creds.expired = True
+        creds.refresh_token = None
+
+        client = GmailClient(creds)
+
+        # Should complete without attempting refresh
+        await client._ensure_valid_token()
+
+        # Should not raise error despite expired token
+        assert creds.expired is True
+
+    @pytest.mark.asyncio
+    async def test_ensure_valid_token_initializes_lock_if_missing(self) -> None:
+        """Test _ensure_valid_token creates lock if not initialized (line 193-195)."""
+        from unittest.mock import patch
+
+        creds = mock_credentials()
+        creds.expired = True
+        creds.refresh_token = "refresh_token_value"
+
+        client = GmailClient(creds)
+        # Simulate lock not being initialized (connect() not called)
+        client._refresh_lock = None
+
+        with patch.object(client, "_refresh_token_sync", new_callable=MagicMock) as mock_refresh:
+            await client._ensure_valid_token()
+
+            # Lock should have been created (line 195)
+            assert client._refresh_lock is not None
+
+    @pytest.mark.asyncio
+    async def test_ensure_valid_token_refreshes_expired_token(self) -> None:
+        """Test _ensure_valid_token refreshes expired token with refresh_token."""
+        from unittest.mock import patch
+
+        creds = mock_credentials()
+        creds.expired = True
+        creds.refresh_token = "refresh_token_value"
+
+        client = GmailClient(creds)
+        client._refresh_lock = asyncio.Lock()
+
+        with patch.object(client, "_refresh_token_sync", new_callable=MagicMock) as mock_refresh:
+            await client._ensure_valid_token()
+
+            # Should have called refresh (line 200)
+            mock_refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ensure_valid_token_avoids_concurrent_refresh(self) -> None:
+        """Test _ensure_valid_token prevents concurrent refresh attempts."""
+        from unittest.mock import patch
+
+        creds = mock_credentials()
+        creds.expired = True
+        creds.refresh_token = "refresh_token_value"
+
+        client = GmailClient(creds)
+        await client.connect()
+
+        refresh_call_count = 0
+
+        def sync_refresh():
+            """Simulate slow refresh that marks token as not expired."""
+            nonlocal refresh_call_count
+            refresh_call_count += 1
+            import time
+
+            time.sleep(0.05)
+            creds.expired = False
+
+        with patch.object(client, "_refresh_token_sync", side_effect=sync_refresh):
+            # Launch two concurrent refresh attempts
+            task1 = asyncio.create_task(client._ensure_valid_token())
+            task2 = asyncio.create_task(client._ensure_valid_token())
+
+            await asyncio.gather(task1, task2)
+
+            # Only one refresh should have happened (lock prevents concurrent)
+            assert refresh_call_count == 1
+
+
+class TestGmailClientRefreshTokenSync:
+    """Tests for GmailClient._refresh_token_sync() method (lines 207-209)."""
+
+    def test_refresh_token_sync_calls_credentials_refresh(self) -> None:
+        """Test _refresh_token_sync calls credentials.refresh() with Request."""
+        from unittest.mock import MagicMock, patch
+
+        creds = mock_credentials()
+        creds.refresh = MagicMock()
+
+        client = GmailClient(creds)
+
+        with patch("google.auth.transport.requests.Request") as mock_request_cls:
+            mock_request = MagicMock()
+            mock_request_cls.return_value = mock_request
+
+            client._refresh_token_sync()
+
+            # Should have created Request and called refresh
+            mock_request_cls.assert_called_once()
+            creds.refresh.assert_called_once_with(mock_request)
+
+
+class TestGmailClientRequestWithRetry:
+    """Tests for GmailClient._request_with_retry() error handling (lines 230-282)."""
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_raises_if_client_not_initialized(self) -> None:
+        """Test _request_with_retry raises if HTTP client not initialized (line 230-231)."""
+        creds = mock_credentials()
+        client = GmailClient(creds)
+        # Don't call connect() - leave _http_client as None
+
+        with pytest.raises(RuntimeError, match="Client not initialized"):
+            await client._request_with_retry("GET", "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_handles_429_rate_limit(self) -> None:
+        """Test _request_with_retry handles 429 rate limit with retry (lines 251-259)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=3)
+        await client.connect()
+
+        # First request returns 429, second succeeds
+        call_count = 0
+
+        async def mock_request(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: rate limited
+                response = MagicMock()
+                response.status_code = 429
+                response.headers = {"Retry-After": "0.01"}
+                return response
+            else:
+                # Second call: success
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {"success": True}
+                return response
+
+        client._http_client.request = AsyncMock(side_effect=mock_request)
+
+        result = await client._request_with_retry("GET", "https://example.com")
+
+        assert result.status_code == 200
+        assert call_count == 2  # Should have retried
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_handles_500_server_error(self) -> None:
+        """Test _request_with_retry handles 500 server error with retry (lines 261-268)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=3)
+        await client.connect()
+
+        call_count = 0
+
+        async def mock_request(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: server error
+                response = MagicMock()
+                response.status_code = 503
+                return response
+            else:
+                # Second call: success
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {"success": True}
+                return response
+
+        client._http_client.request = AsyncMock(side_effect=mock_request)
+
+        result = await client._request_with_retry("GET", "https://example.com")
+
+        assert result.status_code == 200
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_raises_for_4xx_errors(self) -> None:
+        """Test _request_with_retry raises for 4xx errors without retry (line 271)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=3)
+        await client.connect()
+
+        async def mock_request(*args, **kwargs):
+            response = MagicMock()
+            response.status_code = 404
+            response.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "404 Not Found",
+                request=httpx.Request("GET", "https://example.com"),
+                response=httpx.Response(404, request=httpx.Request("GET", "https://example.com")),
+            )
+            return response
+
+        client._http_client.request = AsyncMock(side_effect=mock_request)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await client._request_with_retry("GET", "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_handles_timeout(self) -> None:
+        """Test _request_with_retry handles timeout with retry (lines 273-279)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=3)
+        await client.connect()
+
+        call_count = 0
+
+        async def mock_request(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: timeout
+                raise httpx.TimeoutException("Request timeout")
+            else:
+                # Second call: success
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {"success": True}
+                return response
+
+        client._http_client.request = AsyncMock(side_effect=mock_request)
+
+        result = await client._request_with_retry("GET", "https://example.com")
+
+        assert result.status_code == 200
+        assert call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_raises_timeout_after_all_retries(self) -> None:
+        """Test _request_with_retry raises timeout after max retries exhausted."""
+        from unittest.mock import AsyncMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=2)
+        await client.connect()
+
+        # All requests timeout
+        client._http_client.request = AsyncMock(
+            side_effect=httpx.TimeoutException("Request timeout")
+        )
+
+        with pytest.raises(httpx.TimeoutException):
+            await client._request_with_retry("GET", "https://example.com")
+
+    @pytest.mark.asyncio
+    async def test_request_with_retry_raises_after_all_retries_exhausted(self) -> None:
+        """Test _request_with_retry raises RuntimeError after max retries (line 282)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        creds = mock_credentials()
+        creds.expired = False
+
+        client = GmailClient(creds, max_retries=2)
+        await client.connect()
+
+        # All requests return 503
+        async def mock_request(*args, **kwargs):
+            response = MagicMock()
+            response.status_code = 503
+            return response
+
+        client._http_client.request = AsyncMock(side_effect=mock_request)
+
+        with pytest.raises(RuntimeError, match="Failed after 2 retries"):
+            await client._request_with_retry("GET", "https://example.com")
+
+
+class TestGmailClientGetMessagesBatchErrorHandling:
+    """Tests for GmailClient.get_messages_batch() exception handling (lines 364-366)."""
+
+    @pytest.mark.asyncio
+    async def test_get_messages_batch_continues_on_fetch_failure(self) -> None:
+        """Test batch fetch continues when individual message fetch fails."""
+        responses = [
+            MockResponse(data={"id": "msg1", "raw": "data1"}),
+            # msg2 will fail (no response)
+            MockResponse(data={"id": "msg3", "raw": "data3"}),
+        ]
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            # Override to simulate failure for msg2
+            original_get = client.get_message
+
+            async def get_with_failure(msg_id: str, format: str = "raw"):
+                if msg_id == "msg2":
+                    raise Exception("Network error fetching msg2")
+                return await original_get(msg_id, format)
+
+            client.get_message = get_with_failure
+
+            messages = [msg async for msg in client.get_messages_batch(["msg1", "msg2", "msg3"])]
+
+        # Should get msg1 and msg3, skip msg2
+        assert len(messages) == 2
+        assert messages[0]["id"] == "msg1"
+        assert messages[1]["id"] == "msg3"
+
+
+class TestGmailClientTrashMessagesErrorHandling:
+    """Tests for GmailClient.trash_messages() exception handling (lines 401-402)."""
+
+    @pytest.mark.asyncio
+    async def test_trash_messages_continues_on_individual_failure(self) -> None:
+        """Test trash_messages continues when individual message trash fails."""
+        responses = [
+            MockResponse(status_code=200),  # msg1 succeeds
+            # msg2 will fail (no response)
+            MockResponse(status_code=200),  # msg3 succeeds
+        ]
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            # Override to simulate failure for msg2
+            original_request = client._request_with_retry
+
+            async def request_with_failure(method: str, url: str, **kwargs):
+                if "msg2" in url:
+                    raise Exception("Network error trashing msg2")
+                return await original_request(method, url, **kwargs)
+
+            client._request_with_retry = request_with_failure
+
+            count = await client.trash_messages(["msg1", "msg2", "msg3"])
+
+        # Should have trashed 2 out of 3
+        assert count == 2
+
+
+class TestGmailClientDeleteMessagesErrorHandling:
+    """Tests for GmailClient.delete_messages_permanent() exception handling (lines 426-427)."""
+
+    @pytest.mark.asyncio
+    async def test_delete_permanent_continues_on_batch_failure(self) -> None:
+        """Test delete_permanent continues when batch delete fails."""
+        # Note: delete_permanent uses chunk_list with size 1000, so we need 1001+ messages
+        # to create multiple batches. For testing, we'll just verify exception handling
+        # by having the single batch fail
+        responses = []
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            # Override to simulate failure
+            async def request_with_failure(method: str, url: str, **kwargs):
+                raise Exception("Network error on batch delete")
+
+            client._request_with_retry = request_with_failure
+
+            # Try to delete messages (single batch will fail)
+            count = await client.delete_messages_permanent(["msg1", "msg2"])
+
+        # Should have caught exception and returned 0
+        assert count == 0
+
+
+class TestGmailClientSearchByRfcMessageId404:
+    """Tests for GmailClient.search_by_rfc_message_id() 404 handling (lines 458-461)."""
+
+    @pytest.mark.asyncio
+    async def test_search_by_rfc_message_id_returns_none_on_404(self) -> None:
+        """Test search returns None on 404 error."""
+        async with FakeGmailClient(mock_credentials(), []) as client:
+            # Override to raise 404
+            async def request_with_404(*args, **kwargs):
+                raise httpx.HTTPStatusError(
+                    "404 Not Found",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(
+                        404, request=httpx.Request("GET", "https://example.com")
+                    ),
+                )
+
+            client._request_with_retry = request_with_404
+
+            result = await client.search_by_rfc_message_id("<test@example.com>")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_search_by_rfc_message_id_raises_on_other_http_errors(self) -> None:
+        """Test search raises HTTPStatusError for non-404 errors."""
+        async with FakeGmailClient(mock_credentials(), []) as client:
+            # Override to raise 500
+            async def request_with_500(*args, **kwargs):
+                raise httpx.HTTPStatusError(
+                    "500 Server Error",
+                    request=httpx.Request("GET", "https://example.com"),
+                    response=httpx.Response(
+                        500, request=httpx.Request("GET", "https://example.com")
+                    ),
+                )
+
+            client._request_with_retry = request_with_500
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.search_by_rfc_message_id("<test@example.com>")
+
+
+class TestGmailClientSearchByRfcMessageIdsBatch:
+    """Tests for GmailClient.search_by_rfc_message_ids_batch() (lines 479-491)."""
+
+    @pytest.mark.asyncio
+    async def test_search_batch_returns_mapping(self) -> None:
+        """Test batch search returns dict mapping RFC IDs to Gmail IDs."""
+        responses = [
+            MockResponse(data={"messages": [{"id": "gmail1"}]}),
+            MockResponse(data={"messages": [{"id": "gmail2"}]}),
+            MockResponse(data={}),  # Third message not found
+        ]
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            result = await client.search_by_rfc_message_ids_batch(
+                ["<msg1@example.com>", "<msg2@example.com>", "<msg3@example.com>"]
+            )
+
+        assert result == {
+            "<msg1@example.com>": "gmail1",
+            "<msg2@example.com>": "gmail2",
+            "<msg3@example.com>": None,
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_batch_calls_progress_callback(self) -> None:
+        """Test batch search calls progress callback after each message (line 488-489)."""
+        responses = [
+            MockResponse(data={"messages": [{"id": "gmail1"}]}),
+            MockResponse(data={"messages": [{"id": "gmail2"}]}),
+        ]
+
+        progress_calls = []
+
+        def progress_callback(processed: int, total: int) -> None:
+            progress_calls.append((processed, total))
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            await client.search_by_rfc_message_ids_batch(
+                ["<msg1@example.com>", "<msg2@example.com>"],
+                progress_callback=progress_callback,
+            )
+
+        # Should have been called twice (once per message)
+        assert len(progress_calls) == 2
+        assert progress_calls[0] == (1, 2)
+        assert progress_calls[1] == (2, 2)
+
+    @pytest.mark.asyncio
+    async def test_search_batch_respects_batch_size(self) -> None:
+        """Test batch search chunks requests by batch_size."""
+        # 5 messages with batch_size=2 should make 5 individual searches
+        # (batch_size only affects chunking, not the number of API calls)
+        responses = [MockResponse(data={"messages": [{"id": f"gmail{i}"}]}) for i in range(5)]
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            result = await client.search_by_rfc_message_ids_batch(
+                [f"<msg{i}@example.com>" for i in range(5)],
+                batch_size=2,
+            )
+
+        assert len(result) == 5
+        assert all(result[f"<msg{i}@example.com>"] == f"gmail{i}" for i in range(5))
+
+    @pytest.mark.asyncio
+    async def test_search_batch_without_progress_callback(self) -> None:
+        """Test batch search works without progress callback (line 488 condition)."""
+        responses = [
+            MockResponse(data={"messages": [{"id": "gmail1"}]}),
+        ]
+
+        async with FakeGmailClient(mock_credentials(), responses) as client:
+            result = await client.search_by_rfc_message_ids_batch(
+                ["<msg1@example.com>"],
+                progress_callback=None,
+            )
+
+        assert result == {"<msg1@example.com>": "gmail1"}

@@ -221,6 +221,42 @@ def v11_db(temp_db_path: str) -> Generator[str]:
             """
         )
 
+        # Schedules table (v1.3+)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                day_of_week INTEGER,
+                day_of_month INTEGER,
+                time TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_run TEXT
+            )
+            """
+        )
+
+        # Archive sessions table (v1.3.6+)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_sessions (
+                session_id TEXT PRIMARY KEY,
+                target_file TEXT NOT NULL,
+                query TEXT NOT NULL,
+                message_ids TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT,
+                status TEXT DEFAULT 'in_progress',
+                compression TEXT,
+                total_count INTEGER NOT NULL,
+                processed_count INTEGER DEFAULT 0,
+                account_id TEXT DEFAULT 'default'
+            )
+            """
+        )
+
         # Ensure PRAGMA user_version reflects v1.1 for tools/tests that rely
         # on it (e.g. Doctor checks)
         conn.execute("PRAGMA user_version = 11")
@@ -344,6 +380,40 @@ def v11_db_factory(temp_dir: Path):
                 """
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command TEXT NOT NULL,
+                    frequency TEXT NOT NULL,
+                    day_of_week INTEGER,
+                    day_of_month INTEGER,
+                    time TEXT NOT NULL,
+                    enabled INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    last_run TEXT
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS archive_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    target_file TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    message_ids TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT,
+                    status TEXT DEFAULT 'in_progress',
+                    compression TEXT,
+                    total_count INTEGER NOT NULL,
+                    processed_count INTEGER DEFAULT 0,
+                    account_id TEXT DEFAULT 'default'
+                )
+                """
+            )
+
             conn.execute("PRAGMA user_version = 11")
             conn.execute(
                 "INSERT OR REPLACE INTO schema_version (version, migrated_timestamp) VALUES (?, ?)",
@@ -431,6 +501,38 @@ def temp_db(temp_dir: Path) -> Generator[Path]:
             CREATE TABLE IF NOT EXISTS schema_version (
                 version TEXT PRIMARY KEY,
                 migrated_timestamp TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                day_of_week INTEGER,
+                day_of_month INTEGER,
+                time TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_run TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS archive_sessions (
+                session_id TEXT PRIMARY KEY,
+                target_file TEXT NOT NULL,
+                query TEXT NOT NULL,
+                message_ids TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT,
+                status TEXT DEFAULT 'in_progress',
+                compression TEXT,
+                total_count INTEGER NOT NULL,
+                processed_count INTEGER DEFAULT 0,
+                account_id TEXT DEFAULT 'default'
             )
             """
         )
@@ -713,6 +815,122 @@ def compressed_mbox_lzma(temp_dir: Path, sample_message: bytes) -> Path:
 # ============================================================================
 # Database Management Fixtures with Context Managers
 # ============================================================================
+
+
+@pytest.fixture
+async def db_manager(v11_db: str) -> AsyncGenerator[DBManager]:
+    """Create a DBManager with proper async initialization and cleanup.
+
+    This is the SINGLE source for async DBManager fixtures across all tests.
+    Do NOT define local db_manager fixtures in individual test files.
+
+    The fixture:
+    - Creates DBManager pointed at a v1.1 schema database
+    - Initializes the async connection
+    - Yields the manager for test use
+    - Closes the connection on teardown (prevents hanging tests)
+
+    Args:
+        v11_db: Path to v1.1 database from the v11_db fixture
+
+    Yields:
+        Initialized DBManager instance with active connection
+    """
+    manager = DBManager(v11_db)
+    await manager.initialize()
+    try:
+        yield manager
+    finally:
+        await manager.close()
+
+
+@pytest.fixture
+async def hybrid_storage(db_manager: DBManager) -> AsyncGenerator:
+    """Create a HybridStorage instance with proper cleanup.
+
+    This is the SINGLE source for HybridStorage fixtures across all tests.
+    Do NOT define local storage fixtures in individual test files.
+
+    The fixture:
+    - Uses the shared db_manager fixture (which handles connection cleanup)
+    - Creates HybridStorage wrapping the DBManager
+    - Yields the storage for test use
+
+    Args:
+        db_manager: Initialized DBManager from the db_manager fixture
+
+    Yields:
+        HybridStorage instance wrapping the DBManager
+    """
+    from gmailarchiver.data.hybrid_storage import HybridStorage
+
+    storage = HybridStorage(db_manager)
+    yield storage
+    # db_manager cleanup is handled by its own fixture
+
+
+@pytest.fixture
+async def db_manager_with_messages(db_manager: DBManager) -> AsyncGenerator[DBManager]:
+    """DBManager with pre-populated test messages for duplicate testing.
+
+    This fixture extends db_manager with sample messages already in the database.
+    Useful for testing deduplication, filtering, and import workflows.
+
+    Args:
+        db_manager: Base db_manager fixture
+
+    Yields:
+        DBManager with existing test messages
+    """
+    # Insert test messages directly via SQL
+    await db_manager._conn.execute(
+        """
+        INSERT INTO messages (
+            rfc_message_id, gmail_id, thread_id, subject, from_addr,
+            to_addr, date, archived_timestamp, archive_file,
+            mbox_offset, mbox_length, body_preview, account_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+        """,
+        (
+            "<existing1@example.com>",
+            "existing1",
+            "thread1",
+            "Existing Message 1",
+            "old@example.com",
+            "recipient@example.com",
+            "2024-01-01T00:00:00",
+            "old.mbox",
+            0,
+            100,
+            "Old message 1 body",
+            "default",
+        ),
+    )
+    await db_manager._conn.execute(
+        """
+        INSERT INTO messages (
+            rfc_message_id, gmail_id, thread_id, subject, from_addr,
+            to_addr, date, archived_timestamp, archive_file,
+            mbox_offset, mbox_length, body_preview, account_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+        """,
+        (
+            "<existing2@example.com>",
+            "existing2",
+            "thread2",
+            "Existing Message 2",
+            "old@example.com",
+            "recipient@example.com",
+            "2024-01-02T00:00:00",
+            "old.mbox",
+            100,
+            100,
+            "Old message 2 body",
+            "default",
+        ),
+    )
+    await db_manager.commit()
+    yield db_manager
 
 
 @pytest.fixture
