@@ -15,7 +15,6 @@ import pytest
 from gmailarchiver.core.workflows.import_ import (
     ImportConfig,
     ImportWorkflow,
-    SingleFileImportWorkflow,
 )
 from gmailarchiver.data.hybrid_storage import HybridStorage
 
@@ -200,81 +199,6 @@ class TestImportWorkflowBehavior:
 
         assert result.imported_count == 5
         assert len(result.files_processed) == 2
-
-
-class TestSingleFileImportWorkflowBehavior:
-    """Test SingleFileImportWorkflow behavior."""
-
-    @pytest.mark.asyncio
-    async def test_imports_single_file(
-        self, hybrid_storage: HybridStorage, mbox_with_messages: Path
-    ) -> None:
-        """Given a single mbox file, imports all messages."""
-        workflow = SingleFileImportWorkflow(hybrid_storage)
-        result = await workflow.run(mbox_with_messages)
-
-        assert result.imported_count == 3
-        assert len(result.files_processed) == 1
-        assert str(mbox_with_messages) in result.files_processed
-
-    @pytest.mark.asyncio
-    async def test_handles_nonexistent_file(
-        self, hybrid_storage: HybridStorage, tmp_path: Path
-    ) -> None:
-        """Given a nonexistent file, returns error result."""
-        workflow = SingleFileImportWorkflow(hybrid_storage)
-        result = await workflow.run(tmp_path / "nonexistent.mbox")
-
-        assert result.imported_count == 0
-        assert len(result.errors) > 0
-
-    @pytest.mark.asyncio
-    async def test_accepts_path_object(
-        self, hybrid_storage: HybridStorage, mbox_with_messages: Path
-    ) -> None:
-        """Accepts Path objects as well as strings."""
-        workflow = SingleFileImportWorkflow(hybrid_storage)
-        result = await workflow.run(mbox_with_messages)  # Path object
-
-        assert result.imported_count == 3
-
-    @pytest.mark.asyncio
-    async def test_skips_duplicates_by_default(
-        self, hybrid_storage: HybridStorage, mbox_with_messages: Path
-    ) -> None:
-        """Skips duplicates by default (skip_duplicates=True)."""
-        workflow = SingleFileImportWorkflow(hybrid_storage)
-
-        result1 = await workflow.run(mbox_with_messages)
-        assert result1.imported_count == 3
-
-        result2 = await workflow.run(mbox_with_messages)
-        assert result2.imported_count == 0
-        assert result2.duplicate_count == 3
-
-    @pytest.mark.asyncio
-    async def test_reports_progress(
-        self, hybrid_storage: HybridStorage, mbox_with_messages: Path
-    ) -> None:
-        """Reports progress when progress reporter is provided."""
-        progress = MagicMock()
-        # Set up task_sequence mock
-        seq_cm = MagicMock()
-        task_cm = MagicMock()
-        seq_cm.__enter__ = MagicMock(return_value=seq_cm)
-        seq_cm.__exit__ = MagicMock(return_value=False)
-        seq_cm.task = MagicMock(return_value=task_cm)
-        task_cm.__enter__ = MagicMock(return_value=task_cm)
-        task_cm.__exit__ = MagicMock(return_value=False)
-        task_cm.complete = MagicMock()
-        task_cm.set_status = MagicMock()
-        progress.task_sequence = MagicMock(return_value=seq_cm)
-
-        workflow = SingleFileImportWorkflow(hybrid_storage, progress=progress)
-        await workflow.run(mbox_with_messages)
-
-        # Progress should be used
-        assert progress.task_sequence.called
 
 
 class TestImportWorkflowErrorHandling:
