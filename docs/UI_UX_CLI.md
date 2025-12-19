@@ -2,7 +2,7 @@
 
 This document defines the visual language, interaction patterns, and composable components for Gmail Archiver's command-line interface. All commands MUST follow these guidelines to ensure a consistent, professional user experience.
 
-**Status**: Iteration 5 - Output Consolidation & Contextual Suggestions
+**Status**: Iteration 6 - TableWidget & Flexible Column Configuration
 
 ---
 
@@ -243,15 +243,94 @@ Validation output adapts based on mode and outcome:
 
 ## 6. Tables & Reports
 
-*[Placeholder - Iteration 3]*
+### 6.1 TableWidget
 
-### 6.1 Key-Value Report
-For summary data with labels and values.
+The `TableWidget` provides flexible table rendering with intelligent column sizing. It allows configuring which columns must show their full content vs which can be truncated.
 
-### 6.2 Tabular Data
-For multi-row data with headers.
+**Column Content Modes:**
 
-### 6.3 Command Summary Layout
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `content="full"` | Content never truncated, wraps if needed | IDs, paths, values user needs to copy |
+| `content="cut"` | Content truncated with `...` when space is limited | Subject lines, descriptions, previews |
+
+**Table Sizing:**
+- Tables expand to terminal width by default (`expand=True`)
+- Overflow strategy: compress "cut" columns first, then wrap "full" columns
+- Use `ratio` for relative sizing between columns
+
+**API Example:**
+```python
+from gmailarchiver.cli.ui.widgets import TableWidget
+
+table = TableWidget(title="Search Results")
+
+# Add columns with appropriate content modes
+table.add_column("Subject", content="cut", ratio=2)  # Can truncate, gets more space
+table.add_column("From", content="cut")              # Can truncate
+table.add_column("Date", content="cut", max_width=16)  # Fixed max width
+table.add_column("Message-ID", content="full")       # Must be fully visible
+
+# Add data rows
+table.add_row("Meeting notes...", "alice@example.com", "2024-01-15 10:30", "<msg123@example.com>")
+
+# Render
+table.render_to_output(ctx.output)
+```
+
+**ColumnSpec Options:**
+| Option | Type | Description |
+|--------|------|-------------|
+| `header` | str | Column header text |
+| `content` | "full" \| "cut" | How to handle overflow |
+| `style` | str | Rich style (default: "cyan") |
+| `min_width` | int | Minimum column width |
+| `max_width` | int | Maximum width (only for `content="cut"`) |
+| `ratio` | int | Relative width ratio for flexible sizing |
+
+**When to use each mode:**
+- **`content="full"`**: Message-IDs, file paths, UUIDs, anything the user might copy/paste
+- **`content="cut"`**: Subject lines, email addresses, descriptions, preview text
+
+**Visual Result:**
+```
+╭── Search Results for: project ─────────────────────────────────────────────────╮
+│ Subject              │ From               │ Date             │ Message-ID       │
+├──────────────────────┼────────────────────┼──────────────────┼──────────────────┤
+│ Meeting notes fo...  │ alice@example.c... │ 2024-01-15 10:30 │ <msg123@example. │
+│                      │                    │                  │ com>             │
+╰────────────────────────────────────────────────────────────────────────────────╯
+```
+Note: Message-ID wraps to show complete content, while Subject and From are truncated.
+
+### 6.2 Key-Value Report (ReportCard)
+
+For summary data with labels and values using the fluent builder pattern.
+
+**API Example:**
+```python
+from gmailarchiver.cli.ui.widgets import ReportCard
+
+ReportCard("Archive Summary")
+    .with_emoji("📦")
+    .add_field("Messages", "4,269")
+    .add_field("Size", "12.3 MB")
+    .add_field("File", "archive.mbox")
+    .render(ctx.output)
+```
+
+### 6.3 Tabular Data Guidelines
+
+**Column ordering convention:**
+1. Primary identifier or main content (left)
+2. Supporting metadata (middle)
+3. Technical/copy-paste values (right, use `content="full"`)
+
+**Date formatting:**
+- Use ISO format: `YYYY-MM-DD HH:MM` (no seconds)
+- Convert RFC 2822 dates using `email.utils.parsedate_to_datetime()`
+
+### 6.4 Command Summary Layout
 
 Final summaries should be visually scannable with strategic emoji for engagement:
 
@@ -638,6 +717,7 @@ All output MUST have a JSON equivalent for automation. When `--json` flag is use
 - `src/gmailarchiver/cli/ui_builder.py` - Fluent builder implementation
 - `src/gmailarchiver/cli/output.py` - OutputManager (existing, being wrapped)
 - `src/gmailarchiver/cli/command_context.py` - CommandContext with `ui` property
+- `src/gmailarchiver/cli/ui/widgets/table.py` - TableWidget with flexible column configuration
 
 ### A.2 Migration Status
 

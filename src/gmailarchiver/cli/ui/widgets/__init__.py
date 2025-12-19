@@ -9,13 +9,14 @@ This package provides reusable widgets for CLI output:
 - ProgressBarWidget: Workflow progress bar with ETA and count display
 - LogWindowWidget: Scrolling log window for task entries
 - WorkflowProgressWidget: Composer for multi-step workflow progress display
+- TableWidget: Flexible table with intelligent column sizing
 
 All widgets use the fluent builder pattern for easy composition.
 
 Usage:
     from gmailarchiver.cli.ui.widgets import (
         ReportCard, SuggestionList, TaskWidget, ProgressBarWidget,
-        LogWindowWidget, WorkflowProgressWidget,
+        LogWindowWidget, WorkflowProgressWidget, TableWidget, ColumnSpec,
     )
 
     ReportCard("Results")
@@ -39,6 +40,12 @@ Usage:
     wf.add_task("Scan").start()
     wf.log_success("Found items")
     group = wf.render()
+
+    table = TableWidget("Search Results")
+    table.add_column("Subject", content="cut", ratio=2)
+    table.add_column("Message-ID", content="full")
+    table.add_row("Meeting notes", "<msg123@example.com>")
+    table.render_to_output(output)
 """
 
 from gmailarchiver.cli.ui.widgets.errors import ErrorPanel
@@ -47,6 +54,7 @@ from gmailarchiver.cli.ui.widgets.progress import ProgressSummary
 from gmailarchiver.cli.ui.widgets.progress_bar import ProgressBarWidget
 from gmailarchiver.cli.ui.widgets.report_card import ReportCard
 from gmailarchiver.cli.ui.widgets.suggestions import SuggestionList
+from gmailarchiver.cli.ui.widgets.table import ColumnSpec, TableWidget
 from gmailarchiver.cli.ui.widgets.task import TaskWidget
 from gmailarchiver.cli.ui.widgets.workflow_progress import WorkflowProgressWidget
 
@@ -60,4 +68,6 @@ __all__ = [
     "LogWindowWidget",
     "LogLevel",
     "WorkflowProgressWidget",
+    "TableWidget",
+    "ColumnSpec",
 ]

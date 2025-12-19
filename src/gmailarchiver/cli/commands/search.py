@@ -7,6 +7,7 @@ import typer
 
 from gmailarchiver.cli.command_context import CommandContext, with_context
 from gmailarchiver.cli.ui import CLIProgressAdapter, ReportCard
+from gmailarchiver.cli.ui.widgets import TableWidget
 from gmailarchiver.core.workflows.search import SearchConfig, SearchResult, SearchWorkflow
 
 
@@ -204,35 +205,37 @@ def _format_date_short(date_str: object) -> str:
 def _display_results_table(
     ctx: CommandContext, result: SearchResult, query: str, with_message_id: bool = False
 ) -> None:
-    """Display results in table format."""
+    """Display results in table format using TableWidget.
+
+    When with_message_id is True, adds a Message-ID column with content="full"
+    so the full ID is visible (wraps if needed) for copy/paste into extract command.
+    """
+    table = TableWidget(title=f"Search Results for: {query}")
+
+    # Add columns with appropriate content modes
+    # Subject: can be truncated, gets more space
+    table.add_column("Subject", content="cut", ratio=2)
+    # From: can be truncated
+    table.add_column("From", content="cut")
+    # Date: fixed width, ISO format fits
+    table.add_column("Date", content="cut", max_width=16)
+
     if with_message_id:
-        headers = ["Subject", "From", "Date", "Message-ID"]
-        rows = []
-        for msg in result.messages:
-            rfc_id = str(msg.get("rfc_message_id", ""))
-            # Truncate Message-ID if too long (keep first and last parts)
-            if len(rfc_id) > 40:
-                rfc_id = rfc_id[:18] + "..." + rfc_id[-18:]
-            rows.append(
-                [
-                    str(msg.get("subject", ""))[:40],
-                    str(msg.get("from_addr", ""))[:25],
-                    _format_date_short(msg.get("date")),
-                    rfc_id,
-                ]
-            )
-    else:
-        headers = ["Subject", "From", "Date"]
-        rows = []
-        for msg in result.messages:
-            rows.append(
-                [
-                    str(msg.get("subject", ""))[:50],
-                    str(msg.get("from_addr", ""))[:30],
-                    _format_date_short(msg.get("date")),
-                ]
-            )
-    ctx.show_table(f"Search Results for: {query}", headers, rows)
+        # Message-ID: must be fully visible for copy/paste
+        table.add_column("Message-ID", content="full")
+
+    # Add rows
+    for msg in result.messages:
+        row = [
+            str(msg.get("subject", "") or "(no subject)"),
+            str(msg.get("from_addr", "")),
+            _format_date_short(msg.get("date")),
+        ]
+        if with_message_id:
+            row.append(str(msg.get("rfc_message_id", "")))
+        table.add_row(*row)
+
+    table.render_to_output(ctx.output)
 
 
 def _truncate_preview(preview: str | None, max_length: int = 200) -> str:
