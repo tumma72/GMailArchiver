@@ -106,26 +106,38 @@ class SearchExecutor:
         Returns:
             SearchResults with BM25 ranked results
         """
-        sql = """
-            SELECT
-                m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
-                m.to_addr, m.date, m.body_preview, m.archive_file,
-                m.mbox_offset, -fts.rank AS relevance_score
-            FROM messages m
-            JOIN messages_fts fts ON m.rowid = fts.rowid
-            WHERE messages_fts MATCH ?
-            ORDER BY fts.rank
-            LIMIT ?
-        """
-
         try:
             if self.db.conn is None:
                 return SearchResults(
                     total_results=0, results=[], query=fts_query, execution_time_ms=0
                 )
+
+            # Get total count first (without LIMIT)
+            count_sql = """
+                SELECT COUNT(*) as cnt
+                FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ?
+            """
+            cursor = await self.db.conn.execute(count_sql, (fts_query,))
+            count_row = await cursor.fetchone()
+            total_count = count_row["cnt"] if count_row else 0
+
+            # Get limited results
+            sql = """
+                SELECT
+                    m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
+                    m.to_addr, m.date, m.body_preview, m.archive_file,
+                    m.mbox_offset, -fts.rank AS relevance_score
+                FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ?
+                ORDER BY fts.rank
+                LIMIT ?
+            """
             cursor = await self.db.conn.execute(sql, (fts_query, limit))
             rows = list(await cursor.fetchall())
-            return self._build_results(rows)
+            return self._build_results(rows, total_count=total_count)
         except Exception:
             # Invalid FTS query - return empty results
             return SearchResults(total_results=0, results=[], query=fts_query, execution_time_ms=0)
@@ -166,6 +178,18 @@ class SearchExecutor:
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
+        if self.db.conn is None:
+            return SearchResults(
+                total_results=0, results=[], query=params.original_query, execution_time_ms=0
+            )
+
+        # Get total count first (without LIMIT)
+        count_sql = f"SELECT COUNT(*) as cnt FROM messages WHERE {where_sql}"
+        cursor = await self.db.conn.execute(count_sql, sql_params)
+        count_row = await cursor.fetchone()
+        total_count = count_row["cnt"] if count_row else 0
+
+        # Get limited results
         sql = f"""
             SELECT
                 gmail_id, rfc_message_id, subject, from_addr,
@@ -175,16 +199,11 @@ class SearchExecutor:
             ORDER BY date DESC
             LIMIT ?
         """
-
         sql_params.append(limit)
 
-        if self.db.conn is None:
-            return SearchResults(
-                total_results=0, results=[], query=params.original_query, execution_time_ms=0
-            )
         cursor = await self.db.conn.execute(sql, sql_params)
         rows = list(await cursor.fetchall())
-        return self._build_results(rows, include_relevance=False)
+        return self._build_results(rows, include_relevance=False, total_count=total_count)
 
     async def _search_hybrid(self, params: QueryParams, limit: int, offset: int) -> SearchResults:
         """
@@ -199,48 +218,61 @@ class SearchExecutor:
             SearchResults with combined filters
         """
         where_clauses = []
-        sql_params: list[str | int] = [params.fts_query]
+        filter_params: list[str | int] = []
 
         if params.from_addr:
             where_clauses.append("m.from_addr LIKE ?")
-            sql_params.append(f"%{params.from_addr}%")
+            filter_params.append(f"%{params.from_addr}%")
 
         if params.to_addr:
             where_clauses.append("m.to_addr LIKE ?")
-            sql_params.append(f"%{params.to_addr}%")
+            filter_params.append(f"%{params.to_addr}%")
 
         if params.after:
             where_clauses.append("m.date >= ?")
-            sql_params.append(params.after)
+            filter_params.append(params.after)
 
         if params.before:
             where_clauses.append("m.date < ?")
-            sql_params.append(params.before)
+            filter_params.append(params.before)
 
         additional_where = " AND " + " AND ".join(where_clauses) if where_clauses else ""
-
-        sql = f"""
-            SELECT
-                m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
-                m.to_addr, m.date, m.body_preview, m.archive_file,
-                m.mbox_offset, -fts.rank AS relevance_score
-            FROM messages m
-            JOIN messages_fts fts ON m.rowid = fts.rowid
-            WHERE messages_fts MATCH ?{additional_where}
-            ORDER BY fts.rank
-            LIMIT ?
-        """
-
-        sql_params.append(limit)
 
         try:
             if self.db.conn is None:
                 return SearchResults(
                     total_results=0, results=[], query=params.original_query, execution_time_ms=0
                 )
+
+            # Get total count first (without LIMIT)
+            count_sql = f"""
+                SELECT COUNT(*) as cnt
+                FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ?{additional_where}
+            """
+            count_params: list[str | int] = [params.fts_query, *filter_params]
+            cursor = await self.db.conn.execute(count_sql, count_params)
+            count_row = await cursor.fetchone()
+            total_count = count_row["cnt"] if count_row else 0
+
+            # Get limited results
+            sql = f"""
+                SELECT
+                    m.gmail_id, m.rfc_message_id, m.subject, m.from_addr,
+                    m.to_addr, m.date, m.body_preview, m.archive_file,
+                    m.mbox_offset, -fts.rank AS relevance_score
+                FROM messages m
+                JOIN messages_fts fts ON m.rowid = fts.rowid
+                WHERE messages_fts MATCH ?{additional_where}
+                ORDER BY fts.rank
+                LIMIT ?
+            """
+            sql_params: list[str | int] = [params.fts_query, *filter_params, limit]
+
             cursor = await self.db.conn.execute(sql, sql_params)
             rows = list(await cursor.fetchall())
-            return self._build_results(rows)
+            return self._build_results(rows, total_count=total_count)
         except Exception:
             # Invalid FTS query - return empty results
             return SearchResults(
@@ -257,6 +289,16 @@ class SearchExecutor:
         Returns:
             SearchResults ordered by date
         """
+        if self.db.conn is None:
+            return SearchResults(total_results=0, results=[], query="", execution_time_ms=0)
+
+        # Get total count first (without LIMIT)
+        count_sql = "SELECT COUNT(*) as cnt FROM messages"
+        cursor = await self.db.conn.execute(count_sql)
+        count_row = await cursor.fetchone()
+        total_count = count_row["cnt"] if count_row else 0
+
+        # Get limited results
         sql = """
             SELECT
                 gmail_id, rfc_message_id, subject, from_addr,
@@ -265,20 +307,20 @@ class SearchExecutor:
             ORDER BY date DESC
             LIMIT ?
         """
-
-        if self.db.conn is None:
-            return SearchResults(total_results=0, results=[], query="", execution_time_ms=0)
         cursor = await self.db.conn.execute(sql, (limit,))
         rows = list(await cursor.fetchall())
-        return self._build_results(rows, include_relevance=False)
+        return self._build_results(rows, include_relevance=False, total_count=total_count)
 
-    def _build_results(self, rows: list[Row], include_relevance: bool = True) -> SearchResults:
+    def _build_results(
+        self, rows: list[Row], include_relevance: bool = True, total_count: int | None = None
+    ) -> SearchResults:
         """
         Build SearchResults from database rows.
 
         Args:
             rows: Database rows
             include_relevance: Whether to include relevance scores
+            total_count: Total matching results (before LIMIT). If None, uses len(rows).
 
         Returns:
             SearchResults object
@@ -304,5 +346,8 @@ class SearchExecutor:
         ]
 
         return SearchResults(
-            total_results=len(results), results=results, query="", execution_time_ms=0
+            total_results=total_count if total_count is not None else len(results),
+            results=results,
+            query="",
+            execution_time_ms=0,
         )

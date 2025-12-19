@@ -150,13 +150,15 @@ class TestSearchExecutor:
 
     @pytest.mark.asyncio
     async def test_execute_with_limit(self, storage: HybridStorage) -> None:
-        """Test limit parameter."""
+        """Test limit parameter - total_results shows actual count, results respects limit."""
         executor = SearchExecutor(storage)
         params = QueryParams(fulltext_terms=[], fts_query="", original_query="")
 
         results = await executor.execute(params, limit=1, offset=0)
 
-        assert results.total_results == 1
+        # total_results shows the actual total count in database (2 messages)
+        assert results.total_results == 2
+        # But only 1 result returned due to limit
         assert len(results.results) == 1
 
     @pytest.mark.asyncio

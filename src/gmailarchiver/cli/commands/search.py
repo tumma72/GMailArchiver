@@ -22,6 +22,9 @@ def search(
     with_preview: bool = typer.Option(
         False, "--with-preview", help="Include message body preview in results"
     ),
+    with_message_id: bool = typer.Option(
+        False, "--with-message-id", help="Include RFC Message-ID column in results"
+    ),
     interactive: bool = typer.Option(
         False, "--interactive", help="Interactive mode for message selection and extraction"
     ),
@@ -36,6 +39,7 @@ def search(
         $ gmailarchiver search "subject:invoice" --limit 20
         $ gmailarchiver search "body:urgent" --json
         $ gmailarchiver search "meeting" --with-preview
+        $ gmailarchiver search "project" --with-message-id
         $ gmailarchiver search "project" --interactive
     """
     asyncio.run(
@@ -46,6 +50,7 @@ def search(
             limit=limit,
             json_output=json_output,
             with_preview=with_preview,
+            with_message_id=with_message_id,
             interactive=interactive,
         )
     )
@@ -58,6 +63,7 @@ async def _run_search(
     limit: int,
     json_output: bool,
     with_preview: bool,
+    with_message_id: bool,
     interactive: bool,
 ) -> None:
     """Async implementation of search command following thin client pattern."""
@@ -116,7 +122,7 @@ async def _run_search(
     if with_preview:
         _display_results_with_preview(ctx, result)
     else:
-        _display_results_table(ctx, result, query)
+        _display_results_table(ctx, result, query, with_message_id)
 
     # Show summary if truncated
     if result.total_count > len(result.messages):
@@ -164,10 +170,11 @@ def _display_results_with_preview(ctx: CommandContext, result: SearchResult) -> 
     for idx, msg in enumerate(result.messages, 1):
         preview = _truncate_preview(str(msg.get("body_preview", "")))
         subject = msg.get("subject") or "(no subject)"
+        date_str = _format_date_short(msg.get("date"))
 
         ctx.info(f"{idx}. Subject: {subject}")
         ctx.info(f"   From: {msg.get('from_addr')}")
-        ctx.info(f"   Date: {msg.get('date') or 'N/A'}")
+        ctx.info(f"   Date: {date_str or 'N/A'}")
         ctx.info(f"   RFC Message-ID: {msg.get('rfc_message_id')}")
         ctx.info(f"   Gmail ID: {msg.get('gmail_id') or 'N/A'}")
         ctx.info(f"   Archive: {msg.get('archive_file')}")
@@ -175,18 +182,56 @@ def _display_results_with_preview(ctx: CommandContext, result: SearchResult) -> 
         ctx.info("")
 
 
-def _display_results_table(ctx: CommandContext, result: SearchResult, query: str) -> None:
+def _format_date_short(date_str: object) -> str:
+    """Format date as ISO with hour:minute (no seconds).
+
+    Converts RFC 2822 format (e.g., 'Wed, 7 Dec 2022 14:36:47 +0100')
+    to ISO format (e.g., '2022-12-07 14:36').
+    """
+    if not date_str:
+        return ""
+
+    from email.utils import parsedate_to_datetime
+
+    try:
+        dt = parsedate_to_datetime(str(date_str))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        # Fall back to truncation if parsing fails
+        return str(date_str)[:16]
+
+
+def _display_results_table(
+    ctx: CommandContext, result: SearchResult, query: str, with_message_id: bool = False
+) -> None:
     """Display results in table format."""
-    headers = ["Subject", "From", "Date"]
-    rows = []
-    for msg in result.messages:
-        rows.append(
-            [
-                str(msg.get("subject", ""))[:50],
-                str(msg.get("from_addr", ""))[:30],
-                str(msg.get("date", ""))[:19],
-            ]
-        )
+    if with_message_id:
+        headers = ["Subject", "From", "Date", "Message-ID"]
+        rows = []
+        for msg in result.messages:
+            rfc_id = str(msg.get("rfc_message_id", ""))
+            # Truncate Message-ID if too long (keep first and last parts)
+            if len(rfc_id) > 40:
+                rfc_id = rfc_id[:18] + "..." + rfc_id[-18:]
+            rows.append(
+                [
+                    str(msg.get("subject", ""))[:40],
+                    str(msg.get("from_addr", ""))[:25],
+                    _format_date_short(msg.get("date")),
+                    rfc_id,
+                ]
+            )
+    else:
+        headers = ["Subject", "From", "Date"]
+        rows = []
+        for msg in result.messages:
+            rows.append(
+                [
+                    str(msg.get("subject", ""))[:50],
+                    str(msg.get("from_addr", ""))[:30],
+                    _format_date_short(msg.get("date")),
+                ]
+            )
     ctx.show_table(f"Search Results for: {query}", headers, rows)
 
 

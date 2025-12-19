@@ -144,12 +144,14 @@ class TestSearchFacade:
 
     @pytest.mark.asyncio
     async def test_search_with_limit(self, test_db: str) -> None:
-        """Test limit parameter."""
+        """Test limit parameter - total_results shows actual count, results respects limit."""
         facade = await SearchFacade.create(test_db)
 
         results = await facade.search("from:alice", limit=1)
 
-        assert results.total_results == 1
+        # total_results shows the actual total (2 messages from alice)
+        assert results.total_results == 2
+        # But only 1 result returned due to limit
         assert len(results.results) == 1
         await facade.close()
 
