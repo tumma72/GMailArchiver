@@ -84,9 +84,17 @@ class ScanGmailMessagesStep:
             if progress:
                 with progress.task_sequence() as seq:
                     with seq.task("Scanning messages from Gmail") as task:
-                        # Create callback that updates task status with live count
+                        # Note: We log count updates to the log window instead of using
+                        # set_status() because set_status replaces the task description,
+                        # which then gets combined with the completion message awkwardly.
+                        last_logged_count = 0
+
                         def on_progress(count: int, page: int) -> None:
-                            task.set_status(f"Scanning messages from Gmail: Found {count:,}")
+                            nonlocal last_logged_count
+                            # Log every 1000 messages to show progress without spam
+                            if count - last_logged_count >= 1000:
+                                task.log(f"Scanned {count:,} messages...")
+                                last_logged_count = count
 
                         query, messages = await self.archiver.list_messages_for_archive(
                             age_threshold, progress_callback=on_progress

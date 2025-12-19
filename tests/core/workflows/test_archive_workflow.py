@@ -174,9 +174,10 @@ async def test_determine_output_file_with_resumable_session(workflow, mock_progr
 
     result = await workflow._determine_output_file(None, None, "test_query")
 
+    # Should return the partial archive file for resumption
     assert result == "partial_archive.mbox"
-    mock_progress.info.assert_any_call("Resuming partial archive: partial_archive.mbox")
-    mock_progress.info.assert_any_call("Progress: 100/500 messages already archived")
+    # Note: Resume info messages were removed to avoid printing outside Live context.
+    # The resume behavior is verified by the file path being returned.
 
 
 @pytest.mark.asyncio

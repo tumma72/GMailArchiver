@@ -181,11 +181,9 @@ class ArchiveWorkflow:
         existing_partial = await self.storage.db.get_session_by_query(gmail_query, compress)
         if existing_partial:
             target = existing_partial["target_file"]
-            processed = existing_partial.get("processed_count", 0)
-            total = existing_partial.get("total_count", 0)
-            if self.progress:
-                self.progress.info(f"Resuming partial archive: {target}")
-                self.progress.info(f"Progress: {processed:,}/{total:,} messages already archived")
+            # Note: Resume info is not logged here to avoid printing outside Live context.
+            # The existing archive file will be used, and incremental mode will skip
+            # already-archived messages automatically.
             return str(target)
 
         # Generate new filename

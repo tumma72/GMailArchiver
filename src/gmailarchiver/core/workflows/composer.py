@@ -152,8 +152,9 @@ class WorkflowComposer:
             if not self._should_execute_step(step_index, context):
                 continue
 
-            if progress:
-                progress.info(f"Running: {step.description}")
+            # Note: Don't call progress.info() here - each step creates its own
+            # task with the appropriate description. Calling info() here would
+            # print text outside the Live context, causing display artifacts.
 
             result: StepResult[Any] = await step.execute(context, current_input, progress)
 
@@ -198,8 +199,9 @@ class WorkflowComposer:
             if not self._should_execute_step(step_index, context):
                 continue
 
-            if progress:
-                progress.info(f"Running: {step.description}")
+            # Note: Don't call progress.info() here - each step creates its own
+            # task with the appropriate description. Calling info() here would
+            # print text outside the Live context, causing display artifacts.
 
             result: StepResult[Any] = await step.execute(context, current_input, progress)
             results.append(result)
