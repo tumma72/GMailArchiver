@@ -63,9 +63,7 @@ class ReportCard:
         self._fields.append((label, str(value), style))
         return self
 
-    def add_field_if(
-        self, condition: bool, label: str, value: Any, style: str = ""
-    ) -> Self:
+    def add_field_if(self, condition: bool, label: str, value: Any, style: str = "") -> Self:
         """Add a field only if condition is true.
 
         Args:

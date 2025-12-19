@@ -1,7 +1,7 @@
 # CLI UI Architecture
 
-**Last Updated:** 2025-12-18
-**Status:** Design (v1.9.0+)
+**Last Updated:** 2025-12-19
+**Status:** Production (v1.9.0+)
 
 This document defines the architecture for the CLI user interface layer. The UI layer provides **composable widgets** and **progress builders** that CLI commands use to create consistent, accessible, and visually appealing terminal output.
 
@@ -277,12 +277,28 @@ class TaskHandle(Protocol):
         """Mark task as failed."""
         ...
 
+    def warn(self, message: str) -> None:
+        """Mark task as completed with warning status.
+
+        Use when task completed but with caveats or non-fatal issues.
+        Displays yellow warning symbol instead of green checkmark.
+        """
+        ...
+
     def advance(self, n: int = 1) -> None:
         """Advance progress counter."""
         ...
 
     def set_total(self, total: int, description: str | None = None) -> None:
         """Set total for late-bound progress."""
+        ...
+
+    def set_status(self, message: str) -> None:
+        """Update task description/status without completing.
+
+        Use for dynamic status updates during long operations.
+        Example: "Scanning: Found 1,234 messages"
+        """
         ...
 
     def log(self, message: str, level: str = "INFO") -> None:
@@ -806,13 +822,80 @@ src/gmailarchiver/cli/ui/
 ├── adapters.py           # CLIProgressAdapter
 └── widgets/
     ├── __init__.py       # Widget exports
+    ├── task.py           # TaskWidget (task state and rendering)
+    ├── log_window.py     # LogWindowWidget (scrolling log display)
     ├── report_card.py    # ReportCard
-    ├── validation.py     # ValidationPanel
     ├── suggestions.py    # SuggestionList
     ├── errors.py         # ErrorPanel
     ├── progress.py       # ProgressSummary
-    └── auth.py           # AuthenticationStatus
+    └── progress_bar.py   # ProgressBarWidget
 ```
+
+---
+
+## Code Cleanup
+
+### Items to Remove
+
+The following backward compatibility code should be removed:
+
+#### builder.py
+
+```python
+# REMOVE: TaskState wrapper class (lines 65-91)
+@dataclass
+class TaskState:
+    """DEPRECATED: This is a compatibility wrapper around TaskWidget."""
+    ...
+
+# REMOVE: LOG_SYMBOLS constant (lines 49-54)
+LOG_SYMBOLS = {
+    "INFO": ("ℹ", "blue"),
+    ...
+}
+# Use LogLevel enum from widgets/log_window.py instead
+
+# REMOVE: _tasks property in TaskSequenceImpl (lines 371-390)
+@property
+def _tasks(self) -> list[TaskState]:
+    """DEPRECATED: Use _task_widgets directly."""
+    ...
+```
+
+### LogLevel Consolidation
+
+Use the `LogLevel` enum from `widgets/log_window.py` as the single source of truth:
+
+```python
+# In widgets/log_window.py (KEEP - this is the source of truth)
+class LogLevel(Enum):
+    INFO = ("ℹ", "blue")
+    SUCCESS = ("✓", "green")
+    WARNING = ("⚠", "yellow")
+    ERROR = ("✗", "red")
+
+# In builder.py (REMOVE - duplicate)
+LOG_SYMBOLS = {...}  # Remove this
+
+# In builder.py._log() (UPDATE to use LogLevel directly)
+def _log(self, message: str, level: LogLevel) -> None:
+    # Accept LogLevel enum, not string
+    ...
+```
+
+### Protocol Alignment
+
+Ensure all protocol methods are implemented:
+
+| Protocol Method | TaskHandleImpl | NoOpTaskHandle |
+|-----------------|----------------|----------------|
+| `complete(message)` | ✓ | ✓ |
+| `fail(message, reason)` | ✓ | ✓ |
+| `warn(message)` | **ADD** | **ADD** |
+| `advance(n)` | ✓ | ✓ |
+| `set_total(total, description)` | ✓ | ✓ |
+| `set_status(message)` | ✓ (exists) | **ADD** |
+| `log(message, level)` | ✓ | ✓ |
 
 ---
 

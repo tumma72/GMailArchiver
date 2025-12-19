@@ -806,7 +806,7 @@ class TestCommandContextAuthenticateGmailAsync:
 
     @pytest.mark.asyncio
     async def test_authenticate_gmail_async_file_not_found_optional(self) -> None:
-        """Test authenticate_gmail_async returns None when credentials not found (required=False)."""
+        """Test authenticate_gmail_async returns None when creds not found."""
         output = MagicMock(spec=OutputManager)
         output.console = MagicMock()
         ctx = CommandContext(output=output)
@@ -881,7 +881,9 @@ class TestCommandContextAuthenticateGmailAsync:
 
         with patch("gmailarchiver.cli.command_context.GmailClient") as MockGmail:
             MockGmail.create = AsyncMock(return_value=mock_gmail)
-            result = await ctx.authenticate_gmail_async(validate_deletion_scope=True, required=False)
+            result = await ctx.authenticate_gmail_async(
+                validate_deletion_scope=True, required=False
+            )
 
         assert result is None
 
@@ -1320,9 +1322,7 @@ class TestWithContextDecoratorLiveMode:
             mock_output.live_layout_context.return_value.__enter__ = MagicMock(
                 return_value=MagicMock()
             )
-            mock_output.live_layout_context.return_value.__exit__ = MagicMock(
-                return_value=None
-            )
+            mock_output.live_layout_context.return_value.__exit__ = MagicMock(return_value=None)
             MockOutput.return_value = mock_output
 
             test_cmd()

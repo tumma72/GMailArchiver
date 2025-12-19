@@ -87,7 +87,9 @@ class ValidateArchiveStep:
         elif isinstance(input_data, str):
             archive_path = input_data
         else:
-            archive_path = context.get(ContextKeys.ARCHIVE_FILE) or ""
+            archive_path = (
+                context.get(ContextKeys.ACTUAL_FILE) or context.get(ContextKeys.ARCHIVE_FILE) or ""
+            )
 
         if not archive_path:
             return StepResult.fail("No archive path provided for validation")
@@ -152,6 +154,8 @@ class ValidateArchiveStep:
                         "database_check": result.database_check,
                         "integrity_check": result.integrity_check,
                         "spot_check": result.spot_check,
+                        "passed": result.passed,
+                        "errors": result.errors,
                     },
                 )
 

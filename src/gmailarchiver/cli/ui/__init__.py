@@ -41,10 +41,8 @@ from gmailarchiver.cli.ui.adapters import CLIProgressAdapter
 # Builders
 from gmailarchiver.cli.ui.builder import (
     DEFAULT_MAX_LOGS,
-    LOG_SYMBOLS,
     TaskHandleImpl,
     TaskSequenceImpl,
-    TaskState,
     UIBuilderImpl,
 )
 from gmailarchiver.cli.ui.protocols import (
@@ -90,12 +88,10 @@ __all__ = [
     "TaskSequenceImpl",
     "TaskHandleImpl",
     "TaskStatus",
-    "TaskState",
     "LogEntry",
     # Builder constants
     "SPINNER_FRAMES",
     "SYMBOLS",
-    "LOG_SYMBOLS",
     "DEFAULT_MAX_LOGS",
     # Adapters
     "CLIProgressAdapter",

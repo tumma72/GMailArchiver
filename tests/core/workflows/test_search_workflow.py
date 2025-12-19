@@ -5,7 +5,6 @@ These tests verify the workflow's behavior from a user's perspective:
 - Reports progress during search
 """
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,9 +20,7 @@ class TestSearchWorkflowBehavior:
     """Test SearchWorkflow behavior."""
 
     @pytest.mark.asyncio
-    async def test_reports_progress_with_results(
-        self, hybrid_storage: HybridStorage
-    ) -> None:
+    async def test_reports_progress_with_results(self, hybrid_storage: HybridStorage) -> None:
         """Reports progress when results are found."""
         progress = MagicMock()
         seq_cm = MagicMock()
@@ -66,9 +63,7 @@ class TestSearchWorkflowBehavior:
         assert "5" in call_args  # Should show count
 
     @pytest.mark.asyncio
-    async def test_reports_progress_no_results(
-        self, hybrid_storage: HybridStorage
-    ) -> None:
+    async def test_reports_progress_no_results(self, hybrid_storage: HybridStorage) -> None:
         """Reports progress when no results are found."""
         progress = MagicMock()
         seq_cm = MagicMock()

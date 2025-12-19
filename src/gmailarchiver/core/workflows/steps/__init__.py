@@ -20,12 +20,8 @@ This module provides reusable steps for composing workflows:
 """
 
 # Mbox steps
-from gmailarchiver.core.workflows.steps.scan import ScanMboxStep
-from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep
-
 # Database steps
 from gmailarchiver.core.workflows.steps.filter import CheckDuplicatesStep
-from gmailarchiver.core.workflows.steps.metadata import RecordMetadataStep
 
 # Gmail steps
 from gmailarchiver.core.workflows.steps.gmail import (
@@ -33,6 +29,9 @@ from gmailarchiver.core.workflows.steps.gmail import (
     FilterGmailMessagesStep,
     ScanGmailMessagesStep,
 )
+from gmailarchiver.core.workflows.steps.metadata import RecordMetadataStep
+from gmailarchiver.core.workflows.steps.scan import ScanMboxStep
+from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep
 
 # Write steps
 from gmailarchiver.core.workflows.steps.write import WriteMessagesStep

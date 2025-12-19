@@ -86,6 +86,17 @@ class TaskHandle(Protocol):
         """
         ...
 
+    def warn(self, message: str) -> None:
+        """Mark task as completed with warning status.
+
+        Use when task completed but with caveats or non-fatal issues.
+        Displays yellow warning symbol instead of green checkmark.
+
+        Args:
+            message: Warning message to display
+        """
+        ...
+
 
 class TaskSequence(Protocol):
     """Protocol for task sequence builders.

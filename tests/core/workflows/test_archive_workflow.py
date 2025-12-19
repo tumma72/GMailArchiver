@@ -208,226 +208,6 @@ async def test_determine_output_file_zstd_compression(workflow):
     assert "archive_" in result
 
 
-@pytest.mark.asyncio
-async def test_scan_messages_without_progress(mock_client, mock_storage):
-    """Test scanning messages without progress reporter."""
-    workflow = ArchiveWorkflow(mock_client, mock_storage, progress=None)
-    workflow.archiver.list_messages_for_archive = AsyncMock(
-        return_value=("query", [{"id": "msg1"}, {"id": "msg2"}])
-    )
-
-    result = await workflow._scan_messages("3y")
-
-    assert result["query"] == "query"
-    assert len(result["messages"]) == 2
-    workflow.archiver.list_messages_for_archive.assert_called_once_with("3y")
-
-
-@pytest.mark.asyncio
-async def test_filter_messages_with_duplicates_and_archived(workflow):
-    """Test filtering with both duplicates and already archived messages."""
-    from gmailarchiver.core.archiver._filter import FilterResult
-
-    workflow.archiver.filter_already_archived = AsyncMock(
-        return_value=FilterResult(
-            to_archive=["msg3"],
-            already_archived_count=2,
-            duplicate_count=1,
-        )
-    )
-
-    result = await workflow._filter_messages([{"id": "msg1"}, {"id": "msg2"}, {"id": "msg3"}], True)
-
-    assert result["to_archive"] == ["msg3"]
-    assert result["skipped_count"] == 3
-    assert result["already_archived_count"] == 2
-    assert result["duplicate_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_filter_messages_without_progress(mock_client, mock_storage):
-    """Test filtering messages without progress reporter."""
-    from gmailarchiver.core.archiver._filter import FilterResult
-
-    workflow = ArchiveWorkflow(mock_client, mock_storage, progress=None)
-    workflow.archiver.filter_already_archived = AsyncMock(
-        return_value=FilterResult(to_archive=["msg1"], already_archived_count=0, duplicate_count=0)
-    )
-
-    result = await workflow._filter_messages([{"id": "msg1"}], True)
-
-    assert result["to_archive"] == ["msg1"]
-    workflow.archiver.filter_already_archived.assert_called_once_with(["msg1"], True)
-
-
-@pytest.mark.asyncio
-async def test_archive_messages_interrupted(workflow):
-    """Test archiving that gets interrupted."""
-    workflow.archiver.archive_messages = AsyncMock(
-        return_value={"archived_count": 5, "interrupted": True, "actual_file": "archive.mbox"}
-    )
-
-    result = await workflow._archive_messages(["msg1", "msg2"], "archive.mbox", None, "query")
-
-    assert result["interrupted"] is True
-    assert result["archived_count"] == 5
-
-
-@pytest.mark.asyncio
-async def test_archive_messages_no_messages_archived(workflow):
-    """Test archiving when no messages were archived."""
-    workflow.archiver.archive_messages = AsyncMock(
-        return_value={"archived_count": 0, "interrupted": False, "actual_file": "archive.mbox"}
-    )
-
-    result = await workflow._archive_messages([], "archive.mbox", None, "query")
-
-    assert result["archived_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_archive_messages_error_handling(workflow):
-    """Test error handling during archiving returns failure result."""
-    workflow.archiver.archive_messages = AsyncMock(side_effect=Exception("Archive failed"))
-
-    # Step catches exceptions and returns failure result with default values
-    result = await workflow._archive_messages(["msg1"], "archive.mbox", None, "query")
-
-    assert result["archived_count"] == 0
-    assert result["failed_count"] == 0
-    assert result["interrupted"] is False
-
-
-@pytest.mark.asyncio
-async def test_archive_messages_without_progress(mock_client, mock_storage):
-    """Test archiving messages without progress reporter."""
-    workflow = ArchiveWorkflow(mock_client, mock_storage, progress=None)
-    workflow.archiver.archive_messages = AsyncMock(
-        return_value={"archived_count": 3, "actual_file": "archive.mbox"}
-    )
-
-    result = await workflow._archive_messages(
-        ["msg1", "msg2", "msg3"], "archive.mbox", "gzip", "query"
-    )
-
-    assert result["archived_count"] == 3
-    workflow.archiver.archive_messages.assert_called_once_with(
-        ["msg1", "msg2", "msg3"], "archive.mbox", "gzip", None, "query"
-    )
-
-
-@pytest.mark.asyncio
-async def test_validate_archive_success(workflow, tmp_path):
-    """Test successful archive validation."""
-    from unittest.mock import MagicMock, patch
-
-    # Create a dummy archive file
-    archive_file = tmp_path / "archive.mbox"
-    archive_file.write_text("From sender@example.com\nSubject: Test\n\nBody\n")
-
-    workflow.storage.db.get_message_ids_for_archive = AsyncMock(return_value=["msg1", "msg2"])
-
-    # Mock ValidationResult
-    mock_validation_result = MagicMock()
-    mock_validation_result.count_check = True
-    mock_validation_result.database_check = True
-    mock_validation_result.integrity_check = True
-    mock_validation_result.spot_check = True
-    mock_validation_result.passed = True
-    mock_validation_result.errors = []
-
-    # Patch ValidatorFacade in the step module where it's used
-    with patch("gmailarchiver.core.workflows.steps.validate.ValidatorFacade") as MockValidator:
-        mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_comprehensive = MagicMock(
-            return_value=mock_validation_result
-        )
-        mock_validator_instance.close = AsyncMock()
-        MockValidator.return_value = mock_validator_instance
-
-        result = await workflow._validate_archive(str(archive_file))
-
-        assert result["passed"] is True
-        assert result["count_check"] is True
-        assert result["database_check"] is True
-        assert result["integrity_check"] is True
-        assert result["spot_check"] is True
-        assert result["errors"] == []
-
-
-@pytest.mark.asyncio
-async def test_validate_archive_failure(workflow, tmp_path):
-    """Test failed archive validation."""
-    from unittest.mock import MagicMock, patch
-
-    # Create a dummy archive file
-    archive_file = tmp_path / "archive.mbox"
-    archive_file.write_text("From sender@example.com\nSubject: Test\n\nBody\n")
-
-    workflow.storage.db.get_message_ids_for_archive = AsyncMock(return_value=["msg1", "msg2"])
-
-    # Mock ValidationResult
-    mock_validation_result = MagicMock()
-    mock_validation_result.count_check = True
-    mock_validation_result.database_check = False
-    mock_validation_result.integrity_check = True
-    mock_validation_result.spot_check = False
-    mock_validation_result.passed = False
-    mock_validation_result.errors = ["Database mismatch", "Spot check failed"]
-
-    # Patch ValidatorFacade in the step module where it's used
-    with patch("gmailarchiver.core.workflows.steps.validate.ValidatorFacade") as MockValidator:
-        mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_comprehensive = MagicMock(
-            return_value=mock_validation_result
-        )
-        mock_validator_instance.close = AsyncMock()
-        MockValidator.return_value = mock_validator_instance
-
-        result = await workflow._validate_archive(str(archive_file))
-
-        assert result["passed"] is False
-        assert result["count_check"] is True
-        assert result["database_check"] is False
-        assert result["spot_check"] is False
-        assert len(result["errors"]) == 2
-
-
-@pytest.mark.asyncio
-async def test_validate_archive_cleanup(workflow, tmp_path):
-    """Test that validator is always closed after validation."""
-    from unittest.mock import MagicMock, patch
-
-    # Create a dummy archive file
-    archive_file = tmp_path / "archive.mbox"
-    archive_file.write_text("From sender@example.com\nSubject: Test\n\nBody\n")
-
-    workflow.storage.db.get_message_ids_for_archive = AsyncMock(return_value=["msg1"])
-
-    mock_validation_result = MagicMock()
-    mock_validation_result.count_check = True
-    mock_validation_result.database_check = True
-    mock_validation_result.integrity_check = True
-    mock_validation_result.spot_check = True
-    mock_validation_result.passed = True
-    mock_validation_result.errors = []
-
-    # Patch ValidatorFacade in the step module where it's used
-    with patch("gmailarchiver.core.workflows.steps.validate.ValidatorFacade") as MockValidator:
-        mock_validator_instance = MagicMock()
-        mock_validator_instance.validate_comprehensive = MagicMock(
-            return_value=mock_validation_result
-        )
-        mock_validator_instance.close = AsyncMock()
-        MockValidator.return_value = mock_validator_instance
-
-        try:
-            await workflow._validate_archive(str(archive_file))
-        finally:
-            # Verify close was called
-            mock_validator_instance.close.assert_called_once()
-
-
 # Additional tests for failure paths
 
 
@@ -456,7 +236,7 @@ async def test_archive_workflow_filter_step_fails(mock_client, mock_storage, moc
     """When filter step fails, workflow returns result with found count."""
     from unittest.mock import patch
 
-    from gmailarchiver.core.workflows.step import StepResult
+    from gmailarchiver.core.workflows.step import ContextKeys, StepResult
     from gmailarchiver.core.workflows.steps.gmail import ScanGmailOutput
 
     workflow = ArchiveWorkflow(mock_client, mock_storage, mock_progress)
@@ -467,13 +247,19 @@ async def test_archive_workflow_filter_step_fails(mock_client, mock_storage, moc
         messages=[{"id": "msg1"}, {"id": "msg2"}],
         total_count=2,
     )
-    mock_scan_result = StepResult.ok(scan_output)
+
+    # Create async mock that sets context like the real step does
+    async def mock_scan_execute(context, input_data, progress):
+        context.set(ContextKeys.GMAIL_QUERY, scan_output.gmail_query)
+        context.set(ContextKeys.MESSAGES, scan_output.messages)
+        context.set(ContextKeys.MESSAGE_IDS, [msg["id"] for msg in scan_output.messages])
+        return StepResult.ok(scan_output)
 
     # Mock filter step to fail
     mock_filter_result = StepResult.fail("Database error")
 
     with (
-        patch.object(workflow._scan_step, "execute", return_value=mock_scan_result),
+        patch.object(workflow._scan_step, "execute", side_effect=mock_scan_execute),
         patch.object(workflow._filter_step, "execute", return_value=mock_filter_result),
     ):
         result = await workflow.run(ArchiveConfig(age_threshold="3y"))
@@ -488,7 +274,7 @@ async def test_archive_workflow_with_validation_pass(mock_client, mock_storage, 
     """When archive runs with validation, validation details are captured."""
     from unittest.mock import patch
 
-    from gmailarchiver.core.workflows.step import StepResult
+    from gmailarchiver.core.workflows.step import ContextKeys, StepResult
     from gmailarchiver.core.workflows.steps.gmail import FilterGmailOutput, ScanGmailOutput
     from gmailarchiver.core.workflows.steps.validate import ValidateOutput
     from gmailarchiver.core.workflows.steps.write import WriteMessagesOutput
@@ -506,7 +292,11 @@ async def test_archive_workflow_with_validation_pass(mock_client, mock_storage, 
         total_skipped=0,
     )
     write_output = WriteMessagesOutput(
-        archived_count=1, failed_count=0, duplicate_count=0, actual_file="archive.mbox", interrupted=False
+        archived_count=1,
+        failed_count=0,
+        duplicate_count=0,
+        actual_file="archive.mbox",
+        interrupted=False,
     )
     validate_output = ValidateOutput(
         passed=True,
@@ -517,15 +307,47 @@ async def test_archive_workflow_with_validation_pass(mock_client, mock_storage, 
         errors=[],
     )
 
+    # Create async mocks that set context like the real steps do
+    async def mock_scan_execute(context, input_data, progress):
+        context.set(ContextKeys.GMAIL_QUERY, scan_output.gmail_query)
+        context.set(ContextKeys.MESSAGES, scan_output.messages)
+        context.set(ContextKeys.MESSAGE_IDS, [msg["id"] for msg in scan_output.messages])
+        return StepResult.ok(scan_output)
+
+    async def mock_filter_execute(context, input_data, progress):
+        context.set(ContextKeys.TO_ARCHIVE, filter_output.to_archive)
+        context.set(ContextKeys.SKIPPED_COUNT, filter_output.total_skipped)
+        context.set(ContextKeys.DUPLICATE_COUNT, filter_output.duplicate_count)
+        context.set("already_archived_count", filter_output.already_archived_count)
+        return StepResult.ok(filter_output)
+
+    async def mock_write_execute(context, input_data, progress):
+        context.set(ContextKeys.ARCHIVED_COUNT, write_output.archived_count)
+        context.set(ContextKeys.ACTUAL_FILE, write_output.actual_file)
+        context.set(ContextKeys.DUPLICATE_COUNT, write_output.duplicate_count)
+        context.set("interrupted", write_output.interrupted)
+        return StepResult.ok(write_output)
+
+    async def mock_validate_execute(context, input_data, progress):
+        context.set(ContextKeys.VALIDATION_PASSED, validate_output.passed)
+        context.set(
+            ContextKeys.VALIDATION_DETAILS,
+            {
+                "count_check": validate_output.count_check,
+                "database_check": validate_output.database_check,
+                "integrity_check": validate_output.integrity_check,
+                "spot_check": validate_output.spot_check,
+                "passed": validate_output.passed,
+                "errors": validate_output.errors,
+            },
+        )
+        return StepResult.ok(validate_output)
+
     with (
-        patch.object(workflow._scan_step, "execute", return_value=StepResult.ok(scan_output)),
-        patch.object(
-            workflow._filter_step, "execute", return_value=StepResult.ok(filter_output)
-        ),
-        patch.object(workflow._write_step, "execute", return_value=StepResult.ok(write_output)),
-        patch.object(
-            workflow._validate_step, "execute", return_value=StepResult.ok(validate_output)
-        ),
+        patch.object(workflow._scan_step, "execute", side_effect=mock_scan_execute),
+        patch.object(workflow._filter_step, "execute", side_effect=mock_filter_execute),
+        patch.object(workflow._write_step, "execute", side_effect=mock_write_execute),
+        patch.object(workflow._validate_step, "execute", side_effect=mock_validate_execute),
     ):
         result = await workflow.run(ArchiveConfig(age_threshold="3y"))
 
@@ -550,58 +372,3 @@ async def test_delete_messages_step_fails(mock_client, mock_storage, mock_progre
         count = await workflow.delete_messages("archive.mbox", permanent=True)
 
     assert count == 0
-
-
-@pytest.mark.asyncio
-async def test_scan_messages_step_fails(mock_client, mock_storage, mock_progress):
-    """When deprecated _scan_messages fails, returns empty result."""
-    from unittest.mock import patch
-
-    from gmailarchiver.core.workflows.step import StepResult
-
-    workflow = ArchiveWorkflow(mock_client, mock_storage, mock_progress)
-
-    # Mock scan step to fail
-    with patch.object(workflow._scan_step, "execute", return_value=StepResult.fail("API error")):
-        result = await workflow._scan_messages("3y")
-
-    assert result["query"] == ""
-    assert result["messages"] == []
-
-
-@pytest.mark.asyncio
-async def test_filter_messages_step_fails(mock_client, mock_storage, mock_progress):
-    """When deprecated _filter_messages fails, returns empty result."""
-    from unittest.mock import patch
-
-    from gmailarchiver.core.workflows.step import StepResult
-
-    workflow = ArchiveWorkflow(mock_client, mock_storage, mock_progress)
-
-    # Mock filter step to fail
-    with patch.object(workflow._filter_step, "execute", return_value=StepResult.fail("DB error")):
-        result = await workflow._filter_messages([{"id": "msg1"}], incremental=True)
-
-    assert result["to_archive"] == []
-    assert result["skipped_count"] == 0
-    assert result["already_archived_count"] == 0
-    assert result["duplicate_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_validate_archive_step_fails(mock_client, mock_storage, mock_progress):
-    """When deprecated _validate_archive fails, returns failure result."""
-    from unittest.mock import patch
-
-    from gmailarchiver.core.workflows.step import StepResult
-
-    workflow = ArchiveWorkflow(mock_client, mock_storage, mock_progress)
-
-    # Mock validate step to fail
-    with patch.object(
-        workflow._validate_step, "execute", return_value=StepResult.fail("Validation error")
-    ):
-        result = await workflow._validate_archive("archive.mbox")
-
-    assert result["passed"] is False
-    assert result["errors"] == ["Validation step failed"]

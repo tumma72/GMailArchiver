@@ -92,14 +92,14 @@ class CLIProgressAdapter:
 
         if self._ui:
             with self._ui.task_sequence(show_logs=show_logs) as seq:
-                yield seq
+                yield seq  # type: ignore[misc]
         else:
             yield NoOpTaskSequence()
 
     @contextmanager
     def workflow_sequence(
         self, show_logs: bool = False, max_logs: int = 5
-    ) -> Generator["WorkflowProgressContext"]:
+    ) -> Generator[WorkflowProgressContext]:
         """Create a shared task sequence for workflow-level operations.
 
         This creates a single Live context that all tasks share, following
@@ -123,9 +123,9 @@ class CLIProgressAdapter:
         """
         if self._ui:
             with self._ui.task_sequence(show_logs=show_logs, max_logs=max_logs) as seq:
-                self._shared_sequence = seq
+                self._shared_sequence = seq  # type: ignore[assignment]
                 try:
-                    yield WorkflowProgressContext(seq, self._output)
+                    yield WorkflowProgressContext(seq, self._output)  # type: ignore[arg-type]
                 finally:
                     self._shared_sequence = None
         else:

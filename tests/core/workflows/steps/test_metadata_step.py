@@ -375,8 +375,9 @@ class TestRecordMetadataStepWithProgress:
         self, db_manager: DBManager, mbox_with_messages: Path
     ) -> None:
         """Test handling of WriteResult.SKIPPED with progress reporting."""
-        from gmailarchiver.core.importer._writer import WriteResult
         from unittest.mock import MagicMock, patch
+
+        from gmailarchiver.core.importer._writer import WriteResult
 
         step = RecordMetadataStep(db_manager)
         context = StepContext()
@@ -425,8 +426,9 @@ class TestRecordMetadataStepWithProgress:
         self, db_manager: DBManager, mbox_with_messages: Path
     ) -> None:
         """Test handling of WriteResult.FAILED with progress reporting."""
-        from gmailarchiver.core.importer._writer import WriteResult
         from unittest.mock import MagicMock, patch
+
+        from gmailarchiver.core.importer._writer import WriteResult
 
         step = RecordMetadataStep(db_manager)
         context = StepContext()
@@ -477,6 +479,7 @@ class TestRecordMetadataStepWithProgress:
     ) -> None:
         """Progress task shows 'No new messages' when no imports happen."""
         from unittest.mock import MagicMock, patch
+
         from gmailarchiver.core.importer._writer import WriteResult
 
         step = RecordMetadataStep(db_manager)
@@ -556,8 +559,9 @@ class TestRecordMetadataStepWithoutProgress:
         self, db_manager: DBManager, mbox_with_messages: Path
     ) -> None:
         """Test handling of WriteResult.SKIPPED without progress reporting."""
-        from gmailarchiver.core.importer._writer import WriteResult
         from unittest.mock import patch
+
+        from gmailarchiver.core.importer._writer import WriteResult
 
         step = RecordMetadataStep(db_manager)
         context = StepContext()
@@ -593,8 +597,9 @@ class TestRecordMetadataStepWithoutProgress:
         self, db_manager: DBManager, mbox_with_messages: Path
     ) -> None:
         """Test handling of WriteResult.FAILED without progress reporting."""
-        from gmailarchiver.core.importer._writer import WriteResult
         from unittest.mock import patch
+
+        from gmailarchiver.core.importer._writer import WriteResult
 
         step = RecordMetadataStep(db_manager)
         context = StepContext()

@@ -128,6 +128,17 @@ class TaskHandle(Protocol):
         """
         ...  # pragma: no cover
 
+    def warn(self, message: str) -> None:
+        """Mark task as completed with warning status.
+
+        Use when task completed but with caveats or non-fatal issues.
+        Displays yellow warning symbol instead of green checkmark.
+
+        Args:
+            message: Warning message to display
+        """
+        ...  # pragma: no cover
+
 
 class NoOpTaskSequence:
     """No-op implementation of TaskSequence for when UI is not available."""
@@ -170,6 +181,10 @@ class NoOpTaskHandle:
 
     def set_status(self, status: str) -> None:
         """No-op set_status."""
+        pass
+
+    def warn(self, message: str) -> None:
+        """No-op warn."""
         pass
 
 

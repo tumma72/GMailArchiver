@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from gmailarchiver.cli.ui import CLIProgressAdapter
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import CLIProgressAdapter
 from gmailarchiver.core.workflows.import_ import ImportConfig, ImportWorkflow
 
 

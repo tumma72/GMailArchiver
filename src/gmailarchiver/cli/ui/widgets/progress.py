@@ -49,9 +49,7 @@ class ProgressSummary:
         self._stats.append((label, count, style))
         return self
 
-    def add_stat_if(
-        self, condition: bool, label: str, count: int, style: str = ""
-    ) -> Self:
+    def add_stat_if(self, condition: bool, label: str, count: int, style: str = "") -> Self:
         """Add a statistic only if condition is true.
 
         Args:

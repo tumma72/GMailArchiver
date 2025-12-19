@@ -235,3 +235,60 @@ class TestValidateArchiveStepWithProgress:
         progress.task_sequence.assert_called_once()
         # Either complete or fail should be called
         assert task_cm.complete.called or task_cm.fail.called
+
+    @pytest.mark.asyncio
+    async def test_reads_actual_file_from_context_with_fallback(
+        self, db_with_archive_messages: tuple[DBManager, Path]
+    ) -> None:
+        """When input is None, reads ACTUAL_FILE from context first."""
+        db_manager, mbox_path = db_with_archive_messages
+        step = ValidateArchiveStep(db_manager)
+        context = StepContext()
+
+        # Set ACTUAL_FILE in context (primary source)
+        context.set(ContextKeys.ACTUAL_FILE, str(mbox_path))
+
+        result = await step.execute(context, None)
+
+        assert result.success is True
+        assert result.data is not None
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_archive_file_when_actual_file_missing(
+        self, db_with_archive_messages: tuple[DBManager, Path]
+    ) -> None:
+        """When ACTUAL_FILE is not in context, falls back to ARCHIVE_FILE."""
+        db_manager, mbox_path = db_with_archive_messages
+        step = ValidateArchiveStep(db_manager)
+        context = StepContext()
+
+        # Set only ARCHIVE_FILE (fallback source)
+        context.set(ContextKeys.ARCHIVE_FILE, str(mbox_path))
+
+        result = await step.execute(context, None)
+
+        assert result.success is True
+        assert result.data is not None
+
+    @pytest.mark.asyncio
+    async def test_prioritizes_actual_file_over_archive_file(
+        self, db_with_archive_messages: tuple[DBManager, Path], tmp_path: Path
+    ) -> None:
+        """When both ACTUAL_FILE and ARCHIVE_FILE are in context, prioritizes ACTUAL_FILE."""
+        db_manager, mbox_path = db_with_archive_messages
+        step = ValidateArchiveStep(db_manager)
+        context = StepContext()
+
+        # Create a second mbox for ARCHIVE_FILE
+        wrong_mbox = tmp_path / "wrong.mbox"
+        wrong_mbox.touch()
+
+        # Set both keys: ACTUAL_FILE should be preferred
+        context.set(ContextKeys.ACTUAL_FILE, str(mbox_path))
+        context.set(ContextKeys.ARCHIVE_FILE, str(wrong_mbox))
+
+        result = await step.execute(context, None)
+
+        # Should succeed because it used ACTUAL_FILE (the correct one)
+        assert result.success is True
+        assert result.data is not None

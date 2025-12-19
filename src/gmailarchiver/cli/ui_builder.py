@@ -8,20 +8,22 @@ This module re-exports from the new location for backward compatibility.
 # Re-export from new location
 from gmailarchiver.cli.ui.builder import (
     DEFAULT_MAX_LOGS,
-    LOG_SYMBOLS,
-    SPINNER_FRAMES,
-    SYMBOLS,
-    LogEntry,
     TaskHandleImpl,
     TaskSequenceImpl,
-    TaskState,
-    TaskStatus,
     UIBuilderImpl,
 )
 from gmailarchiver.cli.ui.protocols import (
     TaskHandle,
     TaskSequence,
     UIBuilder,
+)
+from gmailarchiver.cli.ui.widgets.log_window import LogEntry
+from gmailarchiver.cli.ui.widgets.task import (
+    SPINNER_FRAMES,
+    TaskStatus,
+)
+from gmailarchiver.cli.ui.widgets.task import (
+    STATUS_SYMBOLS as SYMBOLS,
 )
 
 __all__ = [
@@ -34,11 +36,9 @@ __all__ = [
     "TaskSequenceImpl",
     "TaskHandleImpl",
     "TaskStatus",
-    "TaskState",
     "LogEntry",
     # Constants
     "SPINNER_FRAMES",
     "SYMBOLS",
-    "LOG_SYMBOLS",
     "DEFAULT_MAX_LOGS",
 ]

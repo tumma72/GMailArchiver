@@ -2388,7 +2388,6 @@ class TestRepairDatabaseExternalContent:
 
         Covers lines 978-979: Exception handler in repair_database.
         """
-        from gmailarchiver.data.db_manager import DBManagerError
 
         async with DBManager(v11_db, validate_schema=False) as db:
             # Test that exceptions in transaction are properly handled
@@ -2418,6 +2417,7 @@ class TestFTSIntegrityDetailed:
         async with DBManager(v11_db) as db:
             # Insert a message to ensure FTS has records
             import tempfile
+
             with tempfile.NamedTemporaryFile(delete=False) as f:
                 sample_data = sample_message_data.copy()
                 sample_data["archive_file"] = f.name
@@ -2526,9 +2526,7 @@ class TestSchemaVersionDetection:
 
         assert schema_version == "1.1"
 
-    async def test_validate_schema_version_fallback_to_1_1(
-        self, temp_db_path: str
-    ) -> None:
+    async def test_validate_schema_version_fallback_to_1_1(self, temp_db_path: str) -> None:
         """Test fallback to 1.1 when PK detection fails.
 
         Covers line 359: fallback returns "1.1" if PK detection fails.

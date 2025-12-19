@@ -370,6 +370,26 @@ class TestFilterGmailMessagesStepBehavior:
         assert result.success is False
         assert "Database error" in str(result.error)
 
+    @pytest.mark.asyncio
+    async def test_reads_incremental_from_context(self, mock_archiver: MagicMock) -> None:
+        """When input is None and incremental is in context, uses that value."""
+        mock_archiver.filter_already_archived.return_value = MockFilterResult(
+            to_archive=["msg1"],
+            already_archived_count=0,
+            duplicate_count=0,
+            total_skipped=0,
+        )
+
+        step = FilterGmailMessagesStep(mock_archiver)
+        context = StepContext()
+        context.set(ContextKeys.MESSAGE_IDS, ["msg1"])
+        context.set("incremental", False)
+
+        result = await step.execute(context, None)
+
+        assert result.success is True
+        mock_archiver.filter_already_archived.assert_called_once_with(["msg1"], False)
+
 
 class TestDeleteGmailMessagesStepBehavior:
     """Test DeleteGmailMessagesStep behavior."""

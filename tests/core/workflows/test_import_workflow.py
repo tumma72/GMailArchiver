@@ -295,7 +295,9 @@ class TestImportWorkflowErrorHandling:
 
         # Mock _import_single_file to raise a WorkflowError
         with patch.object(
-            workflow, "_import_single_file", new=AsyncMock(side_effect=WorkflowError("import_step", "Import failed"))
+            workflow,
+            "_import_single_file",
+            new=AsyncMock(side_effect=WorkflowError("import_step", "Import failed")),
         ):
             result = await workflow.run(config)
 
@@ -329,7 +331,9 @@ class TestImportWorkflowErrorHandling:
 
         # Mock _import_single_file to raise a general exception
         with patch.object(
-            workflow, "_import_single_file", new=AsyncMock(side_effect=Exception("Unexpected error"))
+            workflow,
+            "_import_single_file",
+            new=AsyncMock(side_effect=Exception("Unexpected error")),
         ):
             result = await workflow.run(config)
 

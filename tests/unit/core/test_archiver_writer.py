@@ -382,8 +382,6 @@ class TestArchiveMessagesInternal:
     @pytest.mark.asyncio
     async def test_archive_messages_fetch_and_parse_with_labels(self, writer):
         """Test fetching and parsing messages with Gmail labels."""
-        import email
-        from email import policy
 
         # Create a sample email message
         sample_raw = b"""From alice@example.com Mon Jan 01 00:00:00 2024
@@ -434,8 +432,6 @@ Test message body."""
     @pytest.mark.asyncio
     async def test_archive_messages_fetch_error_handling(self, writer):
         """Test handling of fetch errors during message retrieval."""
-        import email
-        from email import policy
 
         sample_raw = b"""From: test@example.com
 Subject: Test
@@ -487,6 +483,7 @@ Test body."""
     @pytest.mark.asyncio
     async def test_archive_messages_interrupt_during_fetch(self, writer):
         """Test interrupt handling during message fetch phase."""
+
         async def mock_batch_generator(message_ids):
             # Simulate interruption signal
             writer._interrupted.set()
@@ -516,7 +513,6 @@ Test body."""
 
         # Should handle interruption gracefully
         assert result["interrupted"] is True
-
 
     @pytest.mark.asyncio
     async def test_archive_messages_keyboard_interrupt_during_batch(self, writer):
@@ -554,8 +550,6 @@ Test body."""
     @pytest.mark.asyncio
     async def test_archive_messages_with_task_progress_tracking(self, writer):
         """Test progress callback during fetch phase."""
-        import email
-        from email import policy
 
         sample_raw = b"""From: test@example.com
 Subject: Test
@@ -766,7 +760,6 @@ Test body."""
     @pytest.mark.asyncio
     async def test_archive_messages_logs_summary(self, writer):
         """Test that archive summary is logged correctly."""
-        from pathlib import Path
 
         sample_raw = b"test message"
 
@@ -881,8 +874,6 @@ Test body."""
     @pytest.mark.asyncio
     async def test_archive_messages_fetch_error_with_task_tracking(self, writer):
         """Test that task is advanced even when fetch errors occur."""
-        import email
-        from email import policy
 
         sample_raw = b"""From: test@example.com
 Subject: Test
@@ -1031,8 +1022,8 @@ Test body."""
 
     def test_sigint_handler_sets_interrupted_event(self, writer):
         """Test that SIGINT handler sets the interrupted event."""
-        import signal
         import os
+        import signal
 
         writer._install_sigint_handler()
 
@@ -1105,6 +1096,7 @@ Test body."""
     @pytest.mark.asyncio
     async def test_keyboard_interrupt_during_async_for(self, writer):
         """Test KeyboardInterrupt handler during async for loop."""
+
         async def mock_batch_generator(message_ids):
             # Yield one message and then raise KeyboardInterrupt
             yield {"id": "msg001", "threadId": "thread001", "raw": b"test"}

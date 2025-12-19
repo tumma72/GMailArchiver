@@ -27,7 +27,6 @@ from gmailarchiver.cli.command_context import CommandContext
 from gmailarchiver.cli.migrate import migrate_command
 from gmailarchiver.core.workflows.migrate import MigrateConfig, MigrateResult
 
-
 # ============================================================================
 # Test Fixtures
 # ============================================================================
@@ -752,9 +751,7 @@ class TestStorageContextRequirement:
     """Tests that migrate command requires storage context."""
 
     @pytest.mark.asyncio
-    async def test_asserts_storage_is_not_none(
-        self, mock_ctx: CommandContext, v11_db: str
-    ) -> None:
+    async def test_asserts_storage_is_not_none(self, mock_ctx: CommandContext, v11_db: str) -> None:
         """Should assert that storage is not None (guaranteed by requires_storage=True).
 
         Line 24: assert ctx.storage is not None

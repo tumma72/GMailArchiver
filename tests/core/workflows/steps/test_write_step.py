@@ -321,3 +321,24 @@ class TestWriteMessagesStepBehavior:
         task_cm.complete.assert_called_once()
         call_arg = task_cm.complete.call_args[0][0]
         assert "No messages" in call_arg
+
+    @pytest.mark.asyncio
+    async def test_writes_interrupted_to_context(self, mock_archiver: MagicMock) -> None:
+        """When write is interrupted, step writes 'interrupted' key to context as True."""
+        mock_archiver.archive_messages.return_value = {
+            "archived_count": 50,
+            "failed_count": 0,
+            "actual_file": "archive.mbox",
+            "interrupted": True,
+        }
+
+        step = WriteMessagesStep(mock_archiver)
+        context = StepContext()
+
+        await step.execute(
+            context,
+            WriteMessagesInput(message_ids=["msg1"], output_file="archive.mbox"),
+        )
+
+        assert "interrupted" in context
+        assert context.get("interrupted") is True

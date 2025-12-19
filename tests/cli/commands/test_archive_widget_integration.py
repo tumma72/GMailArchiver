@@ -89,9 +89,7 @@ class TestArchiveCommandWidgetIntegration:
 
     def test_show_final_summary_uses_report_card(self, mock_ctx, success_result):
         """_show_final_summary should render a ReportCard widget."""
-        with patch(
-            "gmailarchiver.cli.commands.archive.ReportCard"
-        ) as MockReportCard:
+        with patch("gmailarchiver.cli.commands.archive.ReportCard") as MockReportCard:
             mock_card = MagicMock()
             mock_card.add_field = MagicMock(return_value=mock_card)
             mock_card.add_conditional_field = MagicMock(return_value=mock_card)
@@ -107,13 +105,9 @@ class TestArchiveCommandWidgetIntegration:
             # Verify render was called with output manager
             mock_card.render.assert_called_once_with(mock_ctx.output)
 
-    def test_show_final_summary_card_contains_archived_count(
-        self, mock_ctx, success_result
-    ):
+    def test_show_final_summary_card_contains_archived_count(self, mock_ctx, success_result):
         """ReportCard should include archived message count."""
-        with patch(
-            "gmailarchiver.cli.commands.archive.ReportCard"
-        ) as MockReportCard:
+        with patch("gmailarchiver.cli.commands.archive.ReportCard") as MockReportCard:
             mock_card = MagicMock()
             mock_card.add_field = MagicMock(return_value=mock_card)
             mock_card.add_conditional_field = MagicMock(return_value=mock_card)
@@ -131,9 +125,7 @@ class TestArchiveCommandWidgetIntegration:
 
     def test_handle_dry_run_uses_report_card(self, mock_ctx, dry_run_result):
         """_handle_dry_run should render a ReportCard widget."""
-        with patch(
-            "gmailarchiver.cli.commands.archive.ReportCard"
-        ) as MockReportCard:
+        with patch("gmailarchiver.cli.commands.archive.ReportCard") as MockReportCard:
             mock_card = MagicMock()
             mock_card.add_field = MagicMock(return_value=mock_card)
             mock_card.add_conditional_field = MagicMock(return_value=mock_card)
@@ -153,13 +145,9 @@ class TestArchiveCommandWidgetIntegration:
             # Verify render was called
             mock_card.render.assert_called_once_with(mock_ctx.output)
 
-    def test_validation_failure_uses_error_panel(
-        self, mock_ctx, validation_failure_result
-    ):
+    def test_validation_failure_uses_error_panel(self, mock_ctx, validation_failure_result):
         """_handle_validation_failure should render an ErrorPanel widget."""
-        with patch(
-            "gmailarchiver.cli.commands.archive.ErrorPanel"
-        ) as MockErrorPanel:
+        with patch("gmailarchiver.cli.commands.archive.ErrorPanel") as MockErrorPanel:
             mock_error = MagicMock()
             mock_error.add_detail = MagicMock(return_value=mock_error)
             mock_error.add_details = MagicMock(return_value=mock_error)

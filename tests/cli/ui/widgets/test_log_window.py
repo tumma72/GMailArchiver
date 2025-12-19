@@ -71,9 +71,7 @@ class TestLogEntry:
     def test_log_entry_timestamp_custom(self) -> None:
         """LogEntry timestamp can be explicitly set."""
         custom_time = 1234567890.0
-        entry = LogEntry(
-            level=LogLevel.SUCCESS, message="Test", timestamp=custom_time
-        )
+        entry = LogEntry(level=LogLevel.SUCCESS, message="Test", timestamp=custom_time)
         assert entry.timestamp == custom_time
 
     def test_log_entry_render_returns_text(self) -> None:
@@ -194,9 +192,7 @@ class TestLogWindowWidgetLogging:
     def test_fluent_chaining(self) -> None:
         """All log methods return Self for chaining."""
         log = LogWindowWidget()
-        result = (
-            log.success("Done").warning("Issue").error("Problem")
-        )
+        result = log.success("Done").warning("Issue").error("Problem")
         assert result is log
         assert log.visible_count == 3
 

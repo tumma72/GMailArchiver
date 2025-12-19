@@ -1,7 +1,6 @@
 """Tests for search result rendering methods in _output_search module."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,7 +10,6 @@ from gmailarchiver.cli._output_search import (
     display_search_results_rich,
 )
 from gmailarchiver.core.search._types import MessageSearchResult
-
 
 # ============================================================================
 # Test Fixtures
@@ -195,9 +193,7 @@ class TestDisplaySearchResultsJson:
         self, mock_output_manager: MagicMock, sample_search_result: MessageSearchResult
     ) -> None:
         """Test JSON output without preview field."""
-        display_search_results_json(
-            mock_output_manager, [sample_search_result], with_preview=False
-        )
+        display_search_results_json(mock_output_manager, [sample_search_result], with_preview=False)
 
         payload = mock_output_manager.set_json_payload.call_args[0][0]
         assert "body_preview" not in payload[0]
@@ -206,9 +202,7 @@ class TestDisplaySearchResultsJson:
         self, mock_output_manager: MagicMock, sample_search_result: MessageSearchResult
     ) -> None:
         """Test JSON output with preview field included."""
-        display_search_results_json(
-            mock_output_manager, [sample_search_result], with_preview=True
-        )
+        display_search_results_json(mock_output_manager, [sample_search_result], with_preview=True)
 
         payload = mock_output_manager.set_json_payload.call_args[0][0]
         assert "body_preview" in payload[0]
@@ -231,9 +225,7 @@ class TestDisplaySearchResultsJson:
             relevance_score=0.95,
         )
 
-        display_search_results_json(
-            mock_output_manager, [long_result], with_preview=True
-        )
+        display_search_results_json(mock_output_manager, [long_result], with_preview=True)
 
         payload = mock_output_manager.set_json_payload.call_args[0][0]
         preview = payload[0]["body_preview"]
@@ -241,7 +233,8 @@ class TestDisplaySearchResultsJson:
         assert len(preview) <= 203
 
     def test_display_search_results_json_no_preview_for_none(
-        self, mock_output_manager: MagicMock,
+        self,
+        mock_output_manager: MagicMock,
         sample_search_result_no_preview: MessageSearchResult,
     ) -> None:
         """Test JSON output with None preview results in '(no preview)'."""
@@ -303,9 +296,7 @@ class TestDisplaySearchResultsRich:
     ) -> None:
         """Test that JSON mode returns without output."""
         mock_output_manager.json_mode = True
-        display_search_results_rich(
-            mock_output_manager, [sample_search_result], total_results=1
-        )
+        display_search_results_rich(mock_output_manager, [sample_search_result], total_results=1)
 
         mock_output_manager.info.assert_not_called()
         mock_output_manager.warning.assert_not_called()
@@ -318,9 +309,7 @@ class TestDisplaySearchResultsRich:
     ) -> None:
         """Test that quiet mode returns without output."""
         mock_output_manager.quiet = True
-        display_search_results_rich(
-            mock_output_manager, [sample_search_result], total_results=1
-        )
+        display_search_results_rich(mock_output_manager, [sample_search_result], total_results=1)
 
         mock_output_manager.info.assert_not_called()
         mock_output_manager.warning.assert_not_called()
@@ -370,10 +359,7 @@ class TestDisplaySearchResultsRich:
 
         calls = mock_output_manager.info.call_args_list
         # First info call should have the header
-        assert any(
-            "Search Results (5 found)" in str(call_args)
-            for call_args in calls
-        )
+        assert any("Search Results (5 found)" in str(call_args) for call_args in calls)
 
     def test_display_search_results_rich_with_preview_displays_all_fields(
         self,

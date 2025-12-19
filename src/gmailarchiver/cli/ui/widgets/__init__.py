@@ -14,7 +14,8 @@ All widgets use the fluent builder pattern for easy composition.
 
 Usage:
     from gmailarchiver.cli.ui.widgets import (
-        ReportCard, SuggestionList, TaskWidget, ProgressBarWidget, LogWindowWidget, WorkflowProgressWidget
+        ReportCard, SuggestionList, TaskWidget, ProgressBarWidget,
+        LogWindowWidget, WorkflowProgressWidget,
     )
 
     ReportCard("Results")

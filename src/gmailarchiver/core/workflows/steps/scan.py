@@ -64,6 +64,10 @@ class ScanMboxStep:
         Returns:
             StepResult with MboxScanOutput containing scanned messages
         """
+        # Check for None input
+        if input_data is None:
+            return StepResult.fail("No archive path provided")
+
         # Normalize input
         if isinstance(input_data, MboxScanInput):
             archive_path = Path(input_data.archive_path)

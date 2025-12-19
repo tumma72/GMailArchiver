@@ -75,12 +75,13 @@ class WriteMessagesStep:
             StepResult with WriteMessagesOutput containing archive stats
         """
         # Get input from parameter or context
-        if input_data:
+        if isinstance(input_data, WriteMessagesInput):
             message_ids = input_data.message_ids
             output_file = input_data.output_file
             compress = input_data.compress
             gmail_query = input_data.gmail_query
         else:
+            # Read from context (input_data is None or from previous step)
             message_ids = context.get(ContextKeys.TO_ARCHIVE) or []
             output_file = context.get(ContextKeys.ARCHIVE_FILE) or "archive.mbox"
             compress = context.get("compress")
@@ -130,11 +131,13 @@ class WriteMessagesStep:
             actual_file = str(result.get("actual_file", output_file))
             archived_count = int(result.get("archived_count", 0))
             duplicate_count = int(result.get("skipped", 0))
+            interrupted = result.get("interrupted", False)
 
             # Store in context
             context.set(ContextKeys.ARCHIVED_COUNT, archived_count)
             context.set(ContextKeys.ACTUAL_FILE, actual_file)
             context.set(ContextKeys.DUPLICATE_COUNT, duplicate_count)
+            context.set("interrupted", interrupted)
 
             output = WriteMessagesOutput(
                 archived_count=archived_count,

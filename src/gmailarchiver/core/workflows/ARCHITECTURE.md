@@ -1,6 +1,6 @@
 # Workflows Architecture
 
-**Last Updated:** 2025-12-18
+**Last Updated:** 2025-12-19
 **Status:** Production (v1.9.0+)
 
 This document defines the architecture of the workflows module, which contains the async business logic for all CLI commands. Workflows are **class-based** with a `run()` method, use **Step composition** for reusable operations, and use **protocol-based dependency injection** to maintain layer boundaries.
@@ -280,19 +280,52 @@ class CheckDuplicatesStep:
 
 ### WorkflowComposer
 
-The `WorkflowComposer` composes steps into executable workflows:
+The `WorkflowComposer` composes steps into executable workflows with support for conditional execution:
 
 ```python
+from collections.abc import Callable
+
 class WorkflowComposer:
-    """Composes steps into executable workflows."""
+    """Composes steps into executable workflows.
+
+    Supports:
+    - Sequential step execution with data passing
+    - Conditional steps that only run when condition is met
+    - Automatic error handling (raises WorkflowError on step failure)
+    """
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self._steps: list[Step] = []
+        self._steps: list[tuple[Step, Callable[[StepContext], bool] | None]] = []
 
     def add_step(self, step: Step) -> WorkflowComposer:
-        """Fluent API for adding steps."""
-        self._steps.append(step)
+        """Add a step that always executes."""
+        self._steps.append((step, None))
+        return self
+
+    def add_conditional_step(
+        self,
+        step: Step,
+        condition: Callable[[StepContext], bool],
+    ) -> WorkflowComposer:
+        """Add a step that only executes when condition(context) is True.
+
+        Args:
+            step: The step to conditionally execute
+            condition: Callable that takes StepContext and returns bool.
+                       Step is skipped if condition returns False.
+
+        Example:
+            .add_conditional_step(
+                WriteMessagesStep(archiver),
+                lambda ctx: bool(ctx.get(ContextKeys.TO_ARCHIVE)) and not ctx.get("dry_run")
+            )
+
+        IMPORTANT: Conditions should only read from StepContext. Store config
+        values in context before running the workflow, not captured from CLI scope.
+        This maintains layer separation.
+        """
+        self._steps.append((step, condition))
         return self
 
     async def run(
@@ -303,15 +336,21 @@ class WorkflowComposer:
     ) -> StepContext:
         """Execute all steps in sequence.
 
-        Each step's output becomes the next step's input.
-        Raises WorkflowError if any step fails.
+        - Each step's output becomes the next step's input
+        - Conditional steps are skipped if condition returns False
+        - Raises WorkflowError if any step fails
+        - Steps must handle empty input gracefully (return success with zeros/empty)
         """
         if context is None:
             context = StepContext()
 
         current_input = initial_input
 
-        for step in self._steps:
+        for step, condition in self._steps:
+            # Skip conditional steps when condition is False
+            if condition is not None and not condition(context):
+                continue
+
             result = await step.execute(context, current_input, progress)
 
             if not result.success:
@@ -321,6 +360,42 @@ class WorkflowComposer:
 
         return context
 ```
+
+### Conditional Step Design
+
+Conditional steps enable declarative workflow composition without manual orchestration:
+
+```python
+# Store config in context (workflow layer, not CLI layer)
+context = StepContext()
+context.set("dry_run", config.dry_run)
+context.set("compress", config.compress)
+context.set(ContextKeys.ARCHIVE_FILE, output_file)
+
+# Compose workflow with conditional steps
+workflow = (
+    WorkflowComposer("archive")
+    .add_step(ScanGmailMessagesStep(archiver))
+    .add_step(FilterGmailMessagesStep(archiver))
+    .add_conditional_step(
+        WriteMessagesStep(archiver),
+        lambda ctx: bool(ctx.get(ContextKeys.TO_ARCHIVE)) and not ctx.get("dry_run")
+    )
+    .add_conditional_step(
+        ValidateArchiveStep(db),
+        lambda ctx: ctx.get(ContextKeys.ARCHIVED_COUNT, 0) > 0 and not ctx.get("dry_run")
+    )
+)
+
+result_context = await workflow.run(initial_input, progress, context)
+```
+
+**Key Principles:**
+
+1. **Conditions read from context only**: Never capture CLI variables in lambdas
+2. **Steps handle empty input**: Return `StepResult.ok()` with zeros/empty data
+3. **No early exit needed**: Empty data flows through, conditionals skip naturally
+4. **All workflows use WorkflowComposer**: No manual step orchestration
 
 ### Workflow Class Pattern
 
@@ -409,14 +484,72 @@ class ImportWorkflow:
         }
 ```
 
-### When to Use Steps vs Direct Implementation
+### Step Input Handling
 
-| Use Steps | Use Direct Implementation |
-|-----------|---------------------------|
-| Operation is reused across workflows | Operation is unique to one workflow |
-| Operation has clear input/output | Operation has complex state dependencies |
-| Operation can fail independently | Operation is tightly coupled to others |
-| Testing in isolation adds value | Workflow-level test is sufficient |
+Steps must handle input flexibly and gracefully:
+
+#### Input Normalization Pattern
+
+Steps should accept multiple input types and normalize internally:
+
+```python
+class CheckDuplicatesStep:
+    """Step that filters out already-imported messages."""
+
+    async def execute(
+        self,
+        context: StepContext,
+        input_data: FilterInput | MboxScanOutput | list | None,
+        progress: ProgressReporter | None = None,
+    ) -> StepResult[FilterOutput]:
+        # Normalize input from multiple sources
+        if isinstance(input_data, FilterInput):
+            scanned_messages = input_data.scanned_messages
+        elif isinstance(input_data, MboxScanOutput):
+            scanned_messages = input_data.scanned_messages
+        elif isinstance(input_data, list):
+            scanned_messages = input_data
+        else:
+            # Fallback to context
+            scanned_messages = context.get(ContextKeys.MESSAGES) or []
+
+        # Continue with normalized data...
+```
+
+#### Empty Input Handling
+
+**Steps MUST handle empty input gracefully** by returning success with zeros/empty data:
+
+```python
+async def execute(self, context, input_data, progress=None) -> StepResult[FilterOutput]:
+    scanned_messages = self._normalize_input(input_data, context)
+
+    # Handle empty input - return success, not failure
+    if not scanned_messages:
+        return StepResult.ok(FilterOutput(
+            to_process=[],
+            total_count=0,
+            new_count=0,
+            duplicate_count=0,
+        ))
+
+    # Normal processing for non-empty input...
+```
+
+**Why this matters:**
+- Enables conditional steps to work naturally (empty flows through)
+- No need for early exit logic in workflows
+- Simplifies workflow composition
+
+### Step Guidelines
+
+| Requirement | Rationale |
+|-------------|-----------|
+| Handle empty input → return success with zeros | Enables conditional step flow |
+| Accept multiple input types → normalize internally | Flexible step composition |
+| Store results in context using ContextKeys | Inter-step communication |
+| Return StepResult.fail() only for errors | Empty data is not an error |
+| Accept dependencies via constructor | Testability and layer separation |
 
 ---
 
@@ -824,31 +957,63 @@ async def test_import_workflow_with_progress(mock_storage, tmp_mbox):
 2. [ ] Implement **Step class** with `name`, `description`, `execute()`
 3. [ ] Use **ContextKeys** for standard context keys
 4. [ ] Accept **dependencies via constructor** (DBManager, etc.)
-5. [ ] Handle **progress reporting** when progress is provided
-6. [ ] Return **StepResult.ok()** or **StepResult.fail()**
-7. [ ] Document **what context keys step reads/writes**
-8. [ ] Write **unit tests** for success and failure cases
-9. [ ] Add to **steps/__init__.py** exports
+5. [ ] **Handle empty input gracefully** - return success with zeros/empty
+6. [ ] **Normalize input** - accept multiple types (dataclass, raw data, context fallback)
+7. [ ] Handle **progress reporting** when progress is provided
+8. [ ] Return **StepResult.ok()** or **StepResult.fail()** (only for errors)
+9. [ ] Document **what context keys step reads/writes**
+10. [ ] Write **unit tests** for success, empty input, and error cases
+11. [ ] Add to **steps/__init__.py** exports
 
 ### Creating a New Workflow
 
 1. [ ] Define **Config dataclass** for workflow parameters
 2. [ ] Define **Result dataclass** for typed return values
 3. [ ] Use **constructor injection** for dependencies (storage, client, progress)
-4. [ ] Compose workflow using **WorkflowComposer** and existing steps
-5. [ ] Handle **errors** and return meaningful error data
-6. [ ] Document **which steps are used** in docstring
-7. [ ] Write **tests** for workflow success, failure, and progress
-8. [ ] Add to **workflows/__init__.py** exports
+4. [ ] **Store config in context** before running (not captured in lambdas)
+5. [ ] Compose workflow using **WorkflowComposer** with `add_step()` and `add_conditional_step()`
+6. [ ] Use **conditional steps** for optional operations (dry-run, validation, etc.)
+7. [ ] Build result from **context values** after workflow.run()
+8. [ ] Handle **WorkflowError** in CLI layer
+9. [ ] Document **which steps are used** in docstring
+10. [ ] Write **tests** for workflow success, empty input, and error scenarios
+11. [ ] Add to **workflows/__init__.py** exports
 
 ### Migrating Existing Workflow to Steps
 
 1. [ ] Identify **reusable operations** in the workflow
 2. [ ] Extract each operation to a **new Step class**
-3. [ ] Update workflow to use **WorkflowComposer**
-4. [ ] Verify **progress reporting** still works correctly
-5. [ ] Ensure **no double task sequences**
-6. [ ] Update **tests** to cover both step and workflow levels
+3. [ ] Ensure steps **handle empty input** gracefully
+4. [ ] Update workflow to use **WorkflowComposer**
+5. [ ] Convert **early exit logic** to conditional steps
+6. [ ] **Remove deprecated wrapper methods** (e.g., `_scan_messages()`, `_filter_messages()`)
+7. [ ] Verify **progress reporting** still works correctly
+8. [ ] Ensure **no double task sequences**
+9. [ ] Update **tests** to cover both step and workflow levels
+
+### Code to Remove During Migration
+
+The following deprecated patterns should be removed:
+
+```python
+# REMOVE: Deprecated wrapper methods in workflows
+async def _scan_messages(self, ...):  # Use Step directly
+async def _filter_messages(self, ...):  # Use Step directly
+async def _archive_messages(self, ...):  # Use Step directly
+
+# REMOVE: Manual step orchestration
+scan_result = await self._scan_step.execute(...)
+if not scan_result.success or not scan_result.data:
+    return ArchiveResult(...)  # Early exit - use conditional steps instead
+
+# REPLACE WITH: WorkflowComposer with conditional steps
+workflow = (
+    WorkflowComposer("archive")
+    .add_step(scan_step)
+    .add_conditional_step(write_step, condition)
+)
+result_context = await workflow.run(input, progress, context)
+```
 
 ---
 

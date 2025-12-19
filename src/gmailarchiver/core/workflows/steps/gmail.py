@@ -96,9 +96,7 @@ class ScanGmailMessagesStep:
                         else:
                             task.complete("No messages found matching criteria")
             else:
-                query, messages = await self.archiver.list_messages_for_archive(
-                    age_threshold
-                )
+                query, messages = await self.archiver.list_messages_for_archive(age_threshold)
 
             # Store in context
             context.set(ContextKeys.GMAIL_QUERY, query)
@@ -183,7 +181,7 @@ class FilterGmailMessagesStep:
         else:
             # Try to get from context
             message_ids = context.get(ContextKeys.MESSAGE_IDS) or []
-            incremental = True
+            incremental = bool(context.get("incremental", True))
 
         if not message_ids:
             output = FilterGmailOutput(

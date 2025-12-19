@@ -240,3 +240,23 @@ class TestScanMboxStepWithCompression:
         assert result.success is True
         assert result.data is not None
         assert result.data.total_messages == 1
+
+
+class TestScanMboxStepEdgeCases:
+    """Test edge cases and error handling in ScanMboxStep."""
+
+    @pytest.mark.asyncio
+    async def test_handles_none_input_gracefully(self) -> None:
+        """ScanMboxStep returns failure with clear message on None input."""
+        step = ScanMboxStep()
+        context = StepContext()
+
+        # Pass None as input - step should gracefully handle this
+        result = await step.execute(context, None)  # type: ignore[arg-type]
+
+        # Should fail with a clear error message
+        assert result.success is False
+        assert result.error is not None
+        # Error should mention archive/path in some way
+        error_lower = result.error.lower()
+        assert "archive" in error_lower or "path" in error_lower or "not found" in error_lower

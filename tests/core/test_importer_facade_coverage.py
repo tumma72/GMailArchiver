@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gmailarchiver.core.importer import ImporterFacade
-from gmailarchiver.core.importer.facade import ScanResult
 from gmailarchiver.data.db_manager import DBManager
 from gmailarchiver.shared.protocols import ProgressReporter
 
@@ -246,7 +245,7 @@ class TestImportArchiveProgressCallbacks:
     async def test_import_progress_on_successful_message_with_gmail_id(
         self, v11_db: str, sample_mbox_few_messages: Path, mock_progress_reporter: MagicMock
     ) -> None:
-        """Test import_archive calls progress.info for successful import with Gmail ID (lines 302-305).
+        """Test import_archive calls progress.info for successful import with Gmail ID.
 
         When a message is successfully imported and has a Gmail ID,
         progress should report "[n/total] Imported (Gmail ID: xxx...)".
@@ -375,9 +374,7 @@ class TestImportArchiveOffsetMapLogic:
         assert scan_result.new_messages == 2
 
         # Now import using the pre-computed scan result
-        result = await importer.import_archive(
-            sample_mbox_few_messages, scan_result=scan_result
-        )
+        result = await importer.import_archive(sample_mbox_few_messages, scan_result=scan_result)
         await db_manager.commit()
 
         assert result.messages_imported == 2
@@ -468,9 +465,7 @@ class TestGmailIdLookupPaths:
 class TestImportMultipleAdvancedPaths:
     """Test advanced paths in import_multiple."""
 
-    async def test_import_multiple_aggregates_gmail_ids(
-        self, v11_db: str, tmp_path: Path
-    ) -> None:
+    async def test_import_multiple_aggregates_gmail_ids(self, v11_db: str, tmp_path: Path) -> None:
         """Test import_multiple aggregates Gmail ID counts from all files.
 
         Lines 377-378 aggregate gmail_ids_found and gmail_ids_not_found.
@@ -691,9 +686,7 @@ class TestImportResultAccuracy:
 class TestScanResultAccuracy:
     """Test ScanResult accuracy and deduplication logic."""
 
-    async def test_scan_result_duplicate_count_accuracy(
-        self, v11_db: str, tmp_path: Path
-    ) -> None:
+    async def test_scan_result_duplicate_count_accuracy(self, v11_db: str, tmp_path: Path) -> None:
         """Test scan_result accurately counts duplicates across multiple imports.
 
         Lines 160-161 calculate new_messages and duplicate_messages
@@ -840,9 +833,7 @@ class TestArchiveRunRecording:
         conn.close()
 
         # Second import with skip_duplicates=True
-        result2 = await importer.import_archive(
-            sample_mbox_few_messages, skip_duplicates=True
-        )
+        result2 = await importer.import_archive(sample_mbox_few_messages, skip_duplicates=True)
         await db_manager.commit()
         assert result2.messages_imported == 0
 
@@ -957,9 +948,7 @@ class TestRemainingCoveragePaths:
         assert result1.messages_imported == 2
 
         # Second import with skip_duplicates should skip both (offset_map will be empty)
-        result2 = await importer.import_archive(
-            sample_mbox_few_messages, skip_duplicates=True
-        )
+        result2 = await importer.import_archive(sample_mbox_few_messages, skip_duplicates=True)
         await db_manager.commit()
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 2
@@ -977,7 +966,9 @@ class TestRemainingCoveragePaths:
         await db_manager.initialize()
 
         # Mock writer to return error status
-        with patch("gmailarchiver.core.importer._writer.DatabaseWriter.write_message") as mock_write:
+        with patch(
+            "gmailarchiver.core.importer._writer.DatabaseWriter.write_message"
+        ) as mock_write:
             from gmailarchiver.core.importer._writer import WriteResult
 
             # First call returns IMPORTED, second returns FAILED
@@ -1090,9 +1081,7 @@ class TestRemainingCoveragePaths:
         assert result1.messages_skipped == 0
 
         # Second import with skip_duplicates=True - all skipped
-        result2 = await importer.import_archive(
-            sample_mbox_few_messages, skip_duplicates=True
-        )
+        result2 = await importer.import_archive(sample_mbox_few_messages, skip_duplicates=True)
         await db_manager.commit()
         assert result2.messages_imported == 0
         assert result2.messages_skipped == 2
@@ -1110,7 +1099,6 @@ class TestRemainingCoveragePaths:
         await db_manager.initialize()
 
         # Create corrupted gzip that won't decompress properly
-        import gzip
 
         corrupted_path = tmp_path / "corrupted.mbox.gz"
         with open(corrupted_path, "wb") as f:
@@ -1140,9 +1128,7 @@ class TestRemainingCoveragePaths:
 
         importer = ImporterFacade(db_manager)
         custom_account = "test-account-123"
-        result = await importer.import_archive(
-            sample_mbox_few_messages, account_id=custom_account
-        )
+        result = await importer.import_archive(sample_mbox_few_messages, account_id=custom_account)
         await db_manager.commit()
 
         assert result.messages_imported == 2

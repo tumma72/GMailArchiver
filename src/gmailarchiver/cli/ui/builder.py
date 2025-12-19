@@ -23,7 +23,6 @@ REFACTORED: Now uses composable widgets from gmailarchiver.cli.ui.widgets.
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from typing import Any
 
 from rich.console import Console, Group
@@ -37,58 +36,8 @@ from gmailarchiver.cli.ui.widgets.task import (
     TaskWidget,
 )
 
-# =============================================================================
-# Backwards Compatibility Aliases
-# =============================================================================
-
-# Re-export TaskStatus enum from widgets (for backwards compatibility)
-# Alias SYMBOLS to STATUS_SYMBOLS for any code importing SYMBOLS
-# Note: TaskStatus enum values are the same
-
-# Log level symbols and colors (for backwards compatibility)
-LOG_SYMBOLS = {
-    "INFO": ("ℹ", "blue"),
-    "WARNING": ("⚠", "yellow"),
-    "ERROR": ("✗", "red"),
-    "SUCCESS": ("✓", "green"),
-}
-
 # Default max visible logs in the log window
 DEFAULT_MAX_LOGS = 10
-
-
-# =============================================================================
-# Backwards Compatibility: TaskState wrapper
-# =============================================================================
-
-
-@dataclass
-class TaskState:
-    """Internal state for a single task.
-
-    DEPRECATED: This is a compatibility wrapper around TaskWidget.
-    New code should use TaskWidget directly.
-    """
-
-    description: str
-    status: TaskStatus = TaskStatus.PENDING
-    total: int | None = None
-    completed: int = 0
-    result_message: str | None = None
-    failure_reason: str | None = None
-    start_time: float = field(default_factory=time.time)
-    end_time: float | None = None
-
-    def to_widget(self) -> TaskWidget:
-        """Convert to TaskWidget."""
-        widget = TaskWidget(description=self.description)
-        widget.status = self.status
-        widget.total = self.total
-        widget.completed = self.completed
-        widget.result_message = self.result_message
-        widget.failure_reason = self.failure_reason
-        widget.start_time = self.start_time
-        return widget
 
 
 # =============================================================================
@@ -146,6 +95,11 @@ class TaskHandleImpl:
     def log(self, message: str, level: str = "INFO") -> None:
         """Log a message within the task context."""
         self._sequence._log(message, level)
+
+    def warn(self, message: str) -> None:
+        """Mark task as completed with warning status."""
+        self._widget.warn(message)
+        self._sequence._refresh()
 
     # OperationHandle compatibility methods (for archiver.py integration)
 
@@ -367,27 +321,6 @@ class TaskSequenceImpl:
     def get_json_events(self) -> list[dict[str, Any]]:
         """Get all JSON events emitted during the sequence."""
         return self._json_events
-
-    # Backwards compatibility: expose _tasks as property
-    @property
-    def _tasks(self) -> list[TaskState]:
-        """Return TaskState list for backwards compatibility.
-
-        DEPRECATED: Use _task_widgets directly.
-        """
-        result = []
-        for widget in self._task_widgets:
-            state = TaskState(
-                description=widget.description,
-                status=widget.status,
-                total=widget.total,
-                completed=widget.completed,
-                result_message=widget.result_message,
-                failure_reason=widget.failure_reason,
-                start_time=widget.start_time,
-            )
-            result.append(state)
-        return result
 
 
 class UIBuilderImpl:

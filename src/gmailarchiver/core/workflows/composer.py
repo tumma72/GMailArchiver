@@ -15,6 +15,7 @@ Example:
     result = ImportResult.from_context(context)
 """
 
+from collections.abc import Callable
 from typing import Any
 
 from gmailarchiver.core.workflows.step import (
@@ -61,6 +62,7 @@ class WorkflowComposer:
         """
         self.name = name
         self._steps: list[Step] = []
+        self._conditions: dict[int, Callable[[StepContext], bool]] = {}
 
     def add_step(self, step: Step) -> WorkflowComposer:
         """Add a step to the workflow.
@@ -74,10 +76,53 @@ class WorkflowComposer:
         self._steps.append(step)
         return self
 
+    def add_conditional_step(
+        self,
+        step: Step,
+        condition: Callable[[StepContext], bool],
+    ) -> WorkflowComposer:
+        """Add a step that only executes when condition(context) is True.
+
+        Args:
+            step: The step to add
+            condition: Function that receives StepContext and returns bool
+
+        Returns:
+            Self for fluent chaining
+
+        Example:
+            def should_filter(context: StepContext) -> bool:
+                return context.get("message_count", 0) > 0
+
+            workflow = (
+                WorkflowComposer("archive")
+                .add_step(ScanStep())
+                .add_conditional_step(FilterStep(), should_filter)
+            )
+        """
+        step_index = len(self._steps)
+        self._steps.append(step)
+        self._conditions[step_index] = condition
+        return self
+
     @property
     def steps(self) -> list[Step]:
         """Return the list of steps (read-only)."""
         return list(self._steps)
+
+    def _should_execute_step(self, step_index: int, context: StepContext) -> bool:
+        """Check if a step should execute based on its condition.
+
+        Args:
+            step_index: Index of the step to check
+            context: Current workflow context
+
+        Returns:
+            True if step should execute, False if it should be skipped
+        """
+        if step_index in self._conditions:
+            return self._conditions[step_index](context)
+        return True
 
     async def run(
         self,
@@ -103,7 +148,10 @@ class WorkflowComposer:
 
         current_input = initial_input
 
-        for step in self._steps:
+        for step_index, step in enumerate(self._steps):
+            if not self._should_execute_step(step_index, context):
+                continue
+
             if progress:
                 progress.info(f"Running: {step.description}")
 
@@ -136,7 +184,8 @@ class WorkflowComposer:
             progress: Optional progress reporter for UI feedback
 
         Returns:
-            Tuple of (final context, list of all step results)
+            Tuple of (final context, list of results for executed steps only)
+            Note: Skipped conditional steps do not appear in the results list.
 
         Raises:
             WorkflowError: If any step fails
@@ -145,7 +194,10 @@ class WorkflowComposer:
         results: list[StepResult[Any]] = []
         current_input = initial_input
 
-        for step in self._steps:
+        for step_index, step in enumerate(self._steps):
+            if not self._should_execute_step(step_index, context):
+                continue
+
             if progress:
                 progress.info(f"Running: {step.description}")
 

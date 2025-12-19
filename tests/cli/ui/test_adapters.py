@@ -5,8 +5,6 @@ This module tests the CLIProgressAdapter and WorkflowProgressContext classes.
 
 from unittest.mock import MagicMock, Mock
 
-import pytest
-
 from gmailarchiver.cli.ui.adapters import CLIProgressAdapter, WorkflowProgressContext
 from gmailarchiver.shared.protocols import NoOpTaskHandle, NoOpTaskSequence
 
