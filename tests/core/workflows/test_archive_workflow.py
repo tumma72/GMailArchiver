@@ -506,7 +506,7 @@ async def test_archive_workflow_with_validation_pass(mock_client, mock_storage, 
         total_skipped=0,
     )
     write_output = WriteMessagesOutput(
-        archived_count=1, failed_count=0, actual_file="archive.mbox", interrupted=False
+        archived_count=1, failed_count=0, duplicate_count=0, actual_file="archive.mbox", interrupted=False
     )
     validate_output = ValidateOutput(
         passed=True,

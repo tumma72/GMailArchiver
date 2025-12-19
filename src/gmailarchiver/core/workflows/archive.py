@@ -157,11 +157,12 @@ class ArchiveWorkflow:
             )
 
         messages_to_archive = filter_result.data.to_archive
-        skipped_count = filter_result.data.total_skipped
-        duplicate_count = filter_result.data.duplicate_count
+        skipped_count = filter_result.data.already_archived_count  # Already archived by Gmail ID
 
         # Step 3: Archive messages (if not dry run)
+        # duplicate_count comes from write step (RFC Message-ID deduplication)
         archived_count = 0
+        duplicate_count = 0
         interrupted = False
         actual_file = output_file
 
@@ -179,6 +180,7 @@ class ArchiveWorkflow:
 
             if write_result.success and write_result.data:
                 archived_count = write_result.data.archived_count
+                duplicate_count = write_result.data.duplicate_count
                 interrupted = write_result.data.interrupted
                 actual_file = write_result.data.actual_file
 

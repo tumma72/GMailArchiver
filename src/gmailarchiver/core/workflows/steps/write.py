@@ -5,7 +5,6 @@ This module provides steps for writing messages to mbox archives:
 """
 
 from dataclasses import dataclass
-from typing import Any
 
 from gmailarchiver.core.archiver import ArchiverFacade
 from gmailarchiver.core.workflows.step import (
@@ -32,6 +31,7 @@ class WriteMessagesOutput:
 
     archived_count: int
     failed_count: int
+    duplicate_count: int  # Duplicates skipped during write (RFC Message-ID dedup)
     actual_file: str
     interrupted: bool = False
 
@@ -90,6 +90,7 @@ class WriteMessagesStep:
             output = WriteMessagesOutput(
                 archived_count=0,
                 failed_count=0,
+                duplicate_count=0,
                 actual_file=output_file,
                 interrupted=False,
             )
@@ -106,10 +107,15 @@ class WriteMessagesStep:
                             task,  # Pass task handle for progress updates
                             gmail_query,
                         )
+                        archived = result.get("archived_count", 0)
+                        skipped = result.get("skipped", 0)
                         if result.get("interrupted"):
                             task.complete("Interrupted")
-                        elif result["archived_count"] > 0:
-                            task.complete(f"Archived {result['archived_count']:,} messages")
+                        elif archived > 0:
+                            msg = f"Archived {archived:,} messages"
+                            if skipped > 0:
+                                msg += f", {skipped:,} duplicates skipped"
+                            task.complete(msg)
                         else:
                             task.complete("No messages archived")
             else:
@@ -123,14 +129,17 @@ class WriteMessagesStep:
 
             actual_file = str(result.get("actual_file", output_file))
             archived_count = int(result.get("archived_count", 0))
+            duplicate_count = int(result.get("skipped", 0))
 
             # Store in context
             context.set(ContextKeys.ARCHIVED_COUNT, archived_count)
             context.set(ContextKeys.ACTUAL_FILE, actual_file)
+            context.set(ContextKeys.DUPLICATE_COUNT, duplicate_count)
 
             output = WriteMessagesOutput(
                 archived_count=archived_count,
                 failed_count=int(result.get("failed_count", 0)),
+                duplicate_count=duplicate_count,
                 actual_file=actual_file,
                 interrupted=bool(result.get("interrupted", False)),
             )

@@ -141,22 +141,21 @@ class ArchiverFacade:
         message_ids: list[str],
         incremental: bool = True,
     ) -> FilterResult:
-        """Filter out already-archived messages and duplicates.
+        """Filter out already-archived messages by Gmail ID.
 
-        Delegates to MessageFilter for implementation. Two-phase filtering:
-        1. Check Gmail IDs against database (fast, local)
-        2. For remaining messages, check RFC Message-IDs (requires Gmail API)
+        Delegates to MessageFilter for fast, database-only filtering.
+        RFC Message-ID deduplication happens later in HybridStorage
+        during the write phase (single API call per message).
 
         Args:
             message_ids: List of Gmail message IDs to filter
             incremental: If True, filter out already archived (default: True)
 
         Returns:
-            FilterResult with to_archive list and skip counts
+            FilterResult with to_archive list and skip counts.
+            Note: duplicate_count is always 0 - duplicates detected during write.
         """
-        return await self._filter.filter_archived(
-            message_ids, incremental=incremental, gmail_client=self.gmail_client
-        )
+        return await self._filter.filter_archived(message_ids, incremental=incremental)
 
     async def archive_messages(
         self,

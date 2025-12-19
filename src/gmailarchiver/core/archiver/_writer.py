@@ -192,12 +192,13 @@ class MessageWriter:
             """Report progress for each message with Log Window pattern."""
             if task:
                 # Map status to log level for Log Window (UI_UX_CLI.md Section 7.4)
+                # HybridStorage sends: "success", "skipped", "error"
                 truncated_subject = (subject[:50] + "...") if len(subject) > 50 else subject
-                if status == "archived":
+                if status == "success":
                     task.log(f"Archived: {truncated_subject}", "SUCCESS")
                 elif status == "skipped":
                     task.log(f"Skipped (duplicate): {truncated_subject}", "WARNING")
-                elif status == "failed":
+                elif status == "error" or status == "failed":
                     task.log(f"Failed: {truncated_subject}", "ERROR")
                 else:
                     task.log(f"{status}: {truncated_subject}", "INFO")
