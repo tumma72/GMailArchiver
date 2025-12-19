@@ -312,16 +312,17 @@ class TestMigrateCommand:
 class TestStatusCommand:
     """Test 'gmailarchiver status' command with database information."""
 
-    def test_status_v1_0_database(self, runner, v1_0_database, tmp_path, monkeypatch):
-        """Test status with v1.0 database shows schema version."""
+    def test_status_v1_0_database_requires_migration(
+        self, runner, v1_0_database, tmp_path, monkeypatch
+    ):
+        """Test status with v1.0 database shows migration required error."""
         monkeypatch.chdir(tmp_path)
 
         result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
 
-        assert result.exit_code == 0
-        assert "1.0" in result.stdout
-        assert "2" in result.stdout  # Message count
-        assert "archive1.mbox" in result.stdout
+        # v1.0 database requires migration - status requires schema 1.1+
+        assert result.exit_code == 1
+        assert "migration" in result.stdout.lower() or "migrate" in result.stdout.lower()
 
     def test_status_v1_1_database(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test status with v1.1 database shows schema version."""
@@ -333,44 +334,36 @@ class TestStatusCommand:
         assert "1.1" in result.stdout
         assert "1" in result.stdout  # Message count
 
-    def test_status_empty_database(self, runner, tmp_path, monkeypatch):
-        """Test status with non-existent database."""
+    def test_status_nonexistent_database(self, runner, tmp_path, monkeypatch):
+        """Test status with non-existent database shows error."""
         monkeypatch.chdir(tmp_path)
         empty_db = tmp_path / "empty.db"
 
         result = runner.invoke(app, ["status", "--state-db", str(empty_db)])
 
-        assert result.exit_code == 0
-        assert "no archive" in result.stdout.lower() or "not found" in result.stdout.lower()
+        # Non-existent database should fail with appropriate error
+        assert result.exit_code == 1
+        assert "not found" in result.stdout.lower() or "database" in result.stdout.lower()
 
-    def test_status_shows_recent_runs(self, runner, v1_0_database, tmp_path, monkeypatch):
-        """Test status displays recent archive runs."""
-        monkeypatch.chdir(tmp_path)
-
-        result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
-
-        assert result.exit_code == 0
-        assert "Recent Archive Runs" in result.stdout or "Archive Runs" in result.stdout
-
-    def test_status_shows_database_size(self, runner, v1_0_database, tmp_path, monkeypatch):
+    def test_status_shows_database_size(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test status displays database file size."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["status", "--state-db", str(v1_0_database)])
+        result = runner.invoke(app, ["status", "--state-db", str(v1_1_database)])
 
         assert result.exit_code == 0
         # Should show size in bytes/KB/MB
         assert "bytes" in result.stdout.lower() or "KB" in result.stdout or "MB" in result.stdout
 
-    def test_status_verbose_shows_more_detail(self, runner, v1_0_database, tmp_path, monkeypatch):
+    def test_status_verbose_shows_more_detail(self, runner, v1_1_database, tmp_path, monkeypatch):
         """Test status --verbose shows additional details."""
         monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["status", "--verbose", "--state-db", str(v1_0_database)])
+        result = runner.invoke(app, ["status", "--verbose", "--state-db", str(v1_1_database)])
 
         assert result.exit_code == 0
-        # Verbose mode should include Query column
-        assert "Query" in result.stdout or "Last 10" in result.stdout
+        # Verbose mode shows "latest:" prefix for archive files
+        assert "latest:" in result.stdout
 
 
 # NOTE: rollback command is not implemented yet

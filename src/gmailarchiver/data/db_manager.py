@@ -1415,11 +1415,19 @@ class DBManager:
         table_prefix = "m." if fulltext else ""
 
         if from_addr:
-            query += f" AND {table_prefix}from_addr = ?"
+            # Use LIKE for partial matching if wildcards present, else exact match
+            if "%" in from_addr:
+                query += f" AND {table_prefix}from_addr LIKE ?"
+            else:
+                query += f" AND {table_prefix}from_addr = ?"
             params.append(from_addr)
 
         if to_addr:
-            query += f" AND {table_prefix}to_addr = ?"
+            # Use LIKE for partial matching if wildcards present, else exact match
+            if "%" in to_addr:
+                query += f" AND {table_prefix}to_addr LIKE ?"
+            else:
+                query += f" AND {table_prefix}to_addr = ?"
             params.append(to_addr)
 
         if subject:

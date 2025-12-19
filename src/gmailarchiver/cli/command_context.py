@@ -710,6 +710,11 @@ def with_context(
                     db = DBManager(str(db_path), validate_schema=False)
                     asyncio.run(db.initialize())
 
+                    # Pass the detected schema version to DBManager
+                    # (since validate_schema=False means it won't detect itself)
+                    if schema_mgr._cached_version is not None:
+                        db.schema_version = schema_mgr._cached_version.value
+
                     # Wrap DBManager with HybridStorage
                     # Only preload RFC IDs if we've validated the schema supports it (v1.1+)
                     # This prevents failures when schema check hasn't run yet

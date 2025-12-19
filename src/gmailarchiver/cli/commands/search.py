@@ -19,7 +19,7 @@ class SortOrder(str, Enum):
     ascending = "ascending"
 
 
-@with_context(requires_storage=True, operation_name="search")
+@with_context(requires_storage=True, requires_schema="1.1", operation_name="search")
 def search(
     ctx: CommandContext,
     query: str = typer.Argument(..., help="Search query (Gmail syntax supported)"),
@@ -94,23 +94,14 @@ async def _run_search(
             suggestion="Use either --interactive OR --json, not both",
         )
 
-    db_path = Path(state_db)
-    if not db_path.exists():
-        ctx.fail_and_exit(
-            title="Database Not Found",
-            message=f"Database not found: {state_db}",
-            suggestion=(
-                "Archive emails first: gmailarchiver archive 3y\n"
-                "Or import existing archive: gmailarchiver import archive.mbox"
-            ),
-        )
-
     assert ctx.storage is not None  # Guaranteed by requires_storage=True
 
     # Phase 2: Create workflow and config
     progress = CLIProgressAdapter(ctx.output, ctx.ui)
     workflow = SearchWorkflow(ctx.storage, progress=progress)
-    config = SearchConfig(query=query, state_db=state_db, limit=limit)
+    config = SearchConfig(
+        query=query, limit=limit, sort_ascending=(sort == SortOrder.ascending)
+    )
 
     # Phase 3: Execute workflow with shared task sequence
     try:

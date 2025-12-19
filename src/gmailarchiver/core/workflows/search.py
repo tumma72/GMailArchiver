@@ -1,12 +1,14 @@
 """Workflow for searching archived messages.
 
-This module provides the async workflow for message search.
+This workflow provides message search functionality using
+the SearchMessagesStep for consistent architecture with other workflows.
 """
 
 import time
 from dataclasses import dataclass
 
-from gmailarchiver.core.search.facade import SearchFacade
+from gmailarchiver.core.workflows.composer import WorkflowComposer
+from gmailarchiver.core.workflows.steps.search import SearchInput, SearchMessagesStep
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import ProgressReporter
 
@@ -16,12 +18,12 @@ class SearchConfig:
     """Configuration for search operation."""
 
     query: str
-    state_db: str
     limit: int = 50
     from_filter: str | None = None
     to_filter: str | None = None
     date_from: str | None = None
     date_to: str | None = None
+    sort_ascending: bool = False
 
 
 @dataclass
@@ -34,72 +36,65 @@ class SearchResult:
 
 
 class SearchWorkflow:
-    """Workflow for searching archived messages."""
+    """Workflow for searching archived messages.
 
-    def __init__(self, storage: HybridStorage, progress: ProgressReporter | None = None) -> None:
+    Uses Step composition via WorkflowComposer:
+    1. SearchMessagesStep - Search messages with full-text search
+    """
+
+    def __init__(
+        self,
+        storage: HybridStorage,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         """Initialize search workflow.
 
         Args:
-            storage: HybridStorage for database access
-            progress: Optional ProgressReporter for UI feedback
+            storage: HybridStorage instance for data access
+            progress: Optional progress reporter for UI feedback
         """
         self.storage = storage
         self.progress = progress
+        self._search_step = SearchMessagesStep(storage)
 
     async def run(self, config: SearchConfig) -> SearchResult:
-        """Run the full search workflow.
+        """Run the search workflow.
 
         Args:
             config: SearchConfig with query and filters
 
         Returns:
-            SearchResult with matching messages
-
-        Raises:
-            FileNotFoundError: If database doesn't exist
+            SearchResult with matching messages and execution time
         """
         start_time = time.perf_counter()
 
-        # Create search facade
-        async with await SearchFacade.create(config.state_db) as search:
-            # Execute search with UI feedback
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task("Searching messages") as task:
-                        results = await search.search(query=config.query, limit=config.limit)
+        # Build workflow
+        workflow = WorkflowComposer("search").add_step(self._search_step)
 
-                        if results.total_results > 0:
-                            task.complete(
-                                f"Found {results.total_results:,} messages "
-                                f"(showing {len(results.results):,})"
-                            )
-                        else:
-                            task.complete("No messages found")
-            else:
-                results = await search.search(query=config.query, limit=config.limit)
+        # Create input
+        search_input = SearchInput(
+            query=config.query,
+            limit=config.limit,
+            from_filter=config.from_filter,
+            to_filter=config.to_filter,
+            date_from=config.date_from,
+            date_to=config.date_to,
+            sort_ascending=config.sort_ascending,
+        )
+
+        # Execute workflow
+        context = await workflow.run(search_input, progress=self.progress)
+
+        # Extract result from context
+        search_results = context.get("search_results")
+        if search_results is None:
+            raise RuntimeError("Search step did not produce output")
 
         end_time = time.perf_counter()
         execution_time_ms = (end_time - start_time) * 1000
 
-        # Convert search results to dict format
-        messages: list[dict[str, object]] = [
-            {
-                "gmail_id": msg.gmail_id,
-                "rfc_message_id": msg.rfc_message_id,
-                "subject": msg.subject,
-                "from_addr": msg.from_addr,
-                "to_addr": msg.to_addr,
-                "date": msg.date,
-                "body_preview": msg.body_preview,
-                "archive_file": msg.archive_file,
-                "mbox_offset": msg.mbox_offset,
-                "relevance_score": msg.relevance_score,
-            }
-            for msg in results.results
-        ]
-
         return SearchResult(
-            messages=messages,
-            total_count=results.total_results,
+            messages=search_results.messages,
+            total_count=search_results.total_count,
             execution_time_ms=execution_time_ms,
         )

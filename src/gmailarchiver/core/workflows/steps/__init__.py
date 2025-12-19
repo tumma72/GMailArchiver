@@ -17,6 +17,12 @@ This module provides reusable steps for composing workflows:
 
 **Write Steps:**
 - WriteMessagesStep: Archive messages to mbox file
+
+**Stats Steps:**
+- GetArchiveStatsStep: Retrieve archive statistics
+
+**Search Steps:**
+- SearchMessagesStep: Search messages using full-text search
 """
 
 # Mbox steps
@@ -31,6 +37,12 @@ from gmailarchiver.core.workflows.steps.gmail import (
 )
 from gmailarchiver.core.workflows.steps.metadata import RecordMetadataStep
 from gmailarchiver.core.workflows.steps.scan import ScanMboxStep
+
+# Stats steps
+from gmailarchiver.core.workflows.steps.stats import GetArchiveStatsStep
+
+# Search steps
+from gmailarchiver.core.workflows.steps.search import SearchMessagesStep
 from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep
 
 # Write steps
@@ -49,4 +61,8 @@ __all__ = [
     "DeleteGmailMessagesStep",
     # Write
     "WriteMessagesStep",
+    # Stats
+    "GetArchiveStatsStep",
+    # Search
+    "SearchMessagesStep",
 ]
