@@ -1,6 +1,7 @@
 """Search command implementation."""
 
 import asyncio
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -11,6 +12,13 @@ from gmailarchiver.cli.ui.widgets import TableWidget
 from gmailarchiver.core.workflows.search import SearchConfig, SearchResult, SearchWorkflow
 
 
+class SortOrder(str, Enum):
+    """Sort order for search results."""
+
+    descending = "descending"
+    ascending = "ascending"
+
+
 @with_context(requires_storage=True, operation_name="search")
 def search(
     ctx: CommandContext,
@@ -19,6 +27,12 @@ def search(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
     limit: int = typer.Option(10, "--limit", "-n", help="Maximum number of results"),
+    sort: SortOrder = typer.Option(
+        SortOrder.descending,
+        "--sort",
+        "-s",
+        help="Sort order by date (descending=newest first, ascending=oldest first)",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
     with_preview: bool = typer.Option(
         False, "--with-preview", help="Include message body preview in results"
@@ -34,6 +48,7 @@ def search(
     Search archived messages.
 
     Supports Gmail-style query syntax with full-text search via BM25 ranking.
+    Results are sorted by date (newest first by default).
 
     Examples:
         $ gmailarchiver search "from:sender@example.com"
@@ -41,6 +56,7 @@ def search(
         $ gmailarchiver search "body:urgent" --json
         $ gmailarchiver search "meeting" --with-preview
         $ gmailarchiver search "project" --with-message-id
+        $ gmailarchiver search "project" --sort ascending
         $ gmailarchiver search "project" --interactive
     """
     asyncio.run(
@@ -49,6 +65,7 @@ def search(
             query=query,
             state_db=state_db,
             limit=limit,
+            sort=sort,
             json_output=json_output,
             with_preview=with_preview,
             with_message_id=with_message_id,
@@ -62,6 +79,7 @@ async def _run_search(
     query: str,
     state_db: str,
     limit: int,
+    sort: SortOrder,
     json_output: bool,
     with_preview: bool,
     with_message_id: bool,
@@ -111,19 +129,22 @@ async def _run_search(
             _handle_no_results(ctx, query)
         return
 
+    # Sort results by date
+    sorted_messages = _sort_by_date(result.messages, sort)
+
     if json_output:
-        _handle_json_output(ctx, result, with_preview)
+        _handle_json_output(ctx, result, sorted_messages, with_preview)
         return
 
     if interactive:
-        await _handle_interactive_mode(ctx, result.messages, query)
+        await _handle_interactive_mode(ctx, sorted_messages, query)
         return
 
     # Phase 5: Display results (table or list format)
     if with_preview:
-        _display_results_with_preview(ctx, result)
+        _display_results_with_preview(ctx, result, sorted_messages)
     else:
-        _display_results_table(ctx, result, query, with_message_id)
+        _display_results_table(ctx, result, query, sorted_messages, with_message_id)
 
     # Show summary if truncated
     if result.total_count > len(result.messages):
@@ -144,10 +165,44 @@ def _handle_no_results(ctx: CommandContext, query: str) -> None:
     )
 
 
-def _handle_json_output(ctx: CommandContext, result: SearchResult, with_preview: bool) -> None:
+def _sort_by_date(
+    messages: list[dict[str, object]], sort: SortOrder
+) -> list[dict[str, object]]:
+    """Sort messages by date.
+
+    Args:
+        messages: List of message dictionaries
+        sort: Sort order (descending=newest first, ascending=oldest first)
+
+    Returns:
+        Sorted list of messages
+    """
+    from email.utils import parsedate_to_datetime
+
+    def get_date_key(msg: dict[str, object]) -> str:
+        """Extract sortable date string from message."""
+        date_str = msg.get("date")
+        if not date_str:
+            return ""
+        try:
+            dt = parsedate_to_datetime(str(date_str))
+            return dt.isoformat()
+        except (ValueError, TypeError):
+            return str(date_str)
+
+    reverse = sort == SortOrder.descending
+    return sorted(messages, key=get_date_key, reverse=reverse)
+
+
+def _handle_json_output(
+    ctx: CommandContext,
+    result: SearchResult,
+    messages: list[dict[str, object]],
+    with_preview: bool,
+) -> None:
     """Handle JSON output mode."""
     output_data = []
-    for msg in result.messages:
+    for msg in messages:
         entry = {
             "gmail_id": msg.get("gmail_id"),
             "rfc_message_id": msg.get("rfc_message_id"),
@@ -165,17 +220,19 @@ def _handle_json_output(ctx: CommandContext, result: SearchResult, with_preview:
     ctx.output.set_json_payload(output_data)
 
 
-def _display_results_with_preview(ctx: CommandContext, result: SearchResult) -> None:
+def _display_results_with_preview(
+    ctx: CommandContext, result: SearchResult, messages: list[dict[str, object]]
+) -> None:
     """Display results in list format with body preview."""
     ctx.info(f"\nSearch Results ({result.total_count} found)\n")
-    for idx, msg in enumerate(result.messages, 1):
+    for idx, msg in enumerate(messages, 1):
         preview = _truncate_preview(str(msg.get("body_preview", "")))
         subject = msg.get("subject") or "(no subject)"
         date_str = _format_date_short(msg.get("date"))
 
-        ctx.info(f"{idx}. Subject: {subject}")
+        ctx.info(f"{idx}. Date: {date_str or 'N/A'}")
         ctx.info(f"   From: {msg.get('from_addr')}")
-        ctx.info(f"   Date: {date_str or 'N/A'}")
+        ctx.info(f"   Subject: {subject}")
         ctx.info(f"   RFC Message-ID: {msg.get('rfc_message_id')}")
         ctx.info(f"   Gmail ID: {msg.get('gmail_id') or 'N/A'}")
         ctx.info(f"   Archive: {msg.get('archive_file')}")
@@ -203,33 +260,38 @@ def _format_date_short(date_str: object) -> str:
 
 
 def _display_results_table(
-    ctx: CommandContext, result: SearchResult, query: str, with_message_id: bool = False
+    ctx: CommandContext,
+    result: SearchResult,
+    query: str,
+    messages: list[dict[str, object]],
+    with_message_id: bool = False,
 ) -> None:
     """Display results in table format using TableWidget.
 
+    Column order: Date, From, Subject, [Message-ID]
     When with_message_id is True, adds a Message-ID column with content="full"
     so the full ID is visible (wraps if needed) for copy/paste into extract command.
     """
     table = TableWidget(title=f"Search Results for: {query}")
 
-    # Add columns with appropriate content modes
-    # Subject: can be truncated, gets more space
-    table.add_column("Subject", content="cut", ratio=2)
-    # From: can be truncated
-    table.add_column("From", content="cut")
+    # Add columns in order: Date, From, Subject, [Message-ID]
     # Date: fixed width, ISO format fits
     table.add_column("Date", content="cut", max_width=16)
+    # From: can be truncated
+    table.add_column("From", content="cut")
+    # Subject: can be truncated, gets more space
+    table.add_column("Subject", content="cut", ratio=2)
 
     if with_message_id:
         # Message-ID: must be fully visible for copy/paste
         table.add_column("Message-ID", content="full")
 
     # Add rows
-    for msg in result.messages:
+    for msg in messages:
         row = [
-            str(msg.get("subject", "") or "(no subject)"),
-            str(msg.get("from_addr", "")),
             _format_date_short(msg.get("date")),
+            str(msg.get("from_addr", "")),
+            str(msg.get("subject", "") or "(no subject)"),
         ]
         if with_message_id:
             row.append(str(msg.get("rfc_message_id", "")))
