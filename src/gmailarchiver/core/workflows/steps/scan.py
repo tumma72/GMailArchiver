@@ -116,9 +116,3 @@ class ScanMboxStep:
             return StepResult.fail(f"Failed to scan archive: {e}")
         finally:
             scanner.cleanup_temp_file(mbox_path, is_temp)
-
-
-def _progress_callback(progress: ProgressReporter | None, count: int) -> None:
-    """Callback for progress reporting during scan."""
-    if progress:
-        progress.info(f"Scanned {count:,} messages...")

@@ -155,8 +155,19 @@ class TestImportWorkflowBehavior:
     async def test_reports_progress_during_import(
         self, hybrid_storage: HybridStorage, mbox_with_messages: Path
     ) -> None:
-        """Given a progress reporter, reports status during import."""
+        """Given a progress reporter, passes it to step-based workflow."""
         progress = MagicMock()
+        # Mock task_sequence for step-level progress
+        seq_cm = MagicMock()
+        task_cm = MagicMock()
+        seq_cm.__enter__ = MagicMock(return_value=seq_cm)
+        seq_cm.__exit__ = MagicMock(return_value=False)
+        seq_cm.task = MagicMock(return_value=task_cm)
+        task_cm.__enter__ = MagicMock(return_value=task_cm)
+        task_cm.__exit__ = MagicMock(return_value=False)
+        task_cm.complete = MagicMock()
+        task_cm.advance = MagicMock()
+        progress.task_sequence = MagicMock(return_value=seq_cm)
 
         config = ImportConfig(
             archive_patterns=[str(mbox_with_messages)],
@@ -167,8 +178,9 @@ class TestImportWorkflowBehavior:
         workflow = ImportWorkflow(hybrid_storage, progress=progress)
         await workflow.run(config)
 
-        # Should have called info at least once
-        assert progress.info.called
+        # Progress is passed to steps which use task_sequence
+        # (step-level progress reporting, not workflow-level info calls)
+        assert progress.task_sequence.called
 
     @pytest.mark.asyncio
     async def test_aggregates_results_from_multiple_patterns(
@@ -272,14 +284,10 @@ class TestImportWorkflowErrorHandling:
     async def test_handles_import_errors_with_progress(
         self, hybrid_storage: HybridStorage, tmp_path: Path
     ) -> None:
-        """Reports errors via progress reporter when import fails."""
+        """Collects errors in result when import fails."""
         from unittest.mock import AsyncMock, patch
 
         from gmailarchiver.core.workflows.step import WorkflowError
-
-        progress = MagicMock()
-        progress.info = MagicMock()
-        progress.error = MagicMock()
 
         # Create a valid mbox file
         mbox_path = tmp_path / "test.mbox"
@@ -291,7 +299,7 @@ class TestImportWorkflowErrorHandling:
             dedupe=True,
         )
 
-        workflow = ImportWorkflow(hybrid_storage, progress=progress)
+        workflow = ImportWorkflow(hybrid_storage)
 
         # Mock _import_single_file to raise a WorkflowError
         with patch.object(
@@ -301,21 +309,16 @@ class TestImportWorkflowErrorHandling:
         ):
             result = await workflow.run(config)
 
-        # Should have errors in result
+        # Should have errors in result (error handling is now at CLI layer)
         assert len(result.errors) > 0
-        # Should have called progress.error
-        progress.error.assert_called()
+        assert "Import failed" in result.errors[0] or "import_step" in result.errors[0]
 
     @pytest.mark.asyncio
     async def test_handles_general_exception_with_progress(
         self, hybrid_storage: HybridStorage, tmp_path: Path
     ) -> None:
-        """Reports general exceptions via progress reporter."""
+        """Collects general exceptions in result."""
         from unittest.mock import AsyncMock, patch
-
-        progress = MagicMock()
-        progress.info = MagicMock()
-        progress.error = MagicMock()
 
         # Create a valid mbox file
         mbox_path = tmp_path / "test.mbox"
@@ -327,7 +330,7 @@ class TestImportWorkflowErrorHandling:
             dedupe=True,
         )
 
-        workflow = ImportWorkflow(hybrid_storage, progress=progress)
+        workflow = ImportWorkflow(hybrid_storage)
 
         # Mock _import_single_file to raise a general exception
         with patch.object(
@@ -337,10 +340,9 @@ class TestImportWorkflowErrorHandling:
         ):
             result = await workflow.run(config)
 
-        # Should have errors in result
+        # Should have errors in result (error handling is now at CLI layer)
         assert len(result.errors) > 0
-        # Should have called progress.error
-        progress.error.assert_called()
+        assert "Unexpected error" in result.errors[0]
 
     @pytest.mark.asyncio
     async def test_collects_errors_from_single_file_result(

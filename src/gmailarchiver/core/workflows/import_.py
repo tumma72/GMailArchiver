@@ -77,16 +77,12 @@ class ImportWorkflow:
 
         # Process each pattern
         for pattern in config.archive_patterns:
-            if self.progress:
-                self.progress.info(f"Scanning pattern: {pattern}")
-
             # Find matching files
             scanner = FileScanner()
             matching_files = scanner.scan_pattern(pattern)
 
             if not matching_files:
-                if self.progress:
-                    self.progress.warning(f"No files found matching: {pattern}")
+                # No files found - will be handled by CLI layer
                 continue
 
             # Import each file using step-based workflow
@@ -109,13 +105,9 @@ class ImportWorkflow:
                 except WorkflowError as e:
                     error_msg = f"Failed to import {file_path}: {e}"
                     errors.append(error_msg)
-                    if self.progress:
-                        self.progress.error(error_msg)
                 except Exception as e:
                     error_msg = f"Failed to import {file_path}: {str(e)}"
                     errors.append(error_msg)
-                    if self.progress:
-                        self.progress.error(error_msg)
 
         return ImportResult(
             imported_count=imported_count,
