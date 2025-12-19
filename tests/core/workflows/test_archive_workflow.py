@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -128,7 +128,9 @@ async def test_delete_messages_permanent(workflow):
     count = await workflow.delete_messages("archive.mbox", permanent=True)
 
     assert count == 2
-    workflow.client.delete_messages_permanent.assert_called_once_with(["msg1", "msg2"])
+    workflow.client.delete_messages_permanent.assert_called_once_with(
+        ["msg1", "msg2"], progress_callback=ANY
+    )
     workflow.client.trash_messages.assert_not_called()
 
 
@@ -141,7 +143,9 @@ async def test_delete_messages_trash(workflow):
     count = await workflow.delete_messages("archive.mbox", permanent=False)
 
     assert count == 3
-    workflow.client.trash_messages.assert_called_once_with(["msg1", "msg2", "msg3"])
+    workflow.client.trash_messages.assert_called_once_with(
+        ["msg1", "msg2", "msg3"], progress_callback=ANY
+    )
     workflow.client.delete_messages_permanent.assert_not_called()
 
 

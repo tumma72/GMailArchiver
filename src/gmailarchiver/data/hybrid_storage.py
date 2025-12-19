@@ -262,11 +262,25 @@ class HybridStorage:
                         logger.debug(f"Committed {db_success_count} messages")
 
                 except Exception as e:
-                    # Log error but continue with next message (like original behavior)
-                    logger.error(f"Failed to record message {record['gmail_id']} in database: {e}")
-                    db_failed_count += 1
-                    if progress_callback:
-                        progress_callback(record["gmail_id"], record["subject"], "error")
+                    # Check if this is a duplicate (UNIQUE constraint on rfc_message_id)
+                    error_str = str(e).lower()
+                    if "unique constraint" in error_str and "rfc_message_id" in error_str:
+                        # Treat as duplicate skip, not error
+                        logger.debug(
+                            f"Skipping duplicate message {record['gmail_id']}: "
+                            f"rfc_message_id already in database"
+                        )
+                        skipped_count += 1
+                        if progress_callback:
+                            progress_callback(record["gmail_id"], record["subject"], "skipped")
+                    else:
+                        # Real error - log and continue
+                        logger.error(
+                            f"Failed to record message {record['gmail_id']} in database: {e}"
+                        )
+                        db_failed_count += 1
+                        if progress_callback:
+                            progress_callback(record["gmail_id"], record["subject"], "error")
 
             # Update counts
             archived_count = db_success_count

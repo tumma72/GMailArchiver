@@ -309,15 +309,29 @@ class DeleteGmailMessagesStep:
                 return StepResult.ok(output, count=0)
 
             action = "Permanently deleting" if permanent else "Moving to trash"
+            total_count = len(archived_ids)
+            last_count = 0  # Track last reported count for progress updates
 
             if progress:
                 with progress.task_sequence() as seq:
-                    with seq.task(f"{action} {len(archived_ids):,} messages") as task:
+                    with seq.task(f"{action} messages", total=total_count) as task:
+                        # Progress callback for per-message/batch updates
+                        def on_progress(count: int) -> None:
+                            nonlocal last_count
+                            delta = count - last_count
+                            if delta > 0:
+                                task.advance(delta)
+                            last_count = count
+
                         if permanent:
-                            await self.client.delete_messages_permanent(list(archived_ids))
+                            await self.client.delete_messages_permanent(
+                                list(archived_ids), progress_callback=on_progress
+                            )
                         else:
-                            await self.client.trash_messages(list(archived_ids))
-                        task.complete(f"{len(archived_ids):,} messages processed")
+                            await self.client.trash_messages(
+                                list(archived_ids), progress_callback=on_progress
+                            )
+                        task.complete(f"{total_count:,} messages processed")
             else:
                 if permanent:
                     await self.client.delete_messages_permanent(list(archived_ids))

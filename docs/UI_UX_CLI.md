@@ -299,6 +299,31 @@ Used when total is known. Shows percentage, count, and ETA.
 ⠹ Importing messages [████████░░░░] 67% • 1,234/2,000 • 2m remaining
 ```
 
+### 7.2.1 Spinner vs Progress Bar Decision
+
+**RULE**: When the total count is known AND the operation involves network/slow I/O, **always use progress bar**.
+
+| Scenario | Total Known? | Slow I/O? | Use |
+|----------|--------------|-----------|-----|
+| Authenticating with Gmail | No | Yes | Spinner |
+| Scanning messages (discovery) | No | Yes | Spinner with live counter |
+| Moving messages to trash | **Yes** | Yes | **Progress bar** |
+| Permanently deleting messages | **Yes** | Yes | **Progress bar** |
+| Importing messages from mbox | **Yes** | No (local) | Progress bar |
+| Compressing archive | No | Yes | Spinner |
+
+**Rationale**: For slow operations with known duration, users need feedback that the operation is progressing. A spinner doesn't convey how much work remains, which causes anxiety during long waits.
+
+**API Pattern for Network Operations with Progress**:
+```python
+with seq.task("Moving to trash", total=len(message_ids)) as task:
+    def on_progress(count: int) -> None:
+        task.advance(count - last_count)
+
+    await client.trash_messages(message_ids, progress_callback=on_progress)
+    task.complete(f"{len(message_ids):,} messages processed")
+```
+
 ### 7.3 Task Sequence (Issue #4 Pattern)
 Used for multi-step operations. Each task shows spinner while running, then checkmark/X when complete.
 

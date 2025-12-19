@@ -383,11 +383,16 @@ class GmailClient:
         # Gmail uses URL-safe base64 encoding
         return base64.urlsafe_b64decode(message["raw"])
 
-    async def trash_messages(self, message_ids: list[str]) -> int:
+    async def trash_messages(
+        self,
+        message_ids: list[str],
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> int:
         """Move messages to trash.
 
         Args:
             message_ids: List of message IDs to trash
+            progress_callback: Optional callback called after each message (receives count)
 
         Returns:
             Number of messages trashed
@@ -398,16 +403,23 @@ class GmailClient:
                 url = f"{GMAIL_API_BASE}/users/{self.user_id}/messages/{msg_id}/trash"
                 await self._request_with_retry("POST", url)
                 count += 1
+                if progress_callback:
+                    progress_callback(count)
             except Exception as e:
                 logger.warning(f"Failed to trash message {msg_id}: {e}")
 
         return count
 
-    async def delete_messages_permanent(self, message_ids: list[str]) -> int:
+    async def delete_messages_permanent(
+        self,
+        message_ids: list[str],
+        progress_callback: Callable[[int], None] | None = None,
+    ) -> int:
         """Permanently delete messages.
 
         Args:
             message_ids: List of message IDs to delete
+            progress_callback: Optional callback called after each batch (receives count)
 
         Returns:
             Number of messages deleted
@@ -423,6 +435,8 @@ class GmailClient:
                 url = f"{GMAIL_API_BASE}/users/{self.user_id}/messages/batchDelete"
                 await self._request_with_retry("POST", url, json={"ids": chunk})
                 count += len(chunk)
+                if progress_callback:
+                    progress_callback(count)
             except Exception as e:
                 logger.warning(f"Failed to delete messages batch: {e}")
 
