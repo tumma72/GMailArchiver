@@ -4,10 +4,11 @@ This test suite ensures all user-facing output goes through OutputManager
 for consistency and JSON output support.
 """
 
-import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 from gmailarchiver.cli.output import OutputManager
 from gmailarchiver.connectors.auth import GmailAuthenticator
@@ -66,7 +67,8 @@ class TestNoPrintStatements:
                         f"print() was called {mock_print.call_count} times in auth.py"
                     )
 
-    def test_archiver_uses_output_manager_not_print(self) -> None:
+    @pytest.mark.asyncio
+    async def test_archiver_uses_output_manager_not_print(self) -> None:
         """Test that ArchiverFacade doesn't use bare print() statements."""
         mock_client = Mock()
         mock_client.delete_messages_permanent = AsyncMock(return_value=5)
@@ -82,7 +84,7 @@ class TestNoPrintStatements:
 
         # Patch print to detect if it's called
         with patch("builtins.print") as mock_print:
-            count = asyncio.run(archiver.delete_archived_messages(["msg1"], permanent=True))
+            count = await archiver.delete_archived_messages(["msg1"], permanent=True)
 
             # Should complete successfully
             assert count == 5
@@ -144,7 +146,8 @@ class TestNoPrintStatements:
 class TestBackwardCompatibility:
     """Test backward compatibility when OutputManager is not provided."""
 
-    def test_archiver_works_without_output_manager(self) -> None:
+    @pytest.mark.asyncio
+    async def test_archiver_works_without_output_manager(self) -> None:
         """Test that archiver works when no OutputManager is provided."""
         mock_client = Mock()
         mock_client.delete_messages_permanent = AsyncMock(return_value=5)
@@ -159,7 +162,7 @@ class TestBackwardCompatibility:
         )
 
         # Should complete successfully even without OutputManager
-        count = asyncio.run(archiver.delete_archived_messages(["msg1"], permanent=True))
+        count = await archiver.delete_archived_messages(["msg1"], permanent=True)
 
         # Should return correct count
         assert count == 5

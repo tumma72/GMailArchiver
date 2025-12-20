@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.core.workflows.dedupe import DedupeConfig, DedupeWorkflow
 
 
@@ -69,29 +70,27 @@ async def dedupe_command(
     # Display deduplication results
     if dry_run:
         ctx.warning("DRY RUN - no changes made")
-        report_data = {
-            "Duplicates Found": f"{result.duplicates_found:,}",
-            "Messages Kept": f"{result.messages_kept:,}",
-        }
-        ctx.show_report("Duplicate Messages Preview", report_data)
+        (
+            ReportCard("Duplicate Messages Preview")
+            .add_field("Duplicates Found", f"{result.duplicates_found:,}")
+            .add_field("Messages Kept", f"{result.messages_kept:,}")
+            .render(ctx.output)
+        )
 
-        ctx.suggest_next_steps(
-            [
-                "Remove duplicates: gmailarchiver utilities dedupe --no-dry-run",
-                "Verify integrity first: gmailarchiver utilities verify-integrity",
-            ]
+        SuggestionList().add(
+            "Remove duplicates: gmailarchiver utilities dedupe --no-dry-run"
+        ).add("Verify integrity first: gmailarchiver utilities verify-integrity").render(
+            ctx.output
         )
     else:
-        report_data = {
-            "Duplicates Removed": f"{result.duplicates_removed:,}",
-            "Messages Kept": f"{result.messages_kept:,}",
-        }
-        ctx.show_report("Deduplication Results", report_data)
+        (
+            ReportCard("Deduplication Results")
+            .add_field("Duplicates Removed", f"{result.duplicates_removed:,}")
+            .add_field("Messages Kept", f"{result.messages_kept:,}")
+            .render(ctx.output)
+        )
 
         ctx.success(f"Successfully removed {result.duplicates_removed:,} duplicate messages")
-        ctx.suggest_next_steps(
-            [
-                "Verify consistency: gmailarchiver utilities verify-consistency",
-                "View updated status: gmailarchiver status",
-            ]
-        )
+        SuggestionList().add(
+            "Verify consistency: gmailarchiver utilities verify-consistency"
+        ).add("View updated status: gmailarchiver status").render(ctx.output)

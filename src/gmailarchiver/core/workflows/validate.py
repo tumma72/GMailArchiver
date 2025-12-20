@@ -1,13 +1,14 @@
 """Workflow for validating archive files.
 
-This module provides the async workflow for archive validation.
+This workflow validates archive file integrity using the Step composition
+pattern via WorkflowComposer.
 """
 
-import asyncio
 from dataclasses import dataclass
-from pathlib import Path
 
-from gmailarchiver.core.validator.facade import ValidatorFacade
+from gmailarchiver.core.workflows.composer import WorkflowComposer
+from gmailarchiver.core.workflows.step import ContextKeys, StepContext
+from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep, ValidateInput
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import ProgressReporter
 
@@ -35,9 +36,17 @@ class ValidateResult:
 
 
 class ValidateWorkflow:
-    """Workflow for validating archive files."""
+    """Workflow for validating archive files.
 
-    def __init__(self, storage: HybridStorage, progress: ProgressReporter | None = None) -> None:
+    Uses Step composition via WorkflowComposer:
+    1. ValidateArchiveStep - Performs comprehensive archive validation
+    """
+
+    def __init__(
+        self,
+        storage: HybridStorage,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         """Initialize validate workflow.
 
         Args:
@@ -46,12 +55,13 @@ class ValidateWorkflow:
         """
         self.storage = storage
         self.progress = progress
+        self._validate_step = ValidateArchiveStep(storage)
 
     async def run(self, config: ValidateConfig) -> ValidateResult:
-        """Run the full validate workflow.
+        """Run the validate workflow.
 
         Args:
-            config: ValidateConfig with archive file and database paths
+            config: ValidateConfig with archive file and options
 
         Returns:
             ValidateResult with validation status and details
@@ -59,62 +69,42 @@ class ValidateWorkflow:
         Raises:
             FileNotFoundError: If archive file doesn't exist
         """
-        archive_path = Path(config.archive_file)
-        if not archive_path.exists():
-            raise FileNotFoundError(f"Archive file not found: {config.archive_file}")
+        # Build workflow
+        workflow = WorkflowComposer("validate").add_step(self._validate_step)
 
-        # Create validator facade
-        validator = ValidatorFacade(
-            archive_path=archive_path,
-            state_db_path=config.state_db,
-            progress=self.progress,
-            db_manager=self.storage.db,
+        # Create context with config
+        context = StepContext()
+        context.set(ContextKeys.ARCHIVE_FILE, config.archive_file)
+        context.set("verbose", config.verbose)
+
+        # Create input
+        validate_input = ValidateInput(archive_path=config.archive_file)
+
+        # Execute workflow
+        await workflow.run(validate_input, progress=self.progress, context=context)
+
+        # Extract results from context
+        validation_passed = context.get(ContextKeys.VALIDATION_PASSED, False) or False
+        validation_details: dict[str, object] = context.get(ContextKeys.VALIDATION_DETAILS) or {}
+
+        # Build detailed report if verbose
+        details: dict[str, object] | None = None
+        if config.verbose:
+            details = {
+                "archive_file": config.archive_file,
+                "checks": validation_details,
+            }
+
+        # Extract check results with proper typing
+        errors_list = validation_details.get("errors", [])
+        errors = list(errors_list) if isinstance(errors_list, list) else []
+
+        return ValidateResult(
+            passed=validation_passed,
+            count_check=bool(validation_details.get("count_check", False)),
+            database_check=bool(validation_details.get("database_check", False)),
+            integrity_check=bool(validation_details.get("integrity_check", False)),
+            spot_check=bool(validation_details.get("spot_check", False)),
+            errors=errors,
+            details=details,
         )
-
-        try:
-            # Get expected message IDs from database
-            archived_ids = await self.storage.get_message_ids_for_archive(config.archive_file)
-
-            # Perform comprehensive validation
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task("Validating archive") as task:
-                        validation_result = await asyncio.to_thread(
-                            validator.validate_comprehensive, archived_ids
-                        )
-
-                        if validation_result.passed:
-                            task.complete("Validation passed")
-                        else:
-                            task.fail(f"Validation failed ({len(validation_result.errors)} errors)")
-            else:
-                validation_result = await asyncio.to_thread(
-                    validator.validate_comprehensive, archived_ids
-                )
-
-            # Build detailed report if verbose
-            details = None
-            if config.verbose:
-                details = {
-                    "archive_file": config.archive_file,
-                    "expected_count": len(archived_ids),
-                    "checks": {
-                        "count_check": validation_result.count_check,
-                        "database_check": validation_result.database_check,
-                        "integrity_check": validation_result.integrity_check,
-                        "spot_check": validation_result.spot_check,
-                    },
-                }
-
-            return ValidateResult(
-                passed=validation_result.passed,
-                count_check=validation_result.count_check,
-                database_check=validation_result.database_check,
-                integrity_check=validation_result.integrity_check,
-                spot_check=validation_result.spot_check,
-                errors=validation_result.errors,
-                details=details,
-            )
-
-        finally:
-            await validator.close()

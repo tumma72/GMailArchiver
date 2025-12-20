@@ -88,7 +88,7 @@ class ArchiveWorkflow:
         self._scan_step = ScanGmailMessagesStep(self.archiver)
         self._filter_step = FilterGmailMessagesStep(self.archiver)
         self._write_step = WriteMessagesStep(self.archiver)
-        self._validate_step = ValidateArchiveStep(storage.db)
+        self._validate_step = ValidateArchiveStep(storage)
         self._delete_step = DeleteGmailMessagesStep(client, storage)
 
     async def run(self, config: ArchiveConfig) -> ArchiveResult:

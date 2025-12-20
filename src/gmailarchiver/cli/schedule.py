@@ -1,6 +1,7 @@
 """Schedule commands implementation."""
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.data.scheduler import Scheduler, ScheduleValidationError
 
 
@@ -52,12 +53,13 @@ async def schedule_add_command(
     elif frequency == "monthly" and day_of_month is not None:
         schedule_parts.append(f"on day {day_of_month}")
 
-    report_data = {
-        "Schedule ID": str(schedule_id),
-        "Command": command,
-        "Schedule": " ".join(schedule_parts),
-    }
-    ctx.show_report("New Schedule", report_data)
+    (
+        ReportCard("New Schedule")
+        .add_field("Schedule ID", str(schedule_id))
+        .add_field("Command", command)
+        .add_field("Schedule", " ".join(schedule_parts))
+        .render(ctx.output)
+    )
 
 
 async def schedule_list_command(
@@ -82,9 +84,9 @@ async def schedule_list_command(
 
     if not schedules:
         ctx.warning("No schedules found")
-        ctx.suggest_next_steps(
-            ["Add a schedule: gmailarchiver schedule add 'check' --frequency daily --time 02:00"]
-        )
+        SuggestionList().add(
+            "Add a schedule: gmailarchiver schedule add 'check' --frequency daily --time 02:00"
+        ).render(ctx.output)
         return
 
     # Display schedules as table

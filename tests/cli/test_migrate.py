@@ -44,8 +44,13 @@ def mock_ctx() -> CommandContext:
     ctx.ui = MagicMock()
     ctx.info = MagicMock()
     ctx.success = MagicMock()
-    ctx.show_report = MagicMock()
-    ctx.suggest_next_steps = MagicMock()
+    # Set up output mock for widget rendering
+    ctx.output = MagicMock()
+    ctx.output.show_report = MagicMock()
+    ctx.output.suggest_next_steps = MagicMock()
+    ctx.output.json_mode = False
+    ctx.output.quiet = False
+    ctx.output.console = MagicMock()
     ctx.fail_and_exit = MagicMock(side_effect=SystemExit(1))
     return ctx
 
@@ -157,10 +162,10 @@ class TestSchemaVersionChecking:
         assert "1.1" in info_msg
 
         # Should NOT call show_report when versions match
-        mock_ctx.show_report.assert_not_called()
+        mock_ctx.output.show_report.assert_not_called()
 
         # Should NOT call suggest_next_steps when versions match
-        mock_ctx.suggest_next_steps.assert_not_called()
+        mock_ctx.output.suggest_next_steps.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_already_at_latest_returns_immediately(
@@ -200,7 +205,7 @@ class TestSchemaVersionChecking:
 
         # Verify success/suggest_next_steps were not called (early return)
         mock_ctx.success.assert_not_called()
-        mock_ctx.suggest_next_steps.assert_not_called()
+        mock_ctx.output.suggest_next_steps.assert_not_called()
 
 
 # ============================================================================
@@ -248,8 +253,8 @@ class TestSuccessfulMigration:
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Should show report with migration details
-        mock_ctx.show_report.assert_called_once()
-        call_args = mock_ctx.show_report.call_args
+        mock_ctx.output.show_report.assert_called_once()
+        call_args = mock_ctx.output.show_report.call_args
         assert call_args[0][0] == "Schema Migration"
         report_data = call_args[0][1]
 
@@ -333,9 +338,9 @@ class TestSuccessfulMigration:
 
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
-        # Should suggest next steps
-        mock_ctx.suggest_next_steps.assert_called_once()
-        suggestions = mock_ctx.suggest_next_steps.call_args[0][0]
+        # Should suggest next steps - SuggestionList widget calls ctx.output.suggest_next_steps
+        mock_ctx.output.suggest_next_steps.assert_called_once()
+        suggestions = mock_ctx.output.suggest_next_steps.call_args[0][0]
         assert len(suggestions) == 2
         assert any("verify-integrity" in s for s in suggestions)
         assert any("verify-consistency" in s for s in suggestions)
@@ -522,8 +527,8 @@ class TestMigrationExceptionHandling:
 
         # Should not call success, show_report, or suggest_next_steps
         mock_ctx.success.assert_not_called()
-        mock_ctx.show_report.assert_not_called()
-        mock_ctx.suggest_next_steps.assert_not_called()
+        mock_ctx.output.show_report.assert_not_called()
+        mock_ctx.output.suggest_next_steps.assert_not_called()
 
 
 # ============================================================================
@@ -658,7 +663,7 @@ class TestReportGeneration:
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Report should include all details
-        report_call = mock_ctx.show_report.call_args
+        report_call = mock_ctx.output.show_report.call_args
         report_data = report_call[0][1]
         details_str = report_data["Details"]
         assert "Schema updated successfully" in details_str
@@ -699,7 +704,7 @@ class TestReportGeneration:
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Report should show N/A for empty details
-        report_call = mock_ctx.show_report.call_args
+        report_call = mock_ctx.output.show_report.call_args
         report_data = report_call[0][1]
         assert report_data["Details"] == "None"
 
@@ -737,7 +742,7 @@ class TestReportGeneration:
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Backup path should show N/A
-        report_call = mock_ctx.show_report.call_args
+        report_call = mock_ctx.output.show_report.call_args
         report_data = report_call[0][1]
         assert report_data["Backup Created"] == "N/A"
 
@@ -895,7 +900,7 @@ class TestEdgeCases:
             await migrate_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # All details should be joined with newlines
-        report_call = mock_ctx.show_report.call_args
+        report_call = mock_ctx.output.show_report.call_args
         report_data = report_call[0][1]
         details_str = report_data["Details"]
         assert "Step 1: Checking schema" in details_str

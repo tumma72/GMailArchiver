@@ -6,7 +6,7 @@ from pathlib import Path
 import typer
 
 from gmailarchiver.cli.command_context import CommandContext, with_context
-from gmailarchiver.cli.ui import CLIProgressAdapter, ReportCard
+from gmailarchiver.cli.ui import CLIProgressAdapter, ReportCard, SuggestionList
 from gmailarchiver.core.workflows.import_ import ImportConfig, ImportResult, ImportWorkflow
 
 
@@ -105,12 +105,9 @@ async def _run_import(
 def _handle_no_files(ctx: CommandContext, pattern: str) -> None:
     """Handle case where no files matched the pattern."""
     ctx.warning(f"No files found matching: {pattern}")
-    ctx.suggest_next_steps(
-        [
-            "Check your file path or glob pattern",
-            "Use quotes around patterns with wildcards: 'archives/*.mbox'",
-        ]
-    )
+    SuggestionList().add("Check your file path or glob pattern").add(
+        "Use quotes around patterns with wildcards: 'archives/*.mbox'"
+    ).render(ctx.output)
 
 
 def _handle_errors(ctx: CommandContext, result: ImportResult) -> None:
@@ -151,9 +148,6 @@ def _show_final_summary(
         ctx.info("No new messages imported (all duplicates)")
 
     # Suggest next steps
-    ctx.suggest_next_steps(
-        [
-            "Search messages: gmailarchiver search 'query'",
-            "View status: gmailarchiver status",
-        ]
-    )
+    SuggestionList().add("Search messages: gmailarchiver search 'query'").add(
+        "View status: gmailarchiver status"
+    ).render(ctx.output)

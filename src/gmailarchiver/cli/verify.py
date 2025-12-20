@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.core.workflows.verify import VerifyConfig, VerifyType, VerifyWorkflow
 
 
@@ -36,20 +37,18 @@ async def verify_integrity_command(
         return
 
     # Display results
-    report_data = {
-        "Verification Type": result.verify_type,
-        "Passed": "Yes" if result.passed else "No",
-        "Issues Found": str(result.issues_found),
-    }
-    ctx.show_report("Database Integrity", report_data)
+    (
+        ReportCard("Database Integrity")
+        .add_field("Verification Type", result.verify_type)
+        .add_field("Passed", "Yes" if result.passed else "No")
+        .add_field("Issues Found", str(result.issues_found))
+        .render(ctx.output)
+    )
 
     if not result.passed:
-        ctx.suggest_next_steps(
-            [
-                "Repair database: gmailarchiver utilities repair --no-dry-run",
-                "Restore from backup: gmailarchiver utilities rollback",
-            ]
-        )
+        SuggestionList().add(
+            "Repair database: gmailarchiver utilities repair --no-dry-run"
+        ).add("Restore from backup: gmailarchiver utilities rollback").render(ctx.output)
         raise SystemExit(1)
 
 
@@ -90,19 +89,19 @@ async def verify_consistency_command(
                 return
 
     # Display detailed results
-    report_data = {
-        "Verification Type": result.verify_type,
-        "Passed": "Yes" if result.passed else "No",
-        "Issues Found": str(result.issues_found),
-    }
-    ctx.show_report("Database/Mbox Consistency", report_data)
+    (
+        ReportCard("Database/Mbox Consistency")
+        .add_field("Verification Type", result.verify_type)
+        .add_field("Passed", "Yes" if result.passed else "No")
+        .add_field("Issues Found", str(result.issues_found))
+        .render(ctx.output)
+    )
 
     if not result.passed:
-        ctx.suggest_next_steps(
-            [
-                "Repair database: gmailarchiver utilities repair --backfill --no-dry-run",
-                "Re-import archives: gmailarchiver utilities import archive.mbox",
-            ]
+        SuggestionList().add(
+            "Repair database: gmailarchiver utilities repair --backfill --no-dry-run"
+        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(
+            ctx.output
         )
         raise SystemExit(1)
 
@@ -144,18 +143,18 @@ async def verify_offsets_command(
                 return
 
     # Display detailed results
-    report_data = {
-        "Verification Type": result.verify_type,
-        "Passed": "Yes" if result.passed else "No",
-        "Issues Found": str(result.issues_found),
-    }
-    ctx.show_report("Mbox Offset Verification", report_data)
+    (
+        ReportCard("Mbox Offset Verification")
+        .add_field("Verification Type", result.verify_type)
+        .add_field("Passed", "Yes" if result.passed else "No")
+        .add_field("Issues Found", str(result.issues_found))
+        .render(ctx.output)
+    )
 
     if not result.passed:
-        ctx.suggest_next_steps(
-            [
-                "Repair offsets: gmailarchiver utilities repair --backfill --no-dry-run",
-                "Re-import archives: gmailarchiver utilities import archive.mbox",
-            ]
+        SuggestionList().add(
+            "Repair offsets: gmailarchiver utilities repair --backfill --no-dry-run"
+        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(
+            ctx.output
         )
         raise SystemExit(1)

@@ -29,8 +29,13 @@ def mock_ctx() -> CommandContext:
     ctx = MagicMock(spec=CommandContext)
     ctx.storage = MagicMock()
     ctx.ui = MagicMock()
-    ctx.show_report = MagicMock()
-    ctx.suggest_next_steps = MagicMock()
+    # Set up output mock for widget rendering
+    ctx.output = MagicMock()
+    ctx.output.show_report = MagicMock()
+    ctx.output.suggest_next_steps = MagicMock()
+    ctx.output.json_mode = False
+    ctx.output.quiet = False
+    ctx.output.console = MagicMock()
     ctx.fail_and_exit = MagicMock(side_effect=SystemExit(1))
     return ctx
 
@@ -80,15 +85,15 @@ class TestVerifyIntegrityCommand:
             await verify_integrity_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Should show report with passed=True
-        mock_ctx.show_report.assert_called_once()
-        call_args = mock_ctx.show_report.call_args
+        mock_ctx.output.show_report.assert_called_once()
+        call_args = mock_ctx.output.show_report.call_args
         assert call_args[0][0] == "Database Integrity"
         report_data = call_args[0][1]
         assert report_data["Passed"] == "Yes"
         assert report_data["Issues Found"] == "0"
 
         # Should not suggest next steps on success
-        mock_ctx.suggest_next_steps.assert_not_called()
+        mock_ctx.output.suggest_next_steps.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_failed_integrity_check_shows_issues_and_suggestions(
@@ -111,14 +116,14 @@ class TestVerifyIntegrityCommand:
                 await verify_integrity_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Should show report with passed=False
-        mock_ctx.show_report.assert_called_once()
-        report_data = mock_ctx.show_report.call_args[0][1]
+        mock_ctx.output.show_report.assert_called_once()
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Passed"] == "No"
         assert report_data["Issues Found"] == "2"
 
         # Should suggest repair actions
-        mock_ctx.suggest_next_steps.assert_called_once()
-        suggestions = mock_ctx.suggest_next_steps.call_args[0][0]
+        mock_ctx.output.suggest_next_steps.assert_called_once()
+        suggestions = mock_ctx.output.suggest_next_steps.call_args[0][0]
         assert len(suggestions) == 2
         assert "repair" in suggestions[0].lower()
         assert "rollback" in suggestions[1].lower()
@@ -224,8 +229,8 @@ class TestVerifyConsistencyCommand:
         assert "consistent" in mock_task.complete.call_args[0][0].lower()
 
         # Should show report
-        mock_ctx.show_report.assert_called_once()
-        report_data = mock_ctx.show_report.call_args[0][1]
+        mock_ctx.output.show_report.assert_called_once()
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Passed"] == "Yes"
 
     @pytest.mark.asyncio
@@ -266,8 +271,8 @@ class TestVerifyConsistencyCommand:
         mock_task.fail.assert_called_once()
 
         # Should suggest repair with --backfill option
-        mock_ctx.suggest_next_steps.assert_called_once()
-        suggestions = mock_ctx.suggest_next_steps.call_args[0][0]
+        mock_ctx.output.suggest_next_steps.assert_called_once()
+        suggestions = mock_ctx.output.suggest_next_steps.call_args[0][0]
         assert any("--backfill" in s for s in suggestions)
         assert any("re-import" in s.lower() for s in suggestions)
 
@@ -393,8 +398,8 @@ class TestVerifyOffsetsCommand:
         assert "valid" in mock_task.complete.call_args[0][0].lower()
 
         # Should show report
-        mock_ctx.show_report.assert_called_once()
-        report_data = mock_ctx.show_report.call_args[0][1]
+        mock_ctx.output.show_report.assert_called_once()
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Passed"] == "Yes"
 
     @pytest.mark.asyncio
@@ -431,8 +436,8 @@ class TestVerifyOffsetsCommand:
                 await verify_offsets_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Should suggest repair with backfill
-        mock_ctx.suggest_next_steps.assert_called_once()
-        suggestions = mock_ctx.suggest_next_steps.call_args[0][0]
+        mock_ctx.output.suggest_next_steps.assert_called_once()
+        suggestions = mock_ctx.output.suggest_next_steps.call_args[0][0]
         assert any("--backfill" in s for s in suggestions)
 
     @pytest.mark.asyncio
@@ -569,7 +574,7 @@ class TestVerifyCommandsEdgeCases:
 
             await verify_integrity_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
-        report_data = mock_ctx.show_report.call_args[0][1]
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Issues Found"] == "0"
 
     @pytest.mark.asyncio
@@ -601,7 +606,7 @@ class TestVerifyCommandsEdgeCases:
             await verify_consistency_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
         # Should not raise SystemExit
-        report_data = mock_ctx.show_report.call_args[0][1]
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Passed"] == "Yes"
 
     @pytest.mark.asyncio
@@ -632,5 +637,5 @@ class TestVerifyCommandsEdgeCases:
             with pytest.raises(SystemExit):
                 await verify_offsets_command(ctx=mock_ctx, state_db=v11_db, json_output=False)
 
-        report_data = mock_ctx.show_report.call_args[0][1]
+        report_data = mock_ctx.output.show_report.call_args[0][1]
         assert report_data["Issues Found"] == "1000"

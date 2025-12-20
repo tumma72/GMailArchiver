@@ -29,8 +29,18 @@ async def test_status_workflow_success(mock_storage):
         recent_runs=[],
     )
     mock_storage.get_recent_runs.return_value = [
-        {"run_id": 1, "archive_file": "file1.mbox", "run_timestamp": "2024-01-01", "messages_archived": 50},
-        {"run_id": 2, "archive_file": "file2.mbox", "run_timestamp": "2024-01-02", "messages_archived": 73},
+        {
+            "run_id": 1,
+            "archive_file": "file1.mbox",
+            "run_timestamp": "2024-01-01",
+            "messages_archived": 50,
+        },
+        {
+            "run_id": 2,
+            "archive_file": "file2.mbox",
+            "run_timestamp": "2024-01-02",
+            "messages_archived": 73,
+        },
     ]
 
     workflow = StatusWorkflow(mock_storage)

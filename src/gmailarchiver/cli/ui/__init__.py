@@ -6,6 +6,7 @@ This module provides the user interface components for CLI commands:
 - ReportCard: Key-value reports with optional emoji
 - SuggestionList: Next-step suggestions with context
 - ErrorPanel: Error messages with details and suggestions
+- ValidationPanel: Multi-check validation results with pass/fail/skip states
 - ProgressSummary: Operation statistics display
 
 **Builders** (live progress):
@@ -54,6 +55,7 @@ from gmailarchiver.cli.ui.protocols import (
 
 # Widgets
 from gmailarchiver.cli.ui.widgets import (
+    CheckStatus,
     ErrorPanel,
     LogLevel,
     LogWindowWidget,
@@ -62,6 +64,7 @@ from gmailarchiver.cli.ui.widgets import (
     ReportCard,
     SuggestionList,
     TaskWidget,
+    ValidationPanel,
     WorkflowProgressWidget,
 )
 
@@ -99,6 +102,8 @@ __all__ = [
     "ReportCard",
     "SuggestionList",
     "ErrorPanel",
+    "ValidationPanel",
+    "CheckStatus",
     "ProgressSummary",
     "TaskWidget",
     "ProgressBarWidget",

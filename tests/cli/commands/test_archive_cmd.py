@@ -78,9 +78,15 @@ def create_mock_output() -> Mock:
     """
     output = Mock()
     output.show_validation_report = Mock()
+    output.suggest_next_steps = Mock()  # For SuggestionList widget
+    output.show_report = Mock()  # For ReportCard widget
     output.progress_context = Mock()
     output.progress_context.return_value.__enter__ = Mock()
     output.progress_context.return_value.__exit__ = Mock()
+    # These are needed for ValidationPanel.render()
+    output.json_mode = False
+    output.quiet = False
+    output.console = Mock()
     return output
 
 
@@ -405,7 +411,8 @@ class TestRunArchive:
 
         # Assert
         ctx.warning.assert_called_with("Archive was interrupted (Ctrl+C)")
-        ctx.suggest_next_steps.assert_called_once()
+        # SuggestionList widget calls ctx.output.suggest_next_steps internally
+        ctx.output.suggest_next_steps.assert_called_once()
 
     async def test_run_archive_validation_failed(self):
         """Should handle validation failure correctly."""
@@ -494,7 +501,8 @@ class TestRunArchive:
 
         # Assert
         ctx.warning.assert_called_with("No messages found matching criteria")
-        ctx.suggest_next_steps.assert_called_once()
+        # SuggestionList widget calls ctx.output.suggest_next_steps internally
+        ctx.output.suggest_next_steps.assert_called_once()
 
     async def test_run_archive_no_new_messages(self):
         """Should handle no new messages (all already archived)."""
@@ -577,8 +585,9 @@ class TestRunArchive:
                 credentials=None,
             )
 
-        # Assert
-        ctx.output.show_validation_report.assert_called_once()
+        # Assert - ValidationPanel.render() calls ctx.output.console.print()
+        # In verbose mode, validation panel should be rendered
+        assert ctx.output.console.print.called
         ctx.success.assert_called()
 
     async def test_run_archive_with_deletion_after_archiving(self):
@@ -686,9 +695,9 @@ class TestHandleInterrupted:
         assert any("Partial archive saved" in msg for msg in info_calls)
         assert any("3 messages archived" in msg for msg in info_calls)
 
-        # Check suggestions
-        ctx.suggest_next_steps.assert_called_once()
-        suggestions = ctx.suggest_next_steps.call_args[0][0]
+        # Check suggestions - SuggestionList widget calls ctx.output.suggest_next_steps
+        ctx.output.suggest_next_steps.assert_called_once()
+        suggestions = ctx.output.suggest_next_steps.call_args[0][0]
         assert any("Resume" in s for s in suggestions)
 
 
@@ -740,8 +749,8 @@ class TestHandleValidationFailure:
 
             _handle_validation_failure(ctx, result, verbose=True)
 
-        # Assert
-        ctx.output.show_validation_report.assert_called_once()
+        # Assert - ValidationPanel.render() calls ctx.output.console.print()
+        assert ctx.output.console.print.called
         MockErrorPanel.assert_called_once()
         mock_panel.render.assert_called_once_with(ctx.output)
 

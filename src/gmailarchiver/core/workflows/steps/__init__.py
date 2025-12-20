@@ -38,11 +38,11 @@ from gmailarchiver.core.workflows.steps.gmail import (
 from gmailarchiver.core.workflows.steps.metadata import RecordMetadataStep
 from gmailarchiver.core.workflows.steps.scan import ScanMboxStep
 
-# Stats steps
-from gmailarchiver.core.workflows.steps.stats import GetArchiveStatsStep
-
 # Search steps
 from gmailarchiver.core.workflows.steps.search import SearchMessagesStep
+
+# Stats steps
+from gmailarchiver.core.workflows.steps.stats import GetArchiveStatsStep
 from gmailarchiver.core.workflows.steps.validate import ValidateArchiveStep
 
 # Write steps

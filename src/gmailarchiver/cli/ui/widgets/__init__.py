@@ -4,6 +4,7 @@ This package provides reusable widgets for CLI output:
 - ReportCard: Key-value reports with optional emoji
 - SuggestionList: Next-step suggestions with context
 - ErrorPanel: Error messages with details and suggestions
+- ValidationPanel: Multi-check validation results with pass/fail/skip states
 - ProgressSummary: Operation statistics display
 - TaskWidget: Single task display with spinner/status transitions
 - ProgressBarWidget: Workflow progress bar with ETA and count display
@@ -56,12 +57,15 @@ from gmailarchiver.cli.ui.widgets.report_card import ReportCard
 from gmailarchiver.cli.ui.widgets.suggestions import SuggestionList
 from gmailarchiver.cli.ui.widgets.table import ColumnSpec, TableWidget
 from gmailarchiver.cli.ui.widgets.task import TaskWidget
+from gmailarchiver.cli.ui.widgets.validation import CheckStatus, ValidationPanel
 from gmailarchiver.cli.ui.widgets.workflow_progress import WorkflowProgressWidget
 
 __all__ = [
     "ReportCard",
     "SuggestionList",
     "ErrorPanel",
+    "ValidationPanel",
+    "CheckStatus",
     "ProgressSummary",
     "TaskWidget",
     "ProgressBarWidget",

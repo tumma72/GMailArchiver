@@ -98,7 +98,9 @@ class TestValidateWorkflowBehavior:
     async def test_raises_error_for_missing_archive(
         self, hybrid_storage: HybridStorage, tmp_path: Path
     ) -> None:
-        """Given a nonexistent archive file, raises FileNotFoundError."""
+        """Given a nonexistent archive file, raises WorkflowError."""
+        from gmailarchiver.core.workflows.step import WorkflowError
+
         config = ValidateConfig(
             archive_file=str(tmp_path / "nonexistent.mbox"),
             state_db=str(hybrid_storage.db.db_path),
@@ -107,7 +109,7 @@ class TestValidateWorkflowBehavior:
 
         workflow = ValidateWorkflow(hybrid_storage)
 
-        with pytest.raises(FileNotFoundError, match="Archive file not found"):
+        with pytest.raises(WorkflowError, match="Archive not found"):
             await workflow.run(config)
 
     @pytest.mark.asyncio
@@ -128,10 +130,13 @@ class TestValidateWorkflowBehavior:
         assert result.passed is True
         assert result.details is not None
         assert "archive_file" in result.details
-        assert "expected_count" in result.details
         assert "checks" in result.details
-        assert result.details["expected_count"] == 3
-        assert result.details["checks"]["count_check"] is True
+        # The checks dict contains the individual check results
+        checks = result.details["checks"]
+        assert checks["count_check"] is True
+        assert checks["database_check"] is True
+        assert checks["integrity_check"] is True
+        assert checks["spot_check"] is True
 
     @pytest.mark.asyncio
     async def test_reports_validation_failure_with_errors(

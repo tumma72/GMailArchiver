@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.core.workflows.repair import RepairConfig, RepairWorkflow
 
 
@@ -47,31 +48,34 @@ async def repair_command(
     # Display detailed results
     if dry_run:
         ctx.warning("DRY RUN - no changes made")
-        report_data = {
-            "Issues Found": str(result.issues_found),
-            "Details": "\n".join(result.details) if result.details else "None",
-        }
+        (
+            ReportCard("Database Repair")
+            .add_field("Issues Found", str(result.issues_found))
+            .add_field("Details", "\n".join(result.details) if result.details else "None")
+            .render(ctx.output)
+        )
     else:
-        report_data = {
-            "Issues Fixed": str(result.issues_fixed),
-            "Details": "\n".join(result.details) if result.details else "None",
-        }
-
-    ctx.show_report("Database Repair", report_data)
+        (
+            ReportCard("Database Repair")
+            .add_field("Issues Fixed", str(result.issues_fixed))
+            .add_field("Details", "\n".join(result.details) if result.details else "None")
+            .render(ctx.output)
+        )
 
     # Suggest next steps
     if dry_run and result.issues_found > 0:
-        suggestions = ["Apply repairs: gmailarchiver utilities repair --no-dry-run"]
+        suggestions = SuggestionList().add(
+            "Apply repairs: gmailarchiver utilities repair --no-dry-run"
+        )
         if backfill:
-            suggestions.append(
+            suggestions.add(
                 "Backfill offsets: gmailarchiver utilities repair --backfill --no-dry-run"
             )
-        ctx.suggest_next_steps(suggestions)
+        suggestions.render(ctx.output)
     elif not dry_run and result.issues_fixed > 0:
         ctx.success(f"Successfully repaired {result.issues_fixed} issues")
-        ctx.suggest_next_steps(
-            [
-                "Verify integrity: gmailarchiver utilities verify-integrity",
-                "Verify consistency: gmailarchiver utilities verify-consistency",
-            ]
+        SuggestionList().add(
+            "Verify integrity: gmailarchiver utilities verify-integrity"
+        ).add("Verify consistency: gmailarchiver utilities verify-consistency").render(
+            ctx.output
         )

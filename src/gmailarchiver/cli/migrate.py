@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.core.workflows.migrate import MigrateConfig, MigrateWorkflow
 
 
@@ -50,19 +51,17 @@ async def migrate_command(
                 return
 
     # Display migration results
-    report_data = {
-        "Old Version": result.from_version,
-        "New Version": result.to_version,
-        "Backup Created": result.backup_path or "N/A",
-        "Details": "\n".join(result.details) if result.details else "None",
-    }
-    ctx.show_report("Schema Migration", report_data)
+    (
+        ReportCard("Schema Migration")
+        .add_field("Old Version", result.from_version)
+        .add_field("New Version", result.to_version)
+        .add_field("Backup Created", result.backup_path or "N/A")
+        .add_field("Details", "\n".join(result.details) if result.details else "None")
+        .render(ctx.output)
+    )
 
     # Success message and next steps
     ctx.success(f"Successfully migrated database to v{result.to_version}")
-    ctx.suggest_next_steps(
-        [
-            "Verify integrity: gmailarchiver utilities verify-integrity",
-            "Verify consistency: gmailarchiver utilities verify-consistency",
-        ]
-    )
+    SuggestionList().add("Verify integrity: gmailarchiver utilities verify-integrity").add(
+        "Verify consistency: gmailarchiver utilities verify-consistency"
+    ).render(ctx.output)

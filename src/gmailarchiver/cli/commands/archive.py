@@ -6,7 +6,13 @@ from pathlib import Path
 import typer
 
 from gmailarchiver.cli.command_context import CommandContext, with_context
-from gmailarchiver.cli.ui import CLIProgressAdapter, ErrorPanel, ReportCard
+from gmailarchiver.cli.ui import (
+    CLIProgressAdapter,
+    ErrorPanel,
+    ReportCard,
+    SuggestionList,
+    ValidationPanel,
+)
 from gmailarchiver.core.workflows.archive import (
     ArchiveConfig,
     ArchiveResult,
@@ -146,17 +152,14 @@ async def _run_archive(
 
         # 5.4 Show verbose validation if requested
         if verbose and result.validation_details:
-            ctx.output.show_validation_report(result.validation_details, title="Archive Validation")
+            _build_validation_panel(result.validation_details).render(ctx.output)
 
         # 5.5 No messages found
         if result.found_count == 0:
             ctx.warning("No messages found matching criteria")
-            ctx.suggest_next_steps(
-                [
-                    "Check your age threshold",
-                    "Verify messages exist in Gmail matching the criteria",
-                ]
-            )
+            SuggestionList().add("Check your age threshold").add(
+                "Verify messages exist in Gmail matching the criteria"
+            ).render(ctx.output)
             return
 
         # 5.6 Nothing new to archive (but may offer deletion)
@@ -188,18 +191,16 @@ def _handle_interrupted(ctx: CommandContext, result: ArchiveResult, age_threshol
     ctx.warning("Archive was interrupted (Ctrl+C)")
     ctx.info(f"Partial archive saved: {result.actual_file}")
     ctx.info(f"Progress: {result.archived_count} messages archived")
-    ctx.suggest_next_steps(
-        [
-            f"Resume: gmailarchiver archive {age_threshold}",
-            "Cleanup: gmailarchiver cleanup --list",
-        ]
-    )
+    SuggestionList().add(f"Resume: gmailarchiver archive {age_threshold}").add(
+        "Cleanup: gmailarchiver cleanup --list"
+    ).render(ctx.output)
 
 
 def _handle_validation_failure(ctx: CommandContext, result: ArchiveResult, verbose: bool) -> None:
     """Handle validation failure."""
-    if verbose and result.validation_details:
-        ctx.output.show_validation_report(result.validation_details, title="Archive Validation")
+    if result.validation_details:
+        # Always show ValidationPanel on failure (per UI_UX_CLI.md guideline)
+        _build_validation_panel(result.validation_details).render(ctx.output)
 
     ErrorPanel("Validation Failed", "Archive validation did not pass all checks").add_details(
         result.validation_details.get("errors", []) if result.validation_details else []
@@ -315,3 +316,29 @@ def _show_final_summary(
 
     card.render(ctx.output)
     ctx.success("Archive completed!")
+
+
+def _build_validation_panel(details: dict[str, object]) -> ValidationPanel:
+    """Build a ValidationPanel from validation details dict.
+
+    Args:
+        details: Dict with count_check, database_check, integrity_check,
+                 spot_check (bools) and errors (list[str])
+
+    Returns:
+        ValidationPanel configured with the check results
+    """
+    panel = ValidationPanel("Archive Validation")
+
+    # Add checks in order
+    panel.add_check("Count check", passed=bool(details.get("count_check", False)))
+    panel.add_check("Database check", passed=bool(details.get("database_check", False)))
+    panel.add_check("Integrity check", passed=bool(details.get("integrity_check", False)))
+    panel.add_check("Spot check", passed=bool(details.get("spot_check", False)))
+
+    # Add errors if any
+    errors = details.get("errors", [])
+    if errors and isinstance(errors, list):
+        panel.add_errors([str(e) for e in errors])
+
+    return panel

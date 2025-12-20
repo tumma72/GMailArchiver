@@ -2,7 +2,7 @@
 name: architect
 description: System architecture expert for design decisions, SOLID principles validation, and layer contract enforcement. Use for Phase 2 (Design) of the development workflow.
 tools: Read, Grep, Glob
-model: sonnet
+model: opus
 ---
 
 # Architect Agent

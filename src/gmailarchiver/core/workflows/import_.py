@@ -5,7 +5,6 @@ using composable Steps for scanning, filtering, and recording metadata.
 """
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from gmailarchiver.core.importer._scanner import FileScanner

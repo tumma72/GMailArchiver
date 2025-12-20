@@ -15,7 +15,7 @@ from gmailarchiver.core.workflows.steps.validate import (
     ValidateArchiveStep,
     ValidateInput,
 )
-from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 @pytest.fixture
@@ -47,17 +47,17 @@ def empty_mbox(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-async def db_with_archive_messages(
-    db_manager: DBManager, mbox_with_messages: Path
-) -> tuple[DBManager, Path]:
-    """Set up database with messages matching the mbox file."""
+async def storage_with_archive_messages(
+    hybrid_storage: HybridStorage, mbox_with_messages: Path
+) -> tuple[HybridStorage, Path]:
+    """Set up hybrid storage with messages matching the mbox file."""
     from gmailarchiver.core.importer._reader import MboxReader
 
     reader = MboxReader()
     scanned = reader.scan_rfc_message_ids(mbox_with_messages, None)
 
     for rfc_id, offset, length in scanned:
-        await db_manager._conn.execute(
+        await hybrid_storage.db._conn.execute(
             """
             INSERT INTO messages (
                 rfc_message_id, gmail_id, archived_timestamp, archive_file,
@@ -66,8 +66,8 @@ async def db_with_archive_messages(
             """,
             (rfc_id, f"gmail_{rfc_id}", str(mbox_with_messages), offset, length, "default"),
         )
-    await db_manager.commit()
-    return db_manager, mbox_with_messages
+    await hybrid_storage.db.commit()
+    return hybrid_storage, mbox_with_messages
 
 
 class TestValidateArchiveStepBehavior:
@@ -75,11 +75,11 @@ class TestValidateArchiveStepBehavior:
 
     @pytest.mark.asyncio
     async def test_validates_archive_successfully(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """Given a valid archive with matching database records, validation passes."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         result = await step.execute(context, ValidateInput(str(mbox_path)))
@@ -90,11 +90,11 @@ class TestValidateArchiveStepBehavior:
 
     @pytest.mark.asyncio
     async def test_reads_archive_path_from_context(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """When input is None, reads archive path from context."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
         context.set(ContextKeys.ARCHIVE_FILE, str(mbox_path))
 
@@ -105,11 +105,11 @@ class TestValidateArchiveStepBehavior:
 
     @pytest.mark.asyncio
     async def test_accepts_path_string_directly(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """Step accepts a path string as input."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         result = await step.execute(context, str(mbox_path))
@@ -117,9 +117,9 @@ class TestValidateArchiveStepBehavior:
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_fails_when_no_archive_path(self, db_manager: DBManager) -> None:
+    async def test_fails_when_no_archive_path(self, hybrid_storage: HybridStorage) -> None:
         """Fails gracefully when archive path is not provided."""
-        step = ValidateArchiveStep(db_manager)
+        step = ValidateArchiveStep(hybrid_storage)
         context = StepContext()
         # Don't set ARCHIVE_FILE
 
@@ -131,10 +131,10 @@ class TestValidateArchiveStepBehavior:
 
     @pytest.mark.asyncio
     async def test_fails_when_archive_file_missing(
-        self, db_manager: DBManager, tmp_path: Path
+        self, hybrid_storage: HybridStorage, tmp_path: Path
     ) -> None:
         """Fails gracefully when archive file doesn't exist."""
-        step = ValidateArchiveStep(db_manager)
+        step = ValidateArchiveStep(hybrid_storage)
         context = StepContext()
         nonexistent = tmp_path / "nonexistent.mbox"
 
@@ -146,11 +146,11 @@ class TestValidateArchiveStepBehavior:
 
     @pytest.mark.asyncio
     async def test_stores_validation_result_in_context(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """Step stores validation results in context."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         await step.execute(context, ValidateInput(str(mbox_path)))
@@ -159,20 +159,20 @@ class TestValidateArchiveStepBehavior:
         assert context.get(ContextKeys.VALIDATION_PASSED) is True
 
     @pytest.mark.asyncio
-    async def test_step_has_descriptive_name(self, db_manager: DBManager) -> None:
+    async def test_step_has_descriptive_name(self, hybrid_storage: HybridStorage) -> None:
         """Step has a name for identification in workflows."""
-        step = ValidateArchiveStep(db_manager)
+        step = ValidateArchiveStep(hybrid_storage)
 
         assert step.name == "validate_archive"
         assert len(step.description) > 0
 
     @pytest.mark.asyncio
     async def test_output_contains_check_results(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """Output contains individual check results."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         result = await step.execute(context, ValidateInput(str(mbox_path)))
@@ -190,9 +190,11 @@ class TestValidateArchiveStepWithEmptyArchive:
     """Test validation with edge cases."""
 
     @pytest.mark.asyncio
-    async def test_validates_empty_archive(self, db_manager: DBManager, empty_mbox: Path) -> None:
+    async def test_validates_empty_archive(
+        self, hybrid_storage: HybridStorage, empty_mbox: Path
+    ) -> None:
         """Given an empty archive, validation still works."""
-        step = ValidateArchiveStep(db_manager)
+        step = ValidateArchiveStep(hybrid_storage)
         context = StepContext()
 
         result = await step.execute(context, ValidateInput(str(empty_mbox)))
@@ -207,12 +209,12 @@ class TestValidateArchiveStepWithProgress:
 
     @pytest.mark.asyncio
     async def test_reports_progress_during_validation(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """Validation reports progress when progress reporter is provided."""
         from unittest.mock import MagicMock
 
-        db_manager, mbox_path = db_with_archive_messages
+        storage, mbox_path = storage_with_archive_messages
 
         progress = MagicMock()
         seq_cm = MagicMock()
@@ -226,7 +228,7 @@ class TestValidateArchiveStepWithProgress:
         task_cm.fail = MagicMock()
         progress.task_sequence = MagicMock(return_value=seq_cm)
 
-        step = ValidateArchiveStep(db_manager)
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         result = await step.execute(context, ValidateInput(str(mbox_path)), progress)
@@ -238,11 +240,11 @@ class TestValidateArchiveStepWithProgress:
 
     @pytest.mark.asyncio
     async def test_reads_actual_file_from_context_with_fallback(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """When input is None, reads ACTUAL_FILE from context first."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         # Set ACTUAL_FILE in context (primary source)
@@ -255,11 +257,11 @@ class TestValidateArchiveStepWithProgress:
 
     @pytest.mark.asyncio
     async def test_falls_back_to_archive_file_when_actual_file_missing(
-        self, db_with_archive_messages: tuple[DBManager, Path]
+        self, storage_with_archive_messages: tuple[HybridStorage, Path]
     ) -> None:
         """When ACTUAL_FILE is not in context, falls back to ARCHIVE_FILE."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         # Set only ARCHIVE_FILE (fallback source)
@@ -272,11 +274,11 @@ class TestValidateArchiveStepWithProgress:
 
     @pytest.mark.asyncio
     async def test_prioritizes_actual_file_over_archive_file(
-        self, db_with_archive_messages: tuple[DBManager, Path], tmp_path: Path
+        self, storage_with_archive_messages: tuple[HybridStorage, Path], tmp_path: Path
     ) -> None:
         """When both ACTUAL_FILE and ARCHIVE_FILE are in context, prioritizes ACTUAL_FILE."""
-        db_manager, mbox_path = db_with_archive_messages
-        step = ValidateArchiveStep(db_manager)
+        storage, mbox_path = storage_with_archive_messages
+        step = ValidateArchiveStep(storage)
         context = StepContext()
 
         # Create a second mbox for ARCHIVE_FILE

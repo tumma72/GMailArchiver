@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 
 from gmailarchiver.cli.command_context import CommandContext, with_context
-from gmailarchiver.cli.ui import CLIProgressAdapter, ReportCard
+from gmailarchiver.cli.ui import CLIProgressAdapter, ReportCard, SuggestionList
 from gmailarchiver.cli.ui.widgets import TableWidget
 from gmailarchiver.core.workflows.search import SearchConfig, SearchResult, SearchWorkflow
 
@@ -148,12 +148,9 @@ async def _run_search(
 def _handle_no_results(ctx: CommandContext, query: str) -> None:
     """Handle case where no results were found."""
     ctx.warning(f"No results found for: {query}")
-    ctx.suggest_next_steps(
-        [
-            "Try a broader search term",
-            "Check if messages are archived: gmailarchiver status",
-        ]
-    )
+    SuggestionList().add("Try a broader search term").add(
+        "Check if messages are archived: gmailarchiver status"
+    ).render(ctx.output)
 
 
 def _sort_by_date(

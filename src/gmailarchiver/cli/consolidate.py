@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
+from gmailarchiver.cli.ui import ReportCard, SuggestionList
 from gmailarchiver.core.workflows.consolidate import ConsolidateConfig, ConsolidateWorkflow
 
 
@@ -73,14 +74,17 @@ async def consolidate_command(
                 return
 
     # Display consolidation results
-    report_data = {
-        "Input Archives": str(result.source_files_count),
-        "Messages Processed": f"{result.messages_count:,}",
-        "Duplicates Removed": f"{result.duplicates_removed:,}" if deduplicate else "N/A",
-        "Output File": result.output_file,
-        "Sorted By Date": "Yes" if result.sort_applied else "No",
-    }
-    ctx.show_report("Consolidation Results", report_data)
+    (
+        ReportCard("Consolidation Results")
+        .add_field("Input Archives", str(result.source_files_count))
+        .add_field("Messages Processed", f"{result.messages_count:,}")
+        .add_field(
+            "Duplicates Removed", f"{result.duplicates_removed:,}" if deduplicate else "N/A"
+        )
+        .add_field("Output File", result.output_file)
+        .add_field("Sorted By Date", "Yes" if result.sort_applied else "No")
+        .render(ctx.output)
+    )
 
     # Success message
     ctx.success(
@@ -88,9 +92,6 @@ async def consolidate_command(
     )
 
     # Suggest next steps
-    ctx.suggest_next_steps(
-        [
-            f"Validate consolidated archive: gmailarchiver validate {result.output_file}",
-            "View updated status: gmailarchiver status",
-        ]
-    )
+    SuggestionList().add(
+        f"Validate consolidated archive: gmailarchiver validate {result.output_file}"
+    ).add("View updated status: gmailarchiver status").render(ctx.output)
