@@ -491,12 +491,14 @@ async def test_check_temp_directory_not_accessible() -> None:
     """Test temp directory check when not accessible."""
     with patch("tempfile.gettempdir", return_value="/nonexistent/tmp"):
         with patch("os.access", return_value=False):
-            doctor = await Doctor.create(":memory:")
-            result = doctor.check_temp_directory()
+            # Mock mkdir to prevent actual directory creation during HybridStorage init
+            with patch("pathlib.Path.mkdir"):
+                doctor = await Doctor.create(":memory:")
+                result = doctor.check_temp_directory()
 
-            assert result.severity == CheckSeverity.ERROR
-            assert "not accessible" in result.message.lower()
-    await doctor.close()
+                assert result.severity == CheckSeverity.ERROR
+                assert "not accessible" in result.message.lower()
+                await doctor.close()
 
 
 # ============================================================================

@@ -226,9 +226,7 @@ class ValidateArchiveStep:
         expected_count: int,
     ) -> ValidateOutput:
         """Run validation without progress reporting."""
-        result = await asyncio.to_thread(
-            validator.validate_comprehensive, archived_ids
-        )
+        result = await asyncio.to_thread(validator.validate_comprehensive, archived_ids)
 
         return ValidateOutput(
             passed=result.passed,

@@ -32,6 +32,9 @@ class TestSessionLoggerInitialization:
                 assert logger.log_file.name.endswith(".log")
                 assert logger.log_file.parent == Path(tmpdir)
 
+                # Clean up resources
+                logger.close()
+
     def test_init_custom_path(self) -> None:
         """Test initialization with custom log directory path."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -44,6 +47,9 @@ class TestSessionLoggerInitialization:
             assert custom_dir.exists()
             assert custom_dir.is_dir()
 
+            # Clean up resources
+            logger.close()
+
     def test_init_creates_nested_directories(self) -> None:
         """Test that initialization creates nested directories if needed."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -55,6 +61,9 @@ class TestSessionLoggerInitialization:
             assert nested_dir.exists()
             assert nested_dir.is_dir()
             assert logger.log_dir == nested_dir
+
+            # Clean up resources
+            logger.close()
 
     def test_init_permission_error_handling(self) -> None:
         """Test graceful handling of permission errors during directory creation."""
@@ -92,6 +101,9 @@ class TestSessionLoggerInitialization:
                 datetime.strptime(timestamp_part, "%Y-%m-%d_%H%M%S")
             except ValueError:
                 pytest.fail(f"Filename timestamp '{timestamp_part}' doesn't match format")
+
+            # Clean up resources
+            logger.close()
 
     def test_file_handle_opened(self) -> None:
         """Test that file handle is opened on initialization."""

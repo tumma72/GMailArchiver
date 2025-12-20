@@ -1,17 +1,15 @@
 """Tests for status command implementation."""
 
-import asyncio
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gmailarchiver.cli.command_context import CommandContext
 from gmailarchiver.cli.commands.status import (
     _display_recent_runs_table,
     _run_status,
 )
-from gmailarchiver.cli.command_context import CommandContext
-from gmailarchiver.cli.ui.widgets import ReportCard, TableWidget
+from gmailarchiver.cli.ui.widgets import TableWidget
 from gmailarchiver.core.workflows.status import StatusResult
 
 

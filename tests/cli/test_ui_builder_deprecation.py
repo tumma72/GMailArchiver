@@ -39,34 +39,35 @@ class TestUIBuilderDeprecatedImports:
 
     def test_task_handle_impl_imported(self) -> None:
         """TaskHandleImpl is available for import."""
-        assert hasattr(TaskHandleImpl, 'complete')
-        assert hasattr(TaskHandleImpl, 'fail')
-        assert hasattr(TaskHandleImpl, 'advance')
+        assert hasattr(TaskHandleImpl, "complete")
+        assert hasattr(TaskHandleImpl, "fail")
+        assert hasattr(TaskHandleImpl, "advance")
 
     def test_task_sequence_impl_imported(self) -> None:
         """TaskSequenceImpl is available for import."""
-        assert hasattr(TaskSequenceImpl, 'task')
-        assert hasattr(TaskSequenceImpl, '__enter__')
-        assert hasattr(TaskSequenceImpl, '__exit__')
+        assert hasattr(TaskSequenceImpl, "task")
+        assert hasattr(TaskSequenceImpl, "__enter__")
+        assert hasattr(TaskSequenceImpl, "__exit__")
 
     def test_task_status_imported(self) -> None:
         """TaskStatus enum is available for import."""
-        assert hasattr(TaskStatus, 'PENDING')
-        assert hasattr(TaskStatus, 'RUNNING')
-        assert hasattr(TaskStatus, 'SUCCESS')
-        assert hasattr(TaskStatus, 'FAILED')
+        assert hasattr(TaskStatus, "PENDING")
+        assert hasattr(TaskStatus, "RUNNING")
+        assert hasattr(TaskStatus, "SUCCESS")
+        assert hasattr(TaskStatus, "FAILED")
 
     def test_ui_builder_impl_imported(self) -> None:
         """UIBuilderImpl is available for import."""
-        assert hasattr(UIBuilderImpl, 'task_sequence')
-        assert hasattr(UIBuilderImpl, 'spinner')
+        assert hasattr(UIBuilderImpl, "task_sequence")
+        assert hasattr(UIBuilderImpl, "spinner")
 
     def test_all_symbols_exported(self) -> None:
         """All expected symbols are in module __all__."""
         from gmailarchiver import cli
-        assert hasattr(cli.ui_builder, '__all__')
+
+        assert hasattr(cli.ui_builder, "__all__")
         all_symbols = cli.ui_builder.__all__
-        assert 'TaskHandle' in all_symbols
-        assert 'TaskSequence' in all_symbols
-        assert 'UIBuilder' in all_symbols
-        assert 'UIBuilderImpl' in all_symbols
+        assert "TaskHandle" in all_symbols
+        assert "TaskSequence" in all_symbols
+        assert "UIBuilder" in all_symbols
+        assert "UIBuilderImpl" in all_symbols

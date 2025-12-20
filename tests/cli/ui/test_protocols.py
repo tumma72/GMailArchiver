@@ -4,8 +4,6 @@ from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from gmailarchiver.cli.ui.protocols import TaskHandle, TaskSequence, UIBuilder, Widget
 
 
@@ -113,11 +111,11 @@ class TestWidgetProtocol:
 
     def test_widget_protocol_render_required(self) -> None:
         """Widget protocol requires render method."""
-        assert hasattr(Widget, 'render')
+        assert hasattr(Widget, "render")
 
     def test_widget_protocol_to_json_required(self) -> None:
         """Widget protocol requires to_json method."""
-        assert hasattr(Widget, 'to_json')
+        assert hasattr(Widget, "to_json")
 
     def test_concrete_widget_implements_protocol(self) -> None:
         """Concrete widget implements Widget protocol."""
@@ -142,6 +140,7 @@ class TestWidgetProtocol:
     def test_widget_to_json_is_serializable(self) -> None:
         """Widget to_json returns JSON-serializable data."""
         import json
+
         widget = ConcreteWidget()
         data = widget.to_json()
         json_str = json.dumps(data)
@@ -153,27 +152,27 @@ class TestTaskHandleProtocol:
 
     def test_task_handle_protocol_complete_required(self) -> None:
         """TaskHandle protocol requires complete method."""
-        assert hasattr(TaskHandle, 'complete')
+        assert hasattr(TaskHandle, "complete")
 
     def test_task_handle_protocol_fail_required(self) -> None:
         """TaskHandle protocol requires fail method."""
-        assert hasattr(TaskHandle, 'fail')
+        assert hasattr(TaskHandle, "fail")
 
     def test_task_handle_protocol_advance_required(self) -> None:
         """TaskHandle protocol requires advance method."""
-        assert hasattr(TaskHandle, 'advance')
+        assert hasattr(TaskHandle, "advance")
 
     def test_task_handle_protocol_set_total_required(self) -> None:
         """TaskHandle protocol requires set_total method."""
-        assert hasattr(TaskHandle, 'set_total')
+        assert hasattr(TaskHandle, "set_total")
 
     def test_task_handle_protocol_log_required(self) -> None:
         """TaskHandle protocol requires log method."""
-        assert hasattr(TaskHandle, 'log')
+        assert hasattr(TaskHandle, "log")
 
     def test_task_handle_protocol_warn_required(self) -> None:
         """TaskHandle protocol requires warn method."""
-        assert hasattr(TaskHandle, 'warn')
+        assert hasattr(TaskHandle, "warn")
 
     def test_concrete_task_handle_implements_protocol(self) -> None:
         """Concrete task handle implements TaskHandle protocol."""
@@ -254,7 +253,7 @@ class TestTaskSequenceProtocol:
 
     def test_task_sequence_protocol_task_required(self) -> None:
         """TaskSequence protocol requires task method."""
-        assert hasattr(TaskSequence, 'task')
+        assert hasattr(TaskSequence, "task")
 
     def test_concrete_task_sequence_implements_protocol(self) -> None:
         """Concrete task sequence implements TaskSequence protocol."""
@@ -306,11 +305,11 @@ class TestUIBuilderProtocol:
 
     def test_ui_builder_protocol_task_sequence_required(self) -> None:
         """UIBuilder protocol requires task_sequence method."""
-        assert hasattr(UIBuilder, 'task_sequence')
+        assert hasattr(UIBuilder, "task_sequence")
 
     def test_ui_builder_protocol_spinner_required(self) -> None:
         """UIBuilder protocol requires spinner method."""
-        assert hasattr(UIBuilder, 'spinner')
+        assert hasattr(UIBuilder, "spinner")
 
     def test_concrete_ui_builder_implements_protocol(self) -> None:
         """Concrete UI builder implements UIBuilder protocol."""
@@ -375,9 +374,9 @@ class TestUIBuilderProtocol:
         handle = None
         with builder.spinner("Test") as h:
             handle = h
-            assert hasattr(handle, 'complete')
-            assert hasattr(handle, 'fail')
-            assert hasattr(handle, 'advance')
+            assert hasattr(handle, "complete")
+            assert hasattr(handle, "fail")
+            assert hasattr(handle, "advance")
 
 
 class TestProtocolComposition:

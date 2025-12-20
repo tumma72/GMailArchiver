@@ -3,8 +3,6 @@
 Tests the async implementation layer for consolidate operations.
 """
 
-import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -81,9 +79,7 @@ class TestConsolidateCommand:
         mock_ctx = MagicMock(spec=CommandContext)
         mock_ctx.output = MagicMock()
         mock_storage = AsyncMock()
-        mock_storage.db._conn.execute.return_value = AsyncMock(
-            fetchall=AsyncMock(return_value=[])
-        )
+        mock_storage.db._conn.execute.return_value = AsyncMock(fetchall=AsyncMock(return_value=[]))
         mock_ctx.storage = mock_storage
 
         output_file = str(tmp_path / "output.mbox")

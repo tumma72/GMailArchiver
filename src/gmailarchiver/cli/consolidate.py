@@ -78,9 +78,7 @@ async def consolidate_command(
         ReportCard("Consolidation Results")
         .add_field("Input Archives", str(result.source_files_count))
         .add_field("Messages Processed", f"{result.messages_count:,}")
-        .add_field(
-            "Duplicates Removed", f"{result.duplicates_removed:,}" if deduplicate else "N/A"
-        )
+        .add_field("Duplicates Removed", f"{result.duplicates_removed:,}" if deduplicate else "N/A")
         .add_field("Output File", result.output_file)
         .add_field("Sorted By Date", "Yes" if result.sort_applied else "No")
         .render(ctx.output)

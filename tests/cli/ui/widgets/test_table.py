@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock
 
-import pytest
 from rich.table import Table
 
 from gmailarchiver.cli.ui.widgets.table import ColumnSpec, TableWidget
@@ -215,12 +214,7 @@ class TestTableWidget:
 
     def test_render_passes_rows(self) -> None:
         """render passes rows to show_smart_table."""
-        widget = (
-            TableWidget(title="Test")
-            .add_column("Name")
-            .add_row("Alice")
-            .add_row("Bob")
-        )
+        widget = TableWidget(title="Test").add_column("Name").add_row("Alice").add_row("Bob")
         adapter = MagicMock()
         adapter._output = MagicMock()
 
@@ -304,12 +298,7 @@ class TestTableWidget:
 
     def test_build_rich_table_adds_rows(self) -> None:
         """build_rich_table adds row data."""
-        widget = (
-            TableWidget(title="Test")
-            .add_column("Name")
-            .add_row("Alice")
-            .add_row("Bob")
-        )
+        widget = TableWidget(title="Test").add_column("Name").add_row("Alice").add_row("Bob")
         table = widget.build_rich_table()
         # Table should have rows added
         assert len(table.rows) == 2
@@ -340,10 +329,7 @@ class TestTableWidget:
 
     def test_column_spec_with_min_width(self) -> None:
         """ColumnSpec min_width is applied in rendering."""
-        widget = (
-            TableWidget(title="Test")
-            .add_column("Subject", min_width=20)
-        )
+        widget = TableWidget(title="Test").add_column("Subject", min_width=20)
         adapter = MagicMock()
         adapter._output = MagicMock()
         widget.render(adapter)

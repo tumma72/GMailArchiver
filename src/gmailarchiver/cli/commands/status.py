@@ -60,14 +60,16 @@ async def _run_status(
 
     # Handle JSON output
     if json_output:
-        ctx.output.set_json_payload({
-            "schema_version": result.schema_version,
-            "database_size_bytes": result.database_size_bytes,
-            "total_messages": result.total_messages,
-            "archive_files_count": result.archive_files_count,
-            "archive_files": result.archive_files,
-            "recent_runs": result.recent_runs,
-        })
+        ctx.output.set_json_payload(
+            {
+                "schema_version": result.schema_version,
+                "database_size_bytes": result.database_size_bytes,
+                "total_messages": result.total_messages,
+                "archive_files_count": result.archive_files_count,
+                "archive_files": result.archive_files,
+                "recent_runs": result.recent_runs,
+            }
+        )
         return
 
     # Display report card with main statistics

@@ -25,9 +25,7 @@ def validate(
     state_db: str = typer.Option(
         "archive_state.db", "--state-db", help="Path to state database file"
     ),
-    verbose: bool = typer.Option(
-        False, "--verbose", "-v", help="Show detailed validation output"
-    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed validation output"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:
     """

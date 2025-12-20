@@ -135,9 +135,7 @@ class TestWorkflowIntegration:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,
@@ -170,9 +168,7 @@ class TestWorkflowIntegration:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,
@@ -210,9 +206,7 @@ class TestErrorHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 # Should call fail_and_exit (raises typer.Exit)
                 with pytest.raises(typer.Exit) as exc_info:
@@ -243,9 +237,7 @@ class TestErrorHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 # Should call fail_and_exit (raises typer.Exit)
                 with pytest.raises(typer.Exit) as exc_info:
@@ -292,9 +284,7 @@ class TestResultHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,
@@ -325,9 +315,7 @@ class TestResultHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 with patch("gmailarchiver.cli.commands.import_.ReportCard") as MockReportCard:
                     mock_card = MagicMock()
@@ -369,9 +357,7 @@ class TestResultHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,
@@ -404,9 +390,7 @@ class TestResultHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,
@@ -441,9 +425,7 @@ class TestResultHandling:
             with patch("gmailarchiver.cli.commands.import_.CLIProgressAdapter") as MockAdapter:
                 mock_adapter = MockAdapter.return_value
                 mock_adapter.workflow_sequence.return_value.__enter__ = MagicMock()
-                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(
-                    return_value=False
-                )
+                mock_adapter.workflow_sequence.return_value.__exit__ = MagicMock(return_value=False)
 
                 await _run_import(
                     command_context,

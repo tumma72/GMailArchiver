@@ -23,10 +23,21 @@ This module provides reusable steps for composing workflows:
 
 **Search Steps:**
 - SearchMessagesStep: Search messages using full-text search
+
+**Doctor Steps:**
+- DatabaseDiagnosticStep: Run database health diagnostics
+- EnvironmentDiagnosticStep: Run environment health diagnostics
+- SystemDiagnosticStep: Run system health diagnostics
 """
 
 # Mbox steps
 # Database steps
+# Doctor steps
+from gmailarchiver.core.workflows.steps.doctor import (
+    DatabaseDiagnosticStep,
+    EnvironmentDiagnosticStep,
+    SystemDiagnosticStep,
+)
 from gmailarchiver.core.workflows.steps.filter import CheckDuplicatesStep
 
 # Gmail steps
@@ -65,4 +76,8 @@ __all__ = [
     "GetArchiveStatsStep",
     # Search
     "SearchMessagesStep",
+    # Doctor
+    "DatabaseDiagnosticStep",
+    "EnvironmentDiagnosticStep",
+    "SystemDiagnosticStep",
 ]

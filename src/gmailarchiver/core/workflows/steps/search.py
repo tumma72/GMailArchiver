@@ -149,9 +149,7 @@ class SearchMessagesStep:
             if input_data.sort_ascending:
                 messages = sorted(messages, key=lambda m: str(m.get("date", "")))
             else:
-                messages = sorted(
-                    messages, key=lambda m: str(m.get("date", "")), reverse=True
-                )
+                messages = sorted(messages, key=lambda m: str(m.get("date", "")), reverse=True)
 
             output = SearchOutput(
                 messages=messages,

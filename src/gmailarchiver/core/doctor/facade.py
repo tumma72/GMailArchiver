@@ -7,6 +7,7 @@ from typing import Any, Self
 from gmailarchiver.core.doctor._diagnostics import CheckResult, CheckSeverity, DiagnosticsRunner
 from gmailarchiver.core.doctor._repair import FixResult, RepairManager
 from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 @dataclass
@@ -47,7 +48,7 @@ class Doctor:
     def __init__(
         self,
         db_path: Path,
-        db_manager: DBManager | None,
+        storage: HybridStorage | None,
         validate_schema: bool = True,
         auto_create: bool = True,
     ) -> None:
@@ -55,19 +56,20 @@ class Doctor:
 
         Args:
             db_path: Path to SQLite database file
-            db_manager: Pre-initialized DBManager instance (or None if not available)
+            storage: Pre-initialized HybridStorage instance (or None if not available)
             validate_schema: Whether to validate schema on init
             auto_create: Whether to auto-create database if missing
         """
         self.db_path = db_path
         self.validate_schema = validate_schema
         self.auto_create = auto_create
-        self._db_manager = db_manager
+        self._storage = storage
 
     @classmethod
     async def create(
         cls,
         db_path: str,
+        storage: HybridStorage | None = None,
         validate_schema: bool = True,
         auto_create: bool = True,
     ) -> Self:
@@ -75,6 +77,7 @@ class Doctor:
 
         Args:
             db_path: Path to SQLite database file
+            storage: Pre-initialized HybridStorage instance (or None to create new)
             validate_schema: Whether to validate schema on init
             auto_create: Whether to auto-create database if missing
 
@@ -82,8 +85,16 @@ class Doctor:
             Initialized Doctor instance
         """
         path = Path(db_path) if db_path != ":memory:" else Path(":memory:")
-        db_manager = await cls._create_db_manager(path, auto_create)
-        return cls(path, db_manager, validate_schema, auto_create)
+
+        # Create storage if not provided
+        if storage is None:
+            db_manager = await cls._create_db_manager(path, auto_create)
+            if db_manager:
+                storage = HybridStorage(db_manager)
+            else:
+                storage = None
+
+        return cls(path, storage, validate_schema, auto_create)
 
     @staticmethod
     async def _create_db_manager(db_path: Path, auto_create: bool) -> DBManager | None:
@@ -109,8 +120,56 @@ class Doctor:
             return None
 
     def _get_db_manager(self) -> DBManager | None:
-        """Get cached DBManager instance."""
-        return self._db_manager
+        """Get cached DBManager instance from storage."""
+        return self._storage.db if self._storage else None
+
+    async def check_archive_health(self) -> list[CheckResult]:
+        """Check archive and database health (4 checks).
+
+        Returns:
+            List of CheckResult for database-related checks
+        """
+        diagnostics = DiagnosticsRunner(self.db_path, self._storage)
+
+        checks: list[CheckResult] = []
+        checks.append(await diagnostics.check_database_schema())
+        checks.append(await diagnostics.check_database_integrity())
+        checks.append(await diagnostics.check_orphaned_fts())
+        checks.append(await diagnostics.check_archive_files_exist())
+
+        return checks
+
+    async def check_environment_health(self) -> list[CheckResult]:
+        """Check Python environment health (4 checks).
+
+        Returns:
+            List of CheckResult for environment-related checks
+        """
+        diagnostics = DiagnosticsRunner(self.db_path, self._storage)
+
+        checks: list[CheckResult] = []
+        checks.append(diagnostics.check_python_version())
+        checks.append(diagnostics.check_dependencies())
+        checks.append(diagnostics.check_oauth_token())
+        checks.append(diagnostics.check_credentials_file())
+
+        return checks
+
+    async def check_system_health(self) -> list[CheckResult]:
+        """Check system health (4 checks).
+
+        Returns:
+            List of CheckResult for system-related checks
+        """
+        diagnostics = DiagnosticsRunner(self.db_path, self._storage)
+
+        checks: list[CheckResult] = []
+        checks.append(diagnostics.check_disk_space())
+        checks.append(diagnostics.check_write_permissions())
+        checks.append(diagnostics.check_stale_locks())
+        checks.append(diagnostics.check_temp_directory())
+
+        return checks
 
     async def run_diagnostics(self) -> DoctorReport:
         """Run all diagnostic checks.
@@ -118,28 +177,12 @@ class Doctor:
         Returns:
             DoctorReport with results of all checks
         """
-        db_manager = self._get_db_manager()
-        diagnostics = DiagnosticsRunner(self.db_path, db_manager)
-
         checks: list[CheckResult] = []
 
-        # Database checks
-        checks.append(await diagnostics.check_database_schema())
-        checks.append(await diagnostics.check_database_integrity())
-        checks.append(await diagnostics.check_orphaned_fts())
-        checks.append(await diagnostics.check_archive_files_exist())
-
-        # Environment checks
-        checks.append(diagnostics.check_python_version())
-        checks.append(diagnostics.check_dependencies())
-        checks.append(diagnostics.check_oauth_token())
-        checks.append(diagnostics.check_credentials_file())
-
-        # System checks
-        checks.append(diagnostics.check_disk_space())
-        checks.append(diagnostics.check_write_permissions())
-        checks.append(diagnostics.check_stale_locks())
-        checks.append(diagnostics.check_temp_directory())
+        # Use the granular methods for each category
+        checks.extend(await self.check_archive_health())
+        checks.extend(await self.check_environment_health())
+        checks.extend(await self.check_system_health())
 
         # Calculate summary
         checks_passed = sum(1 for c in checks if c.severity == CheckSeverity.OK)
@@ -199,63 +242,51 @@ class Doctor:
     # Delegation methods for direct access to diagnostics/repair
     async def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
-        db_manager = self._get_db_manager()
-        return await DiagnosticsRunner(self.db_path, db_manager).check_database_schema()
+        return await DiagnosticsRunner(self.db_path, self._storage).check_database_schema()
 
     async def check_database_integrity(self) -> CheckResult:
         """Check database integrity."""
-        db_manager = self._get_db_manager()
-        return await DiagnosticsRunner(self.db_path, db_manager).check_database_integrity()
+        return await DiagnosticsRunner(self.db_path, self._storage).check_database_integrity()
 
     async def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
-        db_manager = self._get_db_manager()
-        return await DiagnosticsRunner(self.db_path, db_manager).check_orphaned_fts()
+        return await DiagnosticsRunner(self.db_path, self._storage).check_orphaned_fts()
 
     async def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files exist."""
-        db_manager = self._get_db_manager()
-        return await DiagnosticsRunner(self.db_path, db_manager).check_archive_files_exist()
+        return await DiagnosticsRunner(self.db_path, self._storage).check_archive_files_exist()
 
     def check_python_version(self) -> CheckResult:
         """Check Python version."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_python_version()
+        return DiagnosticsRunner(self.db_path, self._storage).check_python_version()
 
     def check_dependencies(self) -> CheckResult:
         """Check dependencies."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_dependencies()
+        return DiagnosticsRunner(self.db_path, self._storage).check_dependencies()
 
     def check_oauth_token(self) -> CheckResult:
         """Check OAuth token."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_oauth_token()
+        return DiagnosticsRunner(self.db_path, self._storage).check_oauth_token()
 
     def check_credentials_file(self) -> CheckResult:
         """Check credentials file."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_credentials_file()
+        return DiagnosticsRunner(self.db_path, self._storage).check_credentials_file()
 
     def check_disk_space(self) -> CheckResult:
         """Check disk space."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_disk_space()
+        return DiagnosticsRunner(self.db_path, self._storage).check_disk_space()
 
     def check_write_permissions(self) -> CheckResult:
         """Check write permissions."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_write_permissions()
+        return DiagnosticsRunner(self.db_path, self._storage).check_write_permissions()
 
     def check_stale_locks(self) -> CheckResult:
         """Check stale locks."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_stale_locks()
+        return DiagnosticsRunner(self.db_path, self._storage).check_stale_locks()
 
     def check_temp_directory(self) -> CheckResult:
         """Check temp directory."""
-        db_manager = self._get_db_manager()
-        return DiagnosticsRunner(self.db_path, db_manager).check_temp_directory()
+        return DiagnosticsRunner(self.db_path, self._storage).check_temp_directory()
 
     async def fix_missing_database(self) -> FixResult:
         """Fix missing database."""
@@ -273,10 +304,10 @@ class Doctor:
         return RepairManager(self.db_path, db_manager).fix_stale_locks()
 
     async def close(self) -> None:
-        """Close database manager if owned."""
-        if self._db_manager:
-            await self._db_manager.close()
-            self._db_manager = None
+        """Close resources."""
+        # Close database connection to prevent resource warnings
+        if self._storage is not None and self._storage.db is not None:
+            await self._storage.db.close()
 
     async def __aenter__(self) -> Self:
         """Async context manager entry."""

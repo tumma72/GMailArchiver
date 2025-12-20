@@ -3,7 +3,6 @@
 Tests the auto-repair functionality for database and lock file issues.
 """
 
-import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 

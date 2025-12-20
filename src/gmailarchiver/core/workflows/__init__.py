@@ -17,6 +17,7 @@ Dependencies: core layer only (not CLI layer)
 from .archive import ArchiveConfig, ArchiveResult, ArchiveWorkflow
 from .consolidate import ConsolidateConfig, ConsolidateResult, ConsolidateWorkflow
 from .dedupe import DedupeConfig, DedupeResult, DedupeWorkflow
+from .doctor import DoctorConfig, DoctorResult, DoctorWorkflow
 from .import_ import ImportConfig, ImportResult, ImportWorkflow
 from .migrate import MigrateConfig, MigrateResult, MigrateWorkflow
 from .repair import RepairConfig, RepairResult, RepairWorkflow
@@ -35,6 +36,9 @@ __all__ = [
     "DedupeConfig",
     "DedupeResult",
     "DedupeWorkflow",
+    "DoctorConfig",
+    "DoctorResult",
+    "DoctorWorkflow",
     "ImportConfig",
     "ImportResult",
     "ImportWorkflow",

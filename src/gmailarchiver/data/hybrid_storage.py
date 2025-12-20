@@ -474,13 +474,15 @@ class HybridStorage:
             raise HybridStorageError(f"Failed to bulk write messages: {e}") from e
 
         finally:
-            # Cleanup
+            # Cleanup mbox object
             if mbox_obj:
                 try:
-                    mbox_obj.unlock()
-                except Exception as e:
-                    logger.warning(f"Failed to unlock staging mbox: {e}")
-                try:
+                    # Try to unlock if locked
+                    try:
+                        mbox_obj.unlock()
+                    except Exception:
+                        pass  # May not be locked
+                    # Always close to prevent resource leak
                     mbox_obj.close()
                 except Exception as e:
                     logger.warning(f"Failed to close staging mbox: {e}")

@@ -99,9 +99,7 @@ async def _run_search(
     # Phase 2: Create workflow and config
     progress = CLIProgressAdapter(ctx.output, ctx.ui)
     workflow = SearchWorkflow(ctx.storage, progress=progress)
-    config = SearchConfig(
-        query=query, limit=limit, sort_ascending=(sort == SortOrder.ascending)
-    )
+    config = SearchConfig(query=query, limit=limit, sort_ascending=(sort == SortOrder.ascending))
 
     # Phase 3: Execute workflow with shared task sequence
     try:
@@ -153,9 +151,7 @@ def _handle_no_results(ctx: CommandContext, query: str) -> None:
     ).render(ctx.output)
 
 
-def _sort_by_date(
-    messages: list[dict[str, object]], sort: SortOrder
-) -> list[dict[str, object]]:
+def _sort_by_date(messages: list[dict[str, object]], sort: SortOrder) -> list[dict[str, object]]:
     """Sort messages by date.
 
     Args:
@@ -346,8 +342,8 @@ async def _handle_interactive_mode(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Show summary (actual extraction would use MessageExtractor)
-    ReportCard("Extraction Summary").add_field(
-        "Messages Selected", str(len(selected))
-    ).add_field("Output Directory", str(output_dir)).render(ctx.output)
+    ReportCard("Extraction Summary").add_field("Messages Selected", str(len(selected))).add_field(
+        "Output Directory", str(output_dir)
+    ).render(ctx.output)
 
     ctx.success(f"Selected {len(selected)} messages for extraction")

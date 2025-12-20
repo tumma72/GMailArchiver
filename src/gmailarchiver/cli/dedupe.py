@@ -77,11 +77,9 @@ async def dedupe_command(
             .render(ctx.output)
         )
 
-        SuggestionList().add(
-            "Remove duplicates: gmailarchiver utilities dedupe --no-dry-run"
-        ).add("Verify integrity first: gmailarchiver utilities verify-integrity").render(
-            ctx.output
-        )
+        SuggestionList().add("Remove duplicates: gmailarchiver utilities dedupe --no-dry-run").add(
+            "Verify integrity first: gmailarchiver utilities verify-integrity"
+        ).render(ctx.output)
     else:
         (
             ReportCard("Deduplication Results")
@@ -91,6 +89,6 @@ async def dedupe_command(
         )
 
         ctx.success(f"Successfully removed {result.duplicates_removed:,} duplicate messages")
-        SuggestionList().add(
-            "Verify consistency: gmailarchiver utilities verify-consistency"
-        ).add("View updated status: gmailarchiver status").render(ctx.output)
+        SuggestionList().add("Verify consistency: gmailarchiver utilities verify-consistency").add(
+            "View updated status: gmailarchiver status"
+        ).render(ctx.output)

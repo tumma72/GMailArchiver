@@ -53,6 +53,7 @@ def _register_commands() -> None:
     # Import utilities subcommands
     from gmailarchiver.cli.commands.consolidate import consolidate
     from gmailarchiver.cli.commands.dedupe import dedupe
+    from gmailarchiver.cli.commands.doctor import doctor
     from gmailarchiver.cli.commands.import_ import import_
     from gmailarchiver.cli.commands.migrate import migrate
     from gmailarchiver.cli.commands.repair import repair
@@ -83,6 +84,7 @@ def _register_commands() -> None:
     utilities_app.command(name="import")(import_)
     utilities_app.command()(consolidate)
     utilities_app.command()(dedupe)
+    utilities_app.command()(doctor)
 
     # Register schedule subcommands
     schedule_app.command()(add)

@@ -899,6 +899,9 @@ class TestLiveLayoutContextInitialization:
             assert context.log_buffer is log_buffer
             assert context.session_logger is session_logger
 
+            # Clean up resources
+            session_logger.close()
+
     def test_init_with_default_components(self) -> None:
         """Test initialization creates default components if not provided."""
         from gmailarchiver.cli.output import LiveLayoutContext
@@ -913,6 +916,9 @@ class TestLiveLayoutContextInitialization:
             # Should have SessionLogger
             assert context.session_logger is not None
 
+            # Clean up resources
+            context.session_logger.close()
+
     def test_init_custom_max_visible(self) -> None:
         """Test initialization with custom max_visible for LogBuffer."""
         from gmailarchiver.cli.output import LiveLayoutContext
@@ -920,6 +926,9 @@ class TestLiveLayoutContextInitialization:
         with tempfile.TemporaryDirectory() as tmpdir:
             context = LiveLayoutContext(max_visible=5, log_dir=Path(tmpdir))
             assert context.log_buffer._max_visible == 5
+
+            # Clean up resources
+            context.session_logger.close()
 
 
 class TestLiveLayoutContextManager:

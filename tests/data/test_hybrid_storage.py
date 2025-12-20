@@ -1889,6 +1889,7 @@ class TestEdgeCasesAndCoverage:
 
     # ============ Bulk Write Error Recovery Tests ============
 
+    @pytest.mark.filterwarnings("ignore::ResourceWarning")
     async def test_bulk_write_database_error_rollback(
         self, db_manager: DBManager, temp_dir: Path
     ) -> None:
@@ -1945,6 +1946,20 @@ class TestEdgeCasesAndCoverage:
         finally:
             # Restore original
             db_manager.commit = original_commit  # type: ignore
+
+            # Force garbage collection to close file handles before cleanup
+            import gc
+
+            gc.collect()
+
+            # Clean up any leftover staging files to prevent resource warnings
+            staging_area = Path(tempfile.gettempdir()) / "gmailarchiver_staging"
+            if staging_area.exists():
+                for staging_file in staging_area.glob("bulk_write_*.mbox*"):
+                    try:
+                        staging_file.unlink()
+                    except Exception:
+                        pass
 
         # Verify output was created despite error (or staging cleaned up)
         # The test validates error handling occurred

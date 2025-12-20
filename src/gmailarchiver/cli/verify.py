@@ -46,9 +46,9 @@ async def verify_integrity_command(
     )
 
     if not result.passed:
-        SuggestionList().add(
-            "Repair database: gmailarchiver utilities repair --no-dry-run"
-        ).add("Restore from backup: gmailarchiver utilities rollback").render(ctx.output)
+        SuggestionList().add("Repair database: gmailarchiver utilities repair --no-dry-run").add(
+            "Restore from backup: gmailarchiver utilities rollback"
+        ).render(ctx.output)
         raise SystemExit(1)
 
 
@@ -100,9 +100,7 @@ async def verify_consistency_command(
     if not result.passed:
         SuggestionList().add(
             "Repair database: gmailarchiver utilities repair --backfill --no-dry-run"
-        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(
-            ctx.output
-        )
+        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(ctx.output)
         raise SystemExit(1)
 
 
@@ -154,7 +152,5 @@ async def verify_offsets_command(
     if not result.passed:
         SuggestionList().add(
             "Repair offsets: gmailarchiver utilities repair --backfill --no-dry-run"
-        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(
-            ctx.output
-        )
+        ).add("Re-import archives: gmailarchiver utilities import archive.mbox").render(ctx.output)
         raise SystemExit(1)

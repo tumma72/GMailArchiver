@@ -74,8 +74,6 @@ async def repair_command(
         suggestions.render(ctx.output)
     elif not dry_run and result.issues_fixed > 0:
         ctx.success(f"Successfully repaired {result.issues_fixed} issues")
-        SuggestionList().add(
-            "Verify integrity: gmailarchiver utilities verify-integrity"
-        ).add("Verify consistency: gmailarchiver utilities verify-consistency").render(
-            ctx.output
-        )
+        SuggestionList().add("Verify integrity: gmailarchiver utilities verify-integrity").add(
+            "Verify consistency: gmailarchiver utilities verify-consistency"
+        ).render(ctx.output)

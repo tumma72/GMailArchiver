@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from gmailarchiver.connectors.auth import _get_default_token_path
 
 if TYPE_CHECKING:
-    from gmailarchiver.data.db_manager import DBManager
+    from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 class CheckSeverity(Enum):
@@ -39,15 +39,15 @@ class CheckResult:
 class DiagnosticsRunner:
     """Run diagnostic checks for Gmail Archiver."""
 
-    def __init__(self, db_path: Path, db_manager: DBManager | None) -> None:
+    def __init__(self, db_path: Path, storage: HybridStorage | None) -> None:
         """Initialize diagnostics runner.
 
         Args:
             db_path: Path to database file
-            db_manager: Optional database manager
+            storage: Optional HybridStorage instance
         """
         self.db_path = db_path
-        self.db_manager = db_manager
+        self.storage = storage
 
     async def check_database_schema(self) -> CheckResult:
         """Check database schema version."""
@@ -68,7 +68,7 @@ class DiagnosticsRunner:
                 details="Run with --fix to create new database",
             )
 
-        if not self.db_manager:
+        if not self.storage or not self.storage.db:
             return CheckResult(
                 name="Database schema",
                 severity=CheckSeverity.ERROR,
@@ -76,14 +76,14 @@ class DiagnosticsRunner:
                 fixable=False,
             )
 
-        if self.db_manager.conn is None:
+        if self.storage.db.conn is None:
             return CheckResult(
                 name="Database schema",
                 severity=CheckSeverity.ERROR,
                 message="Database connection not initialized",
                 fixable=False,
             )
-        conn = self.db_manager.conn  # Type narrowed
+        conn = self.storage.db.conn  # Type narrowed
 
         try:
             cursor = await conn.execute("PRAGMA user_version")
@@ -122,14 +122,14 @@ class DiagnosticsRunner:
 
     async def check_database_integrity(self) -> CheckResult:
         """Check database integrity using PRAGMA integrity_check."""
-        if not self.db_manager or self.db_manager.conn is None:
+        if not self.storage or not self.storage.db or self.storage.db.conn is None:
             return CheckResult(
                 name="Database integrity",
                 severity=CheckSeverity.ERROR,
                 message="Cannot connect to database",
                 fixable=False,
             )
-        conn = self.db_manager.conn  # Type narrowed
+        conn = self.storage.db.conn  # Type narrowed
 
         try:
             cursor = await conn.execute("PRAGMA integrity_check")
@@ -160,14 +160,14 @@ class DiagnosticsRunner:
 
     async def check_orphaned_fts(self) -> CheckResult:
         """Check for orphaned FTS records."""
-        if not self.db_manager or self.db_manager.conn is None:
+        if not self.storage or not self.storage.db or self.storage.db.conn is None:
             return CheckResult(
                 name="FTS index",
                 severity=CheckSeverity.OK,
                 message="Skipped (no database connection)",
                 fixable=False,
             )
-        conn = self.db_manager.conn  # Type narrowed
+        conn = self.storage.db.conn  # Type narrowed
 
         try:
             # Check if FTS table exists
@@ -231,14 +231,14 @@ class DiagnosticsRunner:
 
     async def check_archive_files_exist(self) -> CheckResult:
         """Check that archive files referenced in database exist."""
-        if not self.db_manager or self.db_manager.conn is None:
+        if not self.storage or not self.storage.db or self.storage.db.conn is None:
             return CheckResult(
                 name="Archive files",
                 severity=CheckSeverity.OK,
                 message="Skipped (no database connection)",
                 fixable=False,
             )
-        conn = self.db_manager.conn  # Type narrowed
+        conn = self.storage.db.conn  # Type narrowed
 
         try:
             # Check if messages table exists
@@ -258,9 +258,7 @@ class DiagnosticsRunner:
                 )
 
             # Get unique archive files
-            cursor = await self.db_manager.conn.execute(
-                "SELECT DISTINCT archive_file FROM messages"
-            )
+            cursor = await conn.execute("SELECT DISTINCT archive_file FROM messages")
             rows = await cursor.fetchall()
             archive_files = [row[0] for row in rows]
 
