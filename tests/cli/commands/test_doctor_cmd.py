@@ -176,9 +176,12 @@ class TestDoctorCommandVerboseOutput:
 
         # Verbose output should include check names/messages
         # At minimum, should have database/schema checks
-        assert "database" in result.stdout.lower() or "schema" in result.stdout.lower() or "archive" in result.stdout.lower()
+        output = result.stdout.lower()
+        assert "database" in output or "schema" in output or "archive" in output
 
-    def test_verbose_shows_fixable_categorization(self, runner: CliRunner, v1_1_database: Path) -> None:
+    def test_verbose_shows_fixable_categorization(
+        self, runner: CliRunner, v1_1_database: Path
+    ) -> None:
         """Test verbose mode shows which issues are fixable."""
         result = runner.invoke(
             app, ["utilities", "doctor", "--verbose", "--state-db", str(v1_1_database)]
@@ -242,7 +245,9 @@ class TestDoctorCommandRichOutput:
             or "diagnostic" in result.stdout.lower()
         )
 
-    def test_shows_suggestions_when_issues_found(self, runner: CliRunner, v1_1_database: Path) -> None:
+    def test_shows_suggestions_when_issues_found(
+        self, runner: CliRunner, v1_1_database: Path
+    ) -> None:
         """Test output shows next-steps suggestions when issues exist."""
         result = runner.invoke(
             app, ["utilities", "doctor", "--state-db", str(v1_1_database)]
