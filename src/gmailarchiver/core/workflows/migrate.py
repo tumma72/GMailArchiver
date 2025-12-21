@@ -3,9 +3,17 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from gmailarchiver.core.workflows.step import StepContext
+from gmailarchiver.core.workflows.steps.migrate import (
+    CreateBackupStep,
+    DetectVersionStep,
+    ExecuteMigrationStep,
+    ValidateMigrationStep,
+    VerifyMigrationStep,
+)
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.data.migration import MigrationManager
-from gmailarchiver.data.schema_manager import SchemaManager
+from gmailarchiver.data.schema_manager import SchemaManager, SchemaVersion
 from gmailarchiver.shared.protocols import ProgressReporter
 
 
@@ -33,7 +41,8 @@ class MigrateWorkflow:
     """Workflow for database schema migration.
 
     This workflow coordinates schema detection, backup creation,
-    and migration execution using SchemaManager and MigrationManager.
+    and migration execution using a step-based architecture with
+    SchemaManager and MigrationManager.
     """
 
     def __init__(
@@ -50,6 +59,13 @@ class MigrateWorkflow:
         self.storage = storage
         self.progress = progress
 
+        # Initialize steps
+        self._detect_step = DetectVersionStep()
+        self._validate_step = ValidateMigrationStep()
+        self._backup_step = CreateBackupStep()
+        self._execute_step = ExecuteMigrationStep()
+        self._verify_step = VerifyMigrationStep()
+
     async def run(self, config: MigrateConfig) -> MigrateResult:
         """Execute the migration workflow.
 
@@ -65,25 +81,45 @@ class MigrateWorkflow:
         details: list[str] = []
         backup_path: Path | None = None
 
-        # Create schema manager
+        # Create facades
         schema_manager = SchemaManager(config.state_db)
 
-        # Detect current version
-        current_version = await schema_manager.detect_version()
-        from_version = current_version.value
-
-        # Determine target version
-        if config.target_version is None:
-            target_version = SchemaManager.CURRENT_VERSION
-        else:
+        # Validate target version early if specified
+        if config.target_version is not None:
             target_version = SchemaManager.version_from_string(config.target_version)
             if not target_version.is_valid:
                 raise ValueError(f"Invalid target version: {config.target_version}")
 
+        # Create context and inject dependencies
+        context = StepContext()
+        context.set(
+            "config",
+            {
+                "state_db": config.state_db,
+                "target_version": config.target_version,
+                "backup": config.backup,
+            },
+        )
+        context.set("schema_manager", schema_manager)
+
+        # Step 1: Detect current and target versions
+        detect_result = await self._detect_step.execute(context, None, progress=self.progress)
+        if not detect_result.success:
+            raise ValueError(f"Version detection failed: {detect_result.error}")
+
+        current_version: SchemaVersion = context.get("current_version")  # type: ignore
+        target_version: SchemaVersion = context.get("target_version")  # type: ignore
+        from_version = current_version.value
         to_version = target_version.value
 
+        # Step 2: Validate migration requirements
+        validate_result = await self._validate_step.execute(context, None, progress=self.progress)
+        if not validate_result.success:
+            raise ValueError(validate_result.error or "Validation failed")
+
         # Check if migration is needed
-        if current_version == target_version:
+        migration_needed = context.get("migration_needed", False)
+        if not migration_needed:
             details.append("Database is already at target version")
             return MigrateResult(
                 success=True,
@@ -93,87 +129,73 @@ class MigrateWorkflow:
                 details=details,
             )
 
-        if current_version > target_version:
-            raise ValueError(
-                f"Cannot downgrade from {from_version} to {to_version}. "
-                "Use rollback command instead."
-            )
-
-        # Check if auto-migration is possible
-        if not await schema_manager.can_auto_migrate():
-            raise ValueError(
-                f"Cannot auto-migrate from version {from_version}. "
-                "Manual migration or database recreation required."
-            )
-
-        # Create backup if requested
+        # Step 3: Create backup if needed and requested
         if config.backup:
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task("Creating backup") as task:
-                        migrator = MigrationManager(config.state_db)
-                        try:
-                            backup_path = await migrator.create_backup()
-                            details.append(f"Backup created: {backup_path}")
-                            task.complete(f"Backup: {backup_path.name}")
-                        finally:
-                            await migrator._close()
-            else:
-                migrator = MigrationManager(config.state_db)
-                try:
-                    backup_path = await migrator.create_backup()
-                    details.append(f"Backup created: {backup_path}")
-                finally:
-                    await migrator._close()
+            # Create migration manager for backup
+            migration_manager = MigrationManager(config.state_db)
+            context.set("migration_manager", migration_manager)
 
-        # Perform migration
+            backup_result = await self._backup_step.execute(context, None, progress=self.progress)
+            if not backup_result.success:
+                raise ValueError(backup_result.error or "Backup creation failed")
+
+            backup_path = context.get("backup_path")
+            if backup_path:
+                details.append(f"Backup created: {backup_path}")
+
+        # Step 4: Execute migration
         try:
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task(f"Migrating {from_version} → {to_version}") as task:
-                        success = await schema_manager.auto_migrate_if_needed(
-                            confirm_callback=None,  # Already confirmed by CLI
-                            progress_callback=lambda msg: details.append(msg),
-                        )
+            execute_result = await self._execute_step.execute(context, None, progress=self.progress)
 
-                        if success:
-                            task.complete(f"Migrated to {to_version}")
-                        else:
-                            task.fail("Migration failed")
+            # Collect migration details
+            migration_details: list[str] = context.get("migration_details", []) or []
+            details.extend(migration_details)
 
-                        # Verify migration
-                        new_version = await schema_manager.detect_version()
-                        if new_version == target_version:
-                            details.append("Migration verified successfully")
-                        else:
-                            success = False
-                            details.append(
-                                f"Migration verification failed: got {new_version.value}"
-                            )
+            if not execute_result.success:
+                # Migration failed - check if we have a backup
+                if backup_path and backup_path.exists():
+                    if self.progress:
+                        self.progress.error(f"Migration failed: {execute_result.error}")
+                        self.progress.info(f"Backup available at: {backup_path}")
+
+                    details.append(f"Migration failed: {execute_result.error}")
+                    details.append(f"Backup available at: {backup_path}")
+
+                    return MigrateResult(
+                        success=False,
+                        from_version=from_version,
+                        to_version=to_version,
+                        backup_path=str(backup_path),
+                        details=details,
+                    )
+                else:
+                    raise RuntimeError(execute_result.error or "Migration failed")
+
+            # Step 5: Verify migration
+            verify_result = await self._verify_step.execute(context, None, progress=self.progress)
+
+            if verify_result.success:
+                details.append("Migration verified successfully")
+                return MigrateResult(
+                    success=True,
+                    from_version=from_version,
+                    to_version=to_version,
+                    backup_path=str(backup_path) if backup_path else None,
+                    details=details,
+                )
             else:
-                success = await schema_manager.auto_migrate_if_needed(
-                    confirm_callback=None,
-                    progress_callback=lambda msg: details.append(msg),
+                # Verification failed
+                details.append(verify_result.error or "Migration verification failed")
+                return MigrateResult(
+                    success=False,
+                    from_version=from_version,
+                    to_version=to_version,
+                    backup_path=str(backup_path) if backup_path else None,
+                    details=details,
                 )
 
-                # Verify migration
-                new_version = await schema_manager.detect_version()
-                if new_version == target_version:
-                    details.append("Migration verified successfully")
-                else:
-                    success = False
-                    details.append(f"Migration verification failed: got {new_version.value}")
-
-            return MigrateResult(
-                success=success,
-                from_version=from_version,
-                to_version=to_version,
-                backup_path=str(backup_path) if backup_path else None,
-                details=details,
-            )
-
         except Exception as e:
-            # Migration failed - rollback if we have a backup
+            # Migration failed - check if we have a backup
             if backup_path and backup_path.exists():
                 if self.progress:
                     self.progress.error(f"Migration failed: {e}")

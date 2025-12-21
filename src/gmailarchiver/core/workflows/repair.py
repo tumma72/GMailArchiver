@@ -1,8 +1,24 @@
-"""Repair workflow for database diagnostics and auto-fix."""
+"""Repair workflow for database diagnostics and auto-fix.
 
-from dataclasses import dataclass
+This workflow uses the WorkflowComposer + Step architecture:
+1. DiagnoseStep: Run full diagnostics and identify issues
+2. AutoFixStep: Attempt to auto-fix fixable issues (conditional on dry_run)
+3. ValidateRepairStep: Re-validate after repair to confirm fixes (conditional)
+"""
 
+from dataclasses import dataclass, field
+from typing import Any
+
+from gmailarchiver.core.doctor._diagnostics import CheckSeverity
+from gmailarchiver.core.doctor._repair import FixResult
 from gmailarchiver.core.doctor.facade import Doctor
+from gmailarchiver.core.workflows.composer import WorkflowComposer
+from gmailarchiver.core.workflows.step import StepContext, WorkflowError
+from gmailarchiver.core.workflows.steps.repair import (
+    AutoFixStep,
+    DiagnoseStep,
+    ValidateRepairStep,
+)
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import ProgressReporter
 
@@ -23,7 +39,9 @@ class RepairResult:
     issues_found: int
     issues_fixed: int
     dry_run: bool
-    details: list[str]
+    details: list[str] = field(default_factory=list)
+    remaining_issues: int = 0
+    validation_passed: bool = True
 
 
 class RepairWorkflow:
@@ -31,6 +49,11 @@ class RepairWorkflow:
 
     This workflow runs diagnostics and optionally attempts to auto-fix
     detected issues. Uses Doctor facade for all repair operations.
+
+    Architecture: 3-step workflow via WorkflowComposer
+    1. DiagnoseStep: Always runs - identifies issues
+    2. AutoFixStep: Runs when dry_run=False
+    3. ValidateRepairStep: Runs when dry_run=False AND issues_fixed > 0
     """
 
     def __init__(
@@ -46,6 +69,34 @@ class RepairWorkflow:
         """
         self.storage = storage
         self.progress = progress
+
+        # Create steps
+        self._diagnose_step = DiagnoseStep()
+        self._auto_fix_step = AutoFixStep()
+        self._validate_step = ValidateRepairStep()
+
+        # Create workflow composer with conditional steps
+        self._composer = (
+            WorkflowComposer("repair")
+            .add_step(self._diagnose_step)
+            .add_conditional_step(self._auto_fix_step, self._should_fix)
+            .add_conditional_step(self._validate_step, self._should_validate)
+        )
+
+    @staticmethod
+    def _should_fix(ctx: StepContext) -> bool:
+        """Condition for auto-fix step: only when not in dry run mode."""
+        config: dict[str, Any] = ctx.get("config", {}) or {}
+        return not config.get("dry_run", True)
+
+    @staticmethod
+    def _should_validate(ctx: StepContext) -> bool:
+        """Condition for validate step: only when not dry run AND issues were fixed."""
+        config: dict[str, Any] = ctx.get("config", {}) or {}
+        if config.get("dry_run", True):
+            return False
+        issues_fixed: int = ctx.get("issues_fixed", 0) or 0
+        return issues_fixed > 0
 
     async def run(self, config: RepairConfig) -> RepairResult:
         """Execute the repair workflow.
@@ -65,109 +116,68 @@ class RepairWorkflow:
             auto_create=False,
         )
 
+        # Create context and inject dependencies
+        context = StepContext()
+        context.set("doctor", doctor)
+        context.set(
+            "config",
+            {
+                "state_db": config.state_db,
+                "backfill": config.backfill,
+                "dry_run": config.dry_run,
+            },
+        )
+
         try:
-            # Run diagnostics
-            if self.progress:
-                with self.progress.task_sequence() as seq:
-                    with seq.task("Running diagnostics") as task:
-                        report = await doctor.run_diagnostics()
-                        task.complete(f"Found {report.errors} errors, {report.warnings} warnings")
-            else:
-                report = await doctor.run_diagnostics()
+            # Execute workflow
+            await self._composer.run(None, progress=self.progress, context=context)
 
-            issues_found = report.errors + report.warnings
+            # Extract results from context
+            issues_found: int = context.get("issues_found", 0) or 0
+            issues_fixed: int = context.get("issues_fixed", 0) or 0
+            remaining_issues: int = context.get("remaining_issues", 0) or 0
+            validation_passed: bool = context.get("validation_passed", True) or True
 
-            # Collect details for non-OK checks
-            for check in report.checks:
-                if check.severity.value != "OK":
-                    details.append(f"{check.name}: {check.message}")
+            # Build details from diagnosis report
+            diagnosis_report = context.get("diagnosis_report")
+            if diagnosis_report:
+                for check in diagnosis_report.checks:
+                    if check.severity != CheckSeverity.OK:
+                        details.append(f"{check.name}: {check.message}")
 
-            # If dry run, don't fix anything
-            if config.dry_run:
-                return RepairResult(
-                    issues_found=issues_found,
-                    issues_fixed=0,
-                    dry_run=True,
-                    details=details,
-                )
+            # Add fix results to details
+            fix_results: list[FixResult] = context.get("fix_results", []) or []
+            if fix_results:
+                for fix_result in fix_results:
+                    if fix_result.success:
+                        details.append(f"Fixed: {fix_result.message}")
+                    else:
+                        details.append(f"Failed: {fix_result.message}")
 
-            # Attempt auto-fix
-            issues_fixed = 0
-            if report.fixable_issues:
-                if self.progress:
-                    with self.progress.task_sequence() as seq:
-                        with seq.task(
-                            "Attempting auto-fix", total=len(report.fixable_issues)
-                        ) as task:
-                            fix_results = await doctor.run_auto_fix()
-                            for fix_result in fix_results:
-                                if fix_result.success:
-                                    issues_fixed += 1
-                                    details.append(f"Fixed: {fix_result.message}")
-                                else:
-                                    details.append(f"Failed: {fix_result.message}")
-                                task.advance(1)
-                            task.complete(f"Fixed {issues_fixed} issues")
-                else:
-                    fix_results = await doctor.run_auto_fix()
-                    for fix_result in fix_results:
-                        if fix_result.success:
-                            issues_fixed += 1
-                            details.append(f"Fixed: {fix_result.message}")
-                        else:
-                            details.append(f"Failed: {fix_result.message}")
-
-            # Handle backfill if requested
-            if config.backfill:
-                if self.progress:
-                    with self.progress.task_sequence() as seq:
-                        with seq.task("Backfilling missing offsets") as task:
-                            backfill_count = await self._backfill_offsets(doctor)
-                            if backfill_count > 0:
-                                issues_fixed += backfill_count
-                                details.append(f"Backfilled {backfill_count} messages")
-                                task.complete(f"Backfilled {backfill_count} messages")
-                            else:
-                                task.complete("No backfill needed")
-                else:
-                    backfill_count = await self._backfill_offsets(doctor)
-                    if backfill_count > 0:
-                        issues_fixed += backfill_count
-                        details.append(f"Backfilled {backfill_count} messages")
+            # Add backfill results to details
+            if config.backfill and issues_fixed > 0:
+                # Check if there were backfills done by checking if issues_fixed
+                # exceeds fix_results successful count
+                successful_fixes = sum(1 for r in fix_results if r.success)
+                backfill_count = issues_fixed - successful_fixes
+                if backfill_count > 0:
+                    details.append(f"Backfilled {backfill_count} messages")
 
             return RepairResult(
                 issues_found=issues_found,
                 issues_fixed=issues_fixed,
-                dry_run=False,
+                dry_run=config.dry_run,
                 details=details,
+                remaining_issues=remaining_issues,
+                validation_passed=validation_passed,
             )
+
+        except WorkflowError:
+            # Re-raise the original exception if stored in context
+            original_exception = context.get("_exception")
+            if original_exception is not None:
+                raise original_exception
+            raise
 
         finally:
             await doctor.close()
-
-    async def _backfill_offsets(self, doctor: Doctor) -> int:
-        """Backfill missing offsets from mbox files.
-
-        Args:
-            doctor: Doctor instance with database access
-
-        Returns:
-            Number of messages backfilled
-        """
-        # Get messages with invalid offsets
-        db_manager = doctor._get_db_manager()
-        if not db_manager:
-            return 0
-
-        invalid_messages = await db_manager.get_messages_with_invalid_offsets()
-        if not invalid_messages:
-            return 0
-
-        # Use MigrationManager for backfill
-        from gmailarchiver.data.migration import MigrationManager
-
-        migrator = MigrationManager(db_manager.db_path)
-        try:
-            return await migrator.backfill_offsets_from_mbox(invalid_messages)
-        finally:
-            await migrator._close()

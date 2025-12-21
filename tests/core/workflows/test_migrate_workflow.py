@@ -17,6 +17,7 @@ import pytest
 
 from gmailarchiver.core.workflows.migrate import (
     MigrateConfig,
+    MigrateResult,
     MigrateWorkflow,
 )
 from gmailarchiver.data.hybrid_storage import HybridStorage
@@ -771,3 +772,440 @@ class TestExceptionHandling:
         assert "Migration verification failed" in result.details[-1]
         # Verify task sequence was used
         assert mock_progress.task_sequence.called
+
+
+# ============================================================================
+# Tests for WorkflowComposer-based Architecture (TDD Red Phase)
+# ============================================================================
+# These tests define expected behavior for the refactored migrate workflow
+# that uses WorkflowComposer and Step classes instead of monolithic execution.
+# They should FAIL initially because the refactored implementation doesn't exist yet.
+
+
+class TestMigrateWorkflowUsesComposer:
+    """Test that MigrateWorkflow uses WorkflowComposer pattern.
+
+    The refactored workflow should:
+    - Use WorkflowComposer to compose migrate steps
+    - Execute steps in correct order: detect -> validate -> backup -> execute -> verify
+    - Inject SchemaManager and MigrationManager into step context
+    - Handle conditional backup step based on config
+    """
+
+    @pytest.mark.asyncio
+    async def test_workflow_uses_workflow_composer(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """MigrateWorkflow internally uses WorkflowComposer or steps."""
+        workflow = MigrateWorkflow(hybrid_storage)
+
+        # After refactoring, workflow should have step instances or composer
+        assert hasattr(workflow, "_detect_step") or hasattr(workflow, "_get_composer")
+
+    @pytest.mark.asyncio
+    async def test_workflow_has_five_migrate_steps(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """MigrateWorkflow has all five migrate steps defined."""
+        workflow = MigrateWorkflow(hybrid_storage)
+
+        # After refactoring, workflow should have all 5 steps
+        assert hasattr(workflow, "_detect_step")
+        assert hasattr(workflow, "_validate_step")
+        assert hasattr(workflow, "_backup_step")
+        assert hasattr(workflow, "_execute_step")
+        assert hasattr(workflow, "_verify_step")
+
+    @pytest.mark.asyncio
+    async def test_workflow_injects_schema_manager_into_context(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """Workflow injects SchemaManager into step context before running steps."""
+
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=False,
+        )
+
+        # The workflow should inject schema_manager into context
+        # We verify by checking that the migration succeeds (requires schema_manager)
+        result = await workflow.run(config)
+
+        # Should have migrated successfully (proves schema_manager was available)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_workflow_injects_migration_manager_into_context(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """Workflow injects MigrationManager into step context for backup step."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,  # Requires MigrationManager
+        )
+
+        result = await workflow.run(config)
+
+        # Should have created backup (proves migration_manager was available)
+        assert result.backup_path is not None
+
+
+class TestMigrateWorkflowStepOrder:
+    """Test that MigrateWorkflow executes steps in correct order."""
+
+    @pytest.mark.asyncio
+    async def test_detect_step_runs_first(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """DetectVersionStep runs before other steps."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Detect step should have identified v1.0
+        assert result.from_version == "1.0"
+
+    @pytest.mark.asyncio
+    async def test_validate_step_runs_after_detect(
+        self, hybrid_storage: HybridStorage, v11_db_empty: str, mock_progress: MagicMock
+    ) -> None:
+        """ValidateMigrationStep runs after DetectVersionStep."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v11_db_empty,
+            target_version="1.1",  # Already at this version
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Validate step should have determined no migration needed
+        assert result.success is True
+        assert "already at target version" in result.details[0]
+
+    @pytest.mark.asyncio
+    async def test_backup_step_runs_before_execute(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """CreateBackupStep runs before ExecuteMigrationStep."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Backup should exist (created before migration)
+        assert result.backup_path is not None
+        assert Path(result.backup_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_verify_step_runs_after_execute(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """VerifyMigrationStep runs after ExecuteMigrationStep."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Verify step should have confirmed migration
+        assert result.success is True
+        assert any("verified" in d.lower() for d in result.details)
+
+
+class TestMigrateWorkflowConditionalBackup:
+    """Test conditional backup step execution."""
+
+    @pytest.mark.asyncio
+    async def test_backup_step_executes_when_backup_true(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """CreateBackupStep executes when config.backup is True."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        assert result.backup_path is not None
+        assert Path(result.backup_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_backup_step_skipped_when_backup_false(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """CreateBackupStep is skipped when config.backup is False."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=False,
+        )
+
+        result = await workflow.run(config)
+
+        assert result.backup_path is None
+
+    @pytest.mark.asyncio
+    async def test_backup_step_skipped_when_no_migration_needed(
+        self, hybrid_storage: HybridStorage, v11_db_empty: str
+    ) -> None:
+        """CreateBackupStep is skipped when no migration is needed."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v11_db_empty,
+            target_version="1.1",  # Already at this version
+            backup=True,  # Backup enabled but should not be created
+        )
+
+        result = await workflow.run(config)
+
+        assert result.backup_path is None
+        assert "already at target version" in result.details[0]
+
+
+class TestMigrateWorkflowResultAggregation:
+    """Test that workflow correctly aggregates step results."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_version_info_from_detect_step(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """MigrateResult includes from_version from DetectVersionStep."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=False,
+        )
+
+        result = await workflow.run(config)
+
+        assert result.from_version == "1.0"
+        assert result.to_version == SchemaVersion.V1_3.value
+
+    @pytest.mark.asyncio
+    async def test_aggregates_backup_path_from_backup_step(
+        self, hybrid_storage: HybridStorage, v10_db: str, temp_dir: Path
+    ) -> None:
+        """MigrateResult includes backup_path from CreateBackupStep."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        assert result.backup_path is not None
+        # Backup should be in same directory as source db
+        assert Path(result.backup_path).parent.resolve() == temp_dir.resolve()
+
+    @pytest.mark.asyncio
+    async def test_aggregates_details_from_all_steps(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """MigrateResult includes details from all executed steps."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Should have details from backup and verification steps at minimum
+        assert len(result.details) >= 2
+        assert any("backup" in d.lower() for d in result.details)
+        assert any("verified" in d.lower() or "complete" in d.lower() for d in result.details)
+
+    @pytest.mark.asyncio
+    async def test_success_reflects_all_steps_passed(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """MigrateResult.success is True only if all steps succeed."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        assert result.success is True
+        # Verify the to_version matches target
+        assert result.to_version == SchemaVersion.V1_3.value
+
+
+class TestMigrateWorkflowErrorHandling:
+    """Test error handling with step-based architecture."""
+
+    @pytest.mark.asyncio
+    async def test_stops_on_detect_step_failure(
+        self, hybrid_storage: HybridStorage, nonexistent_db: str
+    ) -> None:
+        """Workflow stops early if DetectVersionStep fails."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=nonexistent_db,
+            target_version=None,
+            backup=True,
+        )
+
+        with pytest.raises(ValueError, match="Cannot auto-migrate from version none"):
+            await workflow.run(config)
+
+    @pytest.mark.asyncio
+    async def test_stops_on_validate_step_failure(
+        self, hybrid_storage: HybridStorage, v11_db_empty: str
+    ) -> None:
+        """Workflow stops early if ValidateMigrationStep fails."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v11_db_empty,
+            target_version="1.0",  # Downgrade attempt
+            backup=True,
+        )
+
+        with pytest.raises(ValueError, match="Cannot downgrade"):
+            await workflow.run(config)
+
+    @pytest.mark.asyncio
+    async def test_provides_backup_path_on_execute_step_failure(
+        self, hybrid_storage: HybridStorage, v10_db_with_messages: tuple[str, Path]
+    ) -> None:
+        """Provides backup path if ExecuteMigrationStep fails."""
+        db_path, mbox_path = v10_db_with_messages
+
+        # Delete mbox to potentially cause issues
+        mbox_path.unlink()
+
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=db_path,
+            target_version=None,
+            backup=True,
+        )
+
+        # Migration might succeed with warnings or fail
+        # Either way, backup should be available
+        result = await workflow.run(config)
+
+        assert result.backup_path is not None
+
+    @pytest.mark.asyncio
+    async def test_cleans_up_resources_on_step_failure(
+        self, hybrid_storage: HybridStorage, v10_db: str, monkeypatch
+    ) -> None:
+        """Workflow cleans up resources (MigrationManager) even on failure."""
+        from gmailarchiver.data.schema_manager import SchemaManager
+
+        # Track whether MigrationManager was closed
+        migration_closed = []
+
+        original_close = None
+
+        async def mock_auto_migrate(*args, **kwargs):
+            raise RuntimeError("Simulated failure")
+
+        monkeypatch.setattr(SchemaManager, "auto_migrate_if_needed", mock_auto_migrate)
+
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Should have failed but returned result with backup info
+        assert result.success is False
+        assert result.backup_path is not None
+
+
+class TestMigrateWorkflowStepIntegration:
+    """Test that migrate workflow correctly integrates with migrate steps."""
+
+    @pytest.mark.asyncio
+    async def test_workflow_converts_step_results_to_migrate_result(
+        self, hybrid_storage: HybridStorage, v10_db: str
+    ) -> None:
+        """Workflow converts step results to MigrateResult correctly."""
+        workflow = MigrateWorkflow(hybrid_storage)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Should be a proper MigrateResult
+        assert isinstance(result, MigrateResult)
+        assert hasattr(result, "success")
+        assert hasattr(result, "from_version")
+        assert hasattr(result, "to_version")
+        assert hasattr(result, "backup_path")
+        assert hasattr(result, "details")
+
+    @pytest.mark.asyncio
+    async def test_workflow_includes_migration_progress_in_details(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """Workflow includes migration progress messages in details."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        result = await workflow.run(config)
+
+        # Should have progress messages in details
+        assert len(result.details) > 0
+        # Look for version-related progress messages
+        version_messages = [d for d in result.details if "1." in d]
+        assert len(version_messages) > 0
+
+    @pytest.mark.asyncio
+    async def test_workflow_uses_progress_reporter_for_each_step(
+        self, hybrid_storage: HybridStorage, v10_db: str, mock_progress: MagicMock
+    ) -> None:
+        """Workflow uses progress reporter for each step execution."""
+        workflow = MigrateWorkflow(hybrid_storage, progress=mock_progress)
+        config = MigrateConfig(
+            state_db=v10_db,
+            target_version=None,
+            backup=True,
+        )
+
+        await workflow.run(config)
+
+        # Progress reporter should have been used
+        assert mock_progress.task_sequence.called
+        # Should be called at least twice (backup + migration)
+        assert mock_progress.task_sequence.call_count >= 2

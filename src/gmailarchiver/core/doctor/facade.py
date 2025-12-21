@@ -288,6 +288,19 @@ class Doctor:
         """Check temp directory."""
         return DiagnosticsRunner(self.db_path, self._storage).check_temp_directory()
 
+    async def check_mbox_offsets(self, archive_file: str | None = None) -> CheckResult:
+        """Check mbox offset accuracy.
+
+        Args:
+            archive_file: Optional specific archive file to check
+
+        Returns:
+            CheckResult with offset validation status
+        """
+        return await DiagnosticsRunner(self.db_path, self._storage).check_mbox_offsets(
+            archive_file=archive_file
+        )
+
     async def fix_missing_database(self) -> FixResult:
         """Fix missing database."""
         db_manager = self._get_db_manager()

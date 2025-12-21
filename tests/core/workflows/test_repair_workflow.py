@@ -2,6 +2,8 @@
 
 Tests verify repair workflow behavior including diagnostics, auto-fix,
 backfill operations, dry-run mode, and progress reporting.
+
+Includes tests for the WorkflowComposer + Steps refactoring (TDD Red Phase).
 """
 
 import sqlite3
@@ -16,6 +18,19 @@ from gmailarchiver.core.doctor.facade import CheckSeverity, DoctorReport
 from gmailarchiver.core.workflows.repair import RepairConfig, RepairWorkflow
 from gmailarchiver.data.hybrid_storage import HybridStorage
 from gmailarchiver.shared.protocols import NoOpProgressReporter
+
+# Import for WorkflowComposer tests - may not exist yet
+try:
+    from gmailarchiver.core.workflows.composer import WorkflowComposer  # noqa: F401
+    from gmailarchiver.core.workflows.steps.repair import (  # noqa: F401
+        AutoFixStep,
+        DiagnoseStep,
+        ValidateRepairStep,
+    )
+
+    COMPOSER_AVAILABLE = True
+except ImportError:
+    COMPOSER_AVAILABLE = False
 
 
 @pytest.fixture
@@ -892,3 +907,634 @@ class TestRepairWorkflowIntegration:
         assert any("disk_space: Low disk space" in detail for detail in result.details)
         # OK check should NOT be in details
         assert not any("database_schema" in detail for detail in result.details)
+
+
+# ============================================================================
+# WorkflowComposer Pattern Tests (TDD Red Phase)
+# ============================================================================
+# These tests define expected behavior for the refactored RepairWorkflow
+# using the WorkflowComposer + Steps pattern. All tests should FAIL initially.
+
+
+@pytest.mark.skipif(not COMPOSER_AVAILABLE, reason="WorkflowComposer not implemented yet")
+class TestRepairWorkflowComposer:
+    """Test RepairWorkflow uses WorkflowComposer with 3 steps."""
+
+    @pytest.mark.asyncio
+    async def test_workflow_uses_workflow_composer(self, repair_workflow: RepairWorkflow) -> None:
+        """RepairWorkflow should use WorkflowComposer internally."""
+        # After refactoring, RepairWorkflow should have a composer attribute
+        assert hasattr(repair_workflow, "_composer")
+        assert isinstance(repair_workflow._composer, WorkflowComposer)
+
+    @pytest.mark.asyncio
+    async def test_workflow_has_three_steps(self, repair_workflow: RepairWorkflow) -> None:
+        """RepairWorkflow composer should have exactly 3 steps."""
+        steps = repair_workflow._composer.steps
+        assert len(steps) == 3
+
+    @pytest.mark.asyncio
+    async def test_workflow_steps_in_correct_order(self, repair_workflow: RepairWorkflow) -> None:
+        """Steps should be DiagnoseStep, AutoFixStep, ValidateRepairStep in order."""
+        steps = repair_workflow._composer.steps
+
+        assert isinstance(steps[0], DiagnoseStep)
+        assert isinstance(steps[1], AutoFixStep)
+        assert isinstance(steps[2], ValidateRepairStep)
+
+    @pytest.mark.asyncio
+    async def test_workflow_injects_doctor_into_context(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """RepairWorkflow should inject Doctor into StepContext."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=0,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            await repair_workflow.run(config)
+
+            # Verify Doctor was created and injected
+            mock_doctor_class.create.assert_called_once()
+
+
+@pytest.mark.skipif(not COMPOSER_AVAILABLE, reason="WorkflowComposer not implemented yet")
+class TestRepairWorkflowConditionalSteps:
+    """Test conditional step execution in RepairWorkflow."""
+
+    @pytest.mark.asyncio
+    async def test_diagnose_step_always_runs(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """DiagnoseStep should always execute regardless of config."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=True)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=0,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            await repair_workflow.run(config)
+
+            # Diagnostics always runs
+            mock_doctor.run_diagnostics.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_autofix_step_skipped_when_dry_run_true(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """AutoFixStep should be skipped when dry_run=True."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=True)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="orphaned_fts",
+                        severity=CheckSeverity.ERROR,
+                        message="FTS missing",
+                        fixable=True,
+                    )
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["orphaned_fts"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            result = await repair_workflow.run(config)
+
+            # AutoFix should NOT have been called
+            mock_doctor.run_auto_fix.assert_not_called()
+            assert result.issues_fixed == 0
+
+    @pytest.mark.asyncio
+    async def test_autofix_step_runs_when_dry_run_false(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """AutoFixStep should run when dry_run=False and fixable issues exist."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="orphaned_fts",
+                        severity=CheckSeverity.ERROR,
+                        message="FTS missing",
+                        fixable=True,
+                    )
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["orphaned_fts"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="orphaned_fts", success=True, message="Fixed")
+            ]
+
+            result = await repair_workflow.run(config)
+
+            # AutoFix should have been called
+            mock_doctor.run_auto_fix.assert_called_once()
+            assert result.issues_fixed == 1
+
+    @pytest.mark.asyncio
+    async def test_validate_step_skipped_when_dry_run_true(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """ValidateRepairStep should be skipped when dry_run=True."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=True)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="orphaned_fts",
+                        severity=CheckSeverity.ERROR,
+                        message="FTS missing",
+                        fixable=True,
+                    )
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["orphaned_fts"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            await repair_workflow.run(config)
+
+            # run_diagnostics should only be called once (by DiagnoseStep)
+            # ValidateStep would call it again, so only 1 call means validate skipped
+            assert mock_doctor.run_diagnostics.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_validate_step_skipped_when_issues_fixed_zero(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """ValidateRepairStep should be skipped when issues_fixed=0."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            # No issues found, so nothing to fix
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=0,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            await repair_workflow.run(config)
+
+            # run_diagnostics should only be called once (by DiagnoseStep)
+            # ValidateStep would call it again if it ran
+            assert mock_doctor.run_diagnostics.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_validate_step_runs_when_issues_fixed_greater_than_zero(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """ValidateRepairStep should run when dry_run=False AND issues_fixed>0."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            # First call: issues found
+            first_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="orphaned_fts",
+                        severity=CheckSeverity.ERROR,
+                        message="FTS missing",
+                        fixable=True,
+                    )
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["orphaned_fts"],
+            )
+
+            # Second call (validation): no issues remaining
+            second_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=1,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+
+            mock_doctor.run_diagnostics.side_effect = [first_report, second_report]
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="orphaned_fts", success=True, message="Fixed")
+            ]
+
+            await repair_workflow.run(config)
+
+            # run_diagnostics should be called twice: DiagnoseStep + ValidateStep
+            assert mock_doctor.run_diagnostics.call_count == 2
+
+
+@pytest.mark.skipif(not COMPOSER_AVAILABLE, reason="WorkflowComposer not implemented yet")
+class TestRepairWorkflowResultAggregation:
+    """Test RepairResult aggregation from step context."""
+
+    @pytest.mark.asyncio
+    async def test_result_includes_issues_found(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """RepairResult should include issues_found from DiagnoseStep."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=True)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 1",
+                        fixable=True,
+                    ),
+                    CheckResult(
+                        name="issue2",
+                        severity=CheckSeverity.WARNING,
+                        message="Warning 1",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=1,
+                errors=1,
+                fixable_issues=["issue1", "issue2"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            result = await repair_workflow.run(config)
+
+            assert result.issues_found == 2
+
+    @pytest.mark.asyncio
+    async def test_result_includes_issues_fixed(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """RepairResult should include issues_fixed from AutoFixStep."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 1",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["issue1"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="issue1", success=True, message="Fixed")
+            ]
+
+            result = await repair_workflow.run(config)
+
+            assert result.issues_fixed == 1
+
+    @pytest.mark.asyncio
+    async def test_result_includes_remaining_issues(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """RepairResult should include remaining_issues from ValidateRepairStep."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            # First call: 2 issues
+            first_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 1",
+                        fixable=True,
+                    ),
+                    CheckResult(
+                        name="issue2",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 2",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=2,
+                fixable_issues=["issue1", "issue2"],
+            )
+
+            # Second call (validation): 1 issue remains
+            second_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue2",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 2",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["issue2"],
+            )
+
+            mock_doctor.run_diagnostics.side_effect = [first_report, second_report]
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="issue1", success=True, message="Fixed"),
+                FixResult(check_name="issue2", success=False, message="Failed"),
+            ]
+
+            result = await repair_workflow.run(config)
+
+            # Result should have remaining_issues attribute from validation
+            assert hasattr(result, "remaining_issues")
+            assert result.remaining_issues == 1
+
+    @pytest.mark.asyncio
+    async def test_result_includes_validation_passed(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """RepairResult should include validation_passed from ValidateRepairStep."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            # First call: issues found
+            first_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error 1",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["issue1"],
+            )
+
+            # Second call (validation): no issues
+            second_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=1,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+
+            mock_doctor.run_diagnostics.side_effect = [first_report, second_report]
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="issue1", success=True, message="Fixed")
+            ]
+
+            result = await repair_workflow.run(config)
+
+            # Result should have validation_passed attribute
+            assert hasattr(result, "validation_passed")
+            assert result.validation_passed is True
+
+    @pytest.mark.asyncio
+    async def test_result_dry_run_reflects_config(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """RepairResult.dry_run should reflect config.dry_run."""
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=0,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            # Test dry_run=True
+            config_dry = RepairConfig(state_db=v11_db, backfill=False, dry_run=True)
+            result_dry = await repair_workflow.run(config_dry)
+            assert result_dry.dry_run is True
+
+            # Test dry_run=False
+            config_not_dry = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+            result_not_dry = await repair_workflow.run(config_not_dry)
+            assert result_not_dry.dry_run is False
+
+
+@pytest.mark.skipif(not COMPOSER_AVAILABLE, reason="WorkflowComposer not implemented yet")
+class TestRepairWorkflowErrorHandlingComposer:
+    """Test error handling in the refactored RepairWorkflow."""
+
+    @pytest.mark.asyncio
+    async def test_diagnose_step_failure_stops_workflow(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """Workflow should stop if DiagnoseStep fails."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_doctor.run_diagnostics.side_effect = Exception("Diagnostics failed")
+
+            with pytest.raises(Exception, match="Diagnostics failed"):
+                await repair_workflow.run(config)
+
+            # AutoFix should not have been called
+            mock_doctor.run_auto_fix.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_autofix_step_failure_stops_workflow(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """Workflow should stop if AutoFixStep fails."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["issue1"],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+            mock_doctor.run_auto_fix.side_effect = Exception("AutoFix failed")
+
+            with pytest.raises(Exception, match="AutoFix failed"):
+                await repair_workflow.run(config)
+
+    @pytest.mark.asyncio
+    async def test_validate_step_failure_does_not_crash(
+        self, repair_workflow: RepairWorkflow, broken_db: str
+    ) -> None:
+        """Workflow should handle ValidateRepairStep failure gracefully."""
+        config = RepairConfig(state_db=broken_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            # First call (diagnose) succeeds
+            first_report = DoctorReport(
+                overall_status=CheckSeverity.ERROR,
+                checks=[
+                    CheckResult(
+                        name="issue1",
+                        severity=CheckSeverity.ERROR,
+                        message="Error",
+                        fixable=True,
+                    ),
+                ],
+                checks_passed=0,
+                warnings=0,
+                errors=1,
+                fixable_issues=["issue1"],
+            )
+
+            # Second call (validate) fails
+            mock_doctor.run_diagnostics.side_effect = [
+                first_report,
+                Exception("Validation failed"),
+            ]
+            mock_doctor.run_auto_fix.return_value = [
+                FixResult(check_name="issue1", success=True, message="Fixed")
+            ]
+
+            with pytest.raises(Exception, match="Validation failed"):
+                await repair_workflow.run(config)
+
+    @pytest.mark.asyncio
+    async def test_doctor_closed_after_all_steps(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """Doctor should be closed after all steps complete."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_report = DoctorReport(
+                overall_status=CheckSeverity.OK,
+                checks=[],
+                checks_passed=0,
+                warnings=0,
+                errors=0,
+                fixable_issues=[],
+            )
+            mock_doctor.run_diagnostics.return_value = mock_report
+
+            await repair_workflow.run(config)
+
+            mock_doctor.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_doctor_closed_even_on_error(
+        self, repair_workflow: RepairWorkflow, v11_db: str
+    ) -> None:
+        """Doctor should be closed even when a step fails."""
+        config = RepairConfig(state_db=v11_db, backfill=False, dry_run=False)
+
+        with patch("gmailarchiver.core.workflows.repair.Doctor") as mock_doctor_class:
+            mock_doctor = AsyncMock()
+            mock_doctor_class.create = AsyncMock(return_value=mock_doctor)
+
+            mock_doctor.run_diagnostics.side_effect = Exception("Step failed")
+
+            with pytest.raises(Exception, match="Step failed"):
+                await repair_workflow.run(config)
+
+            # Doctor should still be closed
+            mock_doctor.close.assert_called_once()

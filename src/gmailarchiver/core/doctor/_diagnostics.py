@@ -589,3 +589,102 @@ class DiagnosticsRunner:
                 message=f"Temp directory check failed: {e}",
                 fixable=False,
             )
+
+    async def check_mbox_offsets(self, archive_file: str | None = None) -> CheckResult:
+        """Check mbox offset accuracy.
+
+        Verifies that stored offsets in the database accurately point to
+        the correct message positions in mbox files.
+
+        Args:
+            archive_file: Optional specific archive file to check
+
+        Returns:
+            CheckResult with offset validation status
+        """
+        if not self.storage or not self.storage.db or self.storage.db.conn is None:
+            return CheckResult(
+                name="Mbox offsets",
+                severity=CheckSeverity.OK,
+                message="Skipped (no database connection)",
+                fixable=False,
+            )
+        conn = self.storage.db.conn
+
+        try:
+            # Check if messages table has offset data
+            cursor = await conn.execute(
+                """
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='messages'
+            """
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return CheckResult(
+                    name="Mbox offsets",
+                    severity=CheckSeverity.OK,
+                    message="No messages in database",
+                    fixable=False,
+                )
+
+            # Build query based on whether we have a specific archive file
+            if archive_file:
+                cursor = await conn.execute(
+                    """
+                    SELECT COUNT(*) FROM messages
+                    WHERE archive_file = ? AND (mbox_offset IS NULL OR mbox_offset < 0)
+                """,
+                    (archive_file,),
+                )
+            else:
+                cursor = await conn.execute(
+                    """
+                    SELECT COUNT(*) FROM messages
+                    WHERE mbox_offset IS NULL OR mbox_offset < 0
+                """
+                )
+            row = await cursor.fetchone()
+            invalid_count = row[0] if row else 0
+
+            # Get total message count for context
+            if archive_file:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE archive_file = ?",
+                    (archive_file,),
+                )
+            else:
+                cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            total_count = row[0] if row else 0
+
+            if total_count == 0:
+                return CheckResult(
+                    name="Mbox offsets",
+                    severity=CheckSeverity.OK,
+                    message="No messages to check",
+                    fixable=False,
+                )
+
+            if invalid_count == 0:
+                return CheckResult(
+                    name="Mbox offsets",
+                    severity=CheckSeverity.OK,
+                    message=f"All {total_count} offsets are valid",
+                    fixable=False,
+                )
+            else:
+                return CheckResult(
+                    name="Mbox offsets",
+                    severity=CheckSeverity.WARNING,
+                    message=f"Found {invalid_count} invalid offset(s)",
+                    fixable=True,
+                    details="Run: gmailarchiver repair --backfill",
+                )
+        except Exception as e:
+            return CheckResult(
+                name="Mbox offsets",
+                severity=CheckSeverity.WARNING,
+                message=f"Offset check failed: {e}",
+                fixable=False,
+            )
