@@ -105,6 +105,28 @@ markers = [
     "slow: Tests taking >1s",
 ]
 
+[tool.coverage.run]
+source = ["src/gmailarchiver"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__main__.py",
+    "*/site-packages/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+fail_under = 90
+show_missing = true
+
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",

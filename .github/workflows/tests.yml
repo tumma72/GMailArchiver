@@ -82,10 +82,8 @@ jobs:
         run: |
           uv run pytest tests/ \
             --cov=src/gmailarchiver \
-            --cov-config=.coveragerc \
             --cov-report=term \
             --cov-report=xml \
-            --cov-fail-under=90 \
             --no-cov-on-fail
 
       - name: Upload coverage reports
