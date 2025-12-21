@@ -35,7 +35,12 @@ jobs:
         FORCE_COLOR: "0"
         TERM: "dumb"
       run: |
-        uv run pytest --cov=src/gmailarchiver --cov-report=xml --cov-report=term --no-cov-on-fail
+        uv run pytest tests/ \
+          --cov=src/gmailarchiver \
+          --cov-config=.coveragerc \
+          --cov-report=xml \
+          --cov-report=term \
+          --no-cov-on-fail
 
     - name: Get coverage percentage
       id: coverage
