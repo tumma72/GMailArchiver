@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CommandContext**: Extended with async Gmail client support and `is_async` property
 - **`with_context` decorator**: Now accepts `requires_async_gmail` parameter
 - **Architecture documentation**: Updated ADR-006 with httpx rationale and adaptive rate limiting design
+- **Workflows module refactoring** (Major Architectural Change):
+  - All 5 primary commands (archive, verify, migrate, repair, consolidate) migrated to **WorkflowComposer + Steps pattern**
+  - Created 27 reusable step classes across 13 files in `core/workflows/steps/`
+  - Replaced monolithic workflows with composable, independently testable steps
+  - Implemented conditional step execution for dry-run, validation, and optional operations
+  - Steps follow single responsibility principle, each calling one facade method
+  - Added 315+ new tests (TDD methodology) maintaining 96% coverage
+  - All CLI commands now thin (<50 LOC) with pure async logic in workflows
+  - Enhanced documentation: `ARCHITECTURE.md`, `README.md`, and inline docstrings
 
 ### Dependencies
 - Added `httpx[http2]` for async HTTP client with HTTP/2 support

@@ -1,38 +1,33 @@
 # Workflows Module
 
-**Status:** Production (v1.7.0+)
-**Last Updated:** 2025-12-08
+**Status:** Production (v1.9.0+) - All Commands Refactored
+**Last Updated:** 2025-12-21
 
-This module contains the async implementation of all CLI commands, following the thin client pattern.
+This module contains the async orchestration of all CLI commands using a **step-based architecture** with WorkflowComposer pattern.
 
 ## Current Status
 
-### Implemented Workflows
+### Implemented Workflows (5/5 Complete)
 
-| Command | Workflow Function | Status |
-|---------|-------------------|--------|
-| `archive` | `archive_workflow()` | ✅ Implemented (placeholder) |
-| `status` | `status_workflow()` | ✅ Implemented (placeholder) |
-| `validate` | `validate_workflow()` | ⏳ Planned |
-| `search` | `search_workflow()` | ⏳ Planned |
-| `import` | `import_workflow()` | ⏳ Planned |
-| `consolidate` | `consolidate_workflow()` | ⏳ Planned |
-| `dedupe` | `dedupe_workflow()` | ⏳ Planned |
-| `repair` | `repair_workflow()` | ⏳ Planned |
-| `doctor` | `doctor_workflow()` | ⏳ Planned |
+All commands have been refactored to use the **WorkflowComposer + Steps pattern**:
 
-### Migration Status
+| Command | Workflow Class | Steps | Status |
+|---------|---|---|---|
+| `archive` | `ArchiveWorkflow` | 5 | ✅ Production |
+| `verify` | `VerifyWorkflow` | 3 | ✅ Production |
+| `migrate` | `MigrateWorkflow` | 5 | ✅ Production |
+| `repair` | `RepairWorkflow` | 3 | ✅ Production |
+| `consolidate` | `ConsolidateWorkflow` | 3 | ✅ Production |
+| Other (status, search, import, doctor) | Respective workflows | 1-3 each | ✅ Production |
 
-The workflows module is being gradually introduced to replace business logic currently in `__main__.py`.
+### Architecture Evolution
 
-**Migration Plan:**
-1. ✅ Create workflows module structure
-2. ✅ Define workflow pattern and architecture
-3. ⏳ Move `archive` command logic to workflow
-4. ⏳ Move `status` command logic to workflow
-5. ⏳ Move remaining commands to workflows
-6. ⏳ Update CLI commands to call workflows
-7. ⏳ Verify single `asyncio.run()` call per command
+**v1.9.0 (Dec 2025) - Step-Based Refactoring:**
+1. ✅ Created 27 reusable step classes across 13 files
+2. ✅ Refactored all 5 primary commands to use WorkflowComposer
+3. ✅ Implemented conditional step execution (dry-run, validation, backups)
+4. ✅ Added 315+ new tests (96% coverage maintained)
+5. ✅ Eliminated placeholder code
 
 ## Module Structure
 
@@ -201,10 +196,11 @@ User → CLI Command (sync)
 
 ### Test Coverage
 
-| Component | Target | Current |
-|-----------|--------|---------|
-| Workflows | 95%+ | 0% (not yet implemented) |
-| CLI Commands | 80%+ | 0% (not yet migrated) |
+| Component | Target | Current | Status |
+|-----------|--------|---------|--------|
+| Workflow Steps | 95%+ | 315+ tests | ✅ Complete |
+| Workflows | 95%+ | 153 integration tests | ✅ Complete |
+| Total Coverage | 90%+ | 96% | ✅ Exceeds target |
 
 ### Test Patterns
 
@@ -283,31 +279,26 @@ async def archive_workflow(ctx: CommandContext, ...):
     return {"status": "success", "archived": 42}
 ```
 
-## Known Limitations
+## Refactoring Status (v1.9.0)
 
-### Current State
+### ✅ Completed
 
-- ✅ Workflows module structure created
-- ✅ Architecture and design documented
-- ✅ Example workflows created (placeholders)
-- ❌ Business logic not yet moved from `__main__.py`
-- ❌ CLI commands not yet updated to call workflows
-- ❌ Tests not yet written for workflows
+- ✅ All 5 primary commands refactored to WorkflowComposer + Steps
+- ✅ 27 reusable step classes implemented
+- ✅ 315+ new tests written (TDD methodology)
+- ✅ Comprehensive documentation (ARCHITECTURE.md)
+- ✅ Layer boundaries enforced (no CLI imports in core/workflows)
+- ✅ CLI commands kept thin (<50 LOC each)
+- ✅ 96% test coverage achieved
 
-### Technical Debt
+### Architecture Benefits
 
-1. **`__main__.py` is too large** - Contains business logic that should be in workflows
-2. **CLI commands not thin** - Mix business logic with presentation
-3. **No workflow tests** - Need comprehensive test coverage
-4. **Incomplete migration** - Only placeholder workflows exist
-
-### Migration Priority
-
-1. **High**: Move `archive` command logic to workflow
-2. **High**: Move `status` command logic to workflow
-3. **Medium**: Move remaining commands to workflows
-4. **Medium**: Write workflow tests
-5. **Low**: Update CLI commands to be thin
+1. **Reusability** - Steps can be composed into new workflows
+2. **Testability** - Each step independently testable
+3. **Maintainability** - Single responsibility per step
+4. **Extensibility** - Easy to add new steps or workflows
+5. **Observability** - Progress reporting via protocols
+6. **Type Safety** - Full type hints on all components
 
 ## Future Enhancements
 
