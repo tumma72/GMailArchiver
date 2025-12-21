@@ -10,15 +10,15 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.4.5 - Performance Fix
+## 🎉 What's New in v1.5.0 - Architecture Refactoring
 
-Version 1.4.5 includes v1.4.3's **complete fix for the O(n²) performance bottleneck** plus CI/publishing fixes:
+Version 1.5.0 modernizes the internal architecture while maintaining complete backward compatibility. No user-facing changes, but significant improvements under the hood:
 
-- ⚡ **500-1000x Faster** - Batch archiving with O(n) complexity (was O(n²))
-- 🔧 **Root Cause Fixed** - Single mbox open/close cycle per batch (not per-message)
-- 📊 **Progress Tracking** - Real-time callbacks during batch operations
-- ⏸️ **Graceful Interrupts** - Ctrl+C saves progress for resumable operations
-- ✅ **1569 Tests Passing** - All tests pass including CI environment
+- 🏗️ **WorkflowComposer + Steps Pattern** - All 5 primary commands refactored for composability and testability
+- 🧪 **315+ New Tests** - Comprehensive test coverage maintained at 96%
+- ⚡ **Same Performance** - All async operations preserved, no regressions
+- 🔄 **Better Maintainability** - Single-responsibility steps enable easier debugging and future features
+- 🎯 **Foundation for GUI/API** - Workflows can now be reused by non-CLI interfaces (coming soon)
 
 ### Recent Major Features
 
@@ -237,6 +237,26 @@ All commands support `--json` for scripting and `--help` for detailed options.
 - [Changelog](CHANGELOG.md) - Version history and release notes
 
 ## 📜 Version History
+
+### v1.5.0 (2025-12-21) - Architecture Modernization
+
+**Internal Refactoring** (No user-facing changes):
+- Refactored all 5 primary commands (archive, verify, migrate, repair, consolidate) to WorkflowComposer + Steps pattern
+- Created 27 reusable step classes for single-responsibility component design
+- Added 315+ new tests using TDD methodology
+- Maintained 96% test coverage and 2,897 passing tests
+- All quality gates passing (ruff, mypy, zero warnings)
+
+**Benefits**:
+- Foundation for future GUI/API interfaces
+- Improved maintainability and debuggability
+- Easier to add new features with composable steps
+- Better error handling and reporting
+
+**No Breaking Changes**:
+- All CLI interfaces remain identical
+- All commands work exactly as before
+- Performance maintained (all async operations preserved)
 
 ### v1.4.5 (2025-12-05) - Performance Fix + CI/Publishing Repairs
 

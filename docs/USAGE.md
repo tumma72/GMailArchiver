@@ -291,14 +291,20 @@ gmailarchiver verify-integrity --json
 ### repair - Database Repair
 
 ```bash
-# Repair database (dry run - preview only)
+# Repair database (dry run - preview only, default)
 gmailarchiver repair
 
-# Actually repair database
+# Actually repair database (requires explicit flag)
 gmailarchiver repair --no-dry-run
+
+# Preview repairs without making changes
+gmailarchiver repair --dry-run
 
 # Repair with offset backfilling (for migration issues)
 gmailarchiver repair --backfill --no-dry-run
+
+# Dry-run with verbose output
+gmailarchiver repair --dry-run --verbose
 
 # JSON output
 gmailarchiver repair --json

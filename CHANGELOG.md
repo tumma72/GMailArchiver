@@ -35,18 +35,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CommandContext**: Extended with async Gmail client support and `is_async` property
 - **`with_context` decorator**: Now accepts `requires_async_gmail` parameter
 - **Architecture documentation**: Updated ADR-006 with httpx rationale and adaptive rate limiting design
-- **Workflows module refactoring** (Major Architectural Change):
+
+### Dependencies
+- Added `httpx[http2]` for async HTTP client with HTTP/2 support
+
+## [1.5.0] - 2025-12-21
+
+### Changed
+- **Workflows Module Refactoring** (Major Architectural Modernization):
   - All 5 primary commands (archive, verify, migrate, repair, consolidate) migrated to **WorkflowComposer + Steps pattern**
   - Created 27 reusable step classes across 13 files in `core/workflows/steps/`
   - Replaced monolithic workflows with composable, independently testable steps
   - Implemented conditional step execution for dry-run, validation, and optional operations
   - Steps follow single responsibility principle, each calling one facade method
-  - Added 315+ new tests (TDD methodology) maintaining 96% coverage
-  - All CLI commands now thin (<50 LOC) with pure async logic in workflows
-  - Enhanced documentation: `ARCHITECTURE.md`, `README.md`, and inline docstrings
+  - Added 315+ new tests (TDD methodology) maintaining 96% coverage (2,897 total tests)
+  - All CLI commands remain thin (<50 LOC) with pure async logic in workflows
+  - Enhanced documentation: workflows README updated with v1.9.0 pattern documentation
 
-### Dependencies
-- Added `httpx[http2]` for async HTTP client with HTTP/2 support
+### Quality
+- **Test Coverage**: 96% (2,897 tests passing, zero warnings)
+- **Code Quality**: Ruff linting all checks passing, mypy no issues (133 source files)
+- **Architecture**: Complete layer boundary enforcement (no CLI imports in core/workflows)
+
+### No Breaking Changes
+- All CLI interfaces remain identical
+- All commands work exactly as before
+- Performance maintained (all async operations preserved)
+- Backward compatibility guaranteed
+
+### Benefits
+- **Foundation for GUI/API**: Workflows can be reused by non-CLI interfaces
+- **Improved Maintainability**: Single-responsibility steps enable easier debugging
+- **Better Extensibility**: Composable steps simplify adding new features
+- **Enhanced Observability**: Better error handling and progress reporting
 
 ## [1.4.5] - 2025-12-05
 
