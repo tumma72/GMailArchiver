@@ -224,9 +224,7 @@ class TestDoctorCommandRichOutput:
 
     def test_shows_validation_panels(self, runner: CliRunner, v1_1_database: Path) -> None:
         """Test output uses ValidationPanel widgets for categorized display."""
-        result = runner.invoke(
-            app, ["utilities", "doctor", "--state-db", str(v1_1_database)]
-        )
+        result = runner.invoke(app, ["utilities", "doctor", "--state-db", str(v1_1_database)])
 
         # Should show categorized sections
         # (Implementation may vary, but should have structure)
@@ -234,9 +232,7 @@ class TestDoctorCommandRichOutput:
 
     def test_shows_summary_card(self, runner: CliRunner, v1_1_database: Path) -> None:
         """Test output includes summary report card."""
-        result = runner.invoke(
-            app, ["utilities", "doctor", "--state-db", str(v1_1_database)]
-        )
+        result = runner.invoke(app, ["utilities", "doctor", "--state-db", str(v1_1_database)])
 
         # Should include summary information (status, summary, or diagnostic)
         assert (
@@ -249,9 +245,7 @@ class TestDoctorCommandRichOutput:
         self, runner: CliRunner, v1_1_database: Path
     ) -> None:
         """Test output shows next-steps suggestions when issues exist."""
-        result = runner.invoke(
-            app, ["utilities", "doctor", "--state-db", str(v1_1_database)]
-        )
+        result = runner.invoke(app, ["utilities", "doctor", "--state-db", str(v1_1_database)])
 
         # If issues exist, should suggest actions
         if "error" in result.stdout.lower() or "warning" in result.stdout.lower():
@@ -269,9 +263,7 @@ class TestDoctorCommandExitCodes:
 
     def test_exit_code_when_database_exists(self, runner: CliRunner, v1_1_database: Path) -> None:
         """Test exit code when database exists (may be 0 or 1 based on health)."""
-        result = runner.invoke(
-            app, ["utilities", "doctor", "--state-db", str(v1_1_database)]
-        )
+        result = runner.invoke(app, ["utilities", "doctor", "--state-db", str(v1_1_database)])
 
         # Exit code depends on database health - 0 if healthy, 1 if issues
         assert result.exit_code in [0, 1]
