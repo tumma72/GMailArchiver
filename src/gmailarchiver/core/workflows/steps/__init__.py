@@ -45,7 +45,19 @@ This module provides reusable steps for composing workflows:
 - DiagnoseStep: Run full diagnostics and identify issues
 - AutoFixStep: Attempt to auto-fix fixable issues (with optional backfill)
 - ValidateRepairStep: Re-validate after repair to confirm fixes
+
+**Consolidate Steps:**
+- LoadArchivesStep: Load and validate source archives
+- MergeAndProcessStep: Merge and process archives with dedup/sort
+- ValidateConsolidationStep: Validate consolidated archive integrity
 """
+
+# Consolidate steps
+from gmailarchiver.core.workflows.steps.consolidate import (
+    LoadArchivesStep,
+    MergeAndProcessStep,
+    ValidateConsolidationStep,
+)
 
 # Database steps
 # Doctor steps
@@ -101,6 +113,10 @@ from gmailarchiver.core.workflows.steps.verify import (
 from gmailarchiver.core.workflows.steps.write import WriteMessagesStep
 
 __all__ = [
+    # Consolidate
+    "LoadArchivesStep",
+    "MergeAndProcessStep",
+    "ValidateConsolidationStep",
     # Database
     "CheckDuplicatesStep",
     "RecordMetadataStep",

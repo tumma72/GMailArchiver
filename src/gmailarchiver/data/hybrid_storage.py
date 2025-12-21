@@ -447,7 +447,15 @@ class HybridStorage:
             # Move staging to final location
             final_mbox = output_path
             if compression:
-                final_mbox = output_path.with_suffix(".mbox")
+                # When compression is requested, we need a temporary mbox path
+                # that is different from the final output path to avoid
+                # overwriting/deleting issues
+                if output_path.suffix.lower() in (".gz", ".xz", ".zst"):
+                    # Output has compression extension, use .mbox for temp
+                    final_mbox = output_path.with_suffix(".mbox")
+                else:
+                    # Output doesn't have compression extension, add .tmp.mbox
+                    final_mbox = output_path.parent / (output_path.stem + ".tmp.mbox")
 
             shutil.move(str(staging_mbox), str(final_mbox))
 
@@ -455,7 +463,9 @@ class HybridStorage:
             if compression:
                 logger.debug(f"Compressing with {compression}")
                 await self._compress_file(final_mbox, output_path, compression)
-                final_mbox.unlink()
+                # Only delete the temp mbox if it's different from output
+                if final_mbox != output_path:
+                    final_mbox.unlink()
                 # Clean up lock file
                 lock_file = Path(str(final_mbox) + ".lock")
                 if lock_file.exists():
@@ -1628,6 +1638,64 @@ class HybridStorage:
             # Clean up temp file if created
             if tmp_path and tmp_path.exists():
                 tmp_path.unlink()
+
+    # ==================== ARCHIVE VALIDATION ====================
+
+    async def validate_archive_integrity(self, archive_file: str) -> bool:
+        """
+        Validate archive file integrity.
+
+        Checks that:
+        1. The archive file exists
+        2. It can be opened as an mbox file
+        3. Messages can be read from it
+
+        Args:
+            archive_file: Path to archive file to validate
+
+        Returns:
+            True if validation passes, False otherwise
+        """
+        archive_path = Path(archive_file)
+
+        if not archive_path.exists():
+            return False
+
+        try:
+            # Handle compressed archives
+            compression = self._detect_compression(archive_path)
+            if compression:
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".mbox", delete=False) as tmp:
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    await self._decompress_file(archive_path, tmp_path, compression)
+                    validate_path = tmp_path
+                except Exception:
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    return False
+            else:
+                validate_path = archive_path
+                tmp_path = None
+
+            try:
+                # Try to open and read the mbox
+                with closing(mailbox.mbox(str(validate_path))) as mbox_obj:
+                    # Count messages to verify the file is readable
+                    message_count = len(mbox_obj)
+                    logger.debug(f"Validated {archive_file}: {message_count} messages")
+
+                return True
+
+            finally:
+                # Clean up temp file if created
+                if tmp_path and tmp_path.exists():
+                    tmp_path.unlink()
+
+        except Exception as e:
+            logger.warning(f"Archive validation failed for {archive_file}: {e}")
+            return False
 
     # ==================== STATISTICS OPERATIONS ====================
 

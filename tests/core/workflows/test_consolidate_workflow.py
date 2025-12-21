@@ -558,3 +558,345 @@ class TestConsolidateWorkflowResults:
         result = await workflow.run(config)
 
         assert result.sort_applied is False
+
+
+# ============================================================================
+# Step-Based Workflow Tests (TDD Red Phase)
+# ============================================================================
+
+# Import the step-based workflow that doesn't exist yet
+try:
+    from gmailarchiver.core.workflows.composer import WorkflowComposer  # noqa: F401
+
+    STEP_WORKFLOW_AVAILABLE = True
+except ImportError:
+    STEP_WORKFLOW_AVAILABLE = False
+
+
+@pytest.mark.skipif(
+    not STEP_WORKFLOW_AVAILABLE,
+    reason="Step-based consolidate workflow not implemented yet (TDD Red Phase)",
+)
+class TestConsolidateWorkflowWithComposer:
+    """Test ConsolidateWorkflow using WorkflowComposer architecture."""
+
+    @pytest.mark.asyncio
+    async def test_uses_workflow_composer(
+        self, hybrid_storage: HybridStorage, tmp_path: Path
+    ) -> None:
+        """Consolidate workflow uses WorkflowComposer for step orchestration."""
+        # This tests that the workflow is composed using WorkflowComposer
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+
+        # Should have a composer attribute
+        assert hasattr(workflow, "composer")
+        assert isinstance(workflow.composer, WorkflowComposer)
+
+    @pytest.mark.asyncio
+    async def test_all_three_steps_registered(self, hybrid_storage: HybridStorage) -> None:
+        """Workflow registers all three steps: Load, Merge, Validate."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+
+        # Check that all steps are registered in order
+        step_names = [step.name for step in workflow.composer.steps]
+        assert "load_archives" in step_names
+        assert "merge_and_process" in step_names
+        assert "validate_consolidation" in step_names
+
+    @pytest.mark.asyncio
+    async def test_steps_execute_in_order(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Steps execute in correct order: Load -> Merge -> Validate."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            dedupe=True,
+            sort_by_date=True,
+            validate=True,
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+        assert output_path.exists()
+
+        # Verify steps executed in order via step results
+        assert result.step_results is not None
+        step_order = [r.step_name for r in result.step_results]
+        assert step_order == ["load_archives", "merge_and_process", "validate_consolidation"]
+
+    @pytest.mark.asyncio
+    async def test_validate_step_skipped_when_disabled(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Validate step is skipped when config.validate=False."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            validate=False,  # Validation disabled
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+
+        # Validate step should be skipped
+        step_names = [r.step_name for r in result.step_results]
+        assert "validate_consolidation" not in step_names
+
+    @pytest.mark.asyncio
+    async def test_validate_step_runs_when_enabled(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Validate step runs when config.validate=True."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            validate=True,  # Validation enabled
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+
+        # Validate step should have executed
+        step_names = [r.step_name for r in result.step_results]
+        assert "validate_consolidation" in step_names
+
+    @pytest.mark.asyncio
+    async def test_result_aggregation_from_context(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Result is aggregated from step context data."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            dedupe=True,
+            sort_by_date=True,
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        # Result should be aggregated from context
+        assert result.messages_count is not None
+        assert result.source_files_count == 2
+        assert result.output_file == str(output_path)
+
+    @pytest.mark.asyncio
+    async def test_error_handling_stops_workflow(
+        self,
+        hybrid_storage: HybridStorage,
+        tmp_path: Path,
+    ) -> None:
+        """Error in any step stops the workflow."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        missing_file = tmp_path / "nonexistent.mbox"
+        output_path = tmp_path / "output.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(missing_file)],
+            output_file=str(output_path),
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is False
+        assert result.error is not None
+        assert "not found" in result.error.lower()
+
+        # Only load step should have been attempted
+        step_names = [r.step_name for r in result.step_results]
+        assert "load_archives" in step_names
+        assert "merge_and_process" not in step_names
+
+    @pytest.mark.asyncio
+    async def test_progress_reporter_integration(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Progress reporter is passed to each step."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        # Mock progress reporter
+        mock_progress = MagicMock()
+        mock_task_sequence = MagicMock()
+        mock_task = MagicMock()
+        mock_progress.task_sequence.return_value.__enter__.return_value = mock_task_sequence
+        mock_task_sequence.task.return_value.__enter__.return_value = mock_task
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage, progress=mock_progress)
+        result = await workflow.run(config)
+
+        assert result.success is True
+        # Progress reporter should have been used
+        assert mock_progress.task_sequence.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_resource_cleanup_on_success(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Resources are cleaned up after successful workflow."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+
+        # Verify no temporary files left behind
+        temp_files = list(tmp_path.glob("*.tmp"))
+        assert len(temp_files) == 0
+
+    @pytest.mark.asyncio
+    async def test_resource_cleanup_on_failure(
+        self,
+        hybrid_storage: HybridStorage,
+        tmp_path: Path,
+    ) -> None:
+        """Resources are cleaned up after failed workflow."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        missing_file = tmp_path / "nonexistent.mbox"
+        output_path = tmp_path / "output.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(missing_file)],
+            output_file=str(output_path),
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is False
+
+        # Verify no partial output files left behind
+        assert not output_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_context_contains_all_step_data(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """After workflow, context contains data from all steps."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            validate=True,
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+
+        # Context should contain data from all steps
+        assert result.context is not None
+        assert result.context.get("archive_info") is not None  # From LoadArchivesStep
+        assert result.context.get("merged_count") is not None  # From MergeAndProcessStep
+        assert result.context.get("validation_passed") is not None  # From ValidateConsolidationStep
+
+    @pytest.mark.asyncio
+    async def test_config_passed_to_all_steps(
+        self,
+        hybrid_storage: HybridStorage,
+        two_mbox_files: tuple[Path, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Config is accessible to all steps via context."""
+        from gmailarchiver.core.workflows.consolidate import ConsolidateStepWorkflow
+
+        mbox1, mbox2 = two_mbox_files
+        output_path = tmp_path / "consolidated.mbox"
+
+        config = ConsolidateConfig(
+            source_files=[str(mbox1), str(mbox2)],
+            output_file=str(output_path),
+            dedupe=True,
+            sort_by_date=True,
+            compress="gzip",
+            dedupe_strategy="largest",
+        )
+
+        workflow = ConsolidateStepWorkflow(hybrid_storage)
+        result = await workflow.run(config)
+
+        assert result.success is True
+
+        # Config should be in context
+        stored_config = result.context.get("config")
+        assert stored_config is not None
+        assert stored_config["dedupe"] is True
+        assert stored_config["sort_by_date"] is True
+        assert stored_config["compress"] == "gzip"
+        assert stored_config["dedupe_strategy"] == "largest"
