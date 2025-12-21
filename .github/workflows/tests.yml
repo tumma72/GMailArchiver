@@ -75,13 +75,18 @@ jobs:
         run: uv sync --dev
 
       - name: Run tests with coverage
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
+          TERM: "dumb"
         run: |
           uv run pytest tests/ \
             --cov=src/gmailarchiver \
             --cov-config=.coveragerc \
             --cov-report=term \
             --cov-report=xml \
-            --cov-fail-under=90
+            --cov-fail-under=90 \
+            --no-cov-on-fail
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@v5
