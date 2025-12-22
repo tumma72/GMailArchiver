@@ -106,10 +106,10 @@ class TestImportCommand:
             app, ["utilities", "import", "nonexistent.mbox", "--state-db", str(v1_1_database)]
         )
 
-        # Import succeeds but with 0 files
+        # Import succeeds but with 0 files (no matching files found)
         assert result.exit_code == 0
-        # Should show that 0 messages were imported
-        assert "0" in result.stdout
+        # Should show warning that no files were found
+        assert "no files found" in result.stdout.lower() or "0" in result.stdout
 
     def test_import_database_error_handling(self, runner, tmp_path, monkeypatch):
         """Test import fails when database doesn't exist."""

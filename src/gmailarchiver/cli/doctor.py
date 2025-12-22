@@ -1,5 +1,8 @@
 """Doctor command handler implementation."""
 
+import asyncio
+from pathlib import Path
+
 from gmailarchiver.cli.command_context import CommandContext
 from gmailarchiver.cli.ui import (
     CLIProgressAdapter,
@@ -9,6 +12,8 @@ from gmailarchiver.cli.ui import (
 )
 from gmailarchiver.core.doctor._diagnostics import CheckResult, CheckSeverity
 from gmailarchiver.core.workflows.doctor import DoctorConfig, DoctorResult, DoctorWorkflow
+from gmailarchiver.data.db_manager import DBManager
+from gmailarchiver.data.hybrid_storage import HybridStorage
 
 
 async def _run_doctor(
@@ -17,11 +22,28 @@ async def _run_doctor(
     json_output: bool,
 ) -> None:
     """Async implementation of doctor command."""
-    assert ctx.storage is not None  # Guaranteed by @with_context(requires_storage=True)
+    # Try to load storage if database exists
+    db_path = Path(ctx.state_db_path)
+    storage: HybridStorage | None = None
+    
+    if db_path.exists():
+        try:
+            db = DBManager(str(db_path), validate_schema=False)
+            await db.initialize()
+            storage = HybridStorage(db)
+            await storage.initialize()
+        except Exception:
+            # If we can't load the storage, that's okay - doctor will report it
+            storage = None
+
+    # Handle case where no database exists - report as health check issue
+    if storage is None:
+        _handle_no_database(ctx, json_output)
+        return
 
     # Create workflow with storage
     progress = CLIProgressAdapter(ctx.output, ctx.ui)
-    workflow = DoctorWorkflow(ctx.storage, progress=progress)
+    workflow = DoctorWorkflow(storage, progress=progress)
     config = DoctorConfig(verbose=verbose)
 
     # Run diagnostics workflow
@@ -59,6 +81,58 @@ async def _run_doctor(
 
     # Display summary
     _display_summary(ctx, result)
+
+
+def _handle_no_database(ctx: CommandContext, json_output: bool) -> None:
+    """Handle case where no database exists - report as health issue."""
+    db_path = ctx.state_db_path or "archive_state.db"
+    
+    if json_output:
+        ctx.output.set_json_payload(
+            {
+                "overall_status": "WARNING",
+                "checks_passed": 0,
+                "total_checks": 1,
+                "warnings": 1,
+                "errors": 0,
+                "fixable_issues": ["Create database by running 'gmailarchiver archive'"],
+                "checks": [
+                    {
+                        "name": "Database Exists",
+                        "severity": "WARNING",
+                        "message": f"State database not found: {db_path}",
+                        "fixable": True,
+                        "details": "Run 'gmailarchiver archive' to create a new database",
+                    }
+                ],
+            }
+        )
+        return
+
+    # Rich output for no database case
+    panel = ValidationPanel("Archive Health")
+    panel.add_check(
+        "Database Exists",
+        passed=False,
+        detail=f"State database not found: {db_path}",
+    )
+    panel.render(ctx.output)
+
+    (
+        ReportCard("Diagnostic Summary")
+        .add_field("Overall Status", "WARNING")
+        .add_field("Checks Passed", "0/1")
+        .add_field("Warnings", "1")
+        .add_field("Errors", "0")
+        .render(ctx.output)
+    )
+
+    (
+        SuggestionList()
+        .add("Run 'gmailarchiver archive' to create a new database")
+        .add("Or specify an existing database with --state-db")
+        .render(ctx.output)
+    )
 
 
 def _display_database_checks(

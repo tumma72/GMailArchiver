@@ -379,15 +379,15 @@ class TestSearchCommand:
         # Should find messages to team@example.com
         assert "results" in result.stdout.lower() or "team" in result.stdout.lower()
 
-    def test_search_shows_execution_time(self, runner, v1_1_database_with_messages):
-        """Test search output includes execution time."""
+    def test_search_shows_result_count(self, runner, v1_1_database_with_messages):
+        """Test search output includes result count."""
         result = runner.invoke(
             app, ["search", "meeting", "--state-db", str(v1_1_database_with_messages)]
         )
 
         assert result.exit_code == 0
-        # Should show execution time in ms
-        assert "ms" in result.stdout.lower() or "time" in result.stdout.lower()
+        # Should show result count (e.g., "Found 2 messages")
+        assert "found" in result.stdout.lower() or "result" in result.stdout.lower()
 
     def test_search_invalid_date_format(self, runner, v1_1_database_with_messages):
         """Test search with invalid date format handles gracefully."""

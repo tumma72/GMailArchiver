@@ -8,9 +8,14 @@ from gmailarchiver.cli.command_context import CommandContext, with_context
 from gmailarchiver.cli.doctor import _run_doctor
 
 
-@with_context(requires_storage=True, has_progress=True, operation_name="doctor")
+@with_context(requires_storage=False, has_progress=True, operation_name="doctor")
 def doctor(
     ctx: CommandContext,
+    state_db: str = typer.Option(
+        "archive_state.db",
+        "--state-db",
+        help="Path to state database",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed diagnostics"),
     json_output: bool = typer.Option(False, "--json", help="Output results as JSON"),
 ) -> None:

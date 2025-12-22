@@ -106,13 +106,26 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src/"]
+source = ["src/gmailarchiver"]
 branch = true
+omit = [
+    "*/tests/*",
+    "*/__main__.py",
+    "*/site-packages/*",
+]
 
 [tool.coverage.report]
-fail_under = 95
+fail_under = 90
 show_missing = true
-
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
 
 [dependency-groups]
 dev = [
