@@ -2800,3 +2800,202 @@ class TestMigrationErrorPaths:
 
         conn.close()
         await manager._close()
+
+
+# ============================================================================
+# Additional Coverage Tests for Missing Lines
+# ============================================================================
+
+
+class TestBodyPreviewNonePayload:
+    """Test body preview extraction with None/non-bytes payload (lines 300->295, 308->313)."""
+
+    async def test_extract_body_multipart_with_none_payload(self):
+        """Test multipart message with None payload (line 300->295)."""
+        from unittest.mock import MagicMock
+
+        manager = MigrationManager(":memory:")
+
+        # Create a multipart message with a part that returns None payload
+        msg = MagicMock()
+        msg.is_multipart.return_value = True
+
+        # Create a part that returns None from get_payload
+        part = MagicMock()
+        part.get_content_type.return_value = "text/plain"
+        part.get_payload.return_value = None  # This triggers line 300->295
+
+        msg.walk.return_value = [msg, part]
+
+        result = manager._extract_body_preview(msg)
+        # Should return empty string when payload is None
+        assert result == ""
+        await manager._close()
+
+    async def test_extract_body_multipart_with_string_payload(self):
+        """Test multipart message with string payload instead of bytes (line 300->295)."""
+        from unittest.mock import MagicMock
+
+        manager = MigrationManager(":memory:")
+
+        # Create a multipart message with a part that returns string payload
+        msg = MagicMock()
+        msg.is_multipart.return_value = True
+
+        # Create a part that returns string (not bytes) from get_payload
+        part = MagicMock()
+        part.get_content_type.return_value = "text/plain"
+        part.get_payload.return_value = "string not bytes"  # Not isinstance(payload, bytes)
+
+        msg.walk.return_value = [msg, part]
+
+        result = manager._extract_body_preview(msg)
+        # Should return empty string when payload is not bytes
+        assert result == ""
+        await manager._close()
+
+    async def test_extract_body_non_multipart_with_none_payload(self):
+        """Test non-multipart message with None payload (line 308->313)."""
+        from unittest.mock import MagicMock
+
+        manager = MigrationManager(":memory:")
+
+        # Create a non-multipart message that returns None from get_payload
+        msg = MagicMock()
+        msg.is_multipart.return_value = False
+        msg.get_payload.return_value = None  # This triggers line 308->313
+
+        result = manager._extract_body_preview(msg)
+        # Should return empty string when payload is None
+        assert result == ""
+        await manager._close()
+
+    async def test_extract_body_non_multipart_with_string_payload(self):
+        """Test non-multipart message with string payload instead of bytes (line 308->313)."""
+        from unittest.mock import MagicMock
+
+        manager = MigrationManager(":memory:")
+
+        # Create a non-multipart message that returns string (not bytes)
+        msg = MagicMock()
+        msg.is_multipart.return_value = False
+        msg.get_payload.return_value = "string not bytes"  # Not isinstance(payload, bytes)
+
+        result = manager._extract_body_preview(msg)
+        # Should return empty string when payload is not bytes
+        assert result == ""
+        await manager._close()
+
+
+class TestRollbackWithNonexistentDatabase:
+    """Test rollback when database doesn't exist (line 593->597)."""
+
+    async def test_rollback_when_db_does_not_exist(self, tmp_path):
+        """Test rollback when current database doesn't exist (line 593->597)."""
+        db_path = tmp_path / "nonexistent.db"
+        backup_path = tmp_path / "backup.db"
+
+        # Create backup file
+        conn = sqlite3.connect(str(backup_path))
+        conn.execute("CREATE TABLE archived_messages (gmail_id TEXT)")
+        conn.execute("INSERT INTO archived_messages VALUES ('msg1')")
+        conn.commit()
+        conn.close()
+
+        # Database doesn't exist yet
+        assert not db_path.exists()
+
+        # Perform rollback
+        manager = MigrationManager(db_path)
+        await manager.rollback_migration(backup_path)
+
+        # Verify database now exists with restored data
+        assert db_path.exists()
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT COUNT(*) FROM archived_messages")
+        assert cursor.fetchone()[0] == 1
+        conn.close()
+        await manager._close()
+
+
+class TestMigrationWithMoreMessagesInMboxThanDB:
+    """Test migration when mbox has more messages than v1.0 DB (line 735->720)."""
+
+    async def test_migrate_with_extra_messages_in_mbox(self, tmp_path):
+        """Test migration when mbox file has more messages than v1.0 DB records (line 735->720)."""
+        db_path = tmp_path / "test.db"
+        mbox_path = tmp_path / "archive.mbox"
+
+        # Create mbox file with 3 messages
+        import mailbox
+
+        mbox = mailbox.mbox(str(mbox_path))
+        for i in range(3):
+            msg = email.message.EmailMessage()
+            msg["Message-ID"] = f"<test{i}@example.com>"
+            msg["Subject"] = f"Test Subject {i}"
+            msg["From"] = f"test{i}@example.com"
+            msg["Date"] = "Mon, 1 Jan 2024 12:00:00 +0000"
+            msg.set_content(f"This is test message {i}.")
+            mbox.add(msg)
+        mbox.close()
+
+        # Create v1.0 database with only 1 message (less than mbox)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE archived_messages (
+                gmail_id TEXT PRIMARY KEY,
+                archived_timestamp TEXT NOT NULL,
+                archive_file TEXT NOT NULL,
+                subject TEXT,
+                from_addr TEXT,
+                message_date TEXT,
+                checksum TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE archive_runs (
+                run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_timestamp TEXT,
+                query TEXT,
+                messages_archived INTEGER,
+                archive_file TEXT
+            )
+        """)
+        # Only insert 1 message, but mbox has 3
+        conn.execute(
+            """
+            INSERT INTO archived_messages VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                "msg1",
+                "2024-01-01T00:00:00",
+                str(mbox_path),
+                "Test Subject 0",
+                "test0@example.com",
+                "2024-01-01",
+                "checksum123",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        # Perform migration - should process first message, then hit remaining_messages empty
+        manager = MigrationManager(db_path)
+        await manager.migrate_v1_to_v1_1()
+
+        # Verify migration completed with just 1 message
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.execute("SELECT COUNT(*) FROM messages")
+        count = cursor.fetchone()[0]
+        # Should only have 1 message (from v1.0 DB)
+        # The extra 2 messages in mbox are ignored after remaining_messages is empty
+        assert count == 1
+        conn.close()
+        await manager._close()
+
+
+# Note: Lines 870-881 (__del__ destructor) are defensive cleanup code
+# that's difficult to test reliably in async contexts. The destructor
+# handles edge cases during garbage collection and is excluded from
+# coverage requirements as it's not a testable path in normal usage.

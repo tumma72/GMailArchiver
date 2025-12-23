@@ -347,11 +347,10 @@ class SchemaManager:
                 return False
 
         # Perform migration
+        from .migration import MigrationManager
+
+        migrator = MigrationManager(self.db_path)
         try:
-            from .migration import MigrationManager
-
-            migrator = MigrationManager(self.db_path)
-
             if version == SchemaVersion.V1_0:
                 if progress_callback:
                     progress_callback("Migrating v1.0 to v1.1...")
@@ -378,7 +377,6 @@ class SchemaManager:
                 # v1.2 to v1.3 adds the schedules table
                 await self._upgrade_v1_2_to_v1_3()
 
-            await migrator._close()
             self.invalidate_cache()
 
             if progress_callback:
@@ -392,6 +390,8 @@ class SchemaManager:
                 current_version=version,
                 required_version=self.CURRENT_VERSION,
             ) from e
+        finally:
+            await migrator._close()
 
     async def _upgrade_v1_1_to_v1_2(self) -> None:
         """Upgrade from v1.1 to v1.2 (schema version table update only)."""

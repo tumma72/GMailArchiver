@@ -2,6 +2,9 @@
 
 This module defines the protocol interfaces that all UI components implement.
 Protocols enable type checking while keeping implementations decoupled.
+
+Note: Protocol classes contain only abstract method signatures (`...` bodies)
+and are excluded from coverage measurement since they define interfaces only.
 """
 
 from contextlib import AbstractContextManager
@@ -11,7 +14,7 @@ if TYPE_CHECKING:
     from gmailarchiver.cli.output import OutputManager
 
 
-class Widget(Protocol):
+class Widget(Protocol):  # pragma: no cover
     """Protocol for renderable UI widgets.
 
     All widgets implement this protocol, enabling consistent rendering
@@ -37,7 +40,7 @@ class Widget(Protocol):
         ...
 
 
-class TaskHandle(Protocol):
+class TaskHandle(Protocol):  # pragma: no cover
     """Protocol for controlling a single task within a sequence.
 
     Provides methods for updating task state, progress, and completion.
@@ -98,7 +101,7 @@ class TaskHandle(Protocol):
         ...
 
 
-class TaskSequence(Protocol):
+class TaskSequence(Protocol):  # pragma: no cover
     """Protocol for task sequence builders.
 
     A task sequence manages multiple sequential tasks with a single
@@ -121,7 +124,7 @@ class TaskSequence(Protocol):
         ...
 
 
-class UIBuilder(Protocol):
+class UIBuilder(Protocol):  # pragma: no cover
     """Protocol for UI builder entry point.
 
     Commands access this via ctx.ui to build declarative UI.

@@ -263,12 +263,13 @@ class TestRepairManagerFixStaleLocks:
         assert result.success is True
         assert "Removed 0 lock file(s)" in result.message
 
-    def test_fix_stale_locks_with_memory_database(self):
-        """Test fix_stale_locks with in-memory database."""
-        db_path = Path(":memory:")
+    def test_fix_stale_locks_with_nonexistent_db_path(self, tmp_path):
+        """Test fix_stale_locks with nonexistent database path."""
+        # Use a path that doesn't exist to simulate a similar scenario
+        db_path = tmp_path / "nonexistent" / "test.db"
         manager = RepairManager(db_path, None)
 
-        # Should use current directory for memory databases
+        # Should handle gracefully when parent directory doesn't exist
         result = manager.fix_stale_locks()
 
         assert result.success is True

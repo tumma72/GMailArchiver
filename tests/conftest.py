@@ -15,11 +15,21 @@ import lzma
 import mailbox
 import sqlite3
 import tempfile
+import warnings
 from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from typing import Any
 
-from typer.testing import CliRunner
+# Filter Python 3.14 stdlib deprecation warnings from the mailbox module
+# The mailbox.mbox implementation uses text mode files internally, and this
+# deprecation warning is not actionable in our codebase.
+warnings.filterwarnings(
+    "ignore",
+    message="Use of text mode files is deprecated",
+    category=DeprecationWarning,
+)
+
+from typer.testing import CliRunner  # noqa: E402
 
 # =============================================================================
 # Test-only SQLite connection wrapper

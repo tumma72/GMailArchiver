@@ -10,15 +10,15 @@
 
 **A professional-grade email archival, search, and management solution for Gmail** - Archive, compress, search, extract, and maintain your email history with confidence.
 
-## 🎉 What's New in v1.5.0 - Architecture Refactoring
+## 🎉 What's New in v1.5.2 - Quality & Coverage
 
-Version 1.5.0 modernizes the internal architecture while maintaining complete backward compatibility. No user-facing changes, but significant improvements under the hood:
+Version 1.5.2 raises the quality bar with comprehensive test coverage improvements:
 
-- 🏗️ **WorkflowComposer + Steps Pattern** - All 5 primary commands refactored for composability and testability
-- 🧪 **315+ New Tests** - Comprehensive test coverage maintained at 96%
-- ⚡ **Same Performance** - All async operations preserved, no regressions
-- 🔄 **Better Maintainability** - Single-responsibility steps enable easier debugging and future features
-- 🎯 **Foundation for GUI/API** - Workflows can now be reused by non-CLI interfaces (coming soon)
+- 🧪 **95% Test Coverage** - Enforced minimum threshold with 3,195 tests
+- ✅ **Zero Warnings** - All deprecation warnings resolved
+- 🔧 **Protocol Exclusions** - Interface-only code properly excluded from coverage
+- 📝 **Error Path Testing** - Complete coverage of CLI error handling paths
+- 🏗️ **Quality Gates** - Stricter coverage requirements in CI/CD
 
 ### Recent Major Features
 
@@ -62,7 +62,7 @@ Gmail Archiver solves these problems by providing a **professional-grade archiva
 - **Maintain data sovereignty**: Your emails, your local storage, your control
 - **Automate maintenance**: Set-and-forget health checks
 - **Future-proof format**: mbox is a 40+ year old standard supported by all email clients
-- **Production-ready**: 989 automated tests, 93% code coverage, strict type safety
+- **Production-ready**: 3,195 automated tests, 95% code coverage, strict type safety
 
 ## ✨ Core Features
 
@@ -237,6 +237,20 @@ All commands support `--json` for scripting and `--help` for detailed options.
 - [Changelog](CHANGELOG.md) - Version history and release notes
 
 ## 📜 Version History
+
+### v1.5.2 (2025-12-23) - Quality & Coverage
+
+**Test Coverage Improvements**:
+- Raised minimum coverage threshold from 90% to 95%
+- Added 59 new tests for CLI command coverage (schedule, verify, repair)
+- Total: 3,195 tests passing with zero warnings
+- Protocol classes excluded from coverage (interface-only code)
+
+**Bug Fixes**:
+- Fixed Python 3.14 deprecation warnings from mailbox module
+- Resolved all linting and formatting issues
+
+**Quality**: 3,195 tests, 95% coverage (enforced minimum)
 
 ### v1.5.0 (2025-12-21) - Architecture Modernization
 

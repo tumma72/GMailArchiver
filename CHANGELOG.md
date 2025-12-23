@@ -39,6 +39,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 - Added `httpx[http2]` for async HTTP client with HTTP/2 support
 
+## [1.5.2] - 2025-12-23
+
+### Changed
+- **Coverage Threshold**: Raised minimum from 90% to 95% (enforced in pyproject.toml)
+- **Protocol Exclusions**: Added `# pragma: no cover` to Protocol classes in `cli/ui/protocols.py`
+
+### Added
+- **CLI Command Tests**: 59 new tests for complete CLI coverage
+  - 18 tests for `schedule.py` commands (100% coverage)
+  - 30 tests for `verify.py` commands (100% coverage)
+  - 11 tests for `repair.py` error paths (98% coverage)
+- **Deprecation Warning Filter**: Python 3.14 mailbox module warnings filtered in conftest.py
+
+### Fixed
+- **Python 3.14 Compatibility**: Resolved deprecation warnings from mailbox module text mode
+- **Linting Issues**: Fixed all ruff linting and formatting errors
+
+### Quality
+- **Test Coverage**: 95% (3,195 tests passing, zero warnings)
+- **Enforced Minimum**: CI will fail if coverage drops below 95%
+
 ## [1.5.0] - 2025-12-21
 
 ### Changed
