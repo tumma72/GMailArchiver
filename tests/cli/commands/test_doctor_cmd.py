@@ -100,7 +100,11 @@ class TestDoctorCommandWithDatabase:
     """Test doctor command behavior when database exists."""
 
     def test_command_with_database_runs(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test doctor command runs with database."""
         monkeypatch.chdir(tmp_path)
@@ -110,7 +114,11 @@ class TestDoctorCommandWithDatabase:
         assert result.exit_code == 0
 
     def test_verbose_with_database(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test --verbose flag with database shows detailed output."""
         monkeypatch.chdir(tmp_path)
@@ -134,7 +142,11 @@ class TestDoctorCommandJsonOutput:
     """Test JSON output format."""
 
     def test_json_output_structure_with_database(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test JSON output includes all required fields with database."""
         monkeypatch.chdir(tmp_path)
@@ -154,7 +166,11 @@ class TestDoctorCommandJsonOutput:
         assert "checks_passed" in output
 
     def test_json_checks_array_structure(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test JSON checks array has proper structure."""
         monkeypatch.chdir(tmp_path)
@@ -171,7 +187,11 @@ class TestDoctorCommandJsonOutput:
             assert "message" in check
 
     def test_json_severity_values(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test JSON severity values are valid."""
         monkeypatch.chdir(tmp_path)
@@ -185,7 +205,11 @@ class TestDoctorCommandJsonOutput:
         assert output["overall_status"] in ["OK", "WARNING", "ERROR"]
 
     def test_json_counts_are_integers(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test JSON count fields are integers."""
         monkeypatch.chdir(tmp_path)
@@ -199,7 +223,11 @@ class TestDoctorCommandJsonOutput:
         assert isinstance(output["total_checks"], int)
 
     def test_json_fixable_issues_is_list(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test JSON fixable_issues is a list."""
         monkeypatch.chdir(tmp_path)
@@ -221,7 +249,11 @@ class TestDoctorCommandVerboseOutput:
     """Test verbose output mode."""
 
     def test_verbose_shows_check_details(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test verbose mode displays individual check details."""
         monkeypatch.chdir(tmp_path)
@@ -234,7 +266,11 @@ class TestDoctorCommandVerboseOutput:
         assert "database" in stdout_lower or "schema" in stdout_lower or "archive" in stdout_lower
 
     def test_verbose_shows_more_than_default(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test verbose output is longer than default output."""
         monkeypatch.chdir(tmp_path)
@@ -259,7 +295,11 @@ class TestDoctorCommandRichOutput:
     """Test Rich terminal output."""
 
     def test_shows_summary_card(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test output includes summary report card."""
         monkeypatch.chdir(tmp_path)
@@ -279,7 +319,11 @@ class TestDoctorCommandExitCodes:
     """Test command exit codes based on diagnostic results."""
 
     def test_exit_code_zero_when_all_ok(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test exit code 0 when database exists and checks pass."""
         monkeypatch.chdir(tmp_path)
@@ -322,7 +366,11 @@ class TestDoctorCommandContext:
         assert "database" in result.stdout.lower() or "archive" in result.stdout.lower()
 
     def test_accepts_state_db_option(
-        self, runner: CliRunner, v1_1_database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        runner: CliRunner,
+        v1_1_database: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test --state-db option is accepted."""
         monkeypatch.chdir(tmp_path)

@@ -1,6 +1,5 @@
 """Doctor command handler implementation."""
 
-import asyncio
 from pathlib import Path
 
 from gmailarchiver.cli.command_context import CommandContext
@@ -25,13 +24,12 @@ async def _run_doctor(
     # Try to load storage if database exists
     db_path = Path(ctx.state_db_path)
     storage: HybridStorage | None = None
-    
+
     if db_path.exists():
         try:
             db = DBManager(str(db_path), validate_schema=False)
             await db.initialize()
             storage = HybridStorage(db)
-            await storage.initialize()
         except Exception:
             # If we can't load the storage, that's okay - doctor will report it
             storage = None
@@ -86,7 +84,7 @@ async def _run_doctor(
 def _handle_no_database(ctx: CommandContext, json_output: bool) -> None:
     """Handle case where no database exists - report as health issue."""
     db_path = ctx.state_db_path or "archive_state.db"
-    
+
     if json_output:
         ctx.output.set_json_payload(
             {
